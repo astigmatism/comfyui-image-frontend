@@ -29,6 +29,7 @@ class ComfyUIAdapter:
     """Capability-probed server-side boundary around ComfyUI API differences."""
 
     LIST_CANDIDATES = (
+        ("/api/v2/userdata", "v2_query"),
         ("/userdata", "query"),
         ("/api/userdata", "query"),
         ("/userdata/{directory}", "path"),
@@ -99,7 +100,9 @@ class ComfyUIAdapter:
         directory = self.settings.comfyui_workflow_directory
         for template, mode in self.LIST_CANDIDATES:
             try:
-                if mode == "query":
+                if mode == "v2_query":
+                    response = await self._client.get(template, params={"path": directory})
+                elif mode == "query":
                     response = await self._client.get(template, params={"dir": directory, "recurse": "true"})
                 else:
                     response = await self._client.get(
@@ -141,7 +144,9 @@ class ComfyUIAdapter:
         capabilities = self._capabilities or await self.probe()
         mode, template = capabilities.workflow_list_route.split(":", 1)
         directory = self.settings.comfyui_workflow_directory
-        if mode == "query":
+        if mode == "v2_query":
+            response = await self._client.get(template, params={"path": directory})
+        elif mode == "query":
             response = await self._client.get(template, params={"dir": directory, "recurse": "true"})
         else:
             response = await self._client.get(

@@ -78,3 +78,55 @@ def test_cancel_refuses_global_interrupt_when_multiple_prompts_are_running(tmp_p
             await adapter.close()
 
     asyncio.run(scenario())
+
+
+def test_probe_and_list_support_modern_v2_userdata_listing(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, dict(request.url.params)))
+        if request.url.path == "/object_info":
+            return httpx.Response(200, json={})
+        if request.url.path == "/api/v2/userdata":
+            assert dict(request.url.params) == {"path": "workflows/front-end"}
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "name": "profile.workflow.json",
+                        "path": "workflows/front-end/profile.workflow.json",
+                        "type": "file",
+                    },
+                    {
+                        "name": "profile.api.json",
+                        "path": "workflows/front-end/profile.api.json",
+                        "type": "file",
+                    },
+                    {
+                        "name": "nested",
+                        "path": "workflows/front-end/nested",
+                        "type": "directory",
+                    },
+                ],
+            )
+        if request.url.path.startswith("/userdata/"):
+            return httpx.Response(404)
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"system": {"comfyui_version": "test"}})
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            capabilities = await adapter.probe()
+            assert capabilities.workflow_list_route == "v2_query:/api/v2/userdata"
+            assert capabilities.workflow_get_route == "path:/userdata/{path}"
+            assert await adapter.list_workflow_files() == [
+                "profile.api.json",
+                "profile.workflow.json",
+            ]
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert calls.count(("/api/v2/userdata", {"path": "workflows/front-end"})) == 2
