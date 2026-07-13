@@ -88,6 +88,9 @@ test("one generation renders one card while progressive media changes in place",
     accepted_at: "2026-07-12T12:00:00Z",
     status: "running",
     recall_available: true,
+    cancel_allowed: true,
+    expected_width: 384,
+    expected_height: 512,
     display_artifact: {
       kind: "image",
       role: "image.base",
@@ -105,6 +108,28 @@ test("one generation renders one card while progressive media changes in place",
   assert.equal((next.match(/<article class="gallery-card/g) || []).length, 1);
   assert.match(first, /a1\/thumbnail/);
   assert.match(next, /a2\/thumbnail/);
+  assert.match(first, /--gallery-media-aspect: 384 \/ 512/);
+  assert.match(first, /data-action="cancel-generation"/);
+});
+
+test("cancelled image-less generation keeps its reserved card and a clear terminal message", () => {
+  const html = galleryCardMarkup({
+    id: "g-cancelled",
+    workflow_display_name: "Portrait",
+    accepted_at: "2026-07-12T12:00:00Z",
+    status: "cancelled_without_artifacts",
+    current_stage_label: "Finishing image",
+    recall_available: true,
+    cancel_allowed: false,
+    expected_width: 640,
+    expected_height: 960,
+    display_artifact: null,
+    final_artifact_count: 0,
+  });
+  assert.match(html, /--gallery-media-aspect: 640 \/ 960/);
+  assert.match(html, /<strong>Cancelled generation<\/strong>/);
+  assert.doesNotMatch(html, /Finishing image/);
+  assert.doesNotMatch(html, /data-action="cancel-generation"/);
 });
 
 test("resolution markup exposes strict contract limits to native controls", () => {

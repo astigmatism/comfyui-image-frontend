@@ -135,7 +135,7 @@ Validation rejection creates no gallery record. Acceptance resolves random seeds
 | GET | `/api/artifacts/{id}/content` | Authorized original artifact |
 | GET | `/api/artifacts/{id}/thumbnail` | Authorized WebP derivative |
 
-A summary contains only one `display_artifact` for card rendering even when the detail timeline contains multiple checkpoints or final batch siblings.
+A summary contains only one `display_artifact` for card rendering even when the detail timeline contains multiple checkpoints or final batch siblings. It also exposes the expected output dimensions so an image-less working card can reserve the final aspect ratio, plus `cancel_allowed` for the active card action.
 
 ## Preferences
 

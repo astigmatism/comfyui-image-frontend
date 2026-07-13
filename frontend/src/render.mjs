@@ -258,13 +258,36 @@ export function galleryCardMarkup(generation) {
   const stateClass = generation.status.replaceAll("_", "-");
   const media = hasImage
     ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${generation.workflow_display_name}, ${statusLabel(generation.status)}, ${footerText("", generation.accepted_at).replace(/^ · /, "")}`)}" />`
-    : `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(generation.current_stage_label || statusLabel(generation.status))}</strong>${generation.status === "queued" ? '<span>Waiting for a fair queue slot</span>' : ""}</div>`;
+    : statusPlaceholderMarkup(generation);
   const statusOverlay = generation.status === "succeeded" ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
   const count = generation.final_artifact_count > 1 ? `<div class="batch-count" aria-label="${generation.final_artifact_count} final images">${generation.final_artifact_count}</div>` : "";
+  const width = positiveNumber(generation.expected_width) || positiveNumber(artifact?.width);
+  const height = positiveNumber(generation.expected_height) || positiveNumber(artifact?.height);
+  const aspectStyle = width && height ? ` style="--gallery-media-aspect: ${width} / ${height}"` : "";
+  const cancel = generation.cancel_allowed
+    ? `<button type="button" class="button card-cancel-button" data-action="cancel-generation" data-generation-id="${escapeHtml(generation.id)}">Cancel</button>`
+    : "";
   return `<article class="gallery-card status-${stateClass}" data-generation-id="${escapeHtml(generation.id)}">
-    <button class="card-media" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Open generation details">${media}${statusOverlay}${count}</button>
+    <div class="card-media-frame"${aspectStyle}>
+      <button class="card-media" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Open generation details">${media}${statusOverlay}${count}</button>
+      ${cancel}
+    </div>
     ${cardFooterMarkup(generation)}
   </article>`;
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function statusPlaceholderMarkup(generation) {
+  let label = generation.current_stage_label || statusLabel(generation.status);
+  if (generation.status.startsWith("cancelled_")) label = "Cancelled generation";
+  else if (generation.status.startsWith("failed_")) label = "Generation failed";
+  else if (generation.status === "interrupted") label = "Generation interrupted";
+  const queueCopy = generation.status === "queued" ? "<span>Waiting for a fair queue slot</span>" : "";
+  return `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${queueCopy}</div>`;
 }
 
 export function cardFooterMarkup(generation) {

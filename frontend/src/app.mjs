@@ -119,7 +119,7 @@ async function handleClick(event) {
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
-    else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId);
+    else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
     else if (action === "load-more") await loadMore();
     else if (action === "open-admin") await openAdmin();
@@ -554,10 +554,23 @@ async function openDetail(id) {
   dialog.showModal();
 }
 
-async function cancelGeneration(id) {
-  const result = await api(`/api/generations/${id}/cancel`, { method: "POST" });
-  await refreshGeneration(id);
-  toast(result.status === "cancel_requested" ? "Cancellation requested." : "Generation cancelled.", "success");
+async function cancelGeneration(id, button) {
+  const buttonLabel = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Stopping…";
+  }
+  try {
+    const result = await api(`/api/generations/${id}/cancel`, { method: "POST" });
+    await refreshGeneration(id);
+    toast(result.status === "cancel_requested" ? "Cancellation requested." : "Generation cancelled.", "success");
+  } catch (error) {
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.textContent = buttonLabel || "Cancel";
+    }
+    throw error;
+  }
 }
 
 async function deleteGeneration(id) {

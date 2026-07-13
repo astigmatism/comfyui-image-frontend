@@ -130,9 +130,12 @@ class GenerationSummary(APIModel):
     best_available_artifact_id: str | None = None
     canonical_artifact_id: str | None = None
     display_artifact: ArtifactSummary | None = None
+    expected_width: int | None = None
+    expected_height: int | None = None
     error_message: str | None = None
     recall_available: bool = False
     recall_unavailable_reason: str | None = None
+    cancel_allowed: bool = False
 
 
 class GenerationPage(APIModel):
@@ -149,7 +152,6 @@ class GenerationDetail(GenerationSummary):
     artifacts: list[ArtifactSummary]
     events: list[dict[str, Any]]
     error_code: str | None = None
-    cancel_allowed: bool
     delete_pending: bool
 
 

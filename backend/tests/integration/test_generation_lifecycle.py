@@ -88,12 +88,14 @@ def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
             lambda item: item["artifact_count"] >= 1 and item["status"] == "running",
         )
         assert checkpoint["canonical_artifact_id"] is None
+        assert checkpoint["cancel_allowed"] is True
         cancel = client.post(
             f"/api/generations/{cancellable['id']}/cancel",
             headers={"X-CSRF-Token": csrf(client)},
         )
         assert cancel.status_code == 200
         assert cancel.json()["status"] == "cancel_requested"
+        assert cancel.json()["cancel_allowed"] is False
         cancelled = wait_for_status(client, cancellable["id"], "cancelled_with_artifacts")
         assert cancelled["canonical_artifact_id"] is None
         assert cancelled["best_available_artifact_id"] is not None
@@ -112,6 +114,37 @@ def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
         statuses = {item["id"]: item["status"] for item in page}
         assert statuses[cancellable["id"]] == "cancelled_with_artifacts"
         assert statuses[failed_attempt["id"]] == "failed_with_artifacts"
+
+
+def test_gallery_summary_exposes_target_dimensions_and_queued_cancel_state(
+    settings_factory, fake_state
+) -> None:
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client)
+        payload = generation_payload(client, "portrait placeholder", seed=404)
+        payload["controls"]["size.resolution"] = {"width": 640, "height": 960}
+        response = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json=payload,
+        )
+        assert response.status_code == 201, response.text
+        accepted = response.json()
+        assert (accepted["expected_width"], accepted["expected_height"]) == (640, 960)
+        assert accepted["cancel_allowed"] is True
+
+        cancelled = client.post(
+            f"/api/generations/{accepted['id']}/cancel",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "cancelled_without_artifacts"
+        assert cancelled.json()["cancel_allowed"] is False
+
+        retained = client.get("/api/generations").json()["items"][0]
+        assert retained["id"] == accepted["id"]
+        assert (retained["expected_width"], retained["expected_height"]) == (640, 960)
 
 
 def test_validation_rejection_creates_no_record_and_rapid_submissions_are_distinct(

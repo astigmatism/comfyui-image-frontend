@@ -292,6 +292,7 @@ class GenerationService:
     def summary(self, session: Session, generation: Generation) -> GenerationSummary:
         display = self._display_artifact(session, generation)
         exact = self._exact_profile(session, generation)
+        expected_width, expected_height = self._expected_dimensions(generation)
         return GenerationSummary(
             id=generation.id,
             status=generation.status.value,
@@ -304,10 +305,16 @@ class GenerationService:
             best_available_artifact_id=generation.best_available_artifact_id,
             canonical_artifact_id=generation.canonical_artifact_id,
             display_artifact=self.artifact_summary(display) if display else None,
+            expected_width=expected_width,
+            expected_height=expected_height,
             error_message=generation.error_message,
             recall_available=exact is not None,
             recall_unavailable_reason=(
                 None if exact else "Original workflow version is not currently available."
+            ),
+            cancel_allowed=(
+                generation.status in ACTIVE_STATUSES
+                and generation.status != GenerationStatus.CANCEL_REQUESTED
             ),
         )
 
@@ -351,9 +358,30 @@ class GenerationService:
                 for event in events
             ],
             error_code=generation.error_code,
-            cancel_allowed=generation.status in ACTIVE_STATUSES,
             delete_pending=generation.pending_delete,
         )
+
+    @staticmethod
+    def _expected_dimensions(generation: Generation) -> tuple[int | None, int | None]:
+        controls = generation.resolved_contract_json.get("controls", [])
+        for control in controls:
+            if not isinstance(control, Mapping) or control.get("type") != "resolution":
+                continue
+            value = generation.effective_controls_json.get(str(control.get("id")))
+            if not isinstance(value, Mapping):
+                continue
+            width = value.get("width")
+            height = value.get("height")
+            if (
+                isinstance(width, int)
+                and not isinstance(width, bool)
+                and width > 0
+                and isinstance(height, int)
+                and not isinstance(height, bool)
+                and height > 0
+            ):
+                return width, height
+        return None, None
 
     @staticmethod
     def artifact_summary(artifact: Artifact) -> ArtifactSummary:

@@ -97,3 +97,27 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
   await expect(card.getByRole("button", { name: "Recall settings" })).toBeEnabled();
   await expect(card).toHaveCount(1);
 });
+
+test("working card reserves final aspect ratio and cancels in place", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page, "artist.one", "E2EUserPermanent123!");
+  await page.getByLabel("Width", { exact: true }).fill("384");
+  await page.getByLabel("Height", { exact: true }).fill("512");
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow cancellation sample");
+  await page.getByRole("button", { name: "Generate" }).click();
+
+  const card = page.locator(".gallery-card").first();
+  await expect(card).toHaveClass(/status-running/);
+  await expect(card.locator(".card-media img")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  const generationId = await card.getAttribute("data-generation-id");
+
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(card.locator(".media-status")).toContainText("Cancelled generation");
+  await expect(card.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+  await expect(page.locator(`.gallery-card[data-generation-id="${generationId}"]`)).toHaveCount(1);
+  await expect(card.getByRole("button", { name: "Recall settings" })).toBeEnabled();
+  const frame = await card.locator(".card-media-frame").boundingBox();
+  expect(frame).not.toBeNull();
+  expect(Math.abs(frame.width / frame.height - 384 / 512)).toBeLessThan(0.02);
+});
