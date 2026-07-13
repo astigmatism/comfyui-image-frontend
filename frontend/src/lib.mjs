@@ -185,6 +185,55 @@ export function resolutionConstraints(control) {
   };
 }
 
+export function resolutionGridConstraints(control) {
+  const limits = resolutionConstraints(control);
+  const maximumWidth = Number(limits.maximumWidth);
+  const maximumHeight = Number(limits.maximumHeight);
+  return {
+    minimumWidth: 0,
+    maximumWidth: Number.isFinite(maximumWidth) && maximumWidth > 0 ? maximumWidth : 2048,
+    minimumHeight: 0,
+    maximumHeight: Number.isFinite(maximumHeight) && maximumHeight > 0 ? maximumHeight : 2048,
+    widthStep: 64,
+    heightStep: 64,
+  };
+}
+
+export function snapResolutionValue(value, minimum, maximum, step = 64) {
+  const safeMinimum = Number.isFinite(Number(minimum)) ? Number(minimum) : 0;
+  const safeMaximum = Number.isFinite(Number(maximum)) ? Number(maximum) : 2048;
+  const safeStep = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : 64;
+  const numeric = Number.isFinite(Number(value)) ? Number(value) : safeMinimum;
+  const snapped = safeMinimum + Math.round((numeric - safeMinimum) / safeStep) * safeStep;
+  return Math.max(safeMinimum, Math.min(safeMaximum, snapped));
+}
+
+export function resolutionSummary(width, height) {
+  const safeWidth = Math.max(0, Math.round(Number(width) || 0));
+  const safeHeight = Math.max(0, Math.round(Number(height) || 0));
+  const megapixels = ((safeWidth * safeHeight) / 1_000_000).toFixed(2);
+  const divisor = greatestCommonDivisor(safeWidth, safeHeight);
+  const aspectRatio = safeWidth > 0 && safeHeight > 0 ? `${safeWidth / divisor}:${safeHeight / divisor}` : "—";
+  return {
+    width: safeWidth,
+    height: safeHeight,
+    megapixels,
+    aspectRatio,
+    text: `${safeWidth} × ${safeHeight} · ${megapixels} MP · ${aspectRatio}`,
+  };
+}
+
+function greatestCommonDivisor(first, second) {
+  let a = Math.abs(Math.round(Number(first))) || 1;
+  let b = Math.abs(Math.round(Number(second))) || 1;
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a;
+}
+
 export function clientValidate(contract, values) {
   const errors = {};
   const capabilities = contract?.capability_states || {};

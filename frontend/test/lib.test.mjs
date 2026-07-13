@@ -8,7 +8,10 @@ import {
   footerText,
   overwriteWithRecall,
   resolutionConstraints,
+  resolutionGridConstraints,
+  resolutionSummary,
   scaleToLayout,
+  snapResolutionValue,
 } from "../src/lib.mjs";
 
 test("gallery scale spans compact thumbnails through a full-width card", () => {
@@ -86,6 +89,35 @@ test("resolution constraints accept contract axis aliases and reject invalid req
   assert.deepEqual(clientValidate({ controls: [control] }, { "size.resolution": { width: 512, height: 512 } }), {});
   assert.match(clientValidate({ controls: [control] }, { "size.resolution": { width: 510, height: 512 } })[control.id], /multiples of 8/);
   assert.match(clientValidate({ controls: [control] }, { "size.resolution": { width: 2048, height: 2048 } })[control.id], /exceeds/);
+});
+
+test("resolution grid mirrors Resolution Master snapping and live details", () => {
+  const control = {
+    constraints: {
+      minimum_width: 64,
+      maximum_width: 2048,
+      minimum_height: 64,
+      maximum_height: 2048,
+      multiple: 8,
+    },
+  };
+  assert.deepEqual(resolutionGridConstraints(control), {
+    minimumWidth: 0,
+    maximumWidth: 2048,
+    minimumHeight: 0,
+    maximumHeight: 2048,
+    widthStep: 64,
+    heightStep: 64,
+  });
+  assert.equal(snapResolutionValue(1051, 0, 2048, 64), 1024);
+  assert.equal(snapResolutionValue(2029, 0, 2048, 64), 2048);
+  assert.deepEqual(resolutionSummary(1024, 1600), {
+    width: 1024,
+    height: 1600,
+    megapixels: "1.64",
+    aspectRatio: "16:25",
+    text: "1024 × 1600 · 1.64 MP · 16:25",
+  });
 });
 
 test("footer uses only source, centered dot, and localized submission date text", () => {

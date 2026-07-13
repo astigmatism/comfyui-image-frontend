@@ -760,6 +760,104 @@ code {
   color: var(--muted);
 }
 
+.resolution-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.resolution-canvas {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--resolution-canvas-aspect, 1 / 1);
+  border: 1px solid #314258;
+  border-radius: var(--radius-sm);
+  background-color: #090e15;
+  background-image: radial-gradient(circle at 1px 1px, rgb(172 190 212 / 48%) 0 1px, transparent 1.2px);
+  background-position: -1px -1px;
+  background-size: var(--resolution-grid-step-x, 3.125%) var(--resolution-grid-step-y, 3.125%);
+  box-shadow:
+    inset 0 0 0 3px rgb(0 0 0 / 16%),
+    inset 0 1px 8px rgb(0 0 0 / 38%);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.resolution-canvas::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(145deg, rgb(90 140 205 / 5%), transparent 55%);
+  pointer-events: none;
+  content: "";
+}
+
+.resolution-selection {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: var(--resolution-x);
+  height: var(--resolution-y);
+  border: 1.5px solid rgb(126 151 255 / 88%);
+  border-radius: 2px 2px 0;
+  background: rgb(119 132 237 / 13%);
+  box-shadow: inset 0 0 18px rgb(104 132 238 / 7%);
+  pointer-events: none;
+}
+
+.resolution-handle {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 2px solid #080c12;
+  border-radius: 50%;
+  box-shadow: 0 1px 5px rgb(0 0 0 / 60%);
+  transform: translate(-50%, 50%);
+  cursor: grab;
+  touch-action: none;
+  z-index: 2;
+}
+
+.resolution-handle:active {
+  cursor: grabbing;
+}
+
+.resolution-handle:focus-visible {
+  outline-offset: 3px;
+}
+
+.resolution-handle-both {
+  bottom: var(--resolution-y);
+  left: var(--resolution-x);
+  background: #fff;
+}
+
+.resolution-handle-width {
+  bottom: var(--resolution-y-mid);
+  left: var(--resolution-x);
+  width: 16px;
+  height: 16px;
+  background: #7797ff;
+}
+
+.resolution-handle-height {
+  bottom: var(--resolution-y);
+  left: var(--resolution-x-mid);
+  width: 16px;
+  height: 16px;
+  background: #ff899d;
+}
+
+.resolution-summary {
+  min-height: 1.2em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .upload-control input[type="file"] {
   height: auto;
   min-height: var(--control-height);

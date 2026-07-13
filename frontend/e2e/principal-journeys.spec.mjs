@@ -87,6 +87,48 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
 });
 
+test("resolution canvas snaps all three handles and synchronizes its details and inputs", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page, "admin", "E2EAdminPermanent123!");
+
+  const grid = page.locator("[data-resolution-grid]");
+  await grid.scrollIntoViewIfNeeded();
+  const initialGridBox = await grid.boundingBox();
+  const panelBox = await page.locator(".panel-scroll").boundingBox();
+  expect(initialGridBox).not.toBeNull();
+  expect(panelBox).not.toBeNull();
+  expect(initialGridBox.width).toBeGreaterThan(panelBox.width - 40);
+
+  const dragHandle = async (name, targetWidthFraction, targetHeightFraction) => {
+    const handle = grid.locator(`[data-resolution-handle="${name}"]`);
+    await handle.scrollIntoViewIfNeeded();
+    const gridBox = await grid.boundingBox();
+    const handleBox = await handle.boundingBox();
+    expect(gridBox).not.toBeNull();
+    expect(handleBox).not.toBeNull();
+    const targetX = gridBox.x + gridBox.width * targetWidthFraction;
+    const targetY = gridBox.y + gridBox.height * (1 - targetHeightFraction);
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetX, targetY, { steps: 4 });
+    await page.mouse.up();
+  };
+
+  await dragHandle("both", 0.5, 0.78125);
+  await expect(page.getByLabel("Width", { exact: true })).toHaveValue("1024");
+  await expect(page.getByLabel("Height", { exact: true })).toHaveValue("1600");
+  await expect(page.locator("[data-resolution-summary]")).toHaveText("1024 × 1600 · 1.64 MP · 16:25");
+
+  await dragHandle("width", 0.75, 0.5);
+  await expect(page.getByLabel("Width", { exact: true })).toHaveValue("1536");
+  await expect(page.getByLabel("Height", { exact: true })).toHaveValue("1600");
+
+  await dragHandle("height", 0.5, 0.5);
+  await expect(page.getByLabel("Width", { exact: true })).toHaveValue("1536");
+  await expect(page.getByLabel("Height", { exact: true })).toHaveValue("1024");
+  await expect(page.locator("[data-resolution-summary]")).toHaveText("1536 × 1024 · 1.57 MP · 3:2");
+});
+
 test("failed and cancelled attempts remain one-card, recallable history", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");

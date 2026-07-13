@@ -4,7 +4,9 @@ import {
   defaultsForContract,
   normalizeInputValue,
   overwriteWithRecall,
+  resolutionSummary,
   scaleToLayout,
+  snapResolutionValue,
 } from "./lib.mjs";
 import {
   detailMarkup,
@@ -47,6 +49,8 @@ const state = {
   changingPasswordFromApp: false,
 };
 
+let activeResolutionDrag = null;
+
 async function initialize() {
   bindDelegatedEvents();
   try {
@@ -70,6 +74,12 @@ function bindDelegatedEvents() {
   root.addEventListener("click", handleClick);
   root.addEventListener("change", handleChange);
   root.addEventListener("input", handleInput);
+  root.addEventListener("keydown", handleKeyDown);
+  root.addEventListener("keyup", handleKeyUp);
+  root.addEventListener("pointerdown", handlePointerDown);
+  root.addEventListener("pointermove", handlePointerMove);
+  root.addEventListener("pointerup", handlePointerEnd);
+  root.addEventListener("pointercancel", handlePointerEnd);
   root.addEventListener(
     "toggle",
     (event) => {
@@ -180,7 +190,173 @@ function handleInput(event) {
   }
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
     updateControlFromElement(element);
+    if (element.dataset.resolutionPart) {
+      const grid = element.closest("[data-control-block]")?.querySelector("[data-resolution-grid]");
+      updateResolutionUi(grid, state.controls[element.dataset.controlId]);
+    }
   }
+}
+
+function handlePointerDown(event) {
+  if (event.button !== 0) return;
+  const grid = event.target.closest("[data-resolution-grid]");
+  if (!grid || grid.dataset.resolutionDisabled === "true") return;
+  const handle = event.target.closest("[data-resolution-handle]");
+  const captureTarget = handle || grid;
+  event.preventDefault();
+  activeResolutionDrag = {
+    captureTarget,
+    grid,
+    mode: handle?.dataset.resolutionHandle || "both",
+    pointerId: event.pointerId,
+  };
+  try {
+    captureTarget.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture is an enhancement; delegated pointer events remain the fallback.
+  }
+  if (!handle) updateResolutionFromPointer(event, activeResolutionDrag);
+}
+
+function handlePointerMove(event) {
+  if (!activeResolutionDrag || event.pointerId !== activeResolutionDrag.pointerId) return;
+  event.preventDefault();
+  updateResolutionFromPointer(event, activeResolutionDrag);
+}
+
+function handlePointerEnd(event) {
+  if (!activeResolutionDrag || event.pointerId !== activeResolutionDrag.pointerId) return;
+  const { captureTarget, grid, mode, pointerId } = activeResolutionDrag;
+  activeResolutionDrag = null;
+  try {
+    if (captureTarget.hasPointerCapture(pointerId)) captureTarget.releasePointerCapture(pointerId);
+  } catch {
+    // The browser may release capture before pointercancel reaches the delegated handler.
+  }
+  renderPanelWithResolutionFocus(grid.dataset.controlId, mode);
+}
+
+function handleKeyDown(event) {
+  const handle = event.target.closest("[data-resolution-handle]");
+  if (!handle || handle.disabled) return;
+  const grid = handle.closest("[data-resolution-grid]");
+  if (!grid) return;
+  const mode = handle.dataset.resolutionHandle;
+  const current = state.controls[grid.dataset.controlId] || {};
+  const limits = resolutionGridLimits(grid);
+  let width = Number(current.width) || 0;
+  let height = Number(current.height) || 0;
+  let handled = true;
+
+  if (event.key === "ArrowLeft" && mode !== "height") {
+    width = snapResolutionValue(width - limits.widthStep, limits.minimumWidth, limits.maximumWidth, limits.widthStep);
+  } else if (event.key === "ArrowRight" && mode !== "height") {
+    width = snapResolutionValue(width + limits.widthStep, limits.minimumWidth, limits.maximumWidth, limits.widthStep);
+  } else if (event.key === "ArrowDown" && mode !== "width") {
+    height = snapResolutionValue(height - limits.heightStep, limits.minimumHeight, limits.maximumHeight, limits.heightStep);
+  } else if (event.key === "ArrowUp" && mode !== "width") {
+    height = snapResolutionValue(height + limits.heightStep, limits.minimumHeight, limits.maximumHeight, limits.heightStep);
+  } else if (event.key === "Home") {
+    if (mode !== "height") width = limits.minimumWidth;
+    if (mode !== "width") height = limits.minimumHeight;
+  } else if (event.key === "End") {
+    if (mode !== "height") width = limits.maximumWidth;
+    if (mode !== "width") height = limits.maximumHeight;
+  } else {
+    handled = false;
+  }
+
+  if (!handled) return;
+  event.preventDefault();
+  setResolutionValue(grid, width, height);
+}
+
+function handleKeyUp(event) {
+  const handle = event.target.closest("[data-resolution-handle]");
+  if (!handle || !["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const grid = handle.closest("[data-resolution-grid]");
+  if (grid) renderPanelWithResolutionFocus(grid.dataset.controlId, handle.dataset.resolutionHandle);
+}
+
+function updateResolutionFromPointer(event, drag) {
+  const rect = drag.grid.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const limits = resolutionGridLimits(drag.grid);
+  const current = state.controls[drag.grid.dataset.controlId] || {};
+  let width = Number(current.width) || 0;
+  let height = Number(current.height) || 0;
+  if (drag.mode !== "height") {
+    const rawWidth = limits.minimumWidth + ((event.clientX - rect.left) / rect.width) * (limits.maximumWidth - limits.minimumWidth);
+    width = snapResolutionValue(rawWidth, limits.minimumWidth, limits.maximumWidth, limits.widthStep);
+  }
+  if (drag.mode !== "width") {
+    const rawHeight = limits.minimumHeight + ((rect.bottom - event.clientY) / rect.height) * (limits.maximumHeight - limits.minimumHeight);
+    height = snapResolutionValue(rawHeight, limits.minimumHeight, limits.maximumHeight, limits.heightStep);
+  }
+  setResolutionValue(drag.grid, width, height);
+}
+
+function setResolutionValue(grid, width, height) {
+  const id = grid.dataset.controlId;
+  state.controls[id] = { width, height };
+  delete state.serverFieldErrors[id];
+  state.formError = null;
+  updateResolutionUi(grid, state.controls[id]);
+}
+
+function updateResolutionUi(grid, value) {
+  if (!grid) return;
+  const limits = resolutionGridLimits(grid);
+  const width = Number(value?.width) || 0;
+  const height = Number(value?.height) || 0;
+  const positionX = resolutionPosition(width, limits.minimumWidth, limits.maximumWidth);
+  const positionY = resolutionPosition(height, limits.minimumHeight, limits.maximumHeight);
+  const summary = resolutionSummary(width, height);
+  grid.style.setProperty("--resolution-x", `${positionX}%`);
+  grid.style.setProperty("--resolution-y", `${positionY}%`);
+  grid.style.setProperty("--resolution-x-mid", `${positionX / 2}%`);
+  grid.style.setProperty("--resolution-y-mid", `${positionY / 2}%`);
+  const block = grid.closest("[data-control-block]");
+  const widthInput = block?.querySelector('[data-resolution-part="width"]');
+  const heightInput = block?.querySelector('[data-resolution-part="height"]');
+  const caption = block?.querySelector("[data-resolution-summary]");
+  if (widthInput) widthInput.value = value?.width ?? "";
+  if (heightInput) heightInput.value = value?.height ?? "";
+  if (caption) caption.textContent = summary.text;
+  grid
+    .querySelector('[data-resolution-handle="both"]')
+    ?.setAttribute("aria-label", `Adjust width and height. ${summary.width} by ${summary.height} pixels. Use the arrow keys.`);
+  grid
+    .querySelector('[data-resolution-handle="width"]')
+    ?.setAttribute("aria-label", `Adjust width. ${summary.width} pixels. Use the left and right arrow keys.`);
+  grid
+    .querySelector('[data-resolution-handle="height"]')
+    ?.setAttribute("aria-label", `Adjust height. ${summary.height} pixels. Use the up and down arrow keys.`);
+}
+
+function resolutionGridLimits(grid) {
+  return {
+    minimumWidth: Number(grid.dataset.resolutionMinWidth),
+    maximumWidth: Number(grid.dataset.resolutionMaxWidth),
+    minimumHeight: Number(grid.dataset.resolutionMinHeight),
+    maximumHeight: Number(grid.dataset.resolutionMaxHeight),
+    widthStep: Number(grid.dataset.resolutionWidthStep),
+    heightStep: Number(grid.dataset.resolutionHeightStep),
+  };
+}
+
+function resolutionPosition(value, minimum, maximum) {
+  if (maximum <= minimum) return 0;
+  return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
+}
+
+function renderPanelWithResolutionFocus(controlId, handle) {
+  renderPanel();
+  queueMicrotask(() => {
+    document
+      .querySelector(`[data-resolution-grid][data-control-id="${CSS.escape(controlId)}"] [data-resolution-handle="${handle}"]`)
+      ?.focus();
+  });
 }
 
 function updateControlFromElement(element) {

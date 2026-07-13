@@ -3,6 +3,8 @@ import {
   escapeHtml,
   footerText,
   resolutionConstraints,
+  resolutionGridConstraints,
+  resolutionSummary,
   statusLabel,
 } from "./lib.mjs";
 
@@ -219,11 +221,33 @@ function uploadMarkup(control, value, common) {
 function resolutionMarkup(control, value, disabled, required, error, describedBy, id) {
   const base = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
   const limits = resolutionConstraints(control);
-  return `<div class="resolution-control">
-    <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
-    <span aria-hidden="true">×</span>
-    <label for="${id}-height"><span>Height</span><input id="${id}-height" ${base} data-resolution-part="height" type="number" value="${value?.height ?? ""}" min="${limits.minimumHeight ?? ""}" max="${limits.maximumHeight ?? ""}" step="${limits.heightStep}" /></label>
+  const grid = resolutionGridConstraints(control);
+  const summary = resolutionSummary(value?.width, value?.height);
+  const positionX = resolutionPosition(summary.width, grid.minimumWidth, grid.maximumWidth);
+  const positionY = resolutionPosition(summary.height, grid.minimumHeight, grid.maximumHeight);
+  const gridStepX = (grid.widthStep / (grid.maximumWidth - grid.minimumWidth)) * 100;
+  const gridStepY = (grid.heightStep / (grid.maximumHeight - grid.minimumHeight)) * 100;
+  const disabledAttribute = disabled ? "disabled" : "";
+  return `<div class="resolution-editor">
+    <div class="resolution-canvas" data-resolution-grid data-control-id="${escapeHtml(control.id)}" data-resolution-disabled="${disabled}" data-resolution-min-width="${grid.minimumWidth}" data-resolution-max-width="${grid.maximumWidth}" data-resolution-min-height="${grid.minimumHeight}" data-resolution-max-height="${grid.maximumHeight}" data-resolution-width-step="${grid.widthStep}" data-resolution-height-step="${grid.heightStep}" style="--resolution-x: ${positionX}%; --resolution-y: ${positionY}%; --resolution-x-mid: ${positionX / 2}%; --resolution-y-mid: ${positionY / 2}%; --resolution-grid-step-x: ${gridStepX}%; --resolution-grid-step-y: ${gridStepY}%; --resolution-canvas-aspect: ${grid.maximumWidth - grid.minimumWidth} / ${grid.maximumHeight - grid.minimumHeight};" aria-label="Resolution grid from ${grid.minimumWidth} by ${grid.minimumHeight} to ${grid.maximumWidth} by ${grid.maximumHeight}">
+      <div class="resolution-selection" aria-hidden="true"></div>
+      <button type="button" class="resolution-handle resolution-handle-both" data-resolution-handle="both" ${disabledAttribute} aria-label="Adjust width and height. ${summary.width} by ${summary.height} pixels. Use the arrow keys."></button>
+      <button type="button" class="resolution-handle resolution-handle-width" data-resolution-handle="width" ${disabledAttribute} aria-label="Adjust width. ${summary.width} pixels. Use the left and right arrow keys."></button>
+      <button type="button" class="resolution-handle resolution-handle-height" data-resolution-handle="height" ${disabledAttribute} aria-label="Adjust height. ${summary.height} pixels. Use the up and down arrow keys."></button>
+    </div>
+    <p class="resolution-summary" data-resolution-summary aria-live="polite">${summary.text}</p>
+    <div class="resolution-control">
+      <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
+      <span aria-hidden="true">×</span>
+      <label for="${id}-height"><span>Height</span><input id="${id}-height" ${base} data-resolution-part="height" type="number" value="${value?.height ?? ""}" min="${limits.minimumHeight ?? ""}" max="${limits.maximumHeight ?? ""}" step="${limits.heightStep}" /></label>
+    </div>
   </div>`;
+}
+
+function resolutionPosition(value, minimum, maximum) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || maximum <= minimum) return 0;
+  return Math.max(0, Math.min(100, ((numeric - minimum) / (maximum - minimum)) * 100));
 }
 
 function optionValues(control) {

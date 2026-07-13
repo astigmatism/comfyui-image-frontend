@@ -151,6 +151,28 @@ test("resolution markup exposes strict contract limits to native controls", () =
   assert.match(html, /data-resolution-part="height"[^>]*min="128"[^>]*max="1536"[^>]*step="8"/);
 });
 
+test("resolution markup includes the responsive three-handle grid and live caption", () => {
+  const control = {
+    id: "size.resolution",
+    label: "Resolution",
+    type: "resolution",
+    tier: "basic",
+    constraints: { minimum: 64, maximum: 2048, multiple: 8 },
+  };
+  const html = controlMarkup(
+    control,
+    { "size.resolution": { width: 1024, height: 1600 } },
+    { capability_states: {} },
+  );
+  assert.match(html, /data-resolution-grid/);
+  assert.match(html, /data-resolution-min-width="0" data-resolution-max-width="2048"/);
+  assert.match(html, /data-resolution-width-step="64" data-resolution-height-step="64"/);
+  assert.match(html, /data-resolution-handle="both"/);
+  assert.match(html, /data-resolution-handle="width"/);
+  assert.match(html, /data-resolution-handle="height"/);
+  assert.match(html, /data-resolution-summary[^>]*aria-live="polite">1024 × 1600 · 1.64 MP · 16:25/);
+});
+
 test("unavailable and invalid semantic controls expose accessible state and explanations", () => {
   const control = {
     id: "post.seedvr2.enabled",
