@@ -130,3 +130,79 @@ def test_probe_and_list_support_modern_v2_userdata_listing(tmp_path: Path) -> No
 
     asyncio.run(scenario())
     assert calls.count(("/api/v2/userdata", {"path": "workflows/front-end"})) == 2
+
+
+def test_nested_workflow_get_encodes_filepath_as_one_userdata_segment(tmp_path: Path) -> None:
+    raw_paths: list[bytes] = []
+    encoded_probe = b"/userdata/workflows%2Ffront-end%2F.__frontend_probe_missing__.json"
+    encoded_workflow = (
+        b"/userdata/workflows%2Ffront-end%2Fnested%2Fprofile.workflow.json"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_path = request.url.raw_path.split(b"?", 1)[0]
+        raw_paths.append(raw_path)
+        if raw_path == b"/object_info":
+            return httpx.Response(200, json={})
+        if raw_path == b"/api/v2/userdata":
+            return httpx.Response(200, json=[])
+        if raw_path == encoded_probe:
+            return httpx.Response(404)
+        if raw_path == encoded_workflow:
+            return httpx.Response(200, json={"workflow": "nested"})
+        if raw_path == b"/system_stats":
+            return httpx.Response(200, json={})
+        if request.url.path.startswith("/userdata/"):
+            return httpx.Response(404)
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            await adapter.probe()
+            document = await adapter.get_workflow_file("nested/profile.workflow.json")
+            assert document == {"workflow": "nested"}
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert encoded_probe in raw_paths
+    assert encoded_workflow in raw_paths
+    assert b"/userdata/workflows/front-end/nested/profile.workflow.json" not in raw_paths
+
+
+def test_path_mode_listing_encodes_directory_as_one_userdata_segment(tmp_path: Path) -> None:
+    listing_path = b"/userdata/workflows%2Ffront-end"
+    listing_calls: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_path = request.url.raw_path.split(b"?", 1)[0]
+        if raw_path == b"/object_info":
+            return httpx.Response(200, json={})
+        if raw_path in {b"/api/v2/userdata", b"/userdata", b"/api/userdata"}:
+            return httpx.Response(405)
+        if raw_path == listing_path and request.url.params.get("recurse") == "true":
+            listing_calls.append(raw_path)
+            return httpx.Response(
+                200,
+                json={"files": ["workflows/front-end/nested/profile.api.json"]},
+            )
+        if raw_path == (
+            b"/userdata/workflows%2Ffront-end%2F.__frontend_probe_missing__.json"
+        ):
+            return httpx.Response(404)
+        if raw_path == b"/system_stats":
+            return httpx.Response(200, json={})
+        return httpx.Response(405)
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            capabilities = await adapter.probe()
+            assert capabilities.workflow_list_route == "path:/userdata/{directory}"
+            assert await adapter.list_workflow_files() == ["nested/profile.api.json"]
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert listing_calls == [listing_path, listing_path]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
@@ -9,9 +10,11 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain.contract import ValidatedProfile, validate_profile
-from ..errors import AppError, ContractError
+from ..errors import AppError
 from ..models import ServiceHealth, WorkflowDiagnostic, WorkflowProfile, WorkflowState
 from .comfyui import ComfyUIAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowRegistry:
@@ -95,11 +98,25 @@ class WorkflowRegistry:
                         },
                     )
                 )
-            except (AppError, ContractError, httpx.HTTPError, ValueError) as exc:
-                if isinstance(exc, AppError):
-                    code, message, details = exc.code, exc.message, exc.details
-                else:
-                    code, message, details = "contract_invalid", "Workflow validation failed.", {}
+            except httpx.HTTPError as exc:
+                route_mode = capabilities.workflow_get_route.partition(":")[0] or "unknown"
+                http_status = (
+                    exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                )
+                logger.warning(
+                    "workflow_fetch_failed basename=%s route_mode=%s http_status=%s",
+                    basename,
+                    route_mode,
+                    http_status if http_status is not None else "unknown",
+                )
+                code = "workflow_fetch_failed"
+                message = (
+                    "ComfyUI could not return this workflow source file. "
+                    "Verify its presence and the configured user-data route."
+                )
+                details: dict[str, Any] = {"route_mode": route_mode}
+                if http_status is not None:
+                    details["http_status"] = http_status
                 diagnostics.append(
                     WorkflowDiagnostic(
                         basename=basename,
@@ -108,6 +125,28 @@ class WorkflowRegistry:
                         message=message,
                         checked_at=now,
                         details_json=details,
+                    )
+                )
+            except AppError as exc:
+                diagnostics.append(
+                    WorkflowDiagnostic(
+                        basename=basename,
+                        accepted=False,
+                        code=exc.code,
+                        message=exc.message,
+                        checked_at=now,
+                        details_json=exc.details,
+                    )
+                )
+            except ValueError:
+                diagnostics.append(
+                    WorkflowDiagnostic(
+                        basename=basename,
+                        accepted=False,
+                        code="contract_invalid",
+                        message="Workflow validation failed.",
+                        checked_at=now,
+                        details_json={},
                     )
                 )
 

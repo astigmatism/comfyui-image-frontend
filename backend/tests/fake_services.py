@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
+from urllib.parse import unquote
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -654,6 +655,23 @@ class FakeServiceState:
 def create_fake_services_app(state: FakeServiceState) -> FastAPI:
     app = FastAPI(title="Deterministic fake ComfyUI and Ollama")
 
+    @app.middleware("http")
+    async def preserve_userdata_route_segment(request: Request, call_next):  # type: ignore[no-untyped-def]
+        # Uvicorn exposes a decoded scope path, while ComfyUI matches /userdata/{file}
+        # against the raw route segment. Preserve that behavior for this test double:
+        # encoded separators stay inside one segment and literal separators do not match.
+        prefix = b"/userdata/"
+        raw_path = request.scope.get("raw_path", b"")
+        if isinstance(raw_path, bytes) and raw_path.startswith(prefix):
+            raw_segment = raw_path[len(prefix) :]
+            if b"/" in raw_segment:
+                return Response(status_code=404)
+            try:
+                request.scope["path"] = f"/userdata/{raw_segment.decode('ascii')}"
+            except UnicodeDecodeError:
+                return Response(status_code=404)
+        return await call_next(request)
+
     def require_comfy() -> None:
         if not state.service_available:
             raise HTTPException(status_code=503, detail="fake ComfyUI unavailable")
@@ -685,10 +703,10 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 files.append(f"workflows/front-end/{key}")
         return {"files": files}
 
-    @app.get("/userdata/{path:path}")
-    async def userdata_path(path: str) -> dict[str, Any]:
+    @app.get("/userdata/{file}")
+    async def userdata_path(file: str) -> dict[str, Any]:
         require_comfy()
-        key = _strip_workflow_root(path)
+        key = _strip_workflow_root(unquote(file))
         if key not in state.workflow_files:
             raise HTTPException(status_code=404)
         return state.workflow_files[key]

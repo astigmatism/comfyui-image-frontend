@@ -106,7 +106,7 @@ class ComfyUIAdapter:
                     response = await self._client.get(template, params={"dir": directory, "recurse": "true"})
                 else:
                     response = await self._client.get(
-                        template.format(directory=quote(directory, safe="/")),
+                        template.format(directory=_quote_userdata_segment(directory)),
                         params={"recurse": "true"},
                     )
                 if response.is_success:
@@ -129,7 +129,9 @@ class ComfyUIAdapter:
                 if mode == "query":
                     response = await self._client.get(template, params={"path": probe_path})
                 else:
-                    response = await self._client.get(template.format(path=quote(probe_path, safe="/")))
+                    response = await self._client.get(
+                        template.format(path=_quote_userdata_segment(probe_path))
+                    )
                 if response.status_code in {200, 404}:
                     return f"{mode}:{template}"
             except httpx.HTTPError:
@@ -150,7 +152,8 @@ class ComfyUIAdapter:
             response = await self._client.get(template, params={"dir": directory, "recurse": "true"})
         else:
             response = await self._client.get(
-                template.format(directory=quote(directory, safe="/")), params={"recurse": "true"}
+                template.format(directory=_quote_userdata_segment(directory)),
+                params={"recurse": "true"},
             )
         response.raise_for_status()
         files = _parse_file_list(response.json())
@@ -170,7 +173,9 @@ class ComfyUIAdapter:
         if mode == "query":
             response = await self._client.get(template, params={"path": full_path})
         else:
-            response = await self._client.get(template.format(path=quote(full_path, safe="/")))
+            response = await self._client.get(
+                template.format(path=_quote_userdata_segment(full_path))
+            )
         response.raise_for_status()
         try:
             value = response.json()
@@ -369,6 +374,11 @@ def _safe_relative_path(value: str) -> str:
     if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
         raise AppError("unsafe_path", "Workflow path is unsafe.")
     return str(path)
+
+
+def _quote_userdata_segment(value: str) -> str:
+    """Encode a ComfyUI userdata path as the route's single path segment."""
+    return quote(value, safe="")
 
 
 def _derive_ws_url(base_url: str) -> str:
