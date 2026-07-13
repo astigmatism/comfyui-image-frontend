@@ -25,6 +25,7 @@ test("recall immediately replaces source, controls, seed, and submitted prompt s
     activeProfileId: "newer",
     controls: { "prompt.text": "unsaved", "generation.seed": "random" },
     compositionId: "composition-old",
+    promptAssistant: { available: true, message: null },
     fieldErrors: { "prompt.text": "Required" },
     formError: "Invalid",
   };
@@ -41,6 +42,7 @@ test("recall immediately replaces source, controls, seed, and submitted prompt s
   });
   assert.equal(recalled.compositionId, null);
   assert.deepEqual(recalled.fieldErrors, {});
+  assert.equal(recalled.promptAssistant.available, true);
   assert.equal(recalled.promptAssistant.historicalModel, "m1");
 });
 

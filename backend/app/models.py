@@ -317,6 +317,24 @@ class Generation(Base):
     )
 
 
+class Favorite(Base):
+    __tablename__ = "favorites"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "generation_id", name="uq_favorite_owner_generation"),
+        Index("ix_favorites_owner_created", "owner_id", "created_at", "id"),
+        Index("ix_favorites_generation", "generation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    generation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generations.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GenerationUpload(Base):
     __tablename__ = "generation_uploads"
     __table_args__ = (UniqueConstraint("generation_id", "control_id", name="uq_generation_upload"),)

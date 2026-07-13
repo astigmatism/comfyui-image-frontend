@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   cardFooterMarkup,
   controlMarkup,
+  favoritesMarkup,
   galleryCardMarkup,
   generationPanelMarkup,
 } from "../src/render.mjs";
@@ -64,21 +65,57 @@ test("generation panel fixes Generate first, source second, then basic and colla
   assert.doesNotMatch(html, /<details class="advanced-group" open/);
 });
 
-test("card footer contains no status, prompt, seed, or extra action", () => {
+test("card footer places an accessible heart immediately before recall", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
     accepted_at: "2026-07-12T12:00:00Z",
     status: "failed_with_artifacts",
     recall_available: true,
+    is_favorite: false,
     final_prompt: "private prompt",
     resolved_seeds: { seed: 99 },
   };
   const html = cardFooterMarkup(generation);
   assert.match(html, /Portrait Workflow · Jul 12, 2026/);
-  assert.equal((html.match(/<button/g) || []).length, 1);
+  assert.equal((html.match(/<button/g) || []).length, 2);
+  assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
+  assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, />Recall settings<\/button>/);
   assert.doesNotMatch(html, /Failed|private prompt|99|Cancel|Delete/);
+
+  const active = cardFooterMarkup({ ...generation, is_favorite: true });
+  assert.match(active, /aria-label="Remove from Favorites" aria-pressed="true"/);
+  assert.match(active, /<svg[^>]+viewBox="0 0 24 24"/);
+});
+
+test("Favorites modal renders a thumbnail, generation details, recall, and delete", () => {
+  const html = favoritesMarkup([
+    {
+      id: "f1",
+      created_at: "2026-07-13T12:00:00Z",
+      final_prompt: "lighthouse <at dusk>",
+      generation: {
+        id: "g1",
+        workflow_display_name: "Portrait Workflow",
+        accepted_at: "2026-07-12T12:00:00Z",
+        status: "succeeded",
+        recall_available: true,
+        display_artifact: {
+          kind: "image",
+          thumbnail_url: "/api/artifacts/a1/thumbnail",
+          content_url: "/api/artifacts/a1/content",
+        },
+      },
+    },
+  ]);
+  assert.match(html, /<h2>Favorites<\/h2>/);
+  assert.match(html, /a1\/thumbnail/);
+  assert.match(html, /Portrait Workflow/);
+  assert.match(html, /lighthouse &lt;at dusk&gt;/);
+  assert.match(html, /data-action="recall-favorite"/);
+  assert.match(html, /data-action="delete-favorite"/);
+  assert.ok(html.indexOf('data-action="recall-favorite"') < html.indexOf('data-action="delete-favorite"'));
 });
 
 test("one generation renders one card while progressive media changes in place", () => {

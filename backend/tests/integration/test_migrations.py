@@ -25,8 +25,8 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     engine = create_engine(f"sqlite:///{settings.database_path}")
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "19a5fe877349"
-    assert {"users", "generations", "artifacts", "workflow_profiles"}.issubset(
+    assert revision == "7c9b2d4e6f81"
+    assert {"users", "generations", "artifacts", "workflow_profiles", "favorites"}.issubset(
         set(inspect(engine).get_table_names())
     )
 
@@ -36,5 +36,5 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     command.upgrade(config, "head")
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "19a5fe877349"
+    assert revision == "7c9b2d4e6f81"
     engine.dispose()

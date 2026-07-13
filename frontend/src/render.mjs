@@ -1,6 +1,7 @@
 import {
   controlPresentation,
   escapeHtml,
+  formatLocalDate,
   footerText,
   resolutionConstraints,
   resolutionGridConstraints,
@@ -53,6 +54,7 @@ export function shellMarkup(state) {
         <button class="icon-button panel-toggle" data-action="toggle-panel" aria-label="Open generation controls" aria-expanded="${state.panelOpen}">☰</button>
         <div class="app-title">${escapeHtml(state.session.app_title)}</div>
         <div class="topbar-spacer"></div>
+        <button type="button" class="button low favorites-launch-button" data-action="open-favorites" aria-label="Favorites"><span aria-hidden="true">♡</span><span class="favorites-launch-label">Favorites</span></button>
         <label class="scale-control">
           <span>Gallery scale</span>
           <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-valuetext="${state.galleryScale}%" />
@@ -76,6 +78,7 @@ export function shellMarkup(state) {
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
       <dialog id="detail-dialog" class="detail-dialog"></dialog>
+      <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     </div>`;
@@ -315,7 +318,45 @@ function statusPlaceholderMarkup(generation) {
 }
 
 export function cardFooterMarkup(generation) {
-  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(generation.workflow_display_name)}">${escapeHtml(footerText(generation.workflow_display_name, generation.accepted_at))}</div><button class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall settings</button></footer>`;
+  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(generation.workflow_display_name)}">${escapeHtml(footerText(generation.workflow_display_name, generation.accepted_at))}</div><div class="card-actions">${favoriteButtonMarkup(generation)}<button class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall settings</button></div></footer>`;
+}
+
+export function favoriteButtonMarkup(generation) {
+  const active = Boolean(generation.is_favorite);
+  const label = active ? "Remove from Favorites" : "Add to Favorites";
+  return `<button type="button" class="favorite-button" data-action="toggle-favorite" data-generation-id="${escapeHtml(generation.id)}" aria-label="${label}" aria-pressed="${active}" title="${label}">
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /></svg>
+  </button>`;
+}
+
+export function favoritesMarkup(favorites, nextCursor = null) {
+  const list = favorites.length
+    ? `<div class="favorites-list">${favorites.map(favoriteItemMarkup).join("")}</div>`
+    : '<section class="empty-favorites"><div class="empty-favorite-heart" aria-hidden="true">♡</div><h3>No favorites yet</h3><p>Use the heart on a gallery item to save it here.</p></section>';
+  return `<div class="dialog-frame favorites-frame">
+    <header class="dialog-header"><div><h2>Favorites</h2><p>Your saved generations, visible only to you.</p></div><button type="button" class="icon-button" data-action="close-favorites" aria-label="Close Favorites">×</button></header>
+    <div class="favorites-content">${list}${nextCursor ? '<div class="favorites-load-more"><button type="button" class="button secondary" data-action="load-more-favorites">Load more</button></div>' : ""}</div>
+    <footer class="dialog-actions"><button type="button" class="button primary" data-action="close-favorites">Close</button></footer>
+  </div>`;
+}
+
+function favoriteItemMarkup(favorite) {
+  const generation = favorite.generation;
+  const artifact = generation.display_artifact;
+  const media = artifact?.kind === "image"
+    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${generation.workflow_display_name}`)}" />`
+    : `<div class="favorite-placeholder"><span aria-hidden="true">◇</span><strong>No retained image</strong></div>`;
+  return `<article class="favorite-item" data-favorite-id="${escapeHtml(favorite.id)}" data-generation-id="${escapeHtml(generation.id)}">
+    <div class="favorite-thumbnail">${media}</div>
+    <div class="favorite-details">
+      <div class="favorite-heading"><div><h3>${escapeHtml(generation.workflow_display_name)}</h3><p>Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
+      <p class="favorite-prompt">${escapeHtml(favorite.final_prompt || "No prompt was retained.")}</p>
+      <div class="favorite-actions">
+        <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall</button>
+        <button type="button" class="button destructive" data-action="delete-favorite" data-generation-id="${escapeHtml(generation.id)}">Delete</button>
+      </div>
+    </div>
+  </article>`;
 }
 
 export function detailMarkup(detail) {

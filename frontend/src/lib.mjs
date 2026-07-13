@@ -148,6 +148,7 @@ export function overwriteWithRecall(current, recall) {
     recallIdentity: structuredClone(recall.identity || null),
     compositionId: null,
     promptAssistant: {
+      ...(current.promptAssistant || {}),
       mode: recall.prompt_assistant?.mode || "refine",
       creativeDirection: recall.prompt_assistant?.creative_direction || "",
       historicalModel: recall.prompt_assistant?.model || null,

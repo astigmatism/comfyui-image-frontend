@@ -8,6 +8,7 @@ from pathlib import PurePath
 from typing import Any, Mapping
 
 from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain.compiler import CompileResult, WorkflowCompiler
@@ -18,6 +19,7 @@ from ..models import (
     AppLock,
     Artifact,
     AuditLog,
+    Favorite,
     Generation,
     GenerationEvent,
     GenerationStatus,
@@ -31,6 +33,8 @@ from ..models import (
 )
 from ..schemas import (
     ArtifactSummary,
+    FavoritePage,
+    FavoriteSummary,
     GenerationCreate,
     GenerationDetail,
     GenerationPage,
@@ -289,6 +293,93 @@ class GenerationService:
             next_cursor=next_cursor,
         )
 
+    def list_favorites(
+        self,
+        session: Session,
+        *,
+        owner_id: str,
+        cursor: str | None,
+        limit: int,
+    ) -> FavoritePage:
+        limit = max(1, min(limit, 60))
+        statement = (
+            select(Favorite, Generation)
+            .join(Generation, Favorite.generation_id == Generation.id)
+            .where(Favorite.owner_id == owner_id, Generation.owner_id == owner_id)
+        )
+        if cursor:
+            cursor_time, cursor_id = _decode_cursor(cursor)
+            statement = statement.where(
+                or_(
+                    Favorite.created_at < cursor_time,
+                    and_(Favorite.created_at == cursor_time, Favorite.id < cursor_id),
+                )
+            )
+        rows = list(
+            session.execute(
+                statement.order_by(Favorite.created_at.desc(), Favorite.id.desc()).limit(limit + 1)
+            )
+        )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = (
+            _encode_cursor(rows[-1][0].created_at, rows[-1][0].id) if has_more and rows else None
+        )
+        return FavoritePage(
+            items=[
+                self.favorite_summary(session, favorite, generation)
+                for favorite, generation in rows
+            ],
+            next_cursor=next_cursor,
+        )
+
+    def add_favorite(
+        self, session: Session, *, owner_id: str, generation_id: str
+    ) -> FavoriteSummary:
+        generation = self.get_owned(session, owner_id, generation_id)
+        favorite = session.scalar(
+            select(Favorite).where(
+                Favorite.owner_id == owner_id,
+                Favorite.generation_id == generation.id,
+            )
+        )
+        if favorite is None:
+            favorite = Favorite(owner_id=owner_id, generation_id=generation.id)
+            session.add(favorite)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                favorite = session.scalar(
+                    select(Favorite).where(
+                        Favorite.owner_id == owner_id,
+                        Favorite.generation_id == generation.id,
+                    )
+                )
+                if favorite is None:
+                    raise
+        return self.favorite_summary(session, favorite, generation)
+
+    def remove_favorite(self, session: Session, *, owner_id: str, generation_id: str) -> None:
+        generation = self.get_owned(session, owner_id, generation_id)
+        session.execute(
+            delete(Favorite).where(
+                Favorite.owner_id == owner_id,
+                Favorite.generation_id == generation.id,
+            )
+        )
+        session.commit()
+
+    def favorite_summary(
+        self, session: Session, favorite: Favorite, generation: Generation
+    ) -> FavoriteSummary:
+        return FavoriteSummary(
+            id=favorite.id,
+            created_at=favorite.created_at,
+            final_prompt=generation.final_prompt,
+            generation=self.summary(session, generation),
+        )
+
     def summary(self, session: Session, generation: Generation) -> GenerationSummary:
         display = self._display_artifact(session, generation)
         exact = self._exact_profile(session, generation)
@@ -312,6 +403,13 @@ class GenerationService:
             recall_unavailable_reason=(
                 None if exact else "Original workflow version is not currently available."
             ),
+            is_favorite=session.scalar(
+                select(Favorite.id).where(
+                    Favorite.owner_id == generation.owner_id,
+                    Favorite.generation_id == generation.id,
+                )
+            )
+            is not None,
             cancel_allowed=(
                 generation.status in ACTIVE_STATUSES
                 and generation.status != GenerationStatus.CANCEL_REQUESTED
@@ -641,4 +739,4 @@ def _decode_cursor(value: str) -> tuple[datetime, str]:
             timestamp = timestamp.replace(tzinfo=UTC)
         return timestamp, generation_id
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise AppError("invalid_cursor", "Gallery cursor is invalid.") from exc
+        raise AppError("invalid_cursor", "Pagination cursor is invalid.") from exc

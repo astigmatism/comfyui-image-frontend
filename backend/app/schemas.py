@@ -135,6 +135,7 @@ class GenerationSummary(APIModel):
     error_message: str | None = None
     recall_available: bool = False
     recall_unavailable_reason: str | None = None
+    is_favorite: bool = False
     cancel_allowed: bool = False
 
 
@@ -162,6 +163,18 @@ class RecallResponse(APIModel):
     identity: WorkflowIdentity | None = None
     controls: dict[str, Any] = Field(default_factory=dict)
     prompt_assistant: dict[str, Any] | None = None
+
+
+class FavoriteSummary(APIModel):
+    id: str
+    created_at: datetime
+    final_prompt: str
+    generation: GenerationSummary
+
+
+class FavoritePage(APIModel):
+    items: list[FavoriteSummary]
+    next_cursor: str | None = None
 
 
 class PromptComposeRequest(APIModel):

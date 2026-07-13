@@ -11,7 +11,7 @@ Read both documents completely before designing or writing code. Do not reduce t
 
 ## Mission
 
-Deliver a production-quality, self-contained repository for a small home-network appliance. The application must authenticate local users, discover compatible ComfyUI workflow profiles through ComfyUI's API, render contract-defined controls, queue and monitor image generations, optionally use Ollama to compose prompts, display one progressively updating gallery card per generation, preserve private per-user history, and support exact request recall as defined in the requirements.
+Deliver a production-quality, self-contained repository for a small home-network appliance. The application must authenticate local users, discover compatible ComfyUI workflow profiles through ComfyUI's API, render contract-defined controls, queue and monitor image generations, optionally use Ollama to compose prompts, display one progressively updating gallery card per generation, preserve private per-user history and favorites, and support exact request recall as defined in the requirements.
 
 Do not stop at architecture, wireframes, pseudocode, a scaffold, or a partial prototype. Produce working code, migrations, tests, Docker packaging, configuration examples, and documentation.
 
@@ -43,7 +43,7 @@ Document the chosen stack and the reasons it fits the requirements.
 6. **Do not let administrators inspect another user's prompts, images, controls, uploads, or history.** Enforce this in backend queries and artifact delivery.
 7. **Do not silently replace a missing historical workflow with a newer graph during Recall settings.** Exact identity and hashes must match.
 8. **Do not promise universal pixel-for-pixel reproduction.** Reconstruct the exact request and explain the deterministic-environment qualification.
-9. **Do not put extra metadata or actions into the gallery-card footer.** It contains source, centered dot, date, and Recall settings only.
+9. **Do not put extra metadata or actions into the gallery-card footer.** It contains source, centered dot, date, the Favorites heart, and Recall settings only.
 10. **Do not return code that has not been validated as far as the execution environment permits.** Run and report the tests.
 
 ## Required implementation outcomes
@@ -60,7 +60,8 @@ Build the dark, minimal, consistent interface described by the product requireme
 - Collapsed Prompt Assistant adjacent to the `prompt.text` field.
 - Primary gallery viewport, newest first, lazy-loaded and paginated for thousands of images.
 - One card per accepted generation.
-- Card footer with `generation source · localized submission date` and only the Recall settings action.
+- Card footer with `generation source · localized submission date`, a two-state heart, and the Recall settings action.
+- Owner-only Favorites dialog with a scrollable thumbnail/detail list, exact Recall action, and confirmed bookmark deletion that preserves generation history.
 - Natural image aspect ratios, no forced square crops.
 - Running cards updated in place as progressive artifacts arrive.
 - Accessible detail view for full images, checkpoint timeline, status/error information, contextual cancel, and owner-only deletion.
@@ -176,7 +177,7 @@ Support queued and running cancellation. Model `cancel_requested` separately, re
 
 Implement Recall settings exactly:
 
-- It is the sole persistent card-footer action.
+- It is the text action in the card footer, adjacent to the Favorites heart.
 - It immediately overwrites all current left-panel values without asking about unsaved changes.
 - It selects the exact historical source and repopulates all semantic inputs, uploads, branches, prompt, and resolved seeds.
 - It never queues a job automatically.

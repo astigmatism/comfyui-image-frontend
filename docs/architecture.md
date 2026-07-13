@@ -138,7 +138,7 @@ The production frontend uses browser-native modules:
 - `app.mjs`: state transitions, delegated events, pagination, uploads, SSE, administration.
 - `styles.css`: design tokens, shared control geometry, dark theme, responsive drawer, focus/reduced-motion behavior.
 
-The gallery stores one object/card per generation ID. An SSE event fetches and replaces only that generation's card. Cursor pagination limits DOM growth. Images use archived thumbnails and native lazy loading while detail uses full retained files.
+The gallery stores one object/card per generation ID. An SSE event fetches and replaces only that generation's card. Cursor pagination limits DOM growth. Images use archived thumbnails and native lazy loading while detail uses full retained files. Each gallery summary carries its owner-scoped favorite state; the heart performs an idempotent bookmark mutation. The scrollable Favorites dialog pages only the current user's bookmarks and reuses the exact generation recall flow without copying or deleting history.
 
 ## Graceful shutdown
 

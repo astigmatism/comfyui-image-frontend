@@ -19,6 +19,7 @@ The migration integration test performs `base → head → base → head` agains
 | `service_health` | Last known ComfyUI/Ollama state |
 | `uploads` | Owner-scoped application-owned source/mask metadata |
 | `generations` | Immutable accepted request plus mutable lifecycle/reconciliation fields |
+| `favorites` | Per-user bookmark linking one owned generation into the Favorites list |
 | `generation_uploads` | Exact control-to-upload/hash links for an execution |
 | `prompt_assistant_runs` | Owner-scoped Ollama request/output/provenance, optionally linked to generation |
 | `artifacts` | Retained declared output metadata, state, hash, lineage, canonical/best flags |
@@ -32,7 +33,7 @@ The `generations` row stores workflow ID/display/version/schema/adapter and exac
 
 Uploads, original artifacts, and thumbnails are normal files, never database blobs. The database stores paths relative to the configured data root. File names are opaque UUIDs. Opens and deletes resolve the path and reject anything outside the root.
 
-Generation deletion removes exclusive generation rows/files and deletes an upload only when no retained generation references it. User deletion collects paths, revokes sessions, cancels/reconciles active jobs, removes all owner rows, commits, then deletes application-owned files. Neither operation purges ComfyUI history/storage or contacts Ollama beyond normal active-job cancellation.
+Removing a favorite deletes only the bookmark row. Generation deletion cascades any bookmark for that generation, removes exclusive generation rows/files, and deletes an upload only when no retained generation references it. User deletion collects paths, revokes sessions, cancels/reconciles active jobs, removes all owner rows (including favorites), commits, then deletes application-owned files. Neither operation purges ComfyUI history/storage or contacts Ollama beyond normal active-job cancellation.
 
 ## Time and indexing
 

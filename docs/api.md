@@ -137,6 +137,16 @@ Validation rejection creates no gallery record. Acceptance resolves random seeds
 
 A summary contains only one `display_artifact` for card rendering even when the detail timeline contains multiple checkpoints or final batch siblings. It also exposes the expected output dimensions so an image-less working card can reserve the final aspect ratio, plus `cancel_allowed` for the active card action.
 
+## Favorites
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/api/favorites?limit=40&cursor=...` | Newest-first page of the current owner's saved generations |
+| PUT | `/api/generations/{id}/favorite` | Idempotently save an owned generation as a favorite |
+| DELETE | `/api/generations/{id}/favorite` | Remove only the favorite bookmark; preserve generation history |
+
+Generation summaries expose `is_favorite` for the gallery heart state. A favorite item contains its bookmark ID/time, the final submitted prompt, and an owner-scoped generation summary with thumbnail and exact-recall availability. Cross-user requests return not found and never reveal whether another user's generation or favorite exists.
+
 ## Preferences
 
 | Method | Route | Purpose |

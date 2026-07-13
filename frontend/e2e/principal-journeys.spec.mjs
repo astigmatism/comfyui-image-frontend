@@ -62,10 +62,32 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
   const footer = page.locator(".gallery-card .card-footer").first();
-  await expect(footer.locator("button")).toHaveCount(1);
+  await expect(footer.locator("button")).toHaveCount(2);
+  await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(footer.locator(".card-metadata")).toContainText("Fake Progressive Workflow ·");
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
+
+  await footer.getByRole("button", { name: "Add to Favorites" }).click();
+  await expect(footer.getByRole("button", { name: "Remove from Favorites" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("button", { name: "Favorites", exact: true }).click();
+  const favoritesDialog = page.locator("#favorites-dialog");
+  await expect(favoritesDialog).toHaveAttribute("open", "");
+  await expect(favoritesDialog.locator(".favorite-item")).toHaveCount(1);
+  await expect(favoritesDialog.locator(".favorite-thumbnail img")).toBeVisible();
+  await expect(favoritesDialog.locator(".favorite-prompt")).toHaveText(
+    "slow multi lighthouse at dusk",
+  );
+  await favoritesDialog.getByRole("button", { name: "Close Favorites" }).click();
+
+  await prompt.fill("temporary controls");
+  await page.getByRole("button", { name: "Favorites", exact: true }).click();
+  await favoritesDialog.getByRole("button", { name: "Recall", exact: true }).click();
+  await expect(favoritesDialog).not.toHaveAttribute("open", "");
+  await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
 
   await page.locator("#prompt-assistant > summary").click();
   const cardCountBeforeCompose = await page.locator(".gallery-card").count();
@@ -76,6 +98,17 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
 
   await footer.getByRole("button", { name: "Recall settings" }).click();
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
+  await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
+
+  await page.getByRole("button", { name: "Favorites", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await favoritesDialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(favoritesDialog.getByRole("heading", { name: "No favorites yet" })).toBeVisible();
+  await favoritesDialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(footer.getByRole("button", { name: "Add to Favorites" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
 
   const scale = page.locator("#gallery-scale");

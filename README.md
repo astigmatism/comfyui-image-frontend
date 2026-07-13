@@ -1,6 +1,6 @@
 # ComfyUI Image Front-End
 
-A private, contract-driven image-generation appliance for a trusted home network. It presents prepared ComfyUI workflow profiles as semantic controls, keeps one durable gallery card per accepted generation, archives progressive and final artifacts in application-owned storage, and supports exact request recall.
+A private, contract-driven image-generation appliance for a trusted home network. It presents prepared ComfyUI workflow profiles as semantic controls, keeps one durable gallery card per accepted generation, archives progressive and final artifacts in application-owned storage, and supports private per-user favorites and exact request recall.
 
 The implementation follows the supplied **Product and Implementation Requirements v1.0** and **ComfyUI Front-End Workflow Contract Design rev. 1.1**. The product requirements govern behavior, security, persistence, and UX; the workflow contract governs discovery, strict validation, graph compilation, stages, outputs, and cancellation semantics.
 
@@ -13,7 +13,7 @@ The implementation follows the supplied **Product and Implementation Requirement
 - Application-owned image/upload storage with MIME decoding, byte/pixel limits, opaque paths, SHA-256 hashes, and WebP thumbnails.
 - Network-only ComfyUI integration with capability-probed workflow user-data routes, strict contract validation, semantic compilation, progressive artifact retrieval, history reconciliation, and cancellation.
 - Optional server-side Ollama Prompt Assistant with deterministic model selection and complete provenance.
-- Dependency-free browser application built from ES modules and CSS: dark responsive shell, contract-defined controls, lazy cursor-paginated gallery, SSE updates, exact footer, detail timeline, recall, cancellation, and deletion.
+- Dependency-free browser application built from ES modules and CSS: dark responsive shell, contract-defined controls, lazy cursor-paginated gallery, SSE updates, private Favorites modal, detail timeline, recall, cancellation, and deletion.
 - Deterministic fake ComfyUI/Ollama services, unit/integration/security/migration tests, frontend tests, and Playwright journeys.
 - One production image, Compose example, validation scripts, API/architecture/schema documentation, and requirement traceability.
 

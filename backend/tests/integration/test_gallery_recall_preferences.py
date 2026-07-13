@@ -5,8 +5,10 @@ import copy
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.conftest import csrf
+from tests.conftest import change_password, create_user, csrf, login
 from tests.helpers import (
+    ADMIN_PASSWORD,
+    USER_TEMP,
     create_generation,
     provision_user,
     restore_cookie,
@@ -95,3 +97,105 @@ def test_recall_is_disabled_when_exact_workflow_disappears_but_history_remains(
         assert client.get(f"/api/generations/{generation['id']}").status_code == 200
         assert client.get(complete["artifacts"][-1]["content_url"]).status_code == 200
     fake_state.workflow_files = original_files
+
+
+def test_favorites_are_idempotent_owner_scoped_and_preserve_generation_history(
+    settings_factory, fake_state
+) -> None:
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        _, owner_cookie = provision_user(client, username="favorite.owner")
+        generation = create_generation(client, "favorite lighthouse", seed=411)
+
+        created = client.put(
+            f"/api/generations/{generation['id']}/favorite",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert created.status_code == 200
+        favorite = created.json()
+        assert favorite["generation"]["id"] == generation["id"]
+        assert favorite["generation"]["is_favorite"] is True
+        assert favorite["final_prompt"] == "favorite lighthouse"
+
+        duplicate = client.put(
+            f"/api/generations/{generation['id']}/favorite",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.json()["id"] == favorite["id"]
+
+        page = client.get("/api/favorites").json()
+        assert [item["generation"]["id"] for item in page["items"]] == [generation["id"]]
+        gallery_item = next(
+            item
+            for item in client.get("/api/generations").json()["items"]
+            if item["id"] == generation["id"]
+        )
+        assert gallery_item["is_favorite"] is True
+
+        client.cookies.clear()
+        login(client, "admin", ADMIN_PASSWORD)
+        create_user(client, "favorite.other", USER_TEMP)
+        client.cookies.clear()
+        login(client, "favorite.other", USER_TEMP)
+        change_password(client, "OtherPermanent123!")
+
+        assert client.get("/api/favorites").json()["items"] == []
+        assert (
+            client.put(
+                f"/api/generations/{generation['id']}/favorite",
+                headers={"X-CSRF-Token": csrf(client)},
+            ).status_code
+            == 404
+        )
+        assert (
+            client.delete(
+                f"/api/generations/{generation['id']}/favorite",
+                headers={"X-CSRF-Token": csrf(client)},
+            ).status_code
+            == 404
+        )
+
+        restore_cookie(client, owner_cookie, name=settings.session_cookie_name)
+        removed = client.delete(
+            f"/api/generations/{generation['id']}/favorite",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert removed.status_code == 204
+        assert client.get("/api/favorites").json()["items"] == []
+        assert client.get(f"/api/generations/{generation['id']}").status_code == 200
+        updated = client.get("/api/generations").json()["items"]
+        assert (
+            next(item for item in updated if item["id"] == generation["id"])["is_favorite"] is False
+        )
+
+
+def test_favorites_cursor_pagination_is_newest_first(settings_factory, fake_state) -> None:
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="favorite.pages")
+        generations = [
+            create_generation(client, f"favorite page {index}", seed=index)
+            for index in range(5)
+        ]
+        for generation in generations:
+            response = client.put(
+                f"/api/generations/{generation['id']}/favorite",
+                headers={"X-CSRF-Token": csrf(client)},
+            )
+            assert response.status_code == 200
+
+        first = client.get("/api/favorites?limit=2").json()
+        second = client.get(
+            "/api/favorites", params={"limit": 2, "cursor": first["next_cursor"]}
+        ).json()
+        third = client.get(
+            "/api/favorites", params={"limit": 2, "cursor": second["next_cursor"]}
+        ).json()
+        actual = [
+            item["generation"]["id"]
+            for page in (first, second, third)
+            for item in page["items"]
+        ]
+        assert actual == [generation["id"] for generation in reversed(generations)]
+        assert third["next_cursor"] is None

@@ -37,7 +37,7 @@ make validate-available
 - Status transitions, artifact selection/storage/path safety.
 - Owner-specific event broker and SSE serialization.
 - Frontend pure state/control validation, conditions/capabilities, recall overwrite, gallery scale/date formatting.
-- Frontend markup invariants: Generate/source order, collapsed advanced/assistant, one-card update, exact footer.
+- Frontend markup invariants: Generate/source order, collapsed advanced/assistant, one-card update, heart states, Favorites list actions, and restrained footer.
 
 ### Database/repository and API integration
 
@@ -54,6 +54,7 @@ Tests start the real FastAPI lifespan against temporary SQLite/data directories 
 - progressive artifacts, multiple finals, canonical timing, cancellation/failure best available;
 - artifact persistence failure;
 - exact recall and unavailable source behavior;
+- owner-scoped, idempotent favorite creation/removal that preserves generation history;
 - cursor pagination and preference persistence;
 - generation/user cascade deletion including files;
 - queued/running restart recovery, interrupted state, and ComfyUI outage;
@@ -63,7 +64,7 @@ The fake service supports workflow listing/retrieval, object info, prompt accept
 
 ### Browser journeys
 
-`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py`, which runs the production frontend against live deterministic fake HTTP/WebSocket services. The tests exercise bootstrap, user creation, forced changes, generation/progressive card behavior, exact footer, explicit Prompt Assistant, recall overwrite, scale persistence, and retained failed history.
+`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py`, which runs the production frontend against live deterministic fake HTTP/WebSocket services. The tests exercise bootstrap, user creation, forced changes, generation/progressive card behavior, Favorites heart/modal/recall/confirmed deletion, explicit Prompt Assistant, recall overwrite, scale persistence, and retained failed history.
 
 Run only browser tests:
 

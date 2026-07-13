@@ -10,6 +10,7 @@ import {
 } from "./lib.mjs";
 import {
   detailMarkup,
+  favoritesMarkup,
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
@@ -34,6 +35,9 @@ const state = {
   generations: [],
   nextCursor: null,
   loadingMore: false,
+  favorites: [],
+  favoritesNextCursor: null,
+  loadingMoreFavorites: false,
   galleryScale: 45,
   services: [],
   submitting: false,
@@ -128,6 +132,12 @@ async function handleClick(event) {
     } else if (action === "close-panel") closePanel();
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "recall") await recall(target.dataset.generationId);
+    else if (action === "recall-favorite") await recallFavorite(target.dataset.generationId);
+    else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
+    else if (action === "delete-favorite") await deleteFavorite(target.dataset.generationId);
+    else if (action === "open-favorites") await openFavorites();
+    else if (action === "close-favorites") document.querySelector("#favorites-dialog")?.close();
+    else if (action === "load-more-favorites") await loadMoreFavorites();
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -473,6 +483,8 @@ async function enterApplication() {
   state.services = services;
   state.generations = page.items;
   state.nextCursor = page.next_cursor;
+  state.favorites = [];
+  state.favoritesNextCursor = null;
   state.promptAssistant = {
     ...state.promptAssistant,
     available: assistant.available,
@@ -722,6 +734,91 @@ async function recall(id) {
   toast("Exact historical settings loaded. Press Generate when ready.", "success");
 }
 
+async function recallFavorite(id) {
+  document.querySelector("#favorites-dialog")?.close();
+  await recall(id);
+}
+
+async function toggleFavorite(id, button) {
+  const generation = state.generations.find((item) => item.id === id);
+  if (!generation) return;
+  const wasFavorite = Boolean(generation.is_favorite);
+  button.disabled = true;
+  try {
+    if (wasFavorite) {
+      await api(`/api/generations/${encodeURIComponent(id)}/favorite`, { method: "DELETE" });
+      setGenerationFavorite(id, false);
+      state.favorites = state.favorites.filter((item) => item.generation.id !== id);
+      if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
+      toast("Removed from Favorites.", "success");
+    } else {
+      const favorite = await api(`/api/generations/${encodeURIComponent(id)}/favorite`, {
+        method: "PUT",
+      });
+      setGenerationFavorite(id, true, favorite.generation);
+      state.favorites = [
+        favorite,
+        ...state.favorites.filter((item) => item.generation.id !== id),
+      ];
+      if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
+      toast("Added to Favorites.", "success");
+    }
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
+function setGenerationFavorite(id, isFavorite, summary = null) {
+  const index = state.generations.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  state.generations[index] = {
+    ...state.generations[index],
+    ...(summary || {}),
+    is_favorite: isFavorite,
+  };
+  upsertGalleryCard(state.generations[index]);
+}
+
+async function openFavorites() {
+  const page = await api("/api/favorites?limit=40");
+  state.favorites = page.items;
+  state.favoritesNextCursor = page.next_cursor;
+  renderFavoritesDialog();
+  const dialog = document.querySelector("#favorites-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function renderFavoritesDialog() {
+  const dialog = document.querySelector("#favorites-dialog");
+  if (!dialog) return;
+  dialog.innerHTML = favoritesMarkup(state.favorites, state.favoritesNextCursor);
+}
+
+async function loadMoreFavorites() {
+  if (!state.favoritesNextCursor || state.loadingMoreFavorites) return;
+  state.loadingMoreFavorites = true;
+  try {
+    const page = await api(
+      `/api/favorites?limit=40&cursor=${encodeURIComponent(state.favoritesNextCursor)}`,
+    );
+    const known = new Set(state.favorites.map((item) => item.id));
+    state.favorites.push(...page.items.filter((item) => !known.has(item.id)));
+    state.favoritesNextCursor = page.next_cursor;
+    renderFavoritesDialog();
+  } finally {
+    state.loadingMoreFavorites = false;
+  }
+}
+
+async function deleteFavorite(id) {
+  if (!window.confirm("Remove this generation from Favorites? It will remain in your generation history.")) return;
+  await api(`/api/generations/${encodeURIComponent(id)}/favorite`, { method: "DELETE" });
+  state.favorites = state.favorites.filter((item) => item.generation.id !== id);
+  setGenerationFavorite(id, false);
+  renderFavoritesDialog();
+  toast("Favorite deleted. Generation history was preserved.", "success");
+}
+
 async function openDetail(id) {
   const detail = await api(`/api/generations/${id}`);
   const dialog = document.querySelector("#detail-dialog");
@@ -772,7 +869,9 @@ async function deleteGeneration(id) {
 
 function removeGeneration(id) {
   state.generations = state.generations.filter((item) => item.id !== id);
+  state.favorites = state.favorites.filter((item) => item.generation.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
+  if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
   if (!state.generations.length) renderGallery();
 }
 

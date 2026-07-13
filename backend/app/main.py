@@ -16,7 +16,17 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .api import admin, auth, events, generations, preferences, prompt_assistant, uploads, workflows
+from .api import (
+    admin,
+    auth,
+    events,
+    favorites,
+    generations,
+    preferences,
+    prompt_assistant,
+    uploads,
+    workflows,
+)
 from .config import Settings, get_settings
 from .container import AppContainer
 from .db import run_migrations
@@ -192,6 +202,7 @@ def create_app(
     app.include_router(prompt_assistant.router)
     app.include_router(preferences.router)
     app.include_router(generations.router)
+    app.include_router(favorites.router)
     app.include_router(events.router)
     app.include_router(admin.router)
 
@@ -211,4 +222,3 @@ def create_app(
                 },
             )
     return app
-

@@ -163,6 +163,17 @@ code {
   flex: 1;
 }
 
+.favorites-launch-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.favorites-launch-button > span:first-child {
+  color: #ff81aa;
+  font-size: 1.1rem;
+}
+
 .scale-control {
   display: flex;
   align-items: center;
@@ -451,6 +462,13 @@ code {
   padding: 9px 11px 9px 13px;
 }
 
+.card-actions,
+.favorite-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .card-metadata {
   min-width: 0;
   color: var(--muted);
@@ -458,6 +476,52 @@ code {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.favorite-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: #a9b7c7;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.favorite-button svg {
+  width: 18px;
+  height: 18px;
+  overflow: visible;
+}
+
+.favorite-button path {
+  fill: transparent;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.favorite-button:hover:not(:disabled) {
+  border-color: #9d526d;
+  background: #2b1821;
+  color: #ff91b5;
+}
+
+.favorite-button[aria-pressed="true"] {
+  border-color: #b64f76;
+  background: #351a26;
+  color: #ff6f9f;
+}
+
+.favorite-button[aria-pressed="true"] path {
+  fill: currentColor;
 }
 
 .recall-button {
@@ -1088,6 +1152,11 @@ dialog::backdrop {
   height: min(820px, calc(100vh - 36px));
 }
 
+.favorites-dialog {
+  width: min(920px, calc(100vw - 36px));
+  height: min(780px, calc(100vh - 36px));
+}
+
 .dialog-frame {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1126,10 +1195,128 @@ dialog::backdrop {
 }
 
 .detail-content,
-.admin-content {
+.admin-content,
+.favorites-content {
   min-height: 0;
   overflow: auto;
   padding: var(--space-4);
+}
+
+.favorites-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.favorite-item {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  min-height: 150px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.favorite-thumbnail {
+  min-height: 150px;
+  border-right: 1px solid var(--border);
+  background: #070b10;
+}
+
+.favorite-thumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 210px;
+  object-fit: contain;
+}
+
+.favorite-placeholder {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-height: 150px;
+  padding: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.favorite-placeholder span {
+  font-size: 1.6rem;
+}
+
+.favorite-details {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.favorite-heading h3,
+.favorite-heading p,
+.favorite-prompt {
+  margin: 0;
+}
+
+.favorite-heading h3 {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.favorite-heading p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.favorite-prompt {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-soft);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.favorite-actions {
+  justify-content: flex-end;
+}
+
+.favorite-actions .button {
+  min-height: 34px;
+}
+
+.favorites-load-more {
+  display: grid;
+  place-items: center;
+  padding: var(--space-5) 0 var(--space-2);
+}
+
+.empty-favorites {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  min-height: 100%;
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty-favorites h3 {
+  margin: 4px 0;
+}
+
+.empty-favorites p {
+  margin: 0;
+}
+
+.empty-favorite-heart {
+  color: #ff81aa;
+  font-size: 2.5rem;
 }
 
 .artifact-viewer {
@@ -1418,6 +1605,7 @@ tr:last-child td {
   }
 
   .detail-dialog,
+  .favorites-dialog,
   .admin-dialog {
     width: 100vw;
     height: 100vh;
@@ -1430,6 +1618,10 @@ tr:last-child td {
   .dialog-actions {
     flex-wrap: wrap;
   }
+
+  .favorite-item {
+    grid-template-columns: 132px minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 520px) {
@@ -1441,8 +1633,27 @@ tr:last-child td {
     width: 72px;
   }
 
+  .favorites-launch-button {
+    width: 32px;
+    padding: 0;
+  }
+
+  .favorites-launch-label {
+    display: none;
+  }
+
   .card-footer {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .favorite-item {
+    grid-template-columns: 1fr;
+  }
+
+  .favorite-thumbnail {
+    min-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .provenance dl {
