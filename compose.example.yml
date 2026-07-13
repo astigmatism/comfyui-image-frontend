@@ -1,0 +1,33 @@
+services:
+  comfyui-image-frontend:
+    build:
+      context: .
+    image: comfyui-image-frontend:local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - application-data:/data
+    # Allows the example URLs in .env.example to reach ComfyUI/Ollama running
+    # directly on the Docker host. Replace with service DNS names when all
+    # services share a user-defined Docker network.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  application-data:
+    # An explicit name keeps documented backup/restore commands stable even
+    # when the Compose project directory is renamed.
+    name: comfyui-image-frontend-data

@@ -1,0 +1,16 @@
+{
+  "name": "comfyui-image-frontend-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "lint": "node scripts/lint.mjs",
+    "format:check": "node scripts/format-check.mjs",
+    "test": "node --test test/*.test.mjs",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}
