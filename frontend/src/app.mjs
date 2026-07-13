@@ -80,10 +80,18 @@ function bindDelegatedEvents() {
 }
 
 async function handleSubmit(event) {
-  event.preventDefault();
-  if (event.target.id === "login-form") return submitLogin(event.target);
-  if (event.target.id === "password-form") return submitPassword(event.target);
-  if (event.target.id === "create-user-form") return submitCreateUser(event.target);
+  if (event.target.id === "login-form") {
+    event.preventDefault();
+    return submitLogin(event.target);
+  }
+  if (event.target.id === "password-form") {
+    event.preventDefault();
+    return submitPassword(event.target);
+  }
+  if (event.target.id === "create-user-form") {
+    event.preventDefault();
+    return submitCreateUser(event.target);
+  }
 }
 
 async function handleClick(event) {
