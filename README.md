@@ -80,6 +80,18 @@ For production, Docker is the recommended path.
 
 The bootstrap variables are read only when the database has no users. Restarting or replacing the container does not reset an existing password.
 
+### Updating a Compose deployment
+
+After the project is checked out on the production server, update and restart it with:
+
+```sh
+./update_and_restart
+```
+
+The script requires a clean working tree and a configured upstream branch. It gracefully stops the application service, performs a fast-forward-only pull, rebuilds the image, starts the service, and waits for it to become healthy. If the pull or build fails after shutdown, it attempts to restart the last available image automatically.
+
+It defaults to `compose.example.yml` and the `comfyui-image-frontend` service. Custom deployments can set `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, `CIF_UPDATE_STOP_TIMEOUT`, or `CIF_UPDATE_START_TIMEOUT` before invoking it.
+
 ### Connecting to external services
 
 The example uses `host.docker.internal` and a Linux `host-gateway` mapping for ComfyUI/Ollama running directly on the Docker host. When services share a user-defined Docker network, use their service DNS names instead, for example:
