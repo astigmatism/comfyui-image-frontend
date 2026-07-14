@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     app_title: str = "ComfyUI Gallery"
-    listen_host: str = "0.0.0.0"
+    listen_host: str = "0.0.0.0"  # noqa: S104 - configurable application listener default
     listen_port: int = 8000
     data_dir: Path = Path("./backend/data")
     database_path: Path | None = None
@@ -35,8 +35,17 @@ class Settings(BaseSettings):
 
     comfyui_base_url: str = "http://127.0.0.1:8188"
     comfyui_ws_url: str | None = None
-    comfyui_workflow_directory: str = "workflows/front-end"
+    comfyui_instance_id: str = "default"
+    comfyui_user: str | None = None
+    comfyui_workflow_directory: str = "workflows"
     comfyui_concurrency: int = 1
+    comfyui_listing_max_bytes: int = 4 * 1024 * 1024
+    comfyui_object_info_max_bytes: int = 64 * 1024 * 1024
+    comfyui_manifest_max_bytes: int = 1024 * 1024
+    comfyui_workflow_max_bytes: int = 32 * 1024 * 1024
+    comfyui_api_max_bytes: int = 32 * 1024 * 1024
+    comfyui_history_max_bytes: int = 32 * 1024 * 1024
+    comfyui_output_max_bytes: int = 128 * 1024 * 1024
     external_health_interval_seconds: float = 10.0
     dispatch_poll_seconds: float = 0.4
     reconciliation_grace_seconds: float = 5.0
@@ -70,6 +79,22 @@ class Settings(BaseSettings):
             raise ValueError("workflow directory must be a safe relative namespace")
         return normalized
 
+    @field_validator("comfyui_instance_id")
+    @classmethod
+    def validate_comfyui_instance_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or len(normalized) > 64:
+            raise ValueError("ComfyUI instance ID must contain 1 to 64 characters")
+        if not all(character.isalnum() or character in {"-", "_"} for character in normalized):
+            raise ValueError("ComfyUI instance ID may contain only letters, digits, '-' and '_'")
+        return normalized
+
+    @field_validator("comfyui_user")
+    @classmethod
+    def normalize_comfyui_user(cls, value: str | None) -> str | None:
+        normalized = value.strip() if value else None
+        return normalized or None
+
     @model_validator(mode="after")
     def derive_paths_and_validate(self) -> Settings:
         self.data_dir = self.data_dir.resolve()
@@ -77,6 +102,17 @@ class Settings(BaseSettings):
         self.frontend_dist = self.frontend_dist.resolve()
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
+        for field_name in (
+            "comfyui_listing_max_bytes",
+            "comfyui_object_info_max_bytes",
+            "comfyui_manifest_max_bytes",
+            "comfyui_workflow_max_bytes",
+            "comfyui_api_max_bytes",
+            "comfyui_history_max_bytes",
+            "comfyui_output_max_bytes",
+        ):
+            if getattr(self, field_name) < 1024:
+                raise ValueError(f"{field_name} must be at least 1024 bytes")
         if self.session_ttl_hours < 1:
             raise ValueError("session_ttl_hours must be positive")
         secret = self.session_secret.get_secret_value()

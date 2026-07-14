@@ -1,39 +1,41 @@
 # Architecture
 
-## Scope and design principles
+## Scope and invariants
 
-This is one application container for a small trusted network, not a public multi-tenant platform. It deliberately uses one FastAPI process, one SQLite database, application-owned files, and in-process asynchronous workers. There is no broker, separate database, workflow editor, model installer, or direct browser connection to ComfyUI/Ollama.
+This is one application container for a small trusted network, not a public multi-tenant platform. It uses one FastAPI process, one SQLite database, application-owned files, and in-process asynchronous workers. There is no broker, separate database, workflow editor, model installer, ComfyUI filesystem mount, or direct browser connection to ComfyUI/Ollama.
 
-The primary invariants are:
+The principal invariants are:
 
-1. Every accepted generation is durably recorded before dispatch.
-2. Every content query and file response is scoped to the authenticated owner; the administrator role is not a content bypass.
-3. The browser sends semantic controls only. Raw graph selectors, bindings, node IDs, and service URLs remain server-side.
-4. Only an exact validated workflow pair is executable or recallable.
-5. A progressive image is provisional until terminal success explicitly promotes a canonical output.
-6. Accepted executions are immutable snapshots; later UI edits create a new record.
+1. A generation source exists only after a complete three-file ComfyUI publication passes strict validation.
+2. The browser receives only an allowlisted public interface and submits only a stable source key/revision plus public parameters.
+3. Cached frozen graphs are immutable; compilation deep-clones and patches only trusted manifest bindings per request.
+4. Every accepted generation and its exact source revision are durably recorded before dispatch.
+5. Terminal `/history/{prompt_id}` is preserved as the source of truth; no native output node or batch member is discarded.
+6. A gallery display image is a presentation aid, not an invented contract-declared final output.
+7. Every content query and file response is scoped to the authenticated owner; administrator role is not a content bypass.
+8. Accepted executions are immutable snapshots. Republishing or form edits affect only new requests.
 
 ## Process layout
 
-`app.main.create_app` creates an `AppContainer` with shared services:
+`app.main.create_app` creates an `AppContainer` whose services divide responsibility:
 
-- `Database`: SQLAlchemy engine/session factory, SQLite pragmas, migration startup.
+- `Database`: SQLAlchemy sessions, SQLite pragmas, migration startup.
 - `AuthService`: bootstrap, Argon2id credentials, throttling, revocable sessions, account operations.
-- `AssetStore`: safe image decode, application paths, hashes, thumbnails, atomic writes/deletes.
-- `ComfyUIAdapter`: capability-probed user-data routes and all prompt/runtime/output operations.
+- `AssetStore`: safe image decode, application paths, hashes, thumbnails, atomic file operations.
+- `ComfyUIAdapter`: bounded HTTP/WebSocket transport, userdata route probing, `Comfy-User`, prompt/history/output operations.
+- `WorkflowRegistry`: publication listing, validation, immutable revision catalog, last-valid caching, diagnostics.
+- `WorkflowCompiler`: public parameter validation/defaults, exact seed resolution, request-local graph clone/bindings/hash.
+- `GenerationService`: owner-scoped API projection, acceptance transaction, recall, cancellation/deletion.
+- `QueueWorker`: durable fair claim, submission, WebSocket/history monitoring, output normalization/archive, recovery.
 - `OllamaAdapter`: deterministic model discovery and explicit prompt composition.
-- `WorkflowRegistry`: pair discovery, static/runtime validation, immutable source registry, diagnostics.
-- `WorkflowCompiler`: semantic validation, seed resolution, variants/transforms, upload markers, graph hash.
-- `GenerationService`: owner-scoped API projection, acceptance transaction, recall, cancel/delete.
-- `QueueWorker`: durable fair claim, upload substitution, dispatch, WS/history monitoring, archive/finalize/recovery.
-- `EventBroker`: low-latency owner-specific SSE fan-out; the database remains the replay source.
-- `UserDeletionService`: session revocation, active-job cancellation, row/file cleanup without content disclosure.
+- `EventBroker`: low-latency owner-specific SSE fan-out; the database is the replay source.
+- `UserDeletionService`: revocation, active-job reconciliation, row/file cleanup without content disclosure.
 
-FastAPI serves the built frontend after all `/api` routes. The browser sees only public semantic contract fields; registry APIs strip selectors, bindings, raw nodes, runtime filesystem paths, and internal diagnostics.
+FastAPI serves the built frontend after `/api` routes. Public source details are constructed by allowlist; private values are never copied and then redacted.
 
 ## Persistence boundaries
 
-SQLite stores structured state and application ownership. Binary files are beneath the configured data directory:
+SQLite owns structured state and authorization. Binary data is beneath the configured application data directory:
 
 ```text
 /data/app.db
@@ -44,102 +46,110 @@ SQLite stores structured state and application ownership. Binary files are benea
 /data/assets/<generation shard>/<opaque id>.thumb.webp
 ```
 
-Paths are generated by the application and validated relative to the data root before open/delete. Prompts and user filenames are never used as storage paths. Artifact rows include source role/state/sequence, content hash, dimensions, lineage, and application URLs; ComfyUI file references are internal provenance only.
+Prompts and user/ComfyUI filenames are never storage paths. Application paths are generated, stored relative to the data root, and resolved beneath that root before open/delete. SQLite uses foreign keys, WAL, `synchronous=NORMAL`, and a busy timeout. Network work, hashing, decoding, and thumbnails occur outside long write transactions where practical.
 
-SQLite uses foreign keys, WAL, `synchronous=NORMAL`, and a busy timeout. Database writes are short. Expensive HTTP, hashing, image decode, and thumbnail work are performed outside long-lived write transactions where practical.
+Publication documents are durably snapshotted as JSON in `workflow_profiles`; exact raw-byte SHA-256 values preserve identity even though raw source files remain externally owned by ComfyUI. Generations copy the source revision and result structures needed for historical display.
 
 ## Authentication and authorization
 
-A random opaque session token is stored only in an `HttpOnly` cookie. SQLite stores an HMAC-SHA-256 token hash, CSRF token, user session epoch, expiry, IP hash, and optional user-agent metadata. Passwords use Argon2id.
+A random opaque token is stored in an `HttpOnly` cookie. SQLite stores only its HMAC-SHA-256 identity plus CSRF, session epoch, expiry, IP hash, and optional user-agent metadata. Passwords use Argon2id.
 
-Anonymous login uses a signed double-submit CSRF token. Authenticated writes require the session's CSRF token in `X-CSRF-Token`. Password reset increments the user's session epoch and deletes sessions. Login throttling keys a username/IP tuple with the server secret.
+Anonymous login uses signed double-submit CSRF. Authenticated mutations require the session CSRF token in `X-CSRF-Token`. Password reset increments the user's session epoch and deletes sessions. Login throttling keys a username/IP tuple without logging credentials.
 
-Content APIs query by both object ID and `owner_id`. This deliberately returns a not-found response for cross-user IDs, including when the requester is an administrator. Administrator routes expose account records and workflow diagnostics only. Media is delivered through authenticated owner-scoped routes and is not a static mount.
+Content queries include both object ID and `owner_id`, returning not found for cross-user IDs even to administrators. Administrator APIs expose account records and safe workflow diagnostics only. Media is delivered through authenticated routes, not a public file mount.
 
-## Workflow discovery and validation
+## Published-source discovery
 
-At startup and administrator refresh, `WorkflowRegistry.refresh` asks the adapter to:
+At startup, administrator refresh, and an offline-to-online health transition, `WorkflowRegistry` performs this network-only pipeline. Health monitoring does not refetch bundles periodically while ComfyUI remains online:
 
-1. fetch `/object_info` and probe supported user-data list/get route shapes;
-2. list the configured namespace through the network API;
-3. pair `.workflow.json` and `.api.json` by basename;
-4. retrieve each complete pair;
-5. locate exactly one active `FrontendWorkflowContract` manifest;
-6. validate schema shape, kind/version/identity, normalized UI hash, exact API hash, and contract hash;
-7. build node indexes and resolve every structural selector uniquely;
-8. validate binding strategies/inputs, branches, conditions, stages, outputs, dependencies, assets, and dynamic options against runtime data;
-9. require exactly one string or multiline `prompt.text` control and one deterministic canonical output;
-10. store accepted immutable source documents plus a resolved public contract and runtime snapshot.
+1. Probe ComfyUI and retrieve bounded `/object_info` capability data.
+2. Recursively list the configured userdata namespace, preferring `/v2/userdata?path=workflows` and falling back to `/userdata?dir=workflows&recurse=true&full_info=true`.
+3. Filter safe normalized `.interface.json` paths.
+4. Retrieve each manifest and adjacent `<stem>.json` / `<stem>.api.json`; nested paths are encoded whole as one route segment.
+5. Parse strict UTF-8 JSON and validate publication/interface schemas, path/stem/source agreement, exact raw-byte hashes, graph node count/shape, public IDs/types/defaults/ranges/steps, one positive prompt, trusted bindings, dependencies, warnings, and runtime flags.
+6. Match all declared class types against `/object_info`.
+7. Atomically publish each complete accepted revision and safe diagnostic.
 
-A refresh marks old profiles non-current before registering the newly seen exact identities. Historical generation rows retain their own contract and graph snapshots. Ordinary users receive only current valid profiles. Invalid diagnostics are administrator-only and contain basename/code/safe reason, not user data.
+The optional `Comfy-User` header is applied consistently to the relevant HTTP and WebSocket traffic. Listing, manifest, workflow, API, object-info, history, and output responses have separate byte caps.
+
+`source_key` is stable for one configured `instance_id + source_id`. The immutable revision consists of publication UUID and exact workflow/API/manifest hashes. A bad republish cannot replace its last accepted revision. One rejected candidate cannot remove independent valid sources. A transport/listing failure retains the last valid catalog as cached/offline; a successful authoritative listing retires disappeared sources and old embedded-contract profiles. Missing dependencies produce an unavailable catalog record.
+
+Ordinary source APIs contain display name, stable key, instance identity, readiness/cached/availability, warnings, revision, and public interface inputs/outputs. They omit source path, graph, bindings, node IDs, instance UUIDs, and dependencies.
 
 ## Request acceptance and compilation
 
-`POST /api/generations` is accepted only after:
+Canonical generation input is `{source_key, revision?, parameters, prompt_assistant_run_id?}`. Acceptance requires:
 
-- exact profile/optional recall identity verification;
-- unknown-control rejection, defaults and preset expansion;
-- capability/condition/required/conflict validation;
-- type, enum, resource, resolution, and allowlist validation;
-- concrete random seed resolution;
-- owner/type validation of upload IDs and Prompt Assistant run IDs;
-- immutable graph clone, approved variant/branch selection, bindings/transforms, and compiled graph validation;
-- compiled graph SHA-256 calculation.
+- current source resolution and optional exact revision check;
+- rejection of unknown public IDs and legacy graph/binding/path injection;
+- required/default/type/range/step validation;
+- canonical decimal parsing and request-local random resolution for seeds;
+- owner validation for any linked Prompt Assistant run;
+- deep clone of the accepted frozen API graph;
+- patching every private manifest binding for each effective public input;
+- verification that the cached graph remained byte-for-byte/logically unchanged;
+- positive-prompt extraction and compiled graph SHA-256.
 
-One transaction inserts the generation, queue sequence, resolved contract snapshot, requested/effective controls, all seeds, compiled graph, workflow hashes, upload links, Prompt Assistant linkage, and initial durable event. Only then does the API return the gallery card.
+Seed values remain decimal strings in public/effective state so values beyond JavaScript's safe integer range round-trip exactly; the cloned graph receives the validated integer.
 
-## Scheduling and execution
+One transaction inserts the generation, queue sequence, source revision snapshot, requested/effective parameters, resolved seeds, compiled graph/hash, Prompt Assistant linkage, and initial durable event. Only then does the API return a card.
 
-The worker maintains up to `CIF_COMFYUI_CONCURRENCY` active application jobs. `_claim_next` serializes scheduler selection with a SQLite lock row, takes the oldest queued item for the next owner in round-robin order, and preserves each owner's queue order.
+Temporary legacy request/response aliases are isolated at the schema/service boundary. They resolve only to a current validated publication and cannot re-enable embedded-contract discovery.
 
-Before submission, the worker reads application-owned upload bytes, uploads them through the ComfyUI adapter, replaces only compiler-created upload markers, and stores the submitted graph snapshot/hash. ComfyUI returns a `prompt_id`, which is persisted before monitoring.
+## Scheduling and ComfyUI submission
 
-The monitor combines:
+The worker maintains up to `CIF_COMFYUI_CONCURRENCY` active jobs. A SQLite lock row serializes fair selection: oldest queued item per user, round-robin across owners, preserving each owner's FIFO order.
 
-- ComfyUI WebSocket events mapped from raw nodes to semantic stages;
-- contract-declared `executed` outputs retrieved immediately;
-- periodic `/history/{prompt_id}` reconciliation;
-- queue/interrupt calls for cancellation;
-- durable events and artifact rows for browser replay.
+Before `/prompt`, the worker reuses the generation's immutable compiled graph. When the accepted publication runtime flag requests it, the matching editable workflow snapshot is attached at `extra_data.extra_pnginfo.workflow`. Submission uses a request-specific client ID. The returned native `prompt_id` is persisted before monitoring.
 
-Binary sampler preview frames are ignored. Only declared outputs are archived. A new checkpoint supersedes prior provisional roles according to contract progression while retaining them in the detail timeline.
+The monitor combines WebSocket progress with bounded history polling/retry. WebSocket events are timely but incomplete: cached runs may omit them, and a terminal event may precede history persistence. `/history/{prompt_id}` is therefore terminal/recovery truth.
 
-## Terminal state and artifact rules
+## Result normalization and files
 
-A declared canonical output is not final merely because its node emitted. On successful terminal history:
+History normalization persists the complete bounded JSON-safe entry and raw ComfyUI status/error messages. The owner-facing API removes top-level submitted `prompt` and `extra_data` graph envelopes but leaves actual node results, arbitrary JSON-safe custom UI fields, publisher metadata, status/messages/errors, and execution metadata intact. For each native output node:
 
-- all canonical batch siblings are marked `final`;
-- one deterministic sibling becomes the card's primary canonical ID;
-- earlier provisional checkpoints become `superseded`.
+- A connected publisher's top-level list-shaped `comfyui_image_frontend` metadata is matched to its private manifest declaration. The namespaced `artifacts` list is authoritative for public ID, role, kind, cardinality, description, and batch order; mirrored `images` remain in raw history and are not counted again.
+- Every nonpublisher result is copied untouched into the node-keyed `unmapped_outputs` map, whether or not its node appears in `interface.native_outputs`.
+- Publisher metadata naming an undeclared ID or disagreeing with its frozen binding produces a retained result error.
 
-On cancellation/failure:
+Every valid logical file reference from declared and unmapped nodes is retained, including repeated locators and every batch member. Only the native `filename`, `subfolder`, and type (`input`, `output`, `temp`) tuple is used for retrieval. The adapter fetches `/view` within its byte cap; `AssetStore` archives application-owned originals/thumbnails. An optional retrieval failure leaves the logical reference in result data and records a warning. Public artifact routes use opaque IDs and owner authorization.
 
-- canonical remains null;
-- the highest eligible checkpoint becomes `best_available`;
-- the generation uses distinct with/without-artifacts terminal states.
+The detail API returns declared outputs in manifest order and joins archived artifact summaries back to their logical `output_id`/`batch_index`. The visual hierarchy is final, previews/prototypes, comparisons, auxiliary publishers, then additional native output. A physical locator may be downloaded once as an optimization, but logical references are never deduplicated from normalized or raw result structures.
 
-If ComfyUI reports success but any declared output could not be archived, the generation becomes failed with `artifact_persistence_failed`; it is never represented as fully archived success.
+The gallery selects the authored final image for compact display when available. That selection does not remove siblings, rewrite raw history, or discard earlier/native outputs. Failure or interruption retains useful partial images without marking them as a successful canonical final.
 
-## Restart and outage recovery
+Generation detail returns source revision, prompt ID, requested/effective parameters, resolved seed strings, ordered declared outputs, untouched node-keyed unmapped outputs, graph-envelope-safe raw history, warnings/errors, ComfyUI status, artifacts, and durable events.
 
-Startup migrations and bootstrap run before the worker. The registry refresh is failure-tolerant: an unreachable ComfyUI records service health but does not prevent login/history.
+## Restart, refresh, and outage behavior
 
-The worker resumes queued rows. For dispatching/running/cancel-requested rows it checks history, queue state, and prompt ID. A known active prompt resumes monitoring; terminal history finalizes it; an outcome that cannot be reconciled after the configured grace period becomes `interrupted`. Existing artifacts and immutable recall data remain.
+Startup migrations and bootstrap precede workers. Durable current source rows load before network discovery completes. Source readiness progresses through loading/online or cached-offline/unavailable state.
 
-ComfyUI outages before prompt submission return a claimed item to `queued`; health polling later resumes dispatch. Browser disconnects never affect queue state.
+Queued rows resume after restart. For dispatching/running/cancel-requested rows, recovery checks prompt ID, history, and queue state. Known active prompts resume monitoring; terminal history finalizes them; an irreconcilable outcome after the configured grace interval becomes explicit interrupted history. Existing artifacts, raw results, source identity, and recall data remain.
+
+ComfyUI failure before submission returns a claimed item to queued; health polling later resumes dispatch. Browser disconnects never alter queue state. A selected revision that was republished fails with `source_republished` so the user reviews the new interface.
+
+When health monitoring sees ComfyUI move from offline to online, it reruns full source discovery before normal operation continues. This recovers both a cached catalog and an empty catalog from an offline startup without requiring administrator action. A continuously online instance changes its catalog only at startup or explicit refresh, avoiding periodic refetch/race churn.
 
 ## Frontend architecture
 
 The production frontend uses browser-native modules:
 
-- `api.mjs`: same-origin JSON/multipart client and CSRF header handling.
-- `lib.mjs`: pure control conditions, validation, recall overwrite, date/scale helpers.
-- `render.mjs`: escaped semantic HTML for shell, controls, cards, detail, and service states.
-- `app.mjs`: state transitions, delegated events, pagination, uploads, SSE, administration.
-- `styles.css`: design tokens, shared control geometry, dark theme, responsive drawer, focus/reduced-motion behavior.
+- `api.mjs`: same-origin JSON/multipart and CSRF handling.
+- `lib.mjs`: source-input ordering/defaults/validation, seed-safe serialization, recall/state helpers.
+- `render.mjs`: escaped semantic HTML for source-driven controls, cards, detail, warnings and service states.
+- `app.mjs`: state transitions, source selection/revision refresh, submission, pagination, SSE and administration.
+- `styles.css`: design tokens, control geometry, responsive layout, focus and reduced-motion behavior.
 
-The gallery stores one object/card per generation ID. An SSE event fetches and replaces only that generation's card. Cursor pagination limits DOM growth. Images use archived thumbnails and native lazy loading while detail uses full retained files. Each gallery summary carries its owner-scoped favorite state; the heart performs an idempotent bookmark mutation. The scrollable Favorites dialog pages only the current user's bookmarks and reuses the exact generation recall flow without copying or deleting history.
+The selected source's `interface.inputs` is the only control schema. Non-advanced controls render before a disclosed Advanced group. Field errors map to public IDs. Warning-only sources remain usable; loading, cached/offline, unavailable and empty catalogs disable submission with distinct explanations.
+
+The gallery keeps one object/card per generation. SSE replaces only the affected durable state. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance.
+
+## Compatibility and migration
+
+Migration `b84f2d6a91c3_add_published_source_results.py` extends existing tables instead of rewriting history. Legacy embedded-contract profiles cease to be current after successful publication discovery, but their generation rows and files remain readable/deletable. New publication revisions coexist immutably so in-flight jobs and exact recall retain the revision they accepted.
+
+The retired two-file/node-embedded design is not a fallback discovery path. Compatibility fields have a bounded purpose: old stored data and a transitioning frontend, never acceptance of arbitrary or stale graphs. See [`published-workflows.md`](published-workflows.md) for the retirement policy.
 
 ## Graceful shutdown
 
-FastAPI lifespan stops new worker claims, signals worker loops, waits for active monitor tasks to finish/cancel, closes HTTP clients, and disposes the SQLite engine. Already committed queue rows and prompt IDs remain for next-start recovery.
+FastAPI lifespan stops new claims, signals worker loops, waits for active monitors to finish/cancel, closes external clients, and disposes SQLite. Already committed queue rows and prompt IDs remain recoverable at the next start.

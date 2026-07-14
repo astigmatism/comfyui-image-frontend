@@ -4,18 +4,24 @@ import asyncio
 import copy
 import logging
 import time
+from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any
 
 import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import Settings
-from ..domain.contract import sha256_json
+from ..domain.publication import sha256_json
+from ..domain.results import (
+    NativeFileOutput,
+    history_status_indicates_interruption,
+    normalize_history,
+)
+from ..errors import AppError
 from ..models import (
-    ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     Artifact,
     ArtifactState,
@@ -25,6 +31,7 @@ from ..models import (
     SchedulerState,
     ServiceHealth,
     Upload,
+    WorkflowProfile,
 )
 from .assets import AssetStore
 from .comfyui import ComfyUIAdapter
@@ -90,7 +97,9 @@ class QueueWorker:
                     except asyncio.CancelledError:
                         pass
                     except Exception:
-                        logger.exception("generation_task_failed", extra={"generation_id": generation_id})
+                        logger.exception(
+                            "generation_task_failed", extra={"generation_id": generation_id}
+                        )
             available_slots = self.settings.comfyui_concurrency - len(self._active)
             if available_slots > 0 and self._comfyui_available():
                 for _ in range(available_slots):
@@ -103,7 +112,9 @@ class QueueWorker:
                         self._execute(generation_id), name=f"generation-{generation_id}"
                     )
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.settings.dispatch_poll_seconds)
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=self.settings.dispatch_poll_seconds
+                )
             except TimeoutError:
                 continue
 
@@ -164,6 +175,13 @@ class QueueWorker:
                 await self._finish_without_execution(generation_id, cancelled=True)
                 return
             graph = copy.deepcopy(generation.compiled_graph_json)
+            profile = session.get(WorkflowProfile, generation.workflow_profile_id)
+            attach_workflow = bool(
+                generation.resolved_contract_json.get("runtime", {}).get(
+                    "attach_workflow_as_extra_pnginfo", False
+                )
+            )
+            editable_workflow = copy.deepcopy(profile.source_ui_json) if profile else None
         try:
             materialized = await self._materialize_uploads(generation_id, graph)
             with self.session_factory() as session:
@@ -176,7 +194,16 @@ class QueueWorker:
                 generation.submitted_graph_json = materialized
                 generation.submitted_graph_sha256 = sha256_json(materialized)
                 session.commit()
-            prompt_id = await self.comfyui.submit_prompt(materialized, generation.comfyui_client_id)
+            extra_data = None
+            if attach_workflow:
+                if editable_workflow is None:
+                    raise RuntimeError(
+                        "accepted source revision is missing editable workflow metadata"
+                    )
+                extra_data = {"extra_pnginfo": {"workflow": editable_workflow}}
+            prompt_id = await self.comfyui.submit_prompt(
+                materialized, generation.comfyui_client_id, extra_data=extra_data
+            )
         except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException, OSError):
             await self._requeue_after_outage(generation_id)
             return
@@ -192,10 +219,8 @@ class QueueWorker:
                 # Submission raced with cancellation; retain prompt ID and interrupt immediately.
                 generation.comfyui_prompt_id = prompt_id
                 session.commit()
-                try:
+                with suppress(Exception):
                     await self.comfyui.cancel(prompt_id, running=True)
-                except Exception:
-                    pass
             else:
                 generation.comfyui_prompt_id = prompt_id
                 generation.status = GenerationStatus.RUNNING
@@ -246,7 +271,10 @@ class QueueWorker:
                 return [await replace(item) for item in value]
             return value
 
-        return await replace(graph)
+        materialized = await replace(graph)
+        if not isinstance(materialized, dict):
+            raise RuntimeError("compiled graph materialization returned an invalid value")
+        return materialized
 
     async def _monitor(self, generation_id: str, prompt_id: str) -> None:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
@@ -266,44 +294,78 @@ class QueueWorker:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.info("comfyui_websocket_disconnected", extra={"generation_id": generation_id})
+                logger.info(
+                    "comfyui_websocket_disconnected", extra={"generation_id": generation_id}
+                )
 
         pump = asyncio.create_task(websocket_pump(), name=f"comfy-ws-{generation_id}")
-        terminal_hint: str | None = None
+        reconciliation_requested = False
+        awaiting_terminal_history = False
         unknown_reachable_since: float | None = None
+        latest_history: dict[str, Any] | None = None
         try:
             while not self._stop.is_set():
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=0.75)
-                    terminal_hint = await self._process_runtime_event(
-                        generation_id, prompt_id, event
-                    ) or terminal_hint
+                    if await self._process_runtime_event(generation_id, prompt_id, event):
+                        # WebSocket completion/error/cache messages are only wake-up hints.
+                        # Native history remains authoritative for every terminal outcome.
+                        reconciliation_requested = True
+                        awaiting_terminal_history = True
                 except TimeoutError:
                     pass
                 await self._ensure_cancel_sent(generation_id, prompt_id)
                 history = None
                 try:
                     history = await self.comfyui.history(prompt_id)
+                except AppError as exc:
+                    await self._record_reconciliation_error(generation_id, exc)
+                    reconciliation_requested = True
+                    awaiting_terminal_history = True
                 except (httpx.HTTPError, OSError):
                     history = None
+                if history is not None:
+                    latest_history = history
                 terminal = _history_terminal(history)
-                if terminal or terminal_hint:
-                    if history is None:
-                        history = await self._wait_for_history(prompt_id)
+                if terminal:
                     await self._finalize(
                         generation_id,
                         history=history or {},
-                        outcome=terminal or terminal_hint or "interrupted",
+                        outcome=terminal,
                     )
                     return
-                if history is None:
+
+                if reconciliation_requested:
+                    reconciled = await self._wait_for_history(
+                        prompt_id,
+                        generation_id=generation_id,
+                        initial_history=latest_history,
+                    )
+                    if reconciled is not None:
+                        latest_history = reconciled
+                    terminal = _history_terminal(latest_history)
+                    reconciliation_requested = False
+                    if terminal:
+                        await self._finalize(
+                            generation_id,
+                            history=latest_history or {},
+                            outcome=terminal,
+                        )
+                        return
+
+                if history is None or awaiting_terminal_history or pump.done():
                     # A missing history entry is ambiguous. Keep waiting while ComfyUI is
                     # unreachable or still reports the prompt in its queue. Once the service is
-                    # reachable and the prompt is absent from both queue and history for the
-                    # configured grace period, make the uncertainty explicit as `interrupted`.
+                    # reachable and the prompt is absent from the queue without terminal history
+                    # for the configured grace period, make the uncertainty explicit.
                     try:
                         queue_state = await self.comfyui.queue()
                         present = prompt_id in _collect_prompt_ids(queue_state)
+                    except AppError as exc:
+                        await self._record_reconciliation_error(generation_id, exc)
+                        awaiting_terminal_history = True
+                        present = True
+                        unknown_reachable_since = None
                     except (httpx.HTTPError, OSError):
                         present = True
                         unknown_reachable_since = None
@@ -315,10 +377,25 @@ class QueueWorker:
                         time.monotonic() - unknown_reachable_since
                         >= self.settings.reconciliation_grace_seconds
                     ):
-                        await self._finalize(generation_id, history={}, outcome="interrupted")
+                        # A prompt that was previously visible may have just left the queue
+                        # before its terminal history entry became readable. Give durable
+                        # history one bounded retry window and retain any latest partial entry.
+                        reconciled = await self._wait_for_history(
+                            prompt_id,
+                            generation_id=generation_id,
+                            initial_history=latest_history,
+                        )
+                        if reconciled is not None:
+                            latest_history = reconciled
+                        terminal = _history_terminal(latest_history)
+                        await self._finalize(
+                            generation_id,
+                            history=latest_history or {},
+                            outcome=terminal or "interrupted",
+                        )
                         return
                     if pump.done():
-                        # Keep polling: a transient WebSocket outage must not lose the durable result.
+                        # A transient WebSocket outage must not lose the durable result.
                         await asyncio.sleep(0.5)
                 else:
                     unknown_reachable_since = None
@@ -328,7 +405,7 @@ class QueueWorker:
 
     async def _process_runtime_event(
         self, generation_id: str, prompt_id: str, event: Mapping[str, Any]
-    ) -> str | None:
+    ) -> bool:
         event_type = event.get("type")
         data = event.get("data", {})
         if not isinstance(data, Mapping):
@@ -342,14 +419,17 @@ class QueueWorker:
             output = data.get("output", {})
             if isinstance(output, Mapping):
                 await self._process_node_output(generation_id, str(node_id), output)
-        elif event_type in {"execution_success", "execution_cached"}:
-            return "success"
-        elif event_type in {"execution_interrupted", "execution_cancelled"}:
-            return "cancelled"
+        elif event_type in {
+            "execution_success",
+            "execution_cached",
+            "execution_interrupted",
+            "execution_cancelled",
+        }:
+            return True
         elif event_type == "execution_error":
             await self._record_execution_error(generation_id, data)
-            return "failed"
-        return None
+            return True
+        return False
 
     async def _update_stage(self, generation_id: str, node_id: str) -> None:
         with self.session_factory() as session:
@@ -397,7 +477,7 @@ class QueueWorker:
                 session,
                 generation,
                 "generation.progress",
-                {"value": value, "maximum": maximum, "node": data.get("node")},
+                {"value": value, "maximum": maximum},
             )
             session.commit()
         await publish_event(self.broker, event)
@@ -409,71 +489,65 @@ class QueueWorker:
             generation = session.get(Generation, generation_id)
             if generation is None:
                 return
-            declarations = [
-                item
-                for item in generation.resolved_contract_json.get("outputs", [])
-                if str(item.get("resolved_node_id")) == node_id
-            ]
-        for declaration in declarations:
-            await self._persist_declared_output(generation_id, declaration, output_payload, node_id)
+            contract = copy.deepcopy(generation.resolved_contract_json)
+            warnings = [str(value) for value in generation.result_warnings_json]
+        normalized = normalize_history(
+            {"outputs": {node_id: copy.deepcopy(dict(output_payload))}},
+            contract=contract,
+            warnings=warnings,
+        )
+        for file_output in normalized.files:
+            await self._persist_native_file(generation_id, file_output)
 
-    async def _persist_declared_output(
-        self,
-        generation_id: str,
-        declaration: Mapping[str, Any],
-        output_payload: Mapping[str, Any],
-        node_id: str,
-    ) -> None:
-        kind = str(declaration.get("kind"))
-        field = declaration.get("history_field") or ("images" if kind == "image" else "text")
-        values = output_payload.get(field)
-        if values is None and isinstance(output_payload.get("frontend_artifacts"), list):
-            values = [
-                item
-                for item in output_payload["frontend_artifacts"]
-                if isinstance(item, Mapping) and item.get("artifact_id") == declaration.get("id")
-            ]
-        if values is None:
-            return
-        if not isinstance(values, list):
-            values = [values]
-        for batch_index, value in enumerate(values):
-            try:
-                if kind == "image":
-                    if not isinstance(value, Mapping):
-                        continue
-                    content = await self.comfyui.retrieve_artifact(value)
-                    stored = self.assets.store_artifact(
-                        content, generation_id=generation_id, kind="image"
-                    )
-                    source_filename = str(value.get("filename", "")) or None
-                    source_subfolder = str(value.get("subfolder", "")) or None
-                    source_type = str(value.get("type", "output"))
-                else:
-                    if isinstance(value, Mapping) and "text" in value:
-                        text = str(value["text"])
-                    else:
-                        text = str(value)
-                    stored = self.assets.store_artifact(
-                        text.encode("utf-8"), generation_id=generation_id, kind="text"
-                    )
-                    source_filename = source_subfolder = source_type = None
-                event = self._insert_artifact(
-                    generation_id=generation_id,
-                    declaration=declaration,
-                    node_id=node_id,
-                    batch_index=batch_index,
-                    stored=stored,
-                    source_filename=source_filename,
-                    source_subfolder=source_subfolder,
-                    source_type=source_type,
+    async def _persist_native_file(self, generation_id: str, file_output: NativeFileOutput) -> None:
+        reference = file_output.reference
+        with self.session_factory() as session:
+            duplicate = session.scalar(
+                select(Artifact.id).where(
+                    Artifact.generation_id == generation_id,
+                    Artifact.output_id == file_output.output_id,
+                    Artifact.source_node_id == file_output.node_id,
+                    Artifact.batch_index == file_output.batch_index,
+                    Artifact.source_filename == reference.get("filename"),
+                    Artifact.source_subfolder == (reference.get("subfolder") or None),
+                    Artifact.source_type == reference.get("type", "output"),
                 )
-                if event:
-                    await publish_event(self.broker, event)
-            except Exception as exc:
-                await self._record_persistence_failure(
-                    generation_id, str(declaration.get("id")), exc
-                )
+            )
+            if duplicate is not None:
+                self._clear_persistence_failure(generation_id, file_output)
+                return
+        try:
+            content = await self.comfyui.retrieve_artifact(reference)
+            stored = self.assets.store_artifact(
+                content,
+                generation_id=generation_id,
+                kind=file_output.kind,
+            )
+            declaration: dict[str, Any] = {
+                "id": file_output.output_id,
+                "role": file_output.role,
+                "kind": file_output.kind,
+                "resolved_sequence": _artifact_sequence(file_output),
+                "canonical_on_success": file_output.role == "final",
+                "usable_on_cancel": True,
+                "usable_on_failure": True,
+                "progression": {},
+            }
+            event = self._insert_artifact(
+                generation_id=generation_id,
+                declaration=declaration,
+                node_id=file_output.node_id,
+                batch_index=file_output.batch_index,
+                stored=stored,
+                source_filename=reference.get("filename"),
+                source_subfolder=reference.get("subfolder") or None,
+                source_type=reference.get("type", "output"),
+            )
+            self._clear_persistence_failure(generation_id, file_output)
+            if event:
+                await publish_event(self.broker, event)
+        except Exception as exc:
+            await self._record_persistence_failure(generation_id, file_output, exc)
 
     def _insert_artifact(
         self,
@@ -542,7 +616,11 @@ class QueueWorker:
                 parent_artifact_id=parent.id if parent else None,
                 storage_path=stored.relative_path,
                 thumbnail_path=stored.thumbnail_path,
-                mime_type=("text/plain; charset=utf-8" if declaration.get("kind") == "text" else stored.mime_type),
+                mime_type=(
+                    "text/plain; charset=utf-8"
+                    if declaration.get("kind") == "text"
+                    else stored.mime_type
+                ),
                 byte_size=stored.byte_size,
                 width=stored.width or None,
                 height=stored.height or None,
@@ -553,9 +631,7 @@ class QueueWorker:
                 source_type=source_type,
                 usable_on_cancel=bool(declaration.get("usable_on_cancel", False)),
                 usable_on_failure=bool(
-                    declaration.get(
-                        "usable_on_failure", declaration.get("usable_on_cancel", False)
-                    )
+                    declaration.get("usable_on_failure", declaration.get("usable_on_cancel", False))
                 ),
                 emitted_at=datetime.now(UTC),
             )
@@ -575,7 +651,7 @@ class QueueWorker:
                     if generation.best_available_artifact_id
                     else None
                 )
-                if current is None or artifact.sequence >= current.sequence:
+                if current is None or _is_better_presentation_candidate(artifact, current):
                     generation.best_available_artifact_id = artifact.id
             event = add_generation_event(
                 session,
@@ -604,29 +680,81 @@ class QueueWorker:
             return event
 
     async def _record_persistence_failure(
-        self, generation_id: str, output_id: str, exc: Exception
+        self, generation_id: str, file_output: NativeFileOutput, exc: Exception
     ) -> None:
+        failure_key = _persistence_failure_key(file_output)
+        required = _artifact_requires_persistence(file_output)
+        diagnostic_key = (
+            "artifact_persistence_failures" if required else "artifact_persistence_warnings"
+        )
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None:
                 return
             diagnostics = dict(generation.internal_diagnostics_json or {})
-            failures = list(diagnostics.get("artifact_persistence_failures", []))
-            failures.append({"output_id": output_id, "error": type(exc).__name__})
-            diagnostics["artifact_persistence_failures"] = failures
+            failures = [
+                value
+                for value in diagnostics.get(diagnostic_key, [])
+                if not isinstance(value, Mapping)
+                or any(value.get(key) != expected for key, expected in failure_key.items())
+            ]
+            failures.append({**failure_key, "error": type(exc).__name__})
+            diagnostics[diagnostic_key] = failures
             generation.internal_diagnostics_json = diagnostics
             event = add_generation_event(
                 session,
                 generation,
                 "artifact.persistence_failed",
-                {"output_id": output_id, "message": "An output could not be archived."},
+                {
+                    "output_id": file_output.output_id,
+                    "required": required,
+                    "message": (
+                        "A required output could not be archived."
+                        if required
+                        else (
+                            "An optional output could not be archived; its native reference "
+                            "was retained."
+                        )
+                    ),
+                },
             )
             session.commit()
         await publish_event(self.broker, event)
 
-    async def _record_execution_error(
-        self, generation_id: str, data: Mapping[str, Any]
-    ) -> None:
+    def _clear_persistence_failure(self, generation_id: str, file_output: NativeFileOutput) -> None:
+        failure_key = _persistence_failure_key(file_output)
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None:
+                return
+            diagnostics = dict(generation.internal_diagnostics_json or {})
+            changed = False
+            for diagnostic_key in (
+                "artifact_persistence_failures",
+                "artifact_persistence_warnings",
+            ):
+                failures = diagnostics.get(diagnostic_key, [])
+                if not isinstance(failures, list):
+                    continue
+                remaining = [
+                    value
+                    for value in failures
+                    if not isinstance(value, Mapping)
+                    or any(value.get(key) != expected for key, expected in failure_key.items())
+                ]
+                if len(remaining) == len(failures):
+                    continue
+                changed = True
+                if remaining:
+                    diagnostics[diagnostic_key] = remaining
+                else:
+                    diagnostics.pop(diagnostic_key, None)
+            if not changed:
+                return
+            generation.internal_diagnostics_json = diagnostics
+            session.commit()
+
+    async def _record_execution_error(self, generation_id: str, data: Mapping[str, Any]) -> None:
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None:
@@ -640,6 +768,46 @@ class QueueWorker:
             generation.internal_diagnostics_json = diagnostics
             generation.error_code = "execution_failed"
             generation.error_message = "ComfyUI failed during workflow execution."
+            generation.result_errors_json = [
+                *(generation.result_errors_json or []),
+                {
+                    "code": generation.error_code,
+                    "message": generation.error_message,
+                },
+            ]
+            event = add_generation_event(
+                session,
+                generation,
+                "generation.error",
+                {"code": generation.error_code, "message": generation.error_message},
+            )
+            session.commit()
+        await publish_event(self.broker, event)
+
+    async def _record_reconciliation_error(self, generation_id: str, exc: AppError) -> None:
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None or generation.status in TERMINAL_STATUSES:
+                return
+            diagnostics = dict(generation.internal_diagnostics_json or {})
+            diagnostics["history_reconciliation_error"] = {"code": exc.code}
+            generation.internal_diagnostics_json = diagnostics
+            generation.error_code = "history_reconciliation_failed"
+            generation.error_message = (
+                "ComfyUI returned execution state that could not be reconciled safely."
+            )
+            errors = list(generation.result_errors_json or [])
+            if not any(
+                isinstance(value, Mapping) and value.get("code") == generation.error_code
+                for value in errors
+            ):
+                errors.append(
+                    {
+                        "code": generation.error_code,
+                        "message": generation.error_message,
+                    }
+                )
+                generation.result_errors_json = errors
             event = add_generation_event(
                 session,
                 generation,
@@ -675,29 +843,74 @@ class QueueWorker:
                         generation.internal_diagnostics_json = diagnostics
                         session.commit()
 
-    async def _wait_for_history(self, prompt_id: str) -> dict[str, Any] | None:
-        for _ in range(20):
+    async def _wait_for_history(
+        self,
+        prompt_id: str,
+        *,
+        generation_id: str | None = None,
+        initial_history: dict[str, Any] | None = None,
+        raise_unreachable: bool = False,
+    ) -> dict[str, Any] | None:
+        grace = getattr(getattr(self, "settings", None), "reconciliation_grace_seconds", 1.0)
+        delay = min(0.1, max(0.01, grace))
+        maximum_delay = min(1.0, max(delay, grace))
+        latest_history = initial_history
+        recorded_error_codes: set[str] = set()
+        for attempt in range(12):
             try:
                 history = await self.comfyui.history(prompt_id)
                 if history is not None:
-                    return history
-            except httpx.HTTPError:
-                pass
-            await asyncio.sleep(0.25)
-        return None
+                    latest_history = history
+                    if _history_terminal(history):
+                        return history
+            except AppError as exc:
+                if generation_id is not None and exc.code not in recorded_error_codes:
+                    recorded_error_codes.add(exc.code)
+                    await self._record_reconciliation_error(generation_id, exc)
+            except (httpx.HTTPError, OSError):
+                if raise_unreachable:
+                    raise
+            if attempt < 11:
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.7, maximum_delay)
+        return latest_history
 
     async def _finalize(
         self, generation_id: str, *, history: Mapping[str, Any], outcome: str
     ) -> None:
-        outputs = history.get("outputs", {}) if isinstance(history, Mapping) else {}
-        if isinstance(outputs, Mapping):
-            for node_id, output in outputs.items():
-                if isinstance(output, Mapping):
-                    await self._process_node_output(generation_id, str(node_id), output)
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None or generation.status in TERMINAL_STATUSES:
                 return
+            contract = copy.deepcopy(generation.resolved_contract_json)
+            source_warnings = [str(value) for value in generation.result_warnings_json]
+        normalized = normalize_history(history, contract=contract, warnings=source_warnings)
+        for file_output in normalized.files:
+            await self._persist_native_file(generation_id, file_output)
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None or generation.status in TERMINAL_STATUSES:
+                return
+            generation.raw_history_json = copy.deepcopy(dict(history))
+            generation.declared_outputs_json = copy.deepcopy(normalized.declared_outputs)
+            generation.unmapped_outputs_json = copy.deepcopy(normalized.unmapped_outputs)
+            generation.comfyui_status_json = copy.deepcopy(normalized.status)
+            diagnostics = generation.internal_diagnostics_json or {}
+            provisional_error_codes = {"execution_failed", "history_reconciliation_failed"}
+            if outcome == "success" and generation.error_code in provisional_error_codes:
+                generation.error_code = None
+                generation.error_message = None
+            existing_errors = [
+                value
+                for value in (generation.result_errors_json or [])
+                if not (
+                    outcome == "success"
+                    and isinstance(value, Mapping)
+                    and value.get("code") in provisional_error_codes
+                )
+            ]
+            existing_errors.extend(copy.deepcopy(list(normalized.errors)))
+            generation.result_errors_json = existing_errors
             artifacts = list(
                 session.scalars(
                     select(Artifact)
@@ -705,37 +918,59 @@ class QueueWorker:
                     .order_by(Artifact.sequence.desc(), Artifact.batch_index)
                 )
             )
-            persistence_failures = generation.internal_diagnostics_json.get(
-                "artifact_persistence_failures", []
-            )
+            persistence_failures = diagnostics.get("artifact_persistence_failures", [])
+            persistence_warnings = diagnostics.get("artifact_persistence_warnings", [])
+            result_warnings: list[Any] = list(normalized.warnings)
+            if outcome == "success" and diagnostics.get("comfyui_execution_error"):
+                result_warnings.append(
+                    {
+                        "code": "websocket_outcome_overridden",
+                        "message": (
+                            "A WebSocket execution-error hint was superseded by authoritative "
+                            "successful ComfyUI history."
+                        ),
+                    }
+                )
+            if isinstance(persistence_warnings, list):
+                for failure in persistence_warnings:
+                    if not isinstance(failure, Mapping):
+                        continue
+                    warning = _optional_persistence_warning(failure)
+                    if warning not in result_warnings:
+                        result_warnings.append(warning)
+            generation.result_warnings_json = result_warnings
             if outcome == "success" and not persistence_failures:
-                canonical_ids = {
-                    str(item.get("id"))
-                    for item in generation.resolved_contract_json.get("outputs", [])
-                    if item.get("canonical_on_success")
-                }
-                canonical = [item for item in artifacts if item.output_id in canonical_ids]
-                if not canonical:
-                    outcome = "failed"
-                    generation.error_code = "output_missing"
-                    generation.error_message = "Workflow completed without its declared final output."
-                else:
-                    for artifact in artifacts:
-                        if artifact in canonical:
-                            artifact.state = ArtifactState.FINAL
-                            artifact.canonical = True
-                        elif artifact.state == ArtifactState.PROVISIONAL:
-                            artifact.state = ArtifactState.SUPERSEDED
-                        artifact.best_available = False
-                    canonical.sort(key=lambda item: item.batch_index)
-                    generation.canonical_artifact_id = canonical[0].id
-                    generation.best_available_artifact_id = canonical[0].id
-                    generation.final_artifact_count = len(canonical)
-                    generation.status = GenerationStatus.SUCCEEDED
+                declared_final = [item for item in artifacts if item.role == "final"]
+                declared_final.sort(key=lambda item: (item.sequence, item.batch_index))
+                presentation = (
+                    declared_final[0] if declared_final else _best_native_image(artifacts)
+                )
+                for artifact in artifacts:
+                    artifact.canonical = artifact in declared_final
+                    artifact.best_available = bool(presentation and artifact.id == presentation.id)
+                    if artifact in declared_final:
+                        artifact.state = ArtifactState.FINAL
+                    elif presentation and artifact.id == presentation.id:
+                        artifact.state = ArtifactState.BEST_AVAILABLE
+                    elif artifact.state == ArtifactState.PROVISIONAL:
+                        artifact.state = ArtifactState.SUPERSEDED
+                generation.canonical_artifact_id = declared_final[0].id if declared_final else None
+                generation.best_available_artifact_id = presentation.id if presentation else None
+                generation.final_artifact_count = len(declared_final)
+                generation.status = GenerationStatus.SUCCEEDED
             elif outcome == "success" and persistence_failures:
                 outcome = "failed"
                 generation.error_code = "artifact_persistence_failed"
-                generation.error_message = "ComfyUI completed, but one or more outputs could not be archived."
+                generation.error_message = (
+                    "ComfyUI completed, but one or more outputs could not be archived."
+                )
+                generation.result_errors_json = [
+                    *(generation.result_errors_json or []),
+                    {
+                        "code": generation.error_code,
+                        "message": generation.error_message,
+                    },
+                ]
 
             if outcome in {"cancelled", "failed", "interrupted"}:
                 cancelled = outcome == "cancelled" or (
@@ -747,7 +982,7 @@ class QueueWorker:
                     if item.kind == "image"
                     and (item.usable_on_cancel if cancelled else item.usable_on_failure)
                 ]
-                best = eligible[0] if eligible else None
+                best = _best_native_image(eligible)
                 for artifact in artifacts:
                     artifact.canonical = False
                     artifact.best_available = bool(best and artifact.id == best.id)
@@ -761,7 +996,7 @@ class QueueWorker:
                     generation.status = GenerationStatus.INTERRUPTED
                     generation.error_code = generation.error_code or "execution_interrupted"
                     generation.error_message = generation.error_message or (
-                        "Execution outcome could not be reconciled after restart."
+                        "Execution outcome could not be reconciled from ComfyUI history."
                     )
                 elif cancelled:
                     generation.status = (
@@ -779,6 +1014,17 @@ class QueueWorker:
                     generation.error_message = generation.error_message or (
                         "Workflow execution failed before a final image was archived."
                     )
+                if generation.error_code and not any(
+                    isinstance(value, Mapping) and value.get("code") == generation.error_code
+                    for value in generation.result_errors_json
+                ):
+                    generation.result_errors_json = [
+                        *(generation.result_errors_json or []),
+                        {
+                            "code": generation.error_code,
+                            "message": generation.error_message or "Generation did not complete.",
+                        },
+                    ]
             generation.completed_at = datetime.now(UTC)
             generation.current_stage_id = None
             generation.current_stage_label = None
@@ -853,8 +1099,14 @@ class QueueWorker:
             generation.error_message = getattr(
                 exc, "message", "The workflow could not be dispatched to ComfyUI."
             )
+            generation.result_errors_json = [
+                {"code": generation.error_code, "message": generation.error_message}
+            ]
             generation.completed_at = datetime.now(UTC)
-            generation.internal_diagnostics_json = {"exception_type": type(exc).__name__}
+            generation.internal_diagnostics_json = {
+                "exception_type": type(exc).__name__,
+                "queue_validation": copy.deepcopy(getattr(exc, "details", {})),
+            }
             event = add_generation_event(
                 session,
                 generation,
@@ -938,22 +1190,38 @@ class QueueWorker:
                 queued_ids = set()
             if prompt_id in queued_ids or not (history_reachable and queue_reachable):
                 self._active[generation_id] = asyncio.create_task(
-                    self._monitor(generation_id, prompt_id), name=f"generation-recovered-{generation_id}"
+                    self._monitor(generation_id, prompt_id),
+                    name=f"generation-recovered-{generation_id}",
                 )
                 continue
             await asyncio.sleep(self.settings.reconciliation_grace_seconds)
             try:
-                history = await self.comfyui.history(prompt_id)
-            except Exception:
+                history = await self._wait_for_history(
+                    prompt_id,
+                    generation_id=generation_id,
+                    initial_history=history,
+                    raise_unreachable=True,
+                )
+                queue = await self.comfyui.queue()
+                queued_ids = _collect_prompt_ids(queue)
+            except Exception as exc:
+                if isinstance(exc, AppError):
+                    await self._record_reconciliation_error(generation_id, exc)
                 # The service became unavailable during the grace period. Preserve the
                 # in-flight state and let the monitor reconcile after connectivity returns.
                 self._active[generation_id] = asyncio.create_task(
-                    self._monitor(generation_id, prompt_id), name=f"generation-recovered-{generation_id}"
+                    self._monitor(generation_id, prompt_id),
+                    name=f"generation-recovered-{generation_id}",
                 )
                 continue
             terminal = _history_terminal(history)
             if terminal:
                 await self._finalize(generation_id, history=history or {}, outcome=terminal)
+            elif prompt_id in queued_ids:
+                self._active[generation_id] = asyncio.create_task(
+                    self._monitor(generation_id, prompt_id),
+                    name=f"generation-recovered-{generation_id}",
+                )
             else:
                 await self._finalize(generation_id, history=history or {}, outcome="interrupted")
 
@@ -962,7 +1230,29 @@ class QueueWorker:
             comfy_available, comfy_message = await self.comfyui.health()
             ollama_available, ollama_message = await self.ollama.status()
             with self.session_factory() as session:
-                self._set_health(session, "comfyui", comfy_available, comfy_message)
+                previous_comfy = session.get(ServiceHealth, "comfyui")
+                catalog_state = (
+                    previous_comfy.capabilities_json.get("catalog_state")
+                    if previous_comfy
+                    else None
+                )
+                should_refresh_catalog = comfy_available and (
+                    previous_comfy is None
+                    or not previous_comfy.available
+                    or catalog_state in {"unavailable", "cached_offline"}
+                )
+            catalog_refreshed = False
+            if should_refresh_catalog:
+                try:
+                    await self.generations.registry.refresh()
+                    catalog_refreshed = True
+                except Exception:
+                    logger.exception("workflow_catalog_recovery_refresh_failed")
+                    comfy_available = False
+                    comfy_message = "ComfyUI source discovery failed during recovery."
+            with self.session_factory() as session:
+                if not catalog_refreshed:
+                    self._set_health(session, "comfyui", comfy_available, comfy_message)
                 self._set_health(session, "ollama", ollama_available, ollama_message)
                 session.commit()
             try:
@@ -973,9 +1263,7 @@ class QueueWorker:
                 continue
 
     @staticmethod
-    def _set_health(
-        session: Session, service: str, available: bool, message: str | None
-    ) -> None:
+    def _set_health(session: Session, service: str, available: bool, message: str | None) -> None:
         health = session.get(ServiceHealth, service)
         if health is None:
             health = ServiceHealth(service=service)
@@ -997,13 +1285,107 @@ def _history_terminal(history: Mapping[str, Any] | None) -> str | None:
         completed = bool(status.get("completed", False))
     else:
         return None
-    if not completed and status_text not in {"success", "error", "failed", "cancelled", "interrupted"}:
+    if history_status_indicates_interruption(status):
+        return "cancelled"
+    if not completed and status_text not in {
+        "success",
+        "error",
+        "failed",
+        "cancelled",
+        "canceled",
+        "interrupted",
+    }:
         return None
     if status_text in {"success", "completed"}:
         return "success"
     if status_text in {"cancelled", "canceled", "interrupted"}:
         return "cancelled"
     return "failed"
+
+
+def _persistence_failure_key(file_output: NativeFileOutput) -> dict[str, Any]:
+    return {
+        "output_id": file_output.output_id,
+        "node_id": file_output.node_id,
+        "batch_index": file_output.batch_index,
+        "filename": file_output.reference.get("filename"),
+        "subfolder": file_output.reference.get("subfolder", ""),
+        "type": file_output.reference.get("type", "output"),
+    }
+
+
+def _artifact_requires_persistence(file_output: NativeFileOutput) -> bool:
+    """Only a declared final file in durable ComfyUI storage is success-critical."""
+
+    return (
+        file_output.declared
+        and file_output.role == "final"
+        and file_output.reference.get("type", "output") in {"input", "output"}
+    )
+
+
+def _artifact_sequence(file_output: NativeFileOutput) -> int:
+    """Rank authored roles while retaining manifest declaration order within each role."""
+
+    role_rank = {
+        "unmapped": 0,
+        "auxiliary": 1,
+        "preview": 2,
+        "comparison": 3,
+        "final": 4,
+    }.get(file_output.role, 0)
+    return role_rank * 1_000 + max(0, file_output.sequence)
+
+
+def _is_better_presentation_candidate(candidate: Artifact, current: Artifact) -> bool:
+    """Advance to a later authored stage without replacing its stable batch-zero image."""
+
+    return candidate.sequence > current.sequence or (
+        candidate.sequence == current.sequence
+        and candidate.batch_index == 0
+        and current.batch_index != 0
+    )
+
+
+def _optional_persistence_warning(failure: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "code": "optional_artifact_unavailable",
+        "message": (
+            "An optional ComfyUI file could not be archived; its native reference remains "
+            "available in the result history."
+        ),
+        "output_id": failure.get("output_id"),
+        "node_id": failure.get("node_id"),
+        "reference": {
+            "filename": failure.get("filename"),
+            "subfolder": failure.get("subfolder", ""),
+            "type": failure.get("type", "output"),
+        },
+    }
+
+
+def _best_native_image(artifacts: list[Artifact]) -> Artifact | None:
+    """Prefer authored roles and durable files while keeping batch zero presentation-stable."""
+
+    images = [artifact for artifact in artifacts if artifact.kind == "image"]
+    if not images:
+        return None
+
+    def emitted_score(artifact: Artifact) -> float:
+        return artifact.emitted_at.timestamp() if artifact.emitted_at else 0.0
+
+    role_rank = {"unmapped": 0, "auxiliary": 1, "preview": 2, "comparison": 3, "final": 4}
+    storage_rank = {"temp": 0, "input": 1, "output": 2}
+    return max(
+        images,
+        key=lambda artifact: (
+            role_rank.get(artifact.role, 0),
+            storage_rank.get(artifact.source_type or "", 0),
+            artifact.sequence,
+            artifact.batch_index == 0,
+            emitted_score(artifact),
+        ),
+    )
 
 
 def _collect_prompt_ids(value: Any) -> set[str]:

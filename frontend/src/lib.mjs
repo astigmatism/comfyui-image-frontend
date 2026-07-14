@@ -7,6 +7,27 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+export function createLatestRequestGate() {
+  let sequence = 0;
+  const latest = new Map();
+  return {
+    issue(key) {
+      const token = ++sequence;
+      latest.set(key, token);
+      return token;
+    },
+    isCurrent(key, token) {
+      return latest.get(key) === token;
+    },
+    invalidate(key) {
+      latest.set(key, ++sequence);
+    },
+    clear() {
+      latest.clear();
+    },
+  };
+}
+
 export function scaleToLayout(value) {
   const normalized = Math.max(0, Math.min(100, Number(value) || 0));
   if (normalized >= 96) return { full: true, cardWidth: 1200 };
@@ -132,20 +153,114 @@ export function controlPresentation(control, values, capabilityStates = {}) {
   };
 }
 
-export function defaultsForContract(contract) {
+export function interfaceInputs(contract) {
+  const inputs = contract?.inputs || contract?.controls || [];
+  return Array.isArray(inputs) ? inputs.filter((item) => item && typeof item === "object") : [];
+}
+
+export function isAdvancedInput(input) {
+  return input?.advanced === true || input?.tier === "advanced";
+}
+
+export function sortInterfaceInputs(inputs) {
+  return [...(inputs || [])].sort((first, second) => {
+    const tier = Number(isAdvancedInput(first)) - Number(isAdvancedInput(second));
+    if (tier) return tier;
+    const firstOrder = Number.isFinite(Number(first?.order)) ? Number(first.order) : Number.MAX_SAFE_INTEGER;
+    const secondOrder = Number.isFinite(Number(second?.order)) ? Number(second.order) : Number.MAX_SAFE_INTEGER;
+    if (firstOrder !== secondOrder) return firstOrder - secondOrder;
+    const group = compareText(String(first?.group || ""), String(second?.group || ""));
+    if (group) return group;
+    return compareText(String(first?.id || ""), String(second?.id || ""));
+  });
+}
+
+function compareText(first, second) {
+  if (first === second) return 0;
+  return first < second ? -1 : 1;
+}
+
+export function positivePromptInput(contract) {
+  return interfaceInputs(contract).find((input) => input.semantic_role === "positive_prompt") || null;
+}
+
+function inputConstraint(input, name) {
+  return input?.[name] ?? input?.constraints?.[name];
+}
+
+function fixedSeedFallback(input) {
+  const declaredDefault = input?.default;
+  if (declaredDefault !== undefined && declaredDefault !== null && declaredDefault !== "random") {
+    return String(declaredDefault);
+  }
+  return String(inputConstraint(input, "minimum") ?? 0);
+}
+
+export function seedAllowsRandom(input) {
+  if (input?.default_mode === "random") return true;
+  if (input?.default_mode === "fixed") return false;
+  return input?.default === undefined || input?.default === null || input?.default === "random";
+}
+
+export function seedFormValue(input, value = undefined) {
+  const fallback = fixedSeedFallback(input);
+  const allowsRandom = seedAllowsRandom(input);
+  if (value && typeof value === "object") {
+    const requestedFixed = value.mode === "fixed";
+    return {
+      mode: allowsRandom && !requestedFixed ? "random" : "fixed",
+      value: String(!allowsRandom && !requestedFixed ? fallback : (value.value ?? fallback)),
+    };
+  }
+  if (!allowsRandom && (value === undefined || value === null || value === "" || value === "random")) {
+    return { mode: "fixed", value: fallback };
+  }
+  const random =
+    allowsRandom &&
+    (value === "random" || value === null || value === "" || value === undefined);
+  return { mode: random ? "random" : "fixed", value: random ? fallback : String(value) };
+}
+
+export function defaultsForInterface(contract) {
   const values = {};
-  for (const control of contract?.controls || []) {
-    if (Object.hasOwn(control, "default")) values[control.id] = structuredClone(control.default);
+  for (const input of interfaceInputs(contract)) {
+    if (input.type === "seed") {
+      values[input.id] = seedFormValue(input);
+    } else if (Object.hasOwn(input, "default")) {
+      values[input.id] = structuredClone(input.default);
+    }
   }
   return values;
 }
 
+export function defaultsForContract(contract) {
+  return defaultsForInterface(contract);
+}
+
+export function reconcileInterfaceValues(contract, values = {}, previousContract = null) {
+  const result = defaultsForInterface(contract);
+  const previousInputs = new Map(interfaceInputs(previousContract).map((input) => [input.id, input]));
+  for (const input of interfaceInputs(contract)) {
+    if (!Object.hasOwn(values, input.id)) continue;
+    const previous = previousInputs.get(input.id);
+    if (previousContract && (!previous || previous.type !== input.type)) continue;
+    result[input.id] =
+      input.type === "seed" ? seedFormValue(input, values[input.id]) : structuredClone(values[input.id]);
+  }
+  return result;
+}
+
 export function overwriteWithRecall(current, recall) {
+  const sourceKey = recall.source_key ?? recall.profile_id;
+  const parameters = structuredClone(recall.parameters || recall.controls || {});
   return {
     ...current,
-    activeProfileId: recall.profile_id,
-    controls: structuredClone(recall.controls || {}),
-    recallIdentity: structuredClone(recall.identity || null),
+    activeSourceKey: sourceKey,
+    activeProfileId: sourceKey,
+    parameters,
+    controls: structuredClone(parameters),
+    selectedRevision: structuredClone(recall.revision || recall.identity || null),
+    recallIdentity: structuredClone(recall.revision || recall.identity || null),
     compositionId: null,
     promptAssistant: {
       ...(current.promptAssistant || {}),
@@ -160,15 +275,62 @@ export function overwriteWithRecall(current, recall) {
 
 export function normalizeInputValue(control, raw) {
   switch (control.type) {
-    case "integer":
-      return raw === "" ? null : Number.parseInt(raw, 10);
+    case "integer": {
+      if (raw === "") return null;
+      const parsed = Number(raw);
+      return Number.isSafeInteger(parsed) ? parsed : raw;
+    }
     case "number":
-      return raw === "" ? null : Number.parseFloat(raw);
+      return raw === "" ? null : Number(raw);
     case "boolean":
       return Boolean(raw);
     default:
       return raw;
   }
+}
+
+function decimalInteger(value) {
+  const text = String(value ?? "").trim();
+  if (!/^-?\d+$/.test(text)) return null;
+  try {
+    return { text, number: BigInt(text) };
+  } catch {
+    return null;
+  }
+}
+
+function seedParts(input, value) {
+  const state = seedFormValue(input, value);
+  return { random: state.mode === "random", value: state.value.trim() };
+}
+
+export function parametersForRequest(contract, values) {
+  const parameters = {};
+  for (const input of interfaceInputs(contract)) {
+    if (!Object.hasOwn(values || {}, input.id)) continue;
+    const value = values[input.id];
+    if (input.type === "seed") {
+      const seed = seedParts(input, value);
+      if (seed.random) {
+        if (input.required) parameters[input.id] = "random";
+        continue;
+      }
+      if (!seed.value) continue;
+      const parsed = decimalInteger(seed.value);
+      parameters[input.id] = parsed ? parsed.number.toString() : seed.value;
+    } else if (value !== undefined && value !== null) {
+      parameters[input.id] = structuredClone(value);
+    }
+  }
+  return parameters;
+}
+
+function numericStepMatches(value, minimum, step) {
+  const numericStep = Number(step);
+  if (!Number.isFinite(numericStep) || numericStep <= 0) return true;
+  const base = Number.isFinite(Number(minimum)) ? Number(minimum) : 0;
+  const quotient = (value - base) / numericStep;
+  return Math.abs(quotient - Math.round(quotient)) <= 1e-9 * Math.max(1, Math.abs(quotient));
 }
 
 export function resolutionConstraints(control) {
@@ -238,28 +400,54 @@ function greatestCommonDivisor(first, second) {
 export function clientValidate(contract, values) {
   const errors = {};
   const capabilities = contract?.capability_states || {};
-  for (const control of contract?.controls || []) {
+  for (const control of interfaceInputs(contract)) {
     const presentation = controlPresentation(control, values, capabilities);
     if (!presentation.visible || !presentation.enabled || presentation.forbidden) continue;
     const value = values[control.id];
-    if (presentation.required && (value === undefined || value === null || value === "")) {
+    if (
+      control.type !== "seed" &&
+      presentation.required &&
+      (value === undefined || value === null || value === "")
+    ) {
       errors[control.id] = "Required.";
       continue;
     }
     if (value === undefined || value === null || value === "") continue;
-    const constraints = control.constraints || {};
+    const minimum = inputConstraint(control, "minimum");
+    const maximum = inputConstraint(control, "maximum");
+    const step = inputConstraint(control, "step");
+    if (control.type === "integer" && !Number.isSafeInteger(value)) {
+      errors[control.id] = "Enter a safe whole number.";
+      continue;
+    }
     if (["integer", "number"].includes(control.type)) {
-      if (!Number.isFinite(value)) errors[control.id] = "Enter a valid number.";
-      if (constraints.minimum !== undefined && value < constraints.minimum)
-        errors[control.id] = `Minimum ${constraints.minimum}.`;
-      if (constraints.maximum !== undefined && value > constraints.maximum)
-        errors[control.id] = `Maximum ${constraints.maximum}.`;
+      if (!Number.isFinite(value)) {
+        errors[control.id] = "Enter a valid number.";
+        continue;
+      }
+      if (minimum !== undefined && value < Number(minimum)) errors[control.id] = `Minimum ${minimum}.`;
+      else if (maximum !== undefined && value > Number(maximum)) errors[control.id] = `Maximum ${maximum}.`;
+      else if (!numericStepMatches(value, minimum, step)) errors[control.id] = `Use increments of ${step}.`;
     }
     if (["string", "multiline_string"].includes(control.type)) {
+      const constraints = control.constraints || {};
       if (constraints.minimum_length && value.length < constraints.minimum_length)
         errors[control.id] = `Use at least ${constraints.minimum_length} characters.`;
       if (constraints.maximum_length && value.length > constraints.maximum_length)
         errors[control.id] = `Use at most ${constraints.maximum_length} characters.`;
+    }
+    if (control.type === "seed") {
+      const seed = seedParts(control, value);
+      if (seed.random) continue;
+      const parsed = decimalInteger(seed.value);
+      if (!parsed) {
+        errors[control.id] = "Enter a whole-number seed.";
+        continue;
+      }
+      const minimumSeed = minimum === undefined ? null : decimalInteger(minimum);
+      const maximumSeed = maximum === undefined ? null : decimalInteger(maximum);
+      if (minimumSeed && parsed.number < minimumSeed.number) errors[control.id] = `Minimum ${minimum}.`;
+      else if (maximumSeed && parsed.number > maximumSeed.number) errors[control.id] = `Maximum ${maximum}.`;
     }
     if (control.type === "resolution") {
       const width = Number(value?.width);

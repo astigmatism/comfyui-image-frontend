@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class APIModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
 class ErrorBody(APIModel):
@@ -72,31 +72,70 @@ class WorkflowIdentity(APIModel):
     contract_sha256: str
 
 
-class WorkflowSummary(WorkflowIdentity):
-    profile_id: str
+class SourceRevision(APIModel):
+    publication_id: str
+    workflow_sha256: str
+    api_sha256: str
+    manifest_sha256: str
+
+
+class WorkflowSummary(APIModel):
+    source_key: str
     display_name: str
-    contract_schema_version: str
-    adapter_version: str
-    capabilities: dict[str, Any] = Field(default_factory=dict)
+    instance_id: str
+    readiness: str
+    available: bool
+    cached: bool
+    message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    revision: SourceRevision
+    profile_id: str | None = None
+    workflow_id: str | None = None
+    workflow_version: str | None = None
+    ui_graph_sha256: str | None = None
+    api_graph_sha256: str | None = None
+    contract_sha256: str | None = None
+    contract_schema_version: str | None = None
+    adapter_version: str | None = None
 
 
 class WorkflowDetail(WorkflowSummary):
-    contract: dict[str, Any]
+    interface: dict[str, Any]
 
 
 class GenerationCreate(APIModel):
-    profile_id: str
-    controls: dict[str, Any]
+    source_key: str | None = None
+    parameters: dict[str, Any] | None = None
+    revision: SourceRevision | None = None
+    prompt_assistant_run_id: str | None = None
+
+    # Temporary compatibility envelope for the pre-publication browser/API. It resolves only to
+    # a current validated publication and never revives embedded-contract discovery.
+    profile_id: str | None = None
+    controls: dict[str, Any] | None = None
     preset_id: str | None = None
     requested_outputs: list[str] = Field(default_factory=list)
-    prompt_assistant_run_id: str | None = None
     expected_identity: WorkflowIdentity | None = None
+
+    @model_validator(mode="after")
+    def validate_request_shape(self) -> GenerationCreate:
+        if not self.source_key and not self.profile_id:
+            raise ValueError("source_key is required")
+        if self.source_key and self.profile_id:
+            raise ValueError("send source_key, not both source_key and legacy profile_id")
+        if self.parameters is not None and self.controls is not None:
+            raise ValueError("send parameters, not both parameters and legacy controls")
+        return self
+
+    @property
+    def public_parameters(self) -> dict[str, Any]:
+        return self.parameters if self.parameters is not None else (self.controls or {})
 
 
 class ValidationResult(APIModel):
     valid: bool
-    effective_controls: dict[str, Any] = Field(default_factory=dict)
-    resolved_seeds: dict[str, int] = Field(default_factory=dict)
+    effective_parameters: dict[str, Any] = Field(default_factory=dict)
+    resolved_seeds: dict[str, str] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
     compiled_graph_sha256: str | None = None
 
@@ -118,6 +157,28 @@ class ArtifactSummary(APIModel):
     available_at: datetime
 
 
+class DeclaredArtifactReference(APIModel):
+    batch_index: int = Field(ge=0)
+    filename: str | None = None
+    subfolder: str = ""
+    type: Literal["input", "output", "temp"] = "output"
+    artifact: ArtifactSummary | None = None
+
+
+class DeclaredOutputSummary(APIModel):
+    schema_version: str | None = None
+    id: str
+    output_id: str
+    # Stored pre-publication rows may contain historical role/kind values; new discovery emits
+    # only the strict image-role vocabulary enforced by publication validation.
+    role: str
+    kind: str
+    label: str | None = None
+    cardinality: str
+    description: str
+    artifacts: list[DeclaredArtifactReference] = Field(default_factory=list)
+
+
 class GenerationSummary(APIModel):
     id: str
     status: str
@@ -126,6 +187,7 @@ class GenerationSummary(APIModel):
     current_stage_id: str | None = None
     current_stage_label: str | None = None
     artifact_count: int
+    image_count: int
     final_artifact_count: int
     best_available_artifact_id: str | None = None
     canonical_artifact_id: str | None = None
@@ -137,6 +199,9 @@ class GenerationSummary(APIModel):
     recall_unavailable_reason: str | None = None
     is_favorite: bool = False
     cancel_allowed: bool = False
+    prompt_id: str | None = None
+    source_key: str | None = None
+    publication_id: str | None = None
 
 
 class GenerationPage(APIModel):
@@ -146,11 +211,20 @@ class GenerationPage(APIModel):
 
 class GenerationDetail(GenerationSummary):
     workflow: WorkflowIdentity
+    generation_source: dict[str, Any] = Field(default_factory=dict)
     requested_controls: dict[str, Any]
     effective_controls: dict[str, Any]
-    resolved_seeds: dict[str, int]
+    requested_parameters: dict[str, Any] = Field(default_factory=dict)
+    effective_parameters: dict[str, Any] = Field(default_factory=dict)
+    resolved_seeds: dict[str, str]
     final_prompt: str
     artifacts: list[ArtifactSummary]
+    declared_outputs: list[DeclaredOutputSummary] = Field(default_factory=list)
+    unmapped_outputs: dict[str, Any] = Field(default_factory=dict)
+    raw_history: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[Any] = Field(default_factory=list)
+    errors: list[Any] = Field(default_factory=list)
+    comfyui_status: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]]
     error_code: str | None = None
     delete_pending: bool
@@ -162,6 +236,9 @@ class RecallResponse(APIModel):
     profile_id: str | None = None
     identity: WorkflowIdentity | None = None
     controls: dict[str, Any] = Field(default_factory=dict)
+    source_key: str | None = None
+    revision: SourceRevision | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
     prompt_assistant: dict[str, Any] | None = None
 
 
@@ -212,6 +289,7 @@ class AdminDiagnostic(APIModel):
     workflow_version: str | None
     code: str
     message: str
+    details: dict[str, Any] = Field(default_factory=dict)
     checked_at: datetime
 
 

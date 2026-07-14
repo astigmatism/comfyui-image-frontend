@@ -7,471 +7,32 @@ import socket
 import threading
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
 from urllib.parse import unquote
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import JSONResponse, Response
 from PIL import Image, ImageDraw
 
-from app.domain.contract import extract_manifest, normalized_ui_hash, sha256_json
+from tests.publication_fixtures import build_publication_files, object_info_fixture
 
 
-def object_info_fixture() -> dict[str, Any]:
-    return {
-        "PromptNode": {
-            "input": {"required": {"text": ["STRING", {"multiline": True}]}}
-        },
-        "SeedNode": {"input": {"required": {"seed": ["INT", {"min": 0}]}}},
-        "NumberNode": {
-            "input": {"required": {"steps": ["INT", {"min": 1, "max": 50}]}}
-        },
-        "ImageNode": {
-            "input": {
-                "required": {
-                    "prompt": ["STRING"],
-                    "seed": ["INT"],
-                    "width": ["INT"],
-                    "height": ["INT"],
-                    "enabled": ["BOOLEAN"],
-                }
-            }
-        },
-        "LoadImage": {
-            "input": {"required": {"image": ["STRING"]}}
-        },
-        "ModelLoader": {
-            "input": {
-                "required": {
-                    "model_name": [["models/fake.safetensors", "models/other.safetensors"]]
-                }
-            }
-        },
-    }
+def build_workflow_files() -> dict[str, bytes]:
+    """Compatibility name retained for integration tests that mutate the fake catalog."""
 
-
-def _selector(node_id: str, class_type: str, title: str, *expected: str) -> dict[str, Any]:
-    return {
-        "node_id": node_id,
-        "class_type": class_type,
-        "title": title,
-        "expected_inputs": list(expected),
-    }
-
-
-def build_valid_workflow_pair(
-    *,
-    workflow_id: str = "fake-progressive-v1",
-    version: str = "1.0.0",
-    display_name: str = "Fake Progressive Workflow",
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    graph: dict[str, Any] = {
-        "1": {
-            "class_type": "PromptNode",
-            "inputs": {"text": ""},
-            "_meta": {"title": "Prompt Input"},
-        },
-        "2": {
-            "class_type": "SeedNode",
-            "inputs": {"seed": 0},
-            "_meta": {"title": "Generation Seed"},
-        },
-        "3": {
-            "class_type": "NumberNode",
-            "inputs": {"steps": 8},
-            "_meta": {"title": "Sampling Steps"},
-        },
-        "4": {
-            "class_type": "ImageNode",
-            "inputs": {
-                "prompt": ["1", 0],
-                "seed": ["2", 0],
-                "width": 512,
-                "height": 512,
-                "enabled": True,
-            },
-            "_meta": {"title": "Base Artifact"},
-        },
-        "5": {
-            "class_type": "ImageNode",
-            "inputs": {
-                "prompt": ["1", 0],
-                "seed": ["2", 0],
-                "width": 512,
-                "height": 512,
-                "enabled": True,
-            },
-            "_meta": {"title": "Final Artifact"},
-        },
-        "6": {
-            "class_type": "LoadImage",
-            "inputs": {"image": ""},
-            "_meta": {"title": "Reference Image"},
-        },
-        "7": {
-            "class_type": "ModelLoader",
-            "inputs": {"model_name": "models/fake.safetensors"},
-            "_meta": {"title": "Approved Model"},
-        },
-    }
-    api_document = copy.deepcopy(graph)
-    manifest: dict[str, Any] = {
-        "kind": "comfyui.frontend.workflow-contract",
-        "contract_schema_version": "1.1.0",
-        "workflow": {
-            "id": workflow_id,
-            "display_name": display_name,
-            "version": version,
-            "description": "Deterministic progressive integration fixture.",
-            "ui_graph_sha256": "0" * 64,
-            "api_graph_sha256": sha256_json(api_document),
-            "adapter_version": "1.0.0",
-        },
-        "presentation": {"groups": [{"id": "sampling", "label": "Sampling"}]},
-        "requirements": {
-            "node_classes": [
-                {"class_type": name, "required": True}
-                for name in ("PromptNode", "SeedNode", "NumberNode", "ImageNode", "LoadImage", "ModelLoader")
-            ],
-            "assets": [
-                {
-                    "id": "fake-model",
-                    "kind": "checkpoint",
-                    "path": "models/fake.safetensors",
-                    "required": True,
-                }
-            ],
-            "runtime": {"features": []},
-        },
-        "controls": [
-            {
-                "id": "prompt.text",
-                "label": "Prompt",
-                "description": "The exact prompt submitted to the workflow.",
-                "group": "prompt",
-                "order": 10,
-                "type": "multiline_string",
-                "default": "",
-                "required": True,
-                "tier": "basic",
-                "constraints": {"maximum_length": 4000},
-                "bindings": [
-                    {
-                        "strategy": "patch_input",
-                        "selector": _selector("1", "PromptNode", "Prompt Input", "text"),
-                        "input": "text",
-                    }
-                ],
-            },
-            {
-                "id": "generation.seed",
-                "label": "Seed",
-                "group": "sampling",
-                "order": 20,
-                "type": "seed",
-                "default": "random",
-                "tier": "basic",
-                "constraints": {"minimum": 0, "maximum": 2**31 - 1},
-                "bindings": [
-                    {
-                        "strategy": "patch_input",
-                        "selector": _selector("2", "SeedNode", "Generation Seed", "seed"),
-                        "input": "seed",
-                    }
-                ],
-            },
-            {
-                "id": "size.resolution",
-                "label": "Resolution",
-                "group": "size",
-                "order": 30,
-                "type": "resolution",
-                "default": {"width": 512, "height": 512},
-                "required": True,
-                "tier": "basic",
-                "constraints": {
-                    "minimum_width": 64,
-                    "maximum_width": 2048,
-                    "minimum_height": 64,
-                    "maximum_height": 2048,
-                    "multiple": 8,
-                },
-                "bindings": [
-                    {
-                        "strategy": "derive",
-                        "targets": [
-                            {
-                                "component": "width",
-                                "selector": _selector("4", "ImageNode", "Base Artifact", "width"),
-                                "input": "width",
-                            },
-                            {
-                                "component": "height",
-                                "selector": _selector("4", "ImageNode", "Base Artifact", "height"),
-                                "input": "height",
-                            },
-                            {
-                                "component": "width",
-                                "selector": _selector("5", "ImageNode", "Final Artifact", "width"),
-                                "input": "width",
-                            },
-                            {
-                                "component": "height",
-                                "selector": _selector("5", "ImageNode", "Final Artifact", "height"),
-                                "input": "height",
-                            },
-                        ],
-                    }
-                ],
-            },
-            {
-                "id": "post.enabled",
-                "label": "Final processing",
-                "group": "post",
-                "order": 40,
-                "type": "boolean",
-                "default": True,
-                "tier": "basic",
-                "bindings": [{"strategy": "select_branch", "branch_id": "postprocess"}],
-            },
-            {
-                "id": "sampling.steps",
-                "label": "Steps",
-                "group": "sampling",
-                "order": 50,
-                "type": "integer",
-                "default": 8,
-                "tier": "advanced",
-                "constraints": {"minimum": 1, "maximum": 50, "step": 1},
-                "bindings": [
-                    {
-                        "strategy": "patch_input",
-                        "selector": _selector("3", "NumberNode", "Sampling Steps", "steps"),
-                        "input": "steps",
-                    }
-                ],
-            },
-            {
-                "id": "source.image",
-                "label": "Reference image",
-                "group": "reference",
-                "order": 60,
-                "type": "image_upload",
-                "default": None,
-                "required": False,
-                "tier": "advanced",
-                "bindings": [
-                    {
-                        "strategy": "upload_then_patch",
-                        "upload_kind": "image",
-                        "selector": _selector("6", "LoadImage", "Reference Image", "image"),
-                        "input": "image",
-                    }
-                ],
-            },
-            {
-                "id": "model.asset",
-                "label": "Model",
-                "group": "sampling",
-                "order": 70,
-                "type": "asset_selector",
-                "default": "models/fake.safetensors",
-                "tier": "advanced",
-                "options": {"values": ["models/fake.safetensors"]},
-                "bindings": [
-                    {
-                        "strategy": "patch_input",
-                        "selector": _selector("7", "ModelLoader", "Approved Model", "model_name"),
-                        "input": "model_name",
-                    }
-                ],
-            },
-        ],
-        "branches": [
-            {
-                "id": "postprocess",
-                "label": "Final processing",
-                "default_enabled": True,
-                "strategy": "graph_transform",
-                "transforms": {
-                    "enable": [
-                        {
-                            "op": "set_input",
-                            "selector": _selector("5", "ImageNode", "Final Artifact", "enabled"),
-                            "input": "enabled",
-                            "value": True,
-                        }
-                    ],
-                    "disable": [
-                        {
-                            "op": "set_input",
-                            "selector": _selector("5", "ImageNode", "Final Artifact", "enabled"),
-                            "input": "enabled",
-                            "value": False,
-                        }
-                    ],
-                },
-                "invariants": ["base_output_remains_available"],
-            }
-        ],
-        "stages": [
-            {
-                "id": "base_generation",
-                "label": "Creating base image",
-                "sequence": 30,
-                "node_selectors": [_selector("4", "ImageNode", "Base Artifact")],
-                "emits_output_ids": ["base_image"],
-                "cancellable_after_emission": True,
-            },
-            {
-                "id": "final_processing",
-                "label": "Finishing image",
-                "sequence": 90,
-                "node_selectors": [_selector("5", "ImageNode", "Final Artifact")],
-                "emits_output_ids": ["final_image"],
-                "terminal": True,
-            },
-        ],
-        "outputs": [
-            {
-                "id": "base_image",
-                "role": "image.base",
-                "kind": "image",
-                "selector": _selector("4", "ImageNode", "Base Artifact"),
-                "history_field": "images",
-                "availability": "on_node_execution",
-                "temporary": True,
-                "durable": False,
-                "canonical_on_success": False,
-                "usable_on_cancel": True,
-                "usable_on_failure": True,
-                "persist_on_cancel": True,
-                "progression": {"sequence": 30, "quality_tier": "base"},
-                "presentation": {"auto_render": True, "label": "Base image"},
-                "batch_semantics": "one_per_batch_item",
-            },
-            {
-                "id": "final_image",
-                "role": "image.final",
-                "kind": "image",
-                "selector": _selector("5", "ImageNode", "Final Artifact"),
-                "history_field": "images",
-                "availability": "on_node_execution",
-                "durable": True,
-                "temporary": False,
-                "canonical_on_success": True,
-                "usable_on_cancel": False,
-                "usable_on_failure": False,
-                "progression": {
-                    "sequence": 90,
-                    "quality_tier": "final",
-                    "supersedes": ["base_image"],
-                },
-                "presentation": {"auto_render": True, "label": "Final image"},
-                "batch_semantics": "one_per_batch_item",
-            },
-        ],
-        "progression": {
-            "enabled": True,
-            "ordered_output_ids": ["base_image", "final_image"],
-            "continue_automatically": True,
-            "terminal_output_id": "final_image",
-            "on_cancel": {
-                "retain_available_outputs": True,
-                "best_available_strategy": "highest_sequence_usable_on_cancel",
-                "promote_to_canonical": False,
-            },
-            "on_failure": {
-                "retain_available_outputs": True,
-                "best_available_strategy": "highest_sequence_usable_on_failure",
-            },
-        },
-        "presets": [
-            {
-                "id": "quick",
-                "label": "Quick",
-                "values": {"sampling.steps": 4, "size.resolution": {"width": 384, "height": 384}},
-            }
-        ],
-        "policies": {"maximum_initial_pixels": 4_194_304},
-        "extensions": {},
-    }
-    ui_document: dict[str, Any] = {
-        "last_node_id": 100,
-        "last_link_id": 0,
-        "nodes": [
-            {
-                "id": 100,
-                "type": "FrontendWorkflowContract",
-                "pos": [0, 0],
-                "size": [480, 320],
-                "flags": {},
-                "order": 0,
-                "mode": 0,
-                "properties": {"manifest": manifest},
-            }
-        ],
-        "links": [],
-        "groups": [],
-        "config": {},
-        "extra": {},
-        "version": 0.4,
-    }
-    _, location = extract_manifest(ui_document)
-    manifest["workflow"]["ui_graph_sha256"] = normalized_ui_hash(ui_document, location)
-    return ui_document, api_document
-
-
-def build_workflow_files() -> dict[str, dict[str, Any]]:
-    valid_ui, valid_api = build_valid_workflow_pair()
-
-    mismatch_ui = copy.deepcopy(valid_ui)
-    mismatch_manifest = mismatch_ui["nodes"][0]["properties"]["manifest"]
-    mismatch_manifest["workflow"]["id"] = "hash-mismatch"
-    mismatch_manifest["workflow"]["display_name"] = "Hash Mismatch"
-    mismatch_manifest["workflow"]["api_graph_sha256"] = "f" * 64
-    # Keep the UI hash valid after changing the embedded manifest so rejection is specifically API hash.
-    _, mismatch_location = extract_manifest(mismatch_ui)
-    mismatch_manifest["workflow"]["ui_graph_sha256"] = normalized_ui_hash(
-        mismatch_ui, mismatch_location
-    )
-
-    invalid_binding_ui = copy.deepcopy(valid_ui)
-    invalid_binding_manifest = invalid_binding_ui["nodes"][0]["properties"]["manifest"]
-    _, invalid_location = extract_manifest(invalid_binding_ui)
-    invalid_binding_manifest["workflow"]["id"] = "invalid-binding"
-    invalid_binding_manifest["workflow"]["display_name"] = "Invalid Binding"
-    invalid_binding_manifest["controls"][0]["bindings"][0]["input"] = "missing_input"
-    invalid_binding_manifest["workflow"]["ui_graph_sha256"] = normalized_ui_hash(
-        invalid_binding_ui, invalid_location
-    )
-
-    missing_dependency_ui = copy.deepcopy(valid_ui)
-    missing_manifest = missing_dependency_ui["nodes"][0]["properties"]["manifest"]
-    _, missing_location = extract_manifest(missing_dependency_ui)
-    missing_manifest["workflow"]["id"] = "missing-dependency"
-    missing_manifest["workflow"]["display_name"] = "Missing Dependency"
-    missing_manifest["requirements"]["node_classes"].append(
-        {"class_type": "DefinitelyMissingNode", "required": True}
-    )
-    missing_manifest["workflow"]["ui_graph_sha256"] = normalized_ui_hash(
-        missing_dependency_ui, missing_location
-    )
-
-    return {
-        "profiles/progressive.workflow.json": valid_ui,
-        "profiles/progressive.api.json": valid_api,
-        "profiles/incomplete.workflow.json": copy.deepcopy(valid_ui),
-        "profiles/hash-mismatch.workflow.json": mismatch_ui,
-        "profiles/hash-mismatch.api.json": copy.deepcopy(valid_api),
-        "profiles/invalid-binding.workflow.json": invalid_binding_ui,
-        "profiles/invalid-binding.api.json": copy.deepcopy(valid_api),
-        "profiles/missing-dependency.workflow.json": missing_dependency_ui,
-        "profiles/missing-dependency.api.json": copy.deepcopy(valid_api),
-    }
+    return build_publication_files(include_generic=True)
 
 
 def make_png(label: str, *, width: int = 96, height: int = 72) -> bytes:
@@ -484,18 +45,51 @@ def make_png(label: str, *, width: int = 96, height: int = 72) -> bytes:
     return buffer.getvalue()
 
 
+def _node_value(graph: dict[str, Any], class_type: str, default: Any = None) -> Any:
+    for node in graph.values():
+        if isinstance(node, dict) and node.get("class_type") == class_type:
+            inputs = node.get("inputs", {})
+            if isinstance(inputs, dict) and "value" in inputs:
+                return inputs["value"]
+    return default
+
+
+def _first_node_id(graph: dict[str, Any], class_type: str, default: str) -> str:
+    for node_id, node in graph.items():
+        if isinstance(node, dict) and node.get("class_type") == class_type:
+            return str(node_id)
+    return default
+
+
+def _nodes(graph: dict[str, Any], class_type: str) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (str(node_id), node)
+        for node_id, node in graph.items()
+        if isinstance(node, dict) and node.get("class_type") == class_type
+    ]
+
+
 @dataclass
 class FakeServiceState:
-    workflow_files: dict[str, dict[str, Any]] = field(default_factory=build_workflow_files)
+    workflow_files: dict[str, bytes] = field(default_factory=build_workflow_files)
     object_info: dict[str, Any] = field(default_factory=object_info_fixture)
     service_available: bool = True
     ollama_available: bool = True
     reject_prompts: bool = False
     fail_retrieval: bool = False
+    retrieval_failure_substrings: set[str] = field(default_factory=set)
+    retrieval_failures_remaining: int = 0
     disconnect_websocket: bool = False
     default_stage_delay: float = 0.08
+    listing_mode: str = "v2"
+    history_delay_polls: int = 0
+    hide_history: bool = False
+    force_nonterminal_history: bool = False
+    emit_cached_only: bool = False
+    terminal_event_type: str | None = None
     models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest"])
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
+    history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
     running_prompt_ids: set[str] = field(default_factory=set)
     queued_prompt_ids: set[str] = field(default_factory=set)
@@ -506,15 +100,28 @@ class FakeServiceState:
     submitted: list[dict[str, Any]] = field(default_factory=list)
     ollama_calls: list[dict[str, Any]] = field(default_factory=list)
     uploaded: list[str] = field(default_factory=list)
-    _lock: asyncio.Lock | None = None
+    comfy_user_headers: list[tuple[str, str | None]] = field(default_factory=list)
+    userdata_raw_paths: list[bytes] = field(default_factory=list)
+    background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
     def reset_runtime(self) -> None:
+        self.workflow_files = build_workflow_files()
+        self.object_info = object_info_fixture()
         self.service_available = True
         self.ollama_available = True
         self.reject_prompts = False
         self.fail_retrieval = False
+        self.retrieval_failure_substrings.clear()
+        self.retrieval_failures_remaining = 0
         self.disconnect_websocket = False
+        self.listing_mode = "v2"
+        self.history_delay_polls = 0
+        self.hide_history = False
+        self.force_nonterminal_history = False
+        self.emit_cached_only = False
+        self.terminal_event_type = None
         self.histories.clear()
+        self.history_calls.clear()
         self.prompts.clear()
         self.running_prompt_ids.clear()
         self.queued_prompt_ids.clear()
@@ -525,74 +132,95 @@ class FakeServiceState:
         self.submitted.clear()
         self.ollama_calls.clear()
         self.uploaded.clear()
+        self.comfy_user_headers.clear()
+        self.userdata_raw_paths.clear()
+        self.background_tasks.clear()
 
     async def emit(self, client_id: str, event: dict[str, Any]) -> None:
         self.event_log.setdefault(client_id, []).append(copy.deepcopy(event))
-        clients = list(self.websocket_clients.get(client_id, []))
-        for websocket in clients:
+        for websocket in list(self.websocket_clients.get(client_id, [])):
             try:
                 await websocket.send_json(event)
             except Exception:
-                try:
+                with suppress(KeyError, ValueError):
                     self.websocket_clients[client_id].remove(websocket)
-                except (KeyError, ValueError):
-                    pass
+
+    def _record_image(self, prompt_id: str, suffix: str, label: str) -> dict[str, str]:
+        name = f"{prompt_id}-{suffix}.png"
+        reference = {"filename": name, "subfolder": "fake", "type": "output"}
+        self.output_files[(name, "fake", "output")] = make_png(label)
+        return reference
+
+    def _record_generic_file(self, prompt_id: str) -> dict[str, str]:
+        name = f"{prompt_id}-metadata.json"
+        reference = {"filename": name, "subfolder": "fake", "type": "output"}
+        self.output_files[(name, "fake", "output")] = b'{"fixture":"generic-output"}'
+        return reference
 
     async def execute_prompt(self, prompt_id: str) -> None:
         record = self.prompts[prompt_id]
-        client_id = record["client_id"]
+        client_id = str(record["client_id"])
         graph = record["graph"]
-        prompt_text = str(graph.get("1", {}).get("inputs", {}).get("text", ""))
+        assert isinstance(graph, dict)
+        prompt_text = str(_node_value(graph, "CIFTextParameter", ""))
+        stage_node = _first_node_id(graph, "FakeImageOutput", "900")
+        publisher_nodes = _nodes(graph, "CIFPublishImage")
         delay = 0.5 if "slow" in prompt_text.casefold() else self.default_stage_delay
         self.queued_prompt_ids.discard(prompt_id)
         self.running_prompt_ids.add(prompt_id)
         self.histories[prompt_id] = {
-            "status": {"status_str": "running", "completed": False},
+            "status": {"status_str": "running", "completed": False, "messages": []},
             "outputs": {},
+            "prompt": [0, prompt_id, copy.deepcopy(graph), copy.deepcopy(record.get("extra_data"))],
+            "extra_data": copy.deepcopy(record.get("extra_data")),
         }
         await asyncio.sleep(0.02)
-        await self.emit(
-            client_id,
-            {"type": "executing", "data": {"prompt_id": prompt_id, "node": "4"}},
-        )
-        await self.emit(
-            client_id,
-            {
-                "type": "progress",
-                "data": {"prompt_id": prompt_id, "node": "4", "value": 1, "max": 2},
-            },
-        )
-        base_name = f"{prompt_id}-base.png"
-        base_ref = {"filename": base_name, "subfolder": "fake", "type": "output"}
-        self.output_files[(base_name, "fake", "output")] = make_png("base")
-        base_output = {"images": [base_ref]}
-        self.histories[prompt_id]["outputs"]["4"] = base_output
-        await self.emit(
-            client_id,
-            {
-                "type": "executed",
-                "data": {
-                    "prompt_id": prompt_id,
-                    "node": "4",
-                    "output": copy.deepcopy(base_output),
-                },
-            },
-        )
-        await asyncio.sleep(delay)
 
-        cancel_requested = prompt_id in self.cancelled_prompt_ids
-        race_success = "race-success" in prompt_text.casefold()
-        if cancel_requested and not race_success:
-            self.histories[prompt_id]["status"] = {
-                "status_str": "cancelled",
-                "completed": True,
-            }
+        base_ref = self._record_image(prompt_id, "base", "base")
+        base_output = {
+            "images": [base_ref],
+            "text": ["base metadata"],
+            "ui": {"progress_label": "Base image"},
+        }
+        self.histories[prompt_id]["outputs"]["900"] = base_output
+        if not self.emit_cached_only and not self.terminal_event_type:
+            await self.emit(
+                client_id,
+                {"type": "executing", "data": {"prompt_id": prompt_id, "node": stage_node}},
+            )
             await self.emit(
                 client_id,
                 {
-                    "type": "execution_interrupted",
-                    "data": {"prompt_id": prompt_id},
+                    "type": "progress",
+                    "data": {"prompt_id": prompt_id, "node": stage_node, "value": 1, "max": 2},
                 },
+            )
+            await self.emit(
+                client_id,
+                {
+                    "type": "executed",
+                    "data": {
+                        "prompt_id": prompt_id,
+                        "node": "900",
+                        "output": copy.deepcopy(base_output),
+                    },
+                },
+            )
+        await asyncio.sleep(delay)
+
+        cancelled = prompt_id in self.cancelled_prompt_ids
+        if cancelled and "race-success" not in prompt_text.casefold():
+            self.histories[prompt_id]["status"] = {
+                # ComfyUI records InterruptProcessingException as an unsuccessful executor
+                # result. The message, rather than status_str, distinguishes interruption
+                # from an ordinary execution failure.
+                "status_str": "error",
+                "completed": False,
+                "messages": [["execution_interrupted", {"prompt_id": prompt_id}]],
+            }
+            await self.emit(
+                client_id,
+                {"type": "execution_interrupted", "data": {"prompt_id": prompt_id}},
             )
             self.running_prompt_ids.discard(prompt_id)
             return
@@ -601,6 +229,9 @@ class FakeServiceState:
             self.histories[prompt_id]["status"] = {
                 "status_str": "error",
                 "completed": True,
+                "messages": [
+                    ["execution_error", {"node_id": stage_node, "exception_type": "FakeFailure"}]
+                ],
             }
             await self.emit(
                 client_id,
@@ -608,8 +239,8 @@ class FakeServiceState:
                     "type": "execution_error",
                     "data": {
                         "prompt_id": prompt_id,
-                        "node_id": "5",
-                        "node_type": "ImageNode",
+                        "node_id": stage_node,
+                        "node_type": "FakeImageOutput",
                         "exception_type": "FakeFailure",
                     },
                 },
@@ -617,38 +248,169 @@ class FakeServiceState:
             self.running_prompt_ids.discard(prompt_id)
             return
 
-        await self.emit(
-            client_id,
-            {"type": "executing", "data": {"prompt_id": prompt_id, "node": "5"}},
-        )
-        final_refs: list[dict[str, str]] = []
-        count = 2 if "multi" in prompt_text.casefold() else 1
-        for index in range(count):
-            name = f"{prompt_id}-final-{index}.png"
-            ref = {"filename": name, "subfolder": "fake", "type": "output"}
-            final_refs.append(ref)
-            self.output_files[(name, "fake", "output")] = make_png(f"final {index + 1}")
-        final_output = {"images": final_refs}
-        self.histories[prompt_id]["outputs"]["5"] = final_output
-        await self.emit(
-            client_id,
-            {
-                "type": "executed",
-                "data": {
-                    "prompt_id": prompt_id,
-                    "node": "5",
-                    "output": copy.deepcopy(final_output),
+        batch_count = 2 if "multi" in prompt_text.casefold() else 1
+        terminal_node = "901"
+        if publisher_nodes:
+            native_ref = self._record_image(prompt_id, "native-result", "native result")
+            native_output: dict[str, Any] = {
+                "images": [native_ref],
+                "text": ["complete native text result"],
+                "hashes": {
+                    "asset_sha256": "f" * 64,
+                    "model_sha256": "e" * 64,
                 },
-            },
-        )
+                "dimensions": {"width": 96, "height": 72},
+                "custom_ui": {
+                    "palette": ["indigo", "gold"],
+                    "quality": {"score": 0.875, "accepted": True},
+                },
+            }
+            if "generic locator" in prompt_text.casefold():
+                native_output["files"] = [self._record_generic_file(prompt_id)]
+            self.histories[prompt_id]["outputs"]["901"] = native_output
+            if not self.emit_cached_only and not self.terminal_event_type:
+                await self.emit(
+                    client_id,
+                    {
+                        "type": "executed",
+                        "data": {
+                            "prompt_id": prompt_id,
+                            "node": "901",
+                            "output": copy.deepcopy(native_output),
+                        },
+                    },
+                )
+
+            for publisher_index, (publisher_node_id, publisher_node) in enumerate(publisher_nodes):
+                inputs = publisher_node.get("inputs", {})
+                assert isinstance(inputs, dict)
+                output_id = str(inputs.get("output_id") or "final_image")
+                role = str(inputs.get("role") or "final")
+                instance_uuid = str(
+                    inputs.get("instance_uuid")
+                    or f"00000000-0000-4000-8000-{int(publisher_node_id):012d}"
+                )
+                description = str(inputs.get("description") or f"Fixture {role} image output.")
+                references = [
+                    self._record_image(
+                        prompt_id,
+                        f"{output_id}-{batch_index}",
+                        f"{output_id} {batch_index + 1}",
+                    )
+                    for batch_index in range(batch_count)
+                ]
+                publisher_output = {
+                    "images": copy.deepcopy(references),
+                    "comfyui_image_frontend": [
+                        {
+                            "schema_version": "comfyui-image-frontend.interface/v1",
+                            "output_id": output_id,
+                            "instance_uuid": instance_uuid,
+                            "role": role,
+                            "kind": "image",
+                            "cardinality": "many",
+                            "description": description,
+                            "artifacts": [
+                                {"batch_index": batch_index, **copy.deepcopy(reference)}
+                                for batch_index, reference in enumerate(references)
+                            ],
+                        }
+                    ],
+                    "ui": {
+                        "publisher_timing": {
+                            "sequence": publisher_index,
+                            "seconds": round(0.15 + publisher_index * 0.05, 2),
+                        }
+                    },
+                }
+                self.histories[prompt_id]["outputs"][publisher_node_id] = publisher_output
+                terminal_node = publisher_node_id
+                if not self.emit_cached_only and not self.terminal_event_type:
+                    await self.emit(
+                        client_id,
+                        {
+                            "type": "executing",
+                            "data": {"prompt_id": prompt_id, "node": publisher_node_id},
+                        },
+                    )
+                    await self.emit(
+                        client_id,
+                        {
+                            "type": "executed",
+                            "data": {
+                                "prompt_id": prompt_id,
+                                "node": publisher_node_id,
+                                "output": copy.deepcopy(publisher_output),
+                            },
+                        },
+                    )
+        else:
+            final_refs = [
+                self._record_image(prompt_id, f"final-{index}", f"final {index + 1}")
+                for index in range(batch_count)
+            ]
+            final_output: dict[str, Any] = {
+                "images": final_refs,
+                "text": ["complete native text result"],
+                "ui": {"comparison": {"enabled": True}},
+            }
+            if "generic locator" in prompt_text.casefold():
+                final_output["files"] = [self._record_generic_file(prompt_id)]
+            self.histories[prompt_id]["outputs"][terminal_node] = final_output
+            if not self.emit_cached_only and not self.terminal_event_type:
+                await self.emit(
+                    client_id,
+                    {
+                        "type": "executing",
+                        "data": {"prompt_id": prompt_id, "node": terminal_node},
+                    },
+                )
+                await self.emit(
+                    client_id,
+                    {
+                        "type": "executed",
+                        "data": {
+                            "prompt_id": prompt_id,
+                            "node": terminal_node,
+                            "output": copy.deepcopy(final_output),
+                        },
+                    },
+                )
+        if self.terminal_event_type:
+            event_data: dict[str, Any] = {"prompt_id": prompt_id}
+            if self.terminal_event_type == "execution_error":
+                event_data.update(
+                    {
+                        "node_id": terminal_node,
+                        "node_type": "FakeImageOutput",
+                        "exception_type": "FakeWebSocketOnlyFailure",
+                    }
+                )
+            await self.emit(
+                client_id,
+                {"type": self.terminal_event_type, "data": event_data},
+            )
+            # The terminal event deliberately leads durable history so reconciliation tests
+            # can prove that a contradictory terminal history record wins.
+            await asyncio.sleep(0.02)
         self.histories[prompt_id]["status"] = {
             "status_str": "success",
             "completed": True,
+            "messages": [["execution_success", {"prompt_id": prompt_id}]],
         }
-        await self.emit(
-            client_id,
-            {"type": "execution_success", "data": {"prompt_id": prompt_id}},
-        )
+        if self.terminal_event_type:
+            self.running_prompt_ids.discard(prompt_id)
+            return
+        if self.emit_cached_only:
+            await self.emit(
+                client_id,
+                {"type": "execution_cached", "data": {"prompt_id": prompt_id, "nodes": []}},
+            )
+        else:
+            await self.emit(
+                client_id,
+                {"type": "execution_success", "data": {"prompt_id": prompt_id}},
+            )
         self.running_prompt_ids.discard(prompt_id)
 
 
@@ -657,19 +419,18 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
 
     @app.middleware("http")
     async def preserve_userdata_route_segment(request: Request, call_next):  # type: ignore[no-untyped-def]
-        # Uvicorn exposes a decoded scope path, while ComfyUI matches /userdata/{file}
-        # against the raw route segment. Preserve that behavior for this test double:
-        # encoded separators stay inside one segment and literal separators do not match.
-        prefix = b"/userdata/"
         raw_path = request.scope.get("raw_path", b"")
-        if isinstance(raw_path, bytes) and raw_path.startswith(prefix):
-            raw_segment = raw_path[len(prefix) :]
+        if isinstance(raw_path, bytes) and raw_path.startswith(b"/userdata/"):
+            state.userdata_raw_paths.append(raw_path.split(b"?", 1)[0])
+            raw_segment = raw_path[len(b"/userdata/") :].split(b"?", 1)[0]
             if b"/" in raw_segment:
                 return Response(status_code=404)
             try:
                 request.scope["path"] = f"/userdata/{raw_segment.decode('ascii')}"
             except UnicodeDecodeError:
                 return Response(status_code=404)
+        if request.url.path.startswith(("/userdata", "/v2/userdata", "/object_info")):
+            state.comfy_user_headers.append((request.url.path, request.headers.get("Comfy-User")))
         return await call_next(request)
 
     def require_comfy() -> None:
@@ -686,56 +447,78 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         require_comfy()
         return {"system": {"comfyui_version": "fake-1.0"}, "devices": [{"name": "fake-gpu"}]}
 
-    @app.get("/userdata")
-    async def userdata(request: Request) -> Any:
+    @app.get("/v2/userdata")
+    async def userdata_v2(path: str = "workflows") -> Any:
         require_comfy()
-        path = request.query_params.get("path")
-        if path:
-            key = _strip_workflow_root(path)
-            if key not in state.workflow_files:
-                raise HTTPException(status_code=404)
-            return state.workflow_files[key]
-        directory = request.query_params.get("dir", "")
-        prefix = _strip_workflow_root(directory)
-        files = []
-        for key in sorted(state.workflow_files):
-            if not prefix or key.startswith(prefix.rstrip("/") + "/") or key == prefix:
-                files.append(f"workflows/front-end/{key}")
-        return {"files": files}
+        if state.listing_mode != "v2":
+            raise HTTPException(status_code=404)
+        prefix = path.rstrip("/") + "/"
+        return [
+            {"name": key.rsplit("/", 1)[-1], "path": key, "type": "file"}
+            for key in sorted(state.workflow_files)
+            if key.startswith(prefix)
+        ]
+
+    @app.get("/userdata")
+    async def userdata_fallback(request: Request) -> Any:
+        require_comfy()
+        if state.listing_mode not in {"fallback", "v2"}:
+            raise HTTPException(status_code=404)
+        directory = request.query_params.get("dir", "workflows").rstrip("/")
+        prefix = directory + "/"
+        return {"files": [key for key in sorted(state.workflow_files) if key.startswith(prefix)]}
 
     @app.get("/userdata/{file}")
-    async def userdata_path(file: str) -> dict[str, Any]:
+    async def userdata_path(file: str) -> Response:
         require_comfy()
-        key = _strip_workflow_root(unquote(file))
+        key = unquote(file)
         if key not in state.workflow_files:
             raise HTTPException(status_code=404)
-        return state.workflow_files[key]
+        return Response(state.workflow_files[key], media_type="application/json")
 
     @app.post("/prompt")
-    async def submit_prompt(request: Request) -> dict[str, Any]:
+    async def submit_prompt(request: Request) -> Response:
         require_comfy()
         if state.reject_prompts:
-            raise HTTPException(status_code=400, detail="prompt rejected")
+            return JSONResponse(
+                {
+                    "error": {"type": "prompt_outputs_failed_validation"},
+                    "node_errors": {"20": {"errors": [{"message": "fake validation error"}]}},
+                },
+                status_code=400,
+            )
         payload = await request.json()
         graph = payload.get("prompt")
         client_id = payload.get("client_id")
+        extra_data = payload.get("extra_data")
         if not isinstance(graph, dict) or not isinstance(client_id, str):
             raise HTTPException(status_code=422)
         prompt_id = str(uuid.uuid4())
-        state.prompts[prompt_id] = {"graph": copy.deepcopy(graph), "client_id": client_id}
+        state.prompts[prompt_id] = {
+            "graph": copy.deepcopy(graph),
+            "client_id": client_id,
+            "extra_data": copy.deepcopy(extra_data),
+        }
         state.queued_prompt_ids.add(prompt_id)
         state.submitted.append(
             {
                 "prompt_id": prompt_id,
                 "client_id": client_id,
-                "prompt": str(graph.get("1", {}).get("inputs", {}).get("text", "")),
+                "prompt": str(_node_value(graph, "CIFTextParameter", "")),
+                "seed": str(_node_value(graph, "CIFSeedParameter", "")),
+                "width": _node_value(graph, "CIFIntegerParameter"),
+                "extra_data": copy.deepcopy(extra_data),
+                "graph": copy.deepcopy(graph),
             }
         )
-        asyncio.create_task(state.execute_prompt(prompt_id), name=f"fake-prompt-{prompt_id}")
-        return {"prompt_id": prompt_id, "number": len(state.submitted)}
+        task = asyncio.create_task(state.execute_prompt(prompt_id), name=f"fake-prompt-{prompt_id}")
+        state.background_tasks.add(task)
+        task.add_done_callback(state.background_tasks.discard)
+        return JSONResponse({"prompt_id": prompt_id, "number": len(state.submitted)})
 
     @app.websocket("/ws")
     async def websocket_events(websocket: WebSocket) -> None:
+        state.comfy_user_headers.append(("/ws", websocket.headers.get("Comfy-User")))
         client_id = websocket.query_params.get("clientId") or ""
         await websocket.accept()
         if state.disconnect_websocket:
@@ -750,24 +533,36 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            try:
+            with suppress(ValueError):
                 state.websocket_clients.get(client_id, []).remove(websocket)
-            except ValueError:
-                pass
 
     @app.get("/history/{prompt_id}")
     async def history(prompt_id: str) -> dict[str, Any]:
         require_comfy()
+        state.history_calls[prompt_id] = state.history_calls.get(prompt_id, 0) + 1
+        if state.hide_history:
+            raise HTTPException(status_code=404)
+        if state.history_calls[prompt_id] <= state.history_delay_polls:
+            raise HTTPException(status_code=404)
         if prompt_id not in state.histories:
             raise HTTPException(status_code=404)
-        return {prompt_id: state.histories[prompt_id]}
+        history = copy.deepcopy(state.histories[prompt_id])
+        if state.force_nonterminal_history:
+            history["status"] = {"status_str": "running", "completed": False, "messages": []}
+        return {prompt_id: history}
 
     @app.get("/queue")
     async def queue_state() -> dict[str, Any]:
         require_comfy()
         return {
-            "queue_running": [[0, prompt_id, state.prompts.get(prompt_id, {}).get("graph", {})] for prompt_id in sorted(state.running_prompt_ids)],
-            "queue_pending": [[0, prompt_id, state.prompts.get(prompt_id, {}).get("graph", {})] for prompt_id in sorted(state.queued_prompt_ids)],
+            "queue_running": [
+                [0, value, state.prompts.get(value, {}).get("graph", {})]
+                for value in sorted(state.running_prompt_ids)
+            ],
+            "queue_pending": [
+                [0, value, state.prompts.get(value, {}).get("graph", {})]
+                for value in sorted(state.queued_prompt_ids)
+            ],
         }
 
     @app.post("/queue")
@@ -799,7 +594,12 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
     @app.get("/view")
     async def view(filename: str, subfolder: str = "", type: str = "output") -> Response:
         require_comfy()
-        if state.fail_retrieval:
+        targeted_failure = any(
+            fragment in filename for fragment in state.retrieval_failure_substrings
+        )
+        if state.fail_retrieval or targeted_failure or state.retrieval_failures_remaining > 0:
+            if state.retrieval_failures_remaining > 0:
+                state.retrieval_failures_remaining -= 1
             raise HTTPException(status_code=500, detail="retrieval failed")
         key = (filename, subfolder, type)
         if key not in state.output_files:
@@ -822,21 +622,15 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         direction = instruction.split("Creative direction:\n", 1)[-1].strip()
         current = ""
         if "Current prompt:\n" in instruction:
-            current = instruction.split("Current prompt:\n", 1)[1].split("\n\nCreative direction:", 1)[0].strip()
+            current = (
+                instruction.split("Current prompt:\n", 1)[1]
+                .split("\n\nCreative direction:", 1)[0]
+                .strip()
+            )
         composed = f"{current}, {direction}".strip(" ,") or "composed image prompt"
         return {"response": json.dumps({"prompt": composed}), "done": True}
 
     return app
-
-
-def _strip_workflow_root(value: str) -> str:
-    normalized = str(value).replace("\\", "/").strip("/")
-    root = "workflows/front-end"
-    if normalized == root:
-        return ""
-    if normalized.startswith(root + "/"):
-        return normalized[len(root) + 1 :]
-    return normalized
 
 
 class LiveFakeServer:

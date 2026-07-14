@@ -1,11 +1,17 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
 import {
   clientValidate,
-  defaultsForContract,
+  createLatestRequestGate,
+  defaultsForInterface,
+  interfaceInputs,
   normalizeInputValue,
   overwriteWithRecall,
+  parametersForRequest,
+  positivePromptInput,
+  reconcileInterfaceValues,
   resolutionSummary,
   scaleToLayout,
+  seedFormValue,
   snapResolutionValue,
 } from "./lib.mjs";
 import {
@@ -24,12 +30,18 @@ const root = document.querySelector("#app");
 
 const state = {
   session: null,
-  workflows: [],
-  activeProfileId: null,
-  activeProfile: null,
-  controls: {},
+  sources: [],
+  sourceCatalogStatus: "idle",
+  sourceCatalogMessage: null,
+  sourceCatalogToken: 0,
+  sourceDetailLoading: false,
+  sourceDetailError: null,
+  sourceLoadToken: 0,
+  activeSourceKey: null,
+  activeSource: null,
+  parameters: {},
+  parameterStateBySource: {},
   selectedPreset: null,
-  recallIdentity: null,
   compositionId: null,
   promptAssistant: { mode: "refine", creativeDirection: "", available: false, message: null },
   generations: [],
@@ -53,6 +65,7 @@ const state = {
   changingPasswordFromApp: false,
 };
 
+const generationRefreshGate = createLatestRequestGate();
 let activeResolutionDrag = null;
 
 async function initialize() {
@@ -111,7 +124,8 @@ async function handleSubmit(event) {
 async function handleClick(event) {
   const clearUpload = event.target.closest("[data-clear-upload]");
   if (clearUpload) {
-    state.controls[clearUpload.dataset.clearUpload] = null;
+    state.parameters[clearUpload.dataset.clearUpload] = null;
+    persistActiveParameterState();
     renderPanel();
     return;
   }
@@ -156,7 +170,7 @@ async function handleClick(event) {
 async function handleChange(event) {
   const element = event.target;
   if (element.id === "workflow-source") {
-    await selectWorkflow(element.value);
+    await selectSource(element.value);
     return;
   }
   if (element.id === "preset-select") {
@@ -169,8 +183,12 @@ async function handleChange(event) {
   }
   if (element.matches("[data-seed-mode]")) {
     const id = element.dataset.seedMode;
-    state.controls[id] = element.value === "random" ? "random" : 0;
+    const input = interfaceInputs(state.activeSource?.interface).find((item) => item.id === id);
+    if (!input) return;
+    const current = seedFormValue(input, state.parameters[id]);
+    state.parameters[id] = { mode: element.value === "random" ? "random" : "fixed", value: current.value };
     state.serverFieldErrors[id] = null;
+    persistActiveParameterState();
     renderPanel();
     return;
   }
@@ -180,7 +198,9 @@ async function handleChange(event) {
   }
   if (element.matches("[data-control-id]")) {
     updateControlFromElement(element);
-    renderPanel();
+    syncNumberControlPair(element);
+    persistActiveParameterState();
+    syncParameterValidation(element.dataset.controlId);
   }
 }
 
@@ -200,10 +220,17 @@ function handleInput(event) {
   }
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
     updateControlFromElement(element);
+    syncNumberControlPair(element);
     if (element.dataset.resolutionPart) {
       const grid = element.closest("[data-control-block]")?.querySelector("[data-resolution-grid]");
-      updateResolutionUi(grid, state.controls[element.dataset.controlId]);
+      updateResolutionUi(grid, state.parameters[element.dataset.controlId]);
     }
+    if (element.type === "checkbox") {
+      const stateLabel = element.closest(".switch")?.querySelector("em");
+      if (stateLabel) stateLabel.textContent = element.checked ? "On" : "Off";
+    }
+    persistActiveParameterState();
+    syncParameterValidation(element.dataset.controlId);
   }
 }
 
@@ -252,7 +279,7 @@ function handleKeyDown(event) {
   const grid = handle.closest("[data-resolution-grid]");
   if (!grid) return;
   const mode = handle.dataset.resolutionHandle;
-  const current = state.controls[grid.dataset.controlId] || {};
+  const current = state.parameters[grid.dataset.controlId] || {};
   const limits = resolutionGridLimits(grid);
   let width = Number(current.width) || 0;
   let height = Number(current.height) || 0;
@@ -292,7 +319,7 @@ function updateResolutionFromPointer(event, drag) {
   const rect = drag.grid.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
   const limits = resolutionGridLimits(drag.grid);
-  const current = state.controls[drag.grid.dataset.controlId] || {};
+  const current = state.parameters[drag.grid.dataset.controlId] || {};
   let width = Number(current.width) || 0;
   let height = Number(current.height) || 0;
   if (drag.mode !== "height") {
@@ -308,10 +335,11 @@ function updateResolutionFromPointer(event, drag) {
 
 function setResolutionValue(grid, width, height) {
   const id = grid.dataset.controlId;
-  state.controls[id] = { width, height };
+  state.parameters[id] = { width, height };
   delete state.serverFieldErrors[id];
   state.formError = null;
-  updateResolutionUi(grid, state.controls[id]);
+  persistActiveParameterState();
+  updateResolutionUi(grid, state.parameters[id]);
 }
 
 function updateResolutionUi(grid, value) {
@@ -371,30 +399,114 @@ function renderPanelWithResolutionFocus(controlId, handle) {
 
 function updateControlFromElement(element) {
   const id = element.dataset.controlId;
-  const control = state.activeProfile?.contract?.controls?.find((item) => item.id === id);
+  const control = interfaceInputs(state.activeSource?.interface).find((item) => item.id === id);
   if (!id || !control) return;
   if (element.dataset.resolutionPart) {
-    const current = state.controls[id] || {};
-    state.controls[id] = {
+    const current = state.parameters[id] || {};
+    state.parameters[id] = {
       ...current,
-      [element.dataset.resolutionPart]: element.value === "" ? null : Number.parseInt(element.value, 10),
+      [element.dataset.resolutionPart]: element.value === "" ? null : Number(element.value),
     };
   } else if (element.dataset.jsonControl) {
     try {
-      state.controls[id] = JSON.parse(element.value);
+      state.parameters[id] = JSON.parse(element.value);
     } catch {
       state.serverFieldErrors[id] = "Enter valid JSON.";
       return;
     }
   } else if (control.type === "boolean") {
-    state.controls[id] = element.checked;
+    state.parameters[id] = element.checked;
   } else if (control.type === "seed") {
-    state.controls[id] = element.value === "" ? "random" : Number.parseInt(element.value, 10);
+    state.parameters[id] = { mode: "fixed", value: element.value.trim() };
   } else {
-    state.controls[id] = normalizeInputValue(control, element.value);
+    state.parameters[id] = normalizeInputValue(control, element.value);
   }
   delete state.serverFieldErrors[id];
   state.formError = null;
+}
+
+function syncNumberControlPair(element) {
+  if (!element.matches("[data-number-entry], [data-number-slider]")) return;
+  const block = element.closest("[data-control-block]");
+  if (!block) return;
+  if (element.matches("[data-number-slider]")) {
+    const exact = block.querySelector("[data-number-entry]");
+    if (exact) exact.value = element.value;
+    return;
+  }
+  const slider = block.querySelector("[data-number-slider]");
+  const numeric = Number(element.value);
+  if (
+    !slider ||
+    element.value === "" ||
+    !Number.isFinite(numeric) ||
+    numeric < Number(slider.min) ||
+    numeric > Number(slider.max)
+  )
+    return;
+  slider.value = element.value;
+}
+
+function syncParameterValidation(controlId) {
+  const contract = sourceInterface(state.activeSource);
+  const errors = {
+    ...clientValidate(contract, state.parameters),
+    ...withoutNulls(state.serverFieldErrors),
+  };
+  state.fieldErrors = errors;
+
+  const block = document.querySelector(
+    `[data-control-block="${CSS.escape(controlId || "")}"]`,
+  );
+  if (block) syncFieldError(block, controlId, errors[controlId]);
+  document.querySelector(".form-error.summary")?.remove();
+
+  const generateButton = document.querySelector("#generate-button");
+  if (generateButton) {
+    const comfy = state.services.find((item) => item.service === "comfyui");
+    generateButton.disabled = Boolean(
+      state.submitting ||
+        state.sourceCatalogStatus === "loading" ||
+        !state.activeSourceKey ||
+        !state.activeSource ||
+        !contract ||
+        state.sourceDetailLoading ||
+        state.sourceDetailError ||
+        state.activeSource.available === false ||
+        comfy?.available === false ||
+        Object.keys(errors).length,
+    );
+  }
+}
+
+function syncFieldError(block, controlId, message) {
+  const errorId = `control-${String(controlId || "").replaceAll(/[^A-Za-z0-9_-]/g, "-")}-error`;
+  let error = block.querySelector(".field-error");
+  if (message) {
+    if (!error) {
+      error = document.createElement("p");
+      error.className = "field-error";
+      error.id = errorId;
+      error.setAttribute("role", "alert");
+      block.append(error);
+    }
+    error.textContent = message;
+  } else {
+    error?.remove();
+  }
+
+  for (const element of block.querySelectorAll("[data-control-id]:not([data-resolution-grid])")) {
+    const describedBy = new Set((element.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+    describedBy.delete(errorId);
+    if (message) {
+      element.setAttribute("aria-invalid", "true");
+      describedBy.add(errorId);
+    } else {
+      element.removeAttribute("aria-invalid");
+    }
+    if (describedBy.size) element.setAttribute("aria-describedby", [...describedBy].join(" "));
+    else element.removeAttribute("aria-describedby");
+  }
 }
 
 async function submitLogin(form) {
@@ -451,6 +563,14 @@ async function submitPassword(form) {
 async function logout() {
   await api("/api/auth/logout", { method: "POST" });
   stopLiveUpdates();
+  state.sources = [];
+  state.activeSourceKey = null;
+  state.activeSource = null;
+  state.parameters = {};
+  state.parameterStateBySource = {};
+  state.sourceCatalogStatus = "idle";
+  state.sourceCatalogToken += 1;
+  state.sourceLoadToken += 1;
   const session = await api("/api/auth/session");
   state.session = session;
   setCsrfToken(session.csrf_token);
@@ -471,14 +591,14 @@ function renderPasswordChange(forced) {
 
 async function enterApplication() {
   stopLiveUpdates();
-  const [workflows, preferences, services, page, assistant] = await Promise.all([
-    api("/api/workflows"),
+  state.sourceCatalogStatus = "loading";
+  state.sourceCatalogMessage = null;
+  const [preferences, services, page, assistant] = await Promise.all([
     api("/api/preferences"),
     api("/api/services"),
     api("/api/generations?limit=24"),
     api("/api/prompt-assistant/status"),
   ]);
-  state.workflows = workflows;
   state.galleryScale = preferences.gallery_scale;
   state.services = services;
   state.generations = page.items;
@@ -490,19 +610,6 @@ async function enterApplication() {
     available: assistant.available,
     message: assistant.message,
   };
-  if (!state.activeProfileId || !workflows.some((item) => item.profile_id === state.activeProfileId)) {
-    state.activeProfileId = workflows[0]?.profile_id || null;
-    state.activeProfile = null;
-    state.controls = {};
-    state.recallIdentity = null;
-    state.selectedPreset = null;
-  }
-  if (state.activeProfileId) {
-    state.activeProfile = await api(`/api/workflows/${state.activeProfileId}`);
-    if (!Object.keys(state.controls).length) {
-      state.controls = defaultsForContract(state.activeProfile.contract);
-    }
-  }
   root.innerHTML = shellMarkup(state);
   renderPanel();
   renderGallery();
@@ -510,42 +617,153 @@ async function enterApplication() {
   applyGalleryScale();
   setupPaginationObserver();
   startLiveUpdates();
+  await loadSources();
 }
 
-async function selectWorkflow(profileId) {
-  state.activeProfileId = profileId || null;
-  state.activeProfile = profileId ? await api(`/api/workflows/${profileId}`) : null;
-  state.controls = defaultsForContract(state.activeProfile?.contract);
+function sourceKey(source) {
+  return source?.source_key || source?.profile_id || null;
+}
+
+function sourceInterface(source) {
+  return source?.interface || source?.contract || null;
+}
+
+function sourceRevision(source) {
+  if (source?.revision) return source.revision;
+  if (!source) return null;
+  return {
+    publication_id: source.workflow_version,
+    workflow_sha256: source.ui_graph_sha256,
+    api_sha256: source.api_graph_sha256,
+    manifest_sha256: source.contract_sha256,
+  };
+}
+
+function revisionsMatch(first, second) {
+  const firstRevision = sourceRevision(first) || {};
+  const secondRevision = sourceRevision(second) || {};
+  return ["publication_id", "workflow_sha256", "api_sha256", "manifest_sha256"].every(
+    (key) => firstRevision[key] === secondRevision[key],
+  );
+}
+
+function sourceContextIsCurrent(key, revision) {
+  return Boolean(
+    key &&
+      state.activeSourceKey === key &&
+      state.activeSource &&
+      revisionsMatch({ revision }, state.activeSource),
+  );
+}
+
+function persistActiveParameterState() {
+  if (!state.activeSourceKey) return;
+  state.parameterStateBySource[state.activeSourceKey] = {
+    interface: structuredClone(sourceInterface(state.activeSource)),
+    revision: structuredClone(sourceRevision(state.activeSource)),
+    values: structuredClone(state.parameters),
+  };
+}
+
+async function loadSources() {
+  const catalogToken = ++state.sourceCatalogToken;
+  state.sourceCatalogStatus = "loading";
+  state.sourceCatalogMessage = null;
+  renderPanel();
+  try {
+    const sources = await api("/api/workflows");
+    if (catalogToken !== state.sourceCatalogToken) return;
+    state.sources = Array.isArray(sources) ? sources : [];
+    state.sourceCatalogStatus = "ready";
+    const selected = state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+    const next = selected || state.sources.find((item) => item.available !== false) || state.sources[0] || null;
+    if (!next) {
+      persistActiveParameterState();
+      state.sourceLoadToken += 1;
+      state.activeSourceKey = null;
+      state.activeSource = null;
+      state.parameters = {};
+      state.sourceDetailLoading = false;
+      state.sourceDetailError = null;
+      renderPanel();
+      return;
+    }
+    if (
+      state.activeSource &&
+      sourceKey(next) === state.activeSourceKey &&
+      sourceInterface(state.activeSource) &&
+      revisionsMatch(next, state.activeSource)
+    ) {
+      state.activeSource = { ...state.activeSource, ...next };
+      renderPanel();
+      return;
+    }
+    await selectSource(sourceKey(next), { summary: next });
+  } catch (error) {
+    if (catalogToken !== state.sourceCatalogToken) return;
+    state.sourceCatalogStatus = "error";
+    state.sourceCatalogMessage = error.message || "Published sources could not be loaded.";
+    renderPanel();
+  }
+}
+
+async function selectSource(key, { summary = null } = {}) {
+  persistActiveParameterState();
+  const token = ++state.sourceLoadToken;
+  const resolvedSummary = summary || state.sources.find((item) => sourceKey(item) === key) || null;
+  state.activeSourceKey = key || null;
+  state.activeSource = resolvedSummary;
+  const saved = key ? state.parameterStateBySource[key] : null;
+  state.parameters = structuredClone(saved?.values || {});
+  state.sourceDetailLoading = Boolean(key);
+  state.sourceDetailError = null;
   state.selectedPreset = null;
-  state.recallIdentity = null;
   state.compositionId = null;
   state.serverFieldErrors = {};
   state.formError = null;
   state.assistantOpen = false;
   renderPanel();
+  if (!key) return;
+  try {
+    const detail = await api(`/api/workflows/${encodeURIComponent(key)}`);
+    if (token !== state.sourceLoadToken) return;
+    const contract = sourceInterface(detail);
+    if (!contract) throw new Error("The selected source has no public interface.");
+    state.activeSource = { ...(resolvedSummary || {}), ...detail, interface: contract };
+    state.parameters = reconcileInterfaceValues(contract, saved?.values || {}, saved?.interface || null);
+    state.sourceDetailError = null;
+    persistActiveParameterState();
+  } catch (error) {
+    if (token !== state.sourceLoadToken) return;
+    state.sourceDetailError = error.message || "The selected source could not be described.";
+  } finally {
+    if (token === state.sourceLoadToken) {
+      state.sourceDetailLoading = false;
+      renderPanel();
+    }
+  }
 }
 
 function applyPreset(presetId) {
   state.selectedPreset = presetId;
-  const contract = state.activeProfile?.contract;
-  state.controls = defaultsForContract(contract);
+  const contract = sourceInterface(state.activeSource);
+  state.parameters = defaultsForInterface(contract);
   const preset = contract?.presets?.find((item) => item.id === presetId);
-  if (preset) Object.assign(state.controls, structuredClone(preset.values || {}));
+  if (preset) Object.assign(state.parameters, structuredClone(preset.values || {}));
   state.serverFieldErrors = {};
   state.formError = null;
+  persistActiveParameterState();
   renderPanel();
 }
 
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
-  const clientErrors = clientValidate(state.activeProfile?.contract, state.controls);
+  const contract = sourceInterface(state.activeSource);
+  const clientErrors = clientValidate(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
-  panel.innerHTML = generationPanelMarkup(
-    state,
-    state.workflows.find((item) => item.profile_id === state.activeProfileId),
-    state.activeProfile?.contract,
-  );
+  const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+  panel.innerHTML = generationPanelMarkup(state, selected, contract);
   const assistant = panel.querySelector("#prompt-assistant");
   if (assistant) {
     assistant.open = state.assistantOpen;
@@ -565,8 +783,18 @@ function renderPanel() {
 }
 
 async function generate() {
-  if (!state.activeProfile) return;
-  const errors = clientValidate(state.activeProfile.contract, state.controls);
+  const contract = sourceInterface(state.activeSource);
+  const requestSourceKey = state.activeSourceKey;
+  const requestRevision = structuredClone(sourceRevision(state.activeSource));
+  const requestCompositionId = state.compositionId;
+  if (
+    !requestSourceKey ||
+    !state.activeSource ||
+    !contract ||
+    state.activeSource.available === false
+  )
+    return;
+  const errors = clientValidate(contract, state.parameters);
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted controls.";
@@ -578,59 +806,94 @@ async function generate() {
   state.formError = null;
   state.serverFieldErrors = {};
   renderPanel();
+  let focusErrors = false;
   try {
+    const payload = {
+      source_key: requestSourceKey,
+      revision: requestRevision,
+      parameters: parametersForRequest(contract, state.parameters),
+    };
+    if (requestCompositionId) payload.prompt_assistant_run_id = requestCompositionId;
     const generation = await api("/api/generations", {
       method: "POST",
-      body: JSON.stringify({
-        profile_id: state.activeProfileId,
-        controls: state.controls,
-        preset_id: state.selectedPreset,
-        requested_outputs: [],
-        prompt_assistant_run_id: state.compositionId,
-        expected_identity: state.recallIdentity,
-      }),
+      body: JSON.stringify(payload),
     });
     state.generations = [generation, ...state.generations.filter((item) => item.id !== generation.id)];
-    state.compositionId = null;
+    if (
+      sourceContextIsCurrent(requestSourceKey, requestRevision) &&
+      state.compositionId === requestCompositionId
+    ) {
+      state.compositionId = null;
+    }
     upsertGalleryCard(generation, true);
     toast("Generation queued.", "success");
   } catch (error) {
+    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      toast(`Generation request for the previous source failed: ${error.message}`, "error");
+      return;
+    }
     state.formError = error.message;
-    state.serverFieldErrors = error.fields || {};
-    if (error.code === "workflow_unavailable") state.recallIdentity = null;
+    state.serverFieldErrors = normalizeParameterErrors(error.fields);
+    focusErrors = Object.keys(state.serverFieldErrors).length > 0;
+    if (["source_republished", "source_unavailable"].includes(error.code)) {
+      const message = error.message;
+      await loadSources();
+      if (state.activeSourceKey === requestSourceKey) state.formError = message;
+    }
   } finally {
     state.submitting = false;
     renderPanel();
+    if (focusErrors) focusFirstInvalid();
   }
 }
 
 async function composePrompt(button) {
   if (!state.promptAssistant.available) return;
+  const requestSourceKey = state.activeSourceKey;
+  const requestRevision = structuredClone(sourceRevision(state.activeSource));
+  const contract = sourceInterface(state.activeSource);
+  const promptInput =
+    positivePromptInput(contract) || interfaceInputs(contract).find((input) => input.id === "prompt.text");
+  if (!requestSourceKey || !promptInput) return;
+  const requestMode = state.promptAssistant.mode;
+  const requestPrompt = state.parameters[promptInput.id] || "";
+  const requestDirection = state.promptAssistant.creativeDirection || "";
   button.disabled = true;
   button.textContent = "Composing…";
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
       body: JSON.stringify({
-        mode: state.promptAssistant.mode,
-        prompt: state.controls["prompt.text"] || "",
-        creative_direction: state.promptAssistant.creativeDirection || "",
+        mode: requestMode,
+        prompt: requestPrompt,
+        creative_direction: requestDirection,
       }),
     });
-    state.controls["prompt.text"] = result.prompt;
+    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      toast("Prompt composition finished after the source changed and was not applied.");
+      return;
+    }
+    state.parameters[promptInput.id] = result.prompt;
+    persistActiveParameterState();
     state.compositionId = result.composition_id;
     state.promptAssistant.historicalModel = result.model;
     state.assistantOpen = true;
     renderPanel();
-    const prompt = document.querySelector('[data-control-id="prompt.text"]');
+    const prompt = document.querySelector(`[data-control-id="${CSS.escape(promptInput.id)}"]`);
     prompt?.focus();
     toast("Prompt composed and placed in the editable Prompt field.", "success");
   } catch (error) {
-    const message = document.querySelector("#assistant-message");
-    if (message) message.textContent = error.message;
+    if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      const message = document.querySelector("#assistant-message");
+      if (message) message.textContent = error.message;
+    } else {
+      toast(`Prompt composition for the previous source failed: ${error.message}`, "error");
+    }
   } finally {
-    button.disabled = false;
-    button.textContent = "Compose Prompt";
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "Compose Prompt";
+    }
   }
 }
 
@@ -641,8 +904,9 @@ async function handleUpload(input) {
   input.disabled = true;
   try {
     const result = await upload(`/api/uploads/${input.dataset.uploadKind}`, file);
-    state.controls[id] = result.id;
+    state.parameters[id] = result.id;
     delete state.serverFieldErrors[id];
+    persistActiveParameterState();
     renderPanel();
   } catch (error) {
     state.serverFieldErrors[id] = error.message;
@@ -704,8 +968,10 @@ function setupPaginationObserver() {
 }
 
 async function refreshGeneration(id) {
+  const refreshToken = generationRefreshGate.issue(id);
   try {
     const detail = await api(`/api/generations/${id}`);
+    if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     const index = state.generations.findIndex((item) => item.id === id);
     if (index >= 0) state.generations[index] = detail;
     else state.generations.unshift(detail);
@@ -713,6 +979,7 @@ async function refreshGeneration(id) {
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);
   } catch (error) {
+    if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     if (error.status === 404) removeGeneration(id);
   }
 }
@@ -723,11 +990,20 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
-  const profile = await api(`/api/workflows/${recalled.profile_id}`);
-  Object.assign(state, overwriteWithRecall(state, recalled));
-  state.activeProfile = profile;
+  const recalledState = overwriteWithRecall(state, recalled);
+  const key = recalled.source_key || recalled.profile_id;
+  const source = await api(`/api/workflows/${encodeURIComponent(key)}`);
+  const contract = sourceInterface(source);
+  state.activeSourceKey = key;
+  state.activeSource = { ...source, interface: contract };
+  state.parameters = reconcileInterfaceValues(contract, recalledState.parameters, null);
+  state.promptAssistant = recalledState.promptAssistant;
+  state.compositionId = null;
+  state.serverFieldErrors = {};
+  state.formError = null;
   state.selectedPreset = null;
   state.assistantOpen = Boolean(recalled.prompt_assistant);
+  persistActiveParameterState();
   renderPanel();
   closePanel(false);
   document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });
@@ -868,6 +1144,7 @@ async function deleteGeneration(id) {
 }
 
 function removeGeneration(id) {
+  generationRefreshGate.invalidate(id);
   state.generations = state.generations.filter((item) => item.id !== id);
   state.favorites = state.favorites.filter((item) => item.generation.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
@@ -909,6 +1186,7 @@ function startLiveUpdates() {
 function stopLiveUpdates() {
   state.eventSource?.close();
   state.eventSource = null;
+  generationRefreshGate.clear();
   if (state.serviceTimer) window.clearInterval(state.serviceTimer);
   state.serviceTimer = null;
   state.observer?.disconnect();
@@ -916,9 +1194,12 @@ function stopLiveUpdates() {
 
 async function refreshServices() {
   try {
+    const previousComfy = state.services.find((item) => item.service === "comfyui")?.available;
     state.services = await api("/api/services");
+    const currentComfy = state.services.find((item) => item.service === "comfyui")?.available;
     renderServiceBanner();
-    renderPanel();
+    if (previousComfy !== currentComfy) await loadSources();
+    else renderPanel();
   } catch {
     // Session expiry is handled by normal API interaction; avoid disruptive polling errors.
   }
@@ -970,11 +1251,11 @@ async function openAdmin() {
 function adminMarkup(users, diagnostics) {
   const ordinary = users.filter((item) => item.role === "user");
   return `<div class="dialog-frame admin-frame">
-    <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts and workflow registration only.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
+    <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts and published-source discovery.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
     <div class="admin-content">
       <section><h3>Users</h3><form id="create-user-form" class="inline-form"><label class="field"><span>Username</span><input name="username" required /></label><label class="field"><span>Temporary password</span><input name="temporary_password" type="password" minlength="12" required /></label><button class="button primary" type="submit">Create user</button></form>
       <div class="table-wrap"><table><thead><tr><th>Username</th><th>State</th><th>Created</th><th>Account actions</th></tr></thead><tbody>${ordinary.map((user) => `<tr><td>${escapeForAdmin(user.username)}</td><td>${user.must_change_password ? "Temporary password" : "Active"}</td><td>${new Date(user.created_at).toLocaleDateString()}</td><td><div class="button-row"><button type="button" class="button low" data-action="reset-user-password" data-user-id="${user.id}">Reset password</button><button type="button" class="button destructive low" data-action="delete-user" data-user-id="${user.id}" data-username="${escapeForAdmin(user.username)}">Delete</button></div></td></tr>`).join("") || '<tr><td colspan="4">No ordinary users.</td></tr>'}</tbody></table></div></section>
-      <section><div class="section-heading"><h3>Workflow diagnostics</h3><button type="button" class="button secondary" data-action="refresh-workflows">Refresh discovery</button></div><div class="diagnostic-list">${diagnostics.map((item) => `<article class="diagnostic ${item.accepted ? "accepted" : "rejected"}"><strong>${escapeForAdmin(item.basename)}</strong><span>${item.accepted ? "Registered" : "Rejected"}</span><p>${escapeForAdmin(item.message)}</p><code>${escapeForAdmin(item.code)}</code></article>`).join("") || '<p class="muted">No discovery diagnostics yet.</p>'}</div></section>
+      <section><div class="section-heading"><h3>Published-source diagnostics</h3><button type="button" class="button secondary" data-action="refresh-workflows">Refresh discovery</button></div><div class="diagnostic-list">${diagnostics.map((item) => `<article class="diagnostic ${item.accepted ? "accepted" : "rejected"}"><strong>${escapeForAdmin(item.display_name || item.basename || item.source_key || "Published source")}</strong><span>${item.accepted ? "Accepted" : "Rejected"}</span><p>${escapeForAdmin(item.message)}</p><code>${escapeForAdmin(item.code)}</code></article>`).join("") || '<p class="muted">No discovery diagnostics yet.</p>'}</div></section>
     </div>
     <footer class="dialog-actions"><button type="button" class="button primary" data-action="close-admin">Close</button></footer>
   </div>`;
@@ -1013,12 +1294,9 @@ async function deleteUser(userId, username) {
 
 async function refreshWorkflows() {
   await api("/api/admin/workflows/refresh", { method: "POST" });
-  state.workflows = await api("/api/workflows");
-  if (!state.workflows.some((item) => item.profile_id === state.activeProfileId)) {
-    await selectWorkflow(state.workflows[0]?.profile_id || "");
-  }
+  await loadSources();
   await openAdmin();
-  toast("Workflow discovery refreshed.", "success");
+  toast("Published source discovery refreshed.", "success");
 }
 
 function closePanel(updateState = true) {
@@ -1037,7 +1315,13 @@ function toast(message, kind = "info") {
 }
 
 function focusFirstInvalid() {
-  queueMicrotask(() => document.querySelector('[aria-invalid="true"]')?.focus());
+  queueMicrotask(() => {
+    const first = document.querySelector('[aria-invalid="true"]');
+    const target = first?.matches("[data-number-slider]")
+      ? first.closest("[data-control-block]")?.querySelector("[data-number-entry]")
+      : first;
+    target?.focus();
+  });
 }
 
 function showAuthError(message) {
@@ -1055,6 +1339,12 @@ function setBusy(form, busy) {
 
 function withoutNulls(value) {
   return Object.fromEntries(Object.entries(value || {}).filter(([, item]) => item));
+}
+
+function normalizeParameterErrors(value) {
+  return Object.fromEntries(
+    Object.entries(value || {}).map(([key, message]) => [key.replace(/^parameters\./, ""), message]),
+  );
 }
 
 function escapeForAdmin(value) {

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from io import BytesIO
-
-from fastapi.testclient import TestClient
-
 from app.main import create_app
+from fastapi.testclient import TestClient
 from tests.conftest import change_password, create_user, csrf, login
 from tests.fake_services import make_png
 from tests.helpers import (
@@ -41,10 +38,12 @@ def _prepare_accounts(client: TestClient) -> tuple[dict, str, dict, str, str]:
     return alice, alice_cookie, bob, bob_cookie, admin_cookie
 
 
-def test_cross_user_and_administrator_content_access_is_denied(settings_factory, fake_state) -> None:
+def test_cross_user_and_administrator_content_access_is_denied(
+    settings_factory, fake_state
+) -> None:
     settings = settings_factory(enable_background_worker=True)
     with TestClient(create_app(settings)) as client:
-        alice, alice_cookie, _, bob_cookie, admin_cookie = _prepare_accounts(client)
+        _, alice_cookie, _, bob_cookie, admin_cookie = _prepare_accounts(client)
         restore_cookie(client, alice_cookie)
         upload_response = client.post(
             "/api/uploads/images",
@@ -69,26 +68,38 @@ def test_cross_user_and_administrator_content_access_is_denied(settings_factory,
             assert client.get(artifact["content_url"]).status_code == 404
             assert client.get(artifact["thumbnail_url"]).status_code == 404
             assert client.get(upload["preview_url"]).status_code == 404
-            assert client.post(
-                f"/api/generations/{generation['id']}/cancel",
-                headers={"X-CSRF-Token": csrf(client)},
-            ).status_code == 404
-            assert client.delete(
-                f"/api/generations/{generation['id']}",
-                headers={"X-CSRF-Token": csrf(client)},
-            ).status_code == 404
+            assert (
+                client.post(
+                    f"/api/generations/{generation['id']}/cancel",
+                    headers={"X-CSRF-Token": csrf(client)},
+                ).status_code
+                == 404
+            )
+            assert (
+                client.delete(
+                    f"/api/generations/{generation['id']}",
+                    headers={"X-CSRF-Token": csrf(client)},
+                ).status_code
+                == 404
+            )
 
         restore_cookie(client, bob_cookie)
         foreign_upload_request = generation_payload(
             client, "attempt foreign upload", seed=78, source_upload_id=upload["id"]
         )
+        # Publication v1 accepts only declared scalar parameters. An upload identifier cannot
+        # be smuggled into this source, regardless of ownership.
+        foreign_upload_request["parameters"]["source_upload_id"] = upload["id"]
         response = client.post(
             "/api/generations",
             headers={"X-CSRF-Token": csrf(client)},
             json=foreign_upload_request,
         )
         assert response.status_code == 422
-        assert response.json()["error"]["code"] == "control_validation_failed"
+        assert response.json()["error"]["fields"] == {
+            "source_upload_id": "Unknown published parameter."
+        }
+        assert response.json()["error"]["code"] == "parameter_validation_failed"
 
         restore_cookie(client, alice_cookie)
         assert client.get(f"/api/generations/{generation['id']}").status_code == 200

@@ -7,7 +7,13 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..dependencies import AuthContext, get_container, get_db, require_ready_csrf, require_ready_user
+from ..dependencies import (
+    AuthContext,
+    get_container,
+    get_db,
+    require_ready_csrf,
+    require_ready_user,
+)
 from ..errors import AppError
 from ..models import Artifact
 from ..schemas import (
@@ -29,9 +35,7 @@ def validate_generation(
     session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> ValidationResult:
-    return get_container(request).generations.validate(
-        session, user=context.user, request=payload
-    )
+    return get_container(request).generations.validate(session, user=context.user, request=payload)
 
 
 @router.post(

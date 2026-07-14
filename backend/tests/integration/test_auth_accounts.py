@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from app.main import create_app
+from fastapi.testclient import TestClient
 from tests.conftest import auth_session, change_password, create_user, csrf, login
-
 
 ADMIN_TEMP = "AdminTemporary123!"
 ADMIN_PASSWORD = "AdminPermanent123!"
@@ -15,9 +13,12 @@ USER_PASSWORD = "UserPermanent123!"
 def test_bootstrap_admin_forced_change_and_csrf(app_client: TestClient) -> None:
     anonymous = auth_session(app_client)
     assert anonymous["authenticated"] is False
-    assert app_client.post(
-        "/api/auth/login", json={"username": "admin", "password": ADMIN_TEMP}
-    ).status_code == 403
+    assert (
+        app_client.post(
+            "/api/auth/login", json={"username": "admin", "password": ADMIN_TEMP}
+        ).status_code
+        == 403
+    )
 
     signed_in = login(app_client, "admin", ADMIN_TEMP)
     assert signed_in["user"]["role"] == "admin"
@@ -35,7 +36,11 @@ def test_bootstrap_admin_forced_change_and_csrf(app_client: TestClient) -> None:
     assert ready["user"]["must_change_password"] is False
     workflows = app_client.get("/api/workflows")
     assert workflows.status_code == 200
-    assert [item["workflow_id"] for item in workflows.json()] == ["fake-progressive-v1"]
+    assert [item["display_name"] for item in workflows.json()] == [
+        "Generic Landscape",
+        "Krea 2 NSFW V4",
+    ]
+    assert all(item["available"] is True for item in workflows.json())
 
 
 def test_admin_creates_user_and_temporary_password_is_forced(app_client: TestClient) -> None:
@@ -156,6 +161,8 @@ def test_empty_database_without_bootstrap_configuration_fails_startup(settings_f
         bootstrap_admin_username=None,
         bootstrap_admin_temporary_password=None,
     )
-    with pytest.raises(RuntimeError, match="Empty database requires"):
-        with TestClient(create_app(settings)):
-            pass
+    with (
+        pytest.raises(RuntimeError, match="Empty database requires"),
+        TestClient(create_app(settings)),
+    ):
+        pass

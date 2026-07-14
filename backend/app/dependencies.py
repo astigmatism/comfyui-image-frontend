@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Annotated, Iterator
+from typing import Annotated, cast
 
 from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
+from .container import AppContainer
 from .errors import AppError
-from .models import Session as UserSession, User, UserRole
+from .models import Session as UserSession
+from .models import User, UserRole
 from .security import keyed_hash, secure_compare
 
 
@@ -18,8 +21,8 @@ class AuthContext:
     raw_token: str
 
 
-def get_container(request: Request):  # type: ignore[no-untyped-def]
-    return request.app.state.container
+def get_container(request: Request) -> AppContainer:
+    return cast(AppContainer, request.app.state.container)
 
 
 def get_db(request: Request) -> Iterator[Session]:

@@ -1,64 +1,319 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
-import httpx
-from app.models import Base
+import pytest
+from app.domain.publication import source_key_for
+from app.errors import AppError
+from app.models import Base, ServiceHealth, WorkflowProfile, WorkflowState
 from app.services.comfyui import ComfyCapabilities
 from app.services.workflow_registry import WorkflowRegistry
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
+from tests.publication_fixtures import (
+    GENERIC_PUBLICATION_ID,
+    KREA_PUBLICATION_ID,
+    build_publication_bundle,
+    build_publication_files,
+    object_info_fixture,
+)
 
 
-class FetchFailingAdapter:
+class FixturePublicationAdapter:
+    def __init__(
+        self,
+        files: dict[str, bytes] | None = None,
+        *,
+        object_info: dict[str, Any] | None = None,
+    ) -> None:
+        self.settings = SimpleNamespace(
+            comfyui_instance_id="test-instance",
+            comfyui_manifest_max_bytes=1024 * 1024,
+            comfyui_workflow_max_bytes=1024 * 1024,
+            comfyui_api_max_bytes=1024 * 1024,
+        )
+        self.files = files if files is not None else build_publication_files()
+        self.object_info = object_info if object_info is not None else object_info_fixture()
+        self.fetch_failures: dict[str, AppError] = {}
+        self.probe_error: AppError | None = None
+        self.list_error: AppError | None = None
+
     async def probe(self) -> ComfyCapabilities:
+        await asyncio.sleep(0)
+        if self.probe_error:
+            raise self.probe_error
         return ComfyCapabilities(
-            object_info={},
-            workflow_list_route="v2_query:/api/v2/userdata",
-            workflow_get_route="path:/userdata/{path}",
+            object_info=self.object_info,
+            workflow_list_route="v2_query:/v2/userdata",
+            workflow_get_route="encoded_segment:/userdata/{path}",
             system={},
             assets=[],
             capabilities={"workflow_userdata": True},
         )
 
     async def list_workflow_files(self) -> list[str]:
-        return ["nested/profile.api.json", "nested/profile.workflow.json"]
+        await asyncio.sleep(0)
+        if self.list_error:
+            raise self.list_error
+        return sorted(self.files)
 
-    async def get_workflow_file(self, relative_path: str) -> dict[str, Any]:
-        request = httpx.Request("GET", "http://comfy.test/userdata/workflow-source")
-        response = httpx.Response(404, request=request)
-        response.raise_for_status()
-        raise AssertionError("unreachable")
+    async def get_userdata_file(self, path: str, *, maximum_bytes: int) -> bytes:
+        await asyncio.sleep(0)
+        if failure := self.fetch_failures.get(path):
+            raise failure
+        try:
+            value = self.files[path]
+        except KeyError as exc:
+            raise AppError("userdata_file_not_found", "Fixture artifact is absent.") from exc
+        if len(value) > maximum_bytes:
+            raise AppError("comfyui_response_too_large", "Fixture artifact is too large.")
+        return value
 
 
-def test_http_fetch_failure_has_actionable_non_contract_diagnostic(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def make_registry(
+    adapter: FixturePublicationAdapter,
+) -> tuple[WorkflowRegistry, sessionmaker[Session], Any]:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(engine, expire_on_commit=False, class_=Session)
-    registry = WorkflowRegistry(session_factory, FetchFailingAdapter())  # type: ignore[arg-type]
-    log_messages: list[str] = []
+    return WorkflowRegistry(session_factory, adapter), session_factory, engine  # type: ignore[arg-type]
 
-    def capture_warning(message: str, *args: object) -> None:
-        log_messages.append(message % args)
 
-    monkeypatch.setattr("app.services.workflow_registry.logger.warning", capture_warning)
+def test_refresh_discovers_two_output_aware_publications() -> None:
+    adapter = FixturePublicationAdapter()
+    registry, session_factory, engine = make_registry(adapter)
 
     diagnostics = asyncio.run(registry.refresh())
 
-    assert len(diagnostics) == 1
-    diagnostic = diagnostics[0]
-    assert diagnostic.basename == "nested/profile"
-    assert diagnostic.code == "workflow_fetch_failed"
-    assert diagnostic.message == (
-        "ComfyUI could not return this workflow source file. "
-        "Verify its presence and the configured user-data route."
-    )
-    assert diagnostic.details_json == {"route_mode": "path", "http_status": 404}
-    assert "contract_invalid" not in {item.code for item in diagnostics}
-    assert (
-        "workflow_fetch_failed basename=nested/profile route_mode=path http_status=404"
-        in log_messages
-    )
+    assert [(item.basename, item.accepted, item.code) for item in diagnostics] == [
+        ("Generic Landscape", True, "ready"),
+        ("Krea 2 NSFW V4", True, "ready"),
+    ]
+    with session_factory() as session:
+        profiles = registry.list_current(session)
+        assert [profile.display_name for profile in profiles] == [
+            "Generic Landscape",
+            "Krea 2 NSFW V4",
+        ]
+        assert {profile.publication_id for profile in profiles} == {
+            GENERIC_PUBLICATION_ID,
+            KREA_PUBLICATION_ID,
+        }
+        krea = next(profile for profile in profiles if profile.display_name.startswith("Krea"))
+        assert krea.warnings_json == []
+        assert [output["id"] for output in krea.resolved_contract_json["outputs"]] == [
+            "base",
+            "second_pass",
+            "final",
+        ]
+        assert krea.readiness == "ready"
+        health = session.get(ServiceHealth, "comfyui")
+        assert health is not None
+        assert health.available is True
+        assert health.capabilities_json["ready_sources"] == 2
+    engine.dispose()
 
+
+def test_invalid_candidate_and_fetch_failure_do_not_hide_other_ready_sources() -> None:
+    files = build_publication_files()
+    files.update(
+        {
+            "workflows/comfyui-image-frontend/Invalid.api.json": b"{}",
+            "workflows/comfyui-image-frontend/Invalid.interface.json": b"{}",
+            "workflows/comfyui-image-frontend/Invalid.json": b"{}",
+        }
+    )
+    generic = build_publication_bundle("generic")
+    adapter = FixturePublicationAdapter(files)
+    adapter.fetch_failures[generic.api_path] = AppError(
+        "userdata_fetch_failed", "Fixture proxy refused this artifact."
+    )
+    registry, session_factory, engine = make_registry(adapter)
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert {item.code for item in diagnostics} == {
+        "ready",
+        "manifest_invalid",
+        "api_fetch_failed",
+    }
+    with session_factory() as session:
+        profiles = registry.list_current(session)
+        assert [profile.display_name for profile in profiles] == ["Krea 2 NSFW V4"]
+    engine.dispose()
+
+
+def test_pathological_and_invalid_unicode_candidates_do_not_abort_refresh() -> None:
+    generic = build_publication_bundle("generic")
+    files = dict(generic.files)
+    files["workflows/comfyui-image-frontend/Deep.interface.json"] = (
+        b'{"ignored":' + (b"[" * 200) + b"0" + (b"]" * 200) + b"}"
+    )
+    files["workflows/comfyui-image-frontend/Invalid-\ud800.interface.json"] = b"{}"
+    adapter = FixturePublicationAdapter(files)
+    registry, session_factory, engine = make_registry(adapter)
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [(item.basename, item.accepted, item.code) for item in diagnostics] == [
+        ("invalid-manifest-path", False, "manifest_invalid"),
+        ("Deep", False, "manifest_invalid"),
+        ("Generic Landscape", True, "ready"),
+    ]
+    with session_factory() as session:
+        assert [profile.display_name for profile in registry.list_current(session)] == [
+            "Generic Landscape"
+        ]
+    engine.dispose()
+
+
+def test_missing_publisher_dependency_marks_all_output_aware_sources_unavailable() -> None:
+    object_info = object_info_fixture()
+    object_info.pop("CIFPublishImage")
+    adapter = FixturePublicationAdapter(object_info=object_info)
+    registry, session_factory, engine = make_registry(adapter)
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert {(item.basename, item.code) for item in diagnostics} == {
+        ("Generic Landscape", "dependency_missing"),
+        ("Krea 2 NSFW V4", "dependency_missing"),
+    }
+    with session_factory() as session:
+        assert registry.list_current(session) == []
+        unavailable = registry.unavailable_catalog_entries(session)
+        assert {item["display_name"] for item in unavailable} == {
+            "Generic Landscape",
+            "Krea 2 NSFW V4",
+        }
+        assert all(item["available"] is False for item in unavailable)
+        assert all(item["readiness"] == "dependency_missing" for item in unavailable)
+        assert all(
+            item["message"] == "Required ComfyUI node classes are unavailable for this source."
+            for item in unavailable
+        )
+        assert "CIFPublishImage" not in str(unavailable)
+        dependency_diagnostics = [
+            item for item in registry.diagnostics(session) if item.code == "dependency_missing"
+        ]
+        assert len(dependency_diagnostics) == 2
+        assert all(
+            item.details_json["missing_class_types"] == ["CIFPublishImage"]
+            for item in dependency_diagnostics
+        )
+    engine.dispose()
+
+
+def test_dependency_loss_marks_accepted_revision_unavailable_until_runtime_recovers() -> None:
+    generic = build_publication_bundle("generic")
+    adapter = FixturePublicationAdapter(dict(generic.files))
+    registry, session_factory, engine = make_registry(adapter)
+    asyncio.run(registry.refresh())
+    source_key = source_key_for("test-instance", generic.manifest()["source_id"])
+
+    adapter.object_info.pop("CIFPublishImage")
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [item.code for item in diagnostics] == ["dependency_missing"]
+    with session_factory() as session:
+        assert registry.dependency_unavailable_source_keys(session) == {source_key}
+        with pytest.raises(AppError) as exc:
+            registry.get_current(session, source_key)
+        assert exc.value.code == "source_dependency_missing"
+
+    adapter.object_info["CIFPublishImage"] = {"input": {"required": {"images": ["IMAGE"]}}}
+    diagnostics = asyncio.run(registry.refresh())
+    assert [item.code for item in diagnostics] == ["ready"]
+    with session_factory() as session:
+        assert registry.dependency_unavailable_source_keys(session) == set()
+        assert registry.get_current(session, source_key).publication_id == GENERIC_PUBLICATION_ID
+    engine.dispose()
+
+
+def test_bad_republication_retains_prior_revision_then_valid_revision_switches_atomically() -> None:
+    original = build_publication_bundle("krea")
+    adapter = FixturePublicationAdapter(dict(original.files))
+    registry, session_factory, engine = make_registry(adapter)
+    asyncio.run(registry.refresh())
+    source_key = source_key_for("test-instance", original.manifest()["source_id"])
+
+    with session_factory() as session:
+        previous = registry.get_current(session, source_key)
+        previous_id = previous.id
+        assert previous.publication_id == KREA_PUBLICATION_ID
+
+    rejected = build_publication_bundle(
+        "krea",
+        publication_id="33333333-3333-4333-8333-333333333333",
+        corrupt="api",
+    )
+    adapter.files = dict(rejected.files)
+    diagnostics = asyncio.run(registry.refresh())
+    assert [item.code for item in diagnostics] == ["api_hash_mismatch"]
+    with session_factory() as session:
+        retained = registry.get_current(session, source_key)
+        assert retained.id == previous_id
+        assert retained.publication_id == KREA_PUBLICATION_ID
+
+    accepted = build_publication_bundle(
+        "krea", publication_id="44444444-4444-4444-8444-444444444444"
+    )
+    adapter.files = dict(accepted.files)
+    diagnostics = asyncio.run(registry.refresh())
+    assert [item.code for item in diagnostics] == ["ready"]
+    with session_factory() as session:
+        current = registry.get_current(session, source_key)
+        assert current.id != previous_id
+        assert current.publication_id == "44444444-4444-4444-8444-444444444444"
+        revisions = list(
+            session.scalars(
+                select(WorkflowProfile)
+                .where(WorkflowProfile.source_key == source_key)
+                .order_by(WorkflowProfile.publication_id)
+            )
+        )
+        assert [(item.publication_id, item.is_current, item.state) for item in revisions] == [
+            (KREA_PUBLICATION_ID, False, WorkflowState.STALE),
+            ("44444444-4444-4444-8444-444444444444", True, WorkflowState.VALID),
+        ]
+    engine.dispose()
+
+
+def test_transport_outage_retains_cached_current_revision() -> None:
+    adapter = FixturePublicationAdapter(dict(build_publication_bundle("krea").files))
+    registry, session_factory, engine = make_registry(adapter)
+    asyncio.run(registry.refresh())
+    adapter.probe_error = AppError("comfyui_unavailable", "Fixture ComfyUI is offline.")
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [item.code for item in diagnostics] == ["server_unreachable"]
+    assert diagnostics[0].details_json == {"cached_sources": 1}
+    with session_factory() as session:
+        assert len(registry.list_current(session)) == 1
+        health = session.get(ServiceHealth, "comfyui")
+        assert health is not None
+        assert health.available is False
+        assert health.capabilities_json["catalog_state"] == "cached_offline"
+    engine.dispose()
+
+
+def test_concurrent_identical_refreshes_leave_one_immutable_current_revision() -> None:
+    adapter = FixturePublicationAdapter(dict(build_publication_bundle("krea").files))
+    registry, session_factory, engine = make_registry(adapter)
+
+    async def refresh_twice() -> None:
+        first, second = await asyncio.gather(registry.refresh(), registry.refresh())
+        assert first[0].accepted is True
+        assert second[0].accepted is True
+
+    asyncio.run(refresh_twice())
+
+    with session_factory() as session:
+        profiles = list(session.scalars(select(WorkflowProfile)))
+        assert len(profiles) == 1
+        assert profiles[0].is_current is True
+        assert profiles[0].publication_id == KREA_PUBLICATION_ID
     engine.dispose()

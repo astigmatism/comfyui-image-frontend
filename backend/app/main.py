@@ -5,9 +5,10 @@ import logging
 import sys
 import time
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
@@ -36,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 
 class JsonFormatter(logging.Formatter):
-    converter = time.gmtime
+    @staticmethod
+    def converter(timestamp: float | None) -> time.struct_time:
+        return time.gmtime(timestamp)
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -50,7 +53,9 @@ class JsonFormatter(logging.Formatter):
             if value is not None:
                 payload[key] = value
         if record.exc_info:
-            payload["exception"] = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
+            payload["exception"] = (
+                record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
+            )
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -210,6 +215,7 @@ def create_app(
     if frontend_dist.is_dir() and (frontend_dist / "index.html").is_file():
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
     else:
+
         @app.get("/", include_in_schema=False)
         def frontend_not_built() -> JSONResponse:
             return JSONResponse(
@@ -217,8 +223,11 @@ def create_app(
                 content={
                     "error": {
                         "code": "frontend_not_built",
-                        "message": "Frontend assets are not built. Run the documented build command.",
+                        "message": (
+                            "Frontend assets are not built. Run the documented build command."
+                        ),
                     }
                 },
             )
+
     return app

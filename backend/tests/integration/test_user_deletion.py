@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-from sqlalchemy import func, select
-
 from app.main import create_app
 from app.models import (
     Artifact,
@@ -10,11 +7,15 @@ from app.models import (
     GenerationEvent,
     GenerationUpload,
     PromptAssistantRun,
-    Session as UserSession,
     Upload,
     User,
     UserPreference,
 )
+from app.models import (
+    Session as UserSession,
+)
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 from tests.conftest import change_password, create_user, csrf, login
 from tests.fake_services import make_png
 from tests.helpers import (

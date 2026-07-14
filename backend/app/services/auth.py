@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..errors import AppError
-from ..models import AuditLog, LoginThrottle, Session as UserSession, User, UserPreference, UserRole, UserState
+from ..models import AuditLog, LoginThrottle, User, UserPreference, UserRole, UserState
+from ..models import Session as UserSession
 from ..security import (
     hash_password,
     keyed_hash,
@@ -92,7 +93,9 @@ class AuthService:
         )
         if not valid:
             self._record_failed_attempt(session, key, throttle, now)
-            raise AppError("invalid_credentials", "Username or password is incorrect.", status_code=401)
+            raise AppError(
+                "invalid_credentials", "Username or password is incorrect.", status_code=401
+            )
         assert user is not None
         if password_needs_rehash(user.password_hash):
             user.password_hash = hash_password(password)
@@ -131,7 +134,9 @@ class AuthService:
             throttle.blocked_until = now + timedelta(seconds=self.settings.login_block_seconds)
         session.commit()
 
-    def resolve_session(self, session: Session, raw_token: str | None) -> tuple[User, UserSession] | None:
+    def resolve_session(
+        self, session: Session, raw_token: str | None
+    ) -> tuple[User, UserSession] | None:
         if not raw_token:
             return None
         stored = session.get(UserSession, keyed_hash(raw_token, self.settings))
@@ -173,14 +178,15 @@ class AuthService:
         new_password: str,
         current_session_hash: str,
     ) -> None:
-        if not user.must_change_password:
-            if not current_password or not verify_password(user.password_hash, current_password):
-                raise AppError(
-                    "invalid_current_password",
-                    "Current password is incorrect.",
-                    status_code=403,
-                    fields={"current_password": "Incorrect password."},
-                )
+        if not user.must_change_password and (
+            not current_password or not verify_password(user.password_hash, current_password)
+        ):
+            raise AppError(
+                "invalid_current_password",
+                "Current password is incorrect.",
+                status_code=403,
+                fields={"current_password": "Incorrect password."},
+            )
         validate_password(new_password)
         if verify_password(user.password_hash, new_password):
             raise AppError(
@@ -284,7 +290,11 @@ class AuthService:
     @staticmethod
     def _require_ordinary_target(user: User) -> None:
         if user.role != UserRole.USER or user.is_bootstrap:
-            raise AppError("forbidden", "The bootstrap administrator cannot be modified here.", status_code=403)
+            raise AppError(
+                "forbidden",
+                "The bootstrap administrator cannot be modified here.",
+                status_code=403,
+            )
 
 
 def _as_utc(value: datetime) -> datetime:

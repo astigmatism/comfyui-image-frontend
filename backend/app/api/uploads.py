@@ -8,7 +8,13 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..dependencies import AuthContext, get_container, get_db, require_ready_csrf, require_ready_user
+from ..dependencies import (
+    AuthContext,
+    get_container,
+    get_db,
+    require_ready_csrf,
+    require_ready_user,
+)
 from ..errors import AppError
 from ..models import Upload, UploadKind
 from ..schemas import UploadResponse

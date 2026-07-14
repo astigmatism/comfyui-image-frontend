@@ -6,16 +6,18 @@ import tempfile
 from pathlib import Path
 
 import uvicorn
-
 from app.config import Settings
 from app.main import create_app
+
 from tests.fake_services import LiveFakeServer
 
 
 def main() -> None:
     fake = LiveFakeServer().start()
     configured_data = os.getenv("CIF_E2E_DATA_DIR")
-    data_dir = Path(configured_data) if configured_data else Path(tempfile.mkdtemp(prefix="cif-e2e-"))
+    data_dir = (
+        Path(configured_data) if configured_data else Path(tempfile.mkdtemp(prefix="cif-e2e-"))
+    )
     remove_data = configured_data is None
     try:
         root = Path(__file__).resolve().parents[2]
@@ -28,7 +30,7 @@ def main() -> None:
             bootstrap_admin_temporary_password="E2EAdminTemporary123!",
             comfyui_base_url=fake.base_url,
             comfyui_ws_url=fake.ws_url,
-            comfyui_workflow_directory="workflows/front-end",
+            comfyui_workflow_directory="workflows",
             ollama_base_url=fake.base_url,
             frontend_dist=root / "frontend" / "dist",
             dispatch_poll_seconds=0.02,

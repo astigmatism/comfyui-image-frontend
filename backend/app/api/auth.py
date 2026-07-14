@@ -5,7 +5,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlalchemy.orm import Session
 
-from ..dependencies import AuthContext, get_container, get_db, optional_auth, require_auth, require_csrf
+from ..dependencies import (
+    AuthContext,
+    get_container,
+    get_db,
+    optional_auth,
+    require_csrf,
+)
 from ..errors import AppError
 from ..schemas import ChangePasswordRequest, LoginRequest, SessionInfo, UserPublic
 from ..security import new_login_csrf, secure_compare, verify_login_csrf

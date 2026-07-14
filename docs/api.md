@@ -1,169 +1,307 @@
 # Application API
 
-All routes are same-origin. The browser never receives ComfyUI/Ollama credentials, URLs, raw workflow graphs, node selectors, or filesystem paths.
+All routes are same-origin and served beneath `/api`. The application never injects ComfyUI/Ollama credentials or URLs, raw workflow/API graphs, private manifest input bindings, or discovery userdata paths into browser responses. Native output node keys and arbitrary fields actually emitted by ComfyUI remain visible in `unmapped_outputs` and graph-envelope-safe raw history so results are not flattened. Interactive OpenAPI is available at `/api/docs`; `backend/app/schemas.py` is the response-model source of truth.
 
-Interactive OpenAPI is available at `/api/docs` on a running instance. The source of truth for response models is `backend/app/schemas.py`.
+## Authentication and errors
 
-## Authentication model
-
-`GET /api/auth/session` returns either an anonymous signed login CSRF token or the authenticated user plus the server-session CSRF token. The opaque session token is an `HttpOnly` cookie.
-
-Every authenticated mutation requires:
+`GET /api/auth/session` returns an anonymous signed login-CSRF token or the authenticated user and session CSRF token. The opaque session token is an `HttpOnly` cookie. Every authenticated mutation includes:
 
 ```http
-X-CSRF-Token: <csrf_token returned by /api/auth/session or /api/auth/login>
+X-CSRF-Token: <csrf_token>
 ```
 
-Content routes are owner-scoped. Cross-user and administrator attempts against another user's content return not found rather than disclosing existence.
+Content lookups are scoped to the current owner. Cross-user requests, including administrator attempts, return not found rather than revealing existence.
 
-## Error shape
-
-Application and validation errors use one safe shape:
+Errors use a safe machine-readable envelope:
 
 ```json
 {
   "error": {
-    "code": "control_validation_failed",
-    "message": "Some workflow controls are invalid.",
-    "fields": {"size.width": "Maximum 2048."},
+    "code": "parameter_validation_failed",
+    "message": "One or more published parameters are invalid.",
+    "fields": {"width": "Value must be at most 2048."},
     "details": {},
     "request_id": "..."
   }
 }
 ```
 
-Internal traces, secrets, passwords, cookies, and full server paths are not returned.
+Application-internal traces, secrets, cookies, private manifest bindings, and executable graphs are not returned. Raw ComfyUI history/status is treated as authored result data and may itself contain custom diagnostics or paths; operators must trust the local workflow/custom nodes they publish.
 
-## Authentication and account
-
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/auth/session` | Anonymous/authenticated shell state and CSRF token |
-| POST | `/api/auth/login` | Local username/password login; signed login-CSRF required |
-| POST | `/api/auth/logout` | Revoke current session |
-| POST | `/api/auth/password` | Forced or voluntary password change |
-
-## Administrator-only non-content routes
+## Published generation sources
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/admin/users` | List account records |
-| POST | `/api/admin/users` | Create ordinary user with temporary password |
-| POST | `/api/admin/users/{id}/reset-password` | Set temporary password and revoke sessions |
-| DELETE | `/api/admin/users/{id}` | Cancel/reconcile work and delete all application-owned user data |
-| POST | `/api/admin/workflows/refresh` | Re-run network discovery and validation |
-| GET | `/api/admin/workflows/diagnostics` | Safe accepted/rejected profile diagnostics |
+| `GET` | `/api/workflows` | List current ready, cached/offline, and known unavailable publication summaries |
+| `GET` | `/api/workflows/{source_key}` | Get the selected source's allowlisted public interface |
+| `GET` | `/api/services` | Restrained ComfyUI/Ollama availability state |
+| `POST` | `/api/admin/workflows/refresh` | Administrator: rediscover and atomically validate publications |
+| `GET` | `/api/admin/workflows/diagnostics` | Administrator: safe per-transport/per-candidate diagnostics |
 
-No administrator endpoint returns prompts, controls, uploads, artifacts, or histories for another user.
+The historical route name `workflows` is retained, but objects now represent deliberately published sources.
 
-## Workflows and service state
+### Source summary
+
+```json
+{
+  "source_key": "<opaque-sha256>",
+  "display_name": "Krea 2 NSFW V4",
+  "instance_id": "home",
+  "readiness": "ready",
+  "available": true,
+  "cached": false,
+  "warnings": [],
+  "revision": {
+    "publication_id": "11111111-1111-4111-8111-111111111111",
+    "workflow_sha256": "...",
+    "api_sha256": "...",
+    "manifest_sha256": "..."
+  }
+}
+```
+
+`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled. Ordinary source responses describe missing dependencies generically; exact class names remain restricted to administrator diagnostics.
+
+During client migration, summaries also carry legacy `profile_id`, workflow/version/hash, contract-schema, and adapter fields. They are compatibility metadata, not the logical source/revision API; new clients use `source_key` and `revision`.
+
+A source detail adds only this public projection:
+
+```json
+{
+  "interface": {
+    "schema": "comfyui-image-frontend.interface/v1",
+    "inputs": [
+      {
+        "id": "prompt",
+        "type": "string",
+        "label": "Prompt",
+        "description": "The positive image prompt.",
+        "semantic_role": "positive_prompt",
+        "required": true,
+        "advanced": false,
+        "group": "Basic",
+        "order": 10,
+        "default": "mountain lake"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "first_pass",
+        "role": "preview",
+        "kind": "image",
+        "cardinality": "many",
+        "label": "First pass",
+        "description": "Early prototype image."
+      },
+      {
+        "id": "final",
+        "role": "final",
+        "kind": "image",
+        "cardinality": "many",
+        "label": "Final",
+        "description": "Authoritative final image."
+      }
+    ],
+    "unmapped_outputs_policy": "collect"
+  }
+}
+```
+
+Numeric fields additionally include `minimum`, `maximum`, and `step`; seeds include `default_mode` and use a decimal-string default when fixed (or `null` when random). Published manifests declare output `type: "image"`, but this public interface intentionally exposes the normalized field `kind: "image"`. Output descriptions contain public `id`, `role`, `kind`, `cardinality`, `label`, and `description`. Bindings, instance UUIDs, class types, node IDs, dependencies, paths, and graphs are never copied into the public source projection.
+
+Administrator refresh returns diagnostic records with `basename`, `accepted`, optional source/revision hints, `code`, safe `message`, and `checked_at`. Important codes include transport failures (`server_unreachable`, `listing_failed`), candidate fetch failures, validation/hash failures, `dependency_missing`, `ready_with_warnings`, and `ready`.
+
+## Validate and create a generation
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/workflows` | Current valid semantic workflow summaries |
-| GET | `/api/workflows/{profile_id}` | Resolved public contract with controls/capabilities/stages/outputs |
-| GET | `/api/services` | Restrained ComfyUI/Ollama availability state |
+| `POST` | `/api/generations/validate` | Validate parameters and compile a request without queuing |
+| `POST` | `/api/generations` | Durably accept and queue a generation |
 
-The public contract strips bindings, selectors, node IDs, graph documents, internal dependencies, and operator-only controls.
+Canonical request:
 
-## Uploads
+```json
+{
+  "source_key": "<opaque-source-key>",
+  "revision": {
+    "publication_id": "11111111-1111-4111-8111-111111111111",
+    "workflow_sha256": "...",
+    "api_sha256": "...",
+    "manifest_sha256": "..."
+  },
+  "parameters": {
+    "prompt": "mist over a mountain lake",
+    "width": 1024,
+    "height": 1024,
+    "seed": "1125899906842624",
+    "enable_upscale": false
+  },
+  "prompt_assistant_run_id": null
+}
+```
+
+`revision` is optional for a fresh caller but recommended for a UI selection. If the selected source was republished, a mismatch returns HTTP 409 with `source_republished`; the backend never compiles against a silently changed graph.
+
+`parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings.
+
+Successful validation:
+
+```json
+{
+  "valid": true,
+  "effective_parameters": {
+    "prompt": "mist over a mountain lake",
+    "width": 1024,
+    "height": 1024,
+    "seed": "793486291720513",
+    "enable_upscale": false
+  },
+  "resolved_seeds": {"seed": "793486291720513"},
+  "errors": {},
+  "compiled_graph_sha256": "..."
+}
+```
+
+Invalid compilation returns the standard error envelope with field errors rather than queuing. `POST /api/generations` returns HTTP 201 and a generation summary only after the generation/source snapshot, effective parameters, graph, queue item, and initial event are committed.
+
+Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_outputs`, and `expected_identity` remain in the envelope for the pre-publication browser. New clients must not use them. They resolve only to current validated publications and do not restore legacy discovery.
+
+## Generation summaries and detail
 
 | Method | Route | Purpose |
 |---|---|---|
-| POST | `/api/uploads/images` | Decode/store an owner-scoped source image |
-| POST | `/api/uploads/masks` | Decode/store an owner-scoped mask |
-| GET | `/api/uploads/{upload_id}/content` | Authorized preview/original retrieval |
+| `GET` | `/api/generations?limit=40&cursor=...` | Newest-first owner page |
+| `GET` | `/api/generations/{id}` | Complete owner-scoped generation/result detail |
+| `GET` | `/api/generations/{id}/recall` | Exact current-publication recall payload |
+| `POST` | `/api/generations/{id}/cancel` | Request cancellation or cancel a queued item |
+| `DELETE` | `/api/generations/{id}` | Delete owned history/files; may return 202 while active deletion reconciles |
 
-Multipart field name is `file`. Responses return an opaque application upload ID, dimensions, hash, MIME type, and same-origin preview URL. Clients never provide a server path.
+A summary contains lifecycle status, source display name, acceptance/stage state, total artifact count, image count, final-image count, one optional `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native `prompt_id`, `source_key`, and `publication_id`. The display artifact is a gallery convenience selected from the workflow-authored final when available.
+
+Generation detail adds:
+
+```json
+{
+  "generation_source": {
+    "source_key": "...",
+    "instance_id": "home",
+    "publication_id": "...",
+    "workflow_sha256": "...",
+    "api_sha256": "...",
+    "manifest_sha256": "..."
+  },
+  "prompt_id": "native-comfyui-prompt-id",
+  "requested_parameters": {"prompt": "...", "seed": "random"},
+  "effective_parameters": {"prompt": "...", "seed": "793486291720513"},
+  "resolved_seeds": {"seed": "793486291720513"},
+  "declared_outputs": [
+    {
+      "id": "final",
+      "label": "Final",
+      "role": "final",
+      "kind": "image",
+      "cardinality": "many",
+      "description": "Authoritative final image.",
+      "artifacts": [
+        {
+          "batch_index": 0,
+          "filename": "result-00001.png",
+          "subfolder": "example",
+          "type": "output",
+          "artifact": {
+            "id": "artifact-id",
+            "output_id": "final",
+            "role": "final",
+            "kind": "image",
+            "state": "final",
+            "sequence": 4002,
+            "batch_index": 0,
+            "width": 1024,
+            "height": 1024,
+            "canonical": true,
+            "best_available": true,
+            "content_url": "/api/artifacts/artifact-id/content",
+            "thumbnail_url": "/api/artifacts/artifact-id/thumbnail",
+            "available_at": "2026-07-13T20:00:00Z"
+          }
+        }
+      ]
+    }
+  ],
+  "unmapped_outputs": {"156": {"images": [{"filename": "..."}]}},
+  "raw_history": {"outputs": {}, "status": {}},
+  "warnings": [],
+  "errors": [],
+  "comfyui_status": {},
+  "artifacts": [],
+  "events": []
+}
+```
+
+The complete response also carries compatibility `workflow`, `requested_controls`, and `effective_controls` fields so old stored rows remain readable, plus `final_prompt`, `error_code`, and `delete_pending`.
+
+`declared_outputs` is an ordered list following the frozen manifest. Each item contains both `id` and the compatibility alias `output_id`, plus label, role, kind, `cardinality: "many"`, description, and authoritative ordered logical references. Each reference retains its native locator and nests a matching application-owned `artifact` summary when archival succeeded; `artifact` is `null` when no archive is available. Publisher `artifacts[].batch_index` determines logical batch order; the publisher's mirrored ordinary `images` field is retained in `raw_history` but is not counted again. Publisher node IDs and instance UUIDs are private declaration bindings, although their native history payload remains part of raw result metadata.
+
+`unmapped_outputs` remains node-keyed and copies every nonpublisher node result without field or class filtering. `interface.native_outputs` never filters runtime history. Public `raw_history` removes only top-level submitted graph envelopes such as `prompt` and `extra_data`; it retains the actual node results, publisher metadata, raw status/messages/errors, and execution metadata. All retrievable image references from declared and unmapped outputs are archived; every batch member appears separately in top-level `artifacts` with `output_id`, role/kind/state, sequence/batch index, dimensions, canonical/best flags, and authorized URLs. If optional retrieval fails, its logical locator remains in declared/unmapped/raw data and the response carries a warning.
+
+Recall returns `available`, an unavailable reason when relevant, and—when exact—the `source_key`, full `revision`, and effective `parameters`. It never substitutes a newer publication or submits automatically.
+
+## Artifact, upload, and result access
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/uploads/images` | Decode/store owner-scoped source image |
+| `POST` | `/api/uploads/masks` | Decode/store owner-scoped mask |
+| `GET` | `/api/uploads/{upload_id}/content` | Authorized source preview/original |
+| `GET` | `/api/artifacts/{artifact_id}/content` | Authorized retained output |
+| `GET` | `/api/artifacts/{artifact_id}/thumbnail` | Authorized WebP derivative |
+
+Upload multipart field name is `file`. Uploads return opaque ID, kind, dimensions, SHA-256, MIME type, and `preview_url`. Published interface v1 currently has no public upload input type; these routes remain for historical records and unrelated application behavior.
+
+ComfyUI file references are never accepted from callers. The worker extracts only bounded `filename` / `subfolder` / `type` tuples from history, with type restricted to `input`, `output`, or `temp`, retrieves them through `/view`, and archives bytes before exposing application URLs.
 
 ## Prompt Assistant
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/prompt-assistant/status` | Availability and safe explanation |
-| POST | `/api/prompt-assistant/compose` | Explicit refine/create operation |
+| `GET` | `/api/prompt-assistant/status` | Availability without exposing server/model inventory |
+| `POST` | `/api/prompt-assistant/compose` | Explicit `refine` or `create` operation |
 
-Example request:
+Composition returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation. Prompt Assistant is never invoked implicitly by generation or recall.
 
-```json
-{
-  "mode": "refine",
-  "prompt": "portrait in window light",
-  "creative_direction": "35mm film, restrained color"
-}
-```
-
-The response contains the finalized prompt, composition ID, selected model, and template version. Generate does not call Ollama. Passing the composition ID with generation acceptance links provenance; the visible submitted prompt remains authoritative.
-
-## Generation validation and acceptance
+## Favorites and preferences
 
 | Method | Route | Purpose |
 |---|---|---|
-| POST | `/api/generations/validate` | Compile/validate without creating history |
-| POST | `/api/generations` | Durably accept one immutable request |
+| `GET` | `/api/favorites?limit=40&cursor=...` | Newest-first owner favorites |
+| `PUT` | `/api/generations/{id}/favorite` | Idempotently bookmark an owned generation |
+| `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
+| `GET` | `/api/preferences` | Read owner gallery scale |
+| `PUT` | `/api/preferences` | Persist scale from 0 through 100 |
 
-Representative acceptance request:
-
-```json
-{
-  "profile_id": "<registry UUID>",
-  "controls": {
-    "prompt.text": "cinematic portrait",
-    "generation.seed": "random",
-    "size.resolution": {"width": 1024, "height": 1024}
-  },
-  "preset_id": null,
-  "requested_outputs": [],
-  "prompt_assistant_run_id": null,
-  "expected_identity": null
-}
-```
-
-`expected_identity` is populated after recall and contains exact workflow/version/UI/API/contract hashes. A mismatch returns conflict rather than compiling a replacement.
-
-Validation rejection creates no gallery record. Acceptance resolves random seeds to integers, stores all snapshots, inserts a queue event, and returns one summary immediately.
-
-## Gallery and details
+## Authentication and account routes
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/generations?limit=24&cursor=...` | Newest-first owner cursor page |
-| GET | `/api/generations/{id}` | Full owner detail, events, controls, artifact timeline |
-| GET | `/api/generations/{id}/recall` | Exact-recall payload or unavailable reason |
-| POST | `/api/generations/{id}/cancel` | Queue/running cancellation request |
-| DELETE | `/api/generations/{id}` | Immediate terminal/queued delete or `202` pending running reconciliation |
-| GET | `/api/artifacts/{id}/content` | Authorized original artifact |
-| GET | `/api/artifacts/{id}/thumbnail` | Authorized WebP derivative |
+| `GET` | `/api/auth/session` | Anonymous/authenticated state and CSRF token |
+| `POST` | `/api/auth/login` | Local login; signed login-CSRF required |
+| `POST` | `/api/auth/logout` | Revoke current session |
+| `POST` | `/api/auth/password` | Forced or voluntary password change |
+| `GET` | `/api/admin/users` | Administrator: account records only |
+| `POST` | `/api/admin/users` | Administrator: create ordinary account |
+| `POST` | `/api/admin/users/{id}/reset-password` | Administrator: temporary password and revocation |
+| `DELETE` | `/api/admin/users/{id}` | Administrator: cancel/reconcile and delete user data |
 
-A summary contains only one `display_artifact` for card rendering even when the detail timeline contains multiple checkpoints or final batch siblings. It also exposes the expected output dimensions so an image-less working card can reserve the final aspect ratio, plus `cancel_allowed` for the active card action.
-
-## Favorites
-
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/favorites?limit=40&cursor=...` | Newest-first page of the current owner's saved generations |
-| PUT | `/api/generations/{id}/favorite` | Idempotently save an owned generation as a favorite |
-| DELETE | `/api/generations/{id}/favorite` | Remove only the favorite bookmark; preserve generation history |
-
-Generation summaries expose `is_favorite` for the gallery heart state. A favorite item contains its bookmark ID/time, the final submitted prompt, and an owner-scoped generation summary with thumbnail and exact-recall availability. Cross-user requests return not found and never reveal whether another user's generation or favorite exists.
-
-## Preferences
-
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/preferences` | Current owner's gallery scale |
-| PUT | `/api/preferences` | Persist integer scale from 0 through 100 |
+Administrator routes never return another user's prompts, parameters, uploads, results, or history.
 
 ## Server-Sent Events
 
-`GET /api/events` is an authenticated `text/event-stream`. Reconnection can pass either `Last-Event-ID` or `?last_event_id=N`. The route first replays durable owner events after that ID and then subscribes to owner-only live fan-out.
-
-Event envelope:
+`GET /api/events` is an authenticated `text/event-stream`. Reconnection passes `Last-Event-ID` or `?last_event_id=N`. The route replays durable owner events and then subscribes to owner-only live fan-out.
 
 ```text
 id: 123
-event: artifact.available
-data: {"id":123,"type":"artifact.available","generation_id":"...","created_at":"...","payload":{...}}
+event: generation.running
+data: {"id":123,"type":"generation.running","generation_id":"...","created_at":"...","payload":{...}}
 ```
 
-Published types include queue/dispatch/running/stage/progress, artifact availability/persistence failure, cancel request/reconciliation, terminal error/completion, requeue, and deletion. The client fetches current durable generation state after an event, so reconnection does not depend on transient payload completeness.
+Events cover queue, dispatch, running/progress, artifact availability, persistence failure, cancellation/reconciliation, terminal completion/error, requeue, and deletion. The client fetches current durable generation state after relevant events, so correctness does not depend on transient event payload completeness.

@@ -23,6 +23,27 @@ async function openAccountMenu(page) {
   }
 }
 
+async function selectPublishedSource(page, name) {
+  const selector = page.locator("#workflow-source");
+  const option = selector.locator("option").filter({ hasText: name });
+  await expect(option).toHaveCount(1);
+  const value = await option.getAttribute("value");
+  expect(value).toBeTruthy();
+  await selector.selectOption(value);
+  await expect(selector).toHaveValue(value);
+}
+
+async function generateAndExpectAccepted(page) {
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/generations" &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Generate" }).click();
+  const response = await responsePromise;
+  expect(response.status(), await response.text()).toBe(201);
+}
+
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "admin", "E2EAdminTemporary123!");
@@ -41,14 +62,15 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await signIn(page, "artist.one", "E2EUserTemporary123!");
   await setForcedPassword(page, "E2EUserPermanent123!");
+  await selectPublishedSource(page, "Generic Landscape");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   await prompt.fill("slow multi lighthouse at dusk");
-  await page.getByRole("button", { name: "Generate" }).click();
+  await generateAndExpectAccepted(page);
   await expect(page.locator(".gallery-card")).toHaveCount(1);
   await expect(page.locator(".gallery-card .card-media img")).toBeVisible();
   await expect(page.locator(".gallery-card")).toHaveClass(/status-(running|succeeded)/);
-  await expect(page.locator(".gallery-card .batch-count")).toHaveText("2");
+  await expect(page.locator(".gallery-card .batch-count")).toHaveText("4");
 
   const cardMedia = page.locator(".gallery-card .card-media").first();
   const detailDialog = page.locator("#detail-dialog");
@@ -65,7 +87,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(footer.locator("button")).toHaveCount(2);
   await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
-  await expect(footer.locator(".card-metadata")).toContainText("Fake Progressive Workflow ·");
+  await expect(footer.locator(".card-metadata")).toContainText("Generic Landscape ·");
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
   await footer.getByRole("button", { name: "Add to Favorites" }).click();
@@ -120,53 +142,209 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
 });
 
-test("resolution canvas snaps all three handles and synchronizes its details and inputs", async ({ page }) => {
+test("published Krea source exposes strict outputs and the complete authored result hierarchy", async ({
+  page,
+}) => {
   await page.goto("/");
   await signIn(page, "admin", "E2EAdminPermanent123!");
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
 
-  const grid = page.locator("[data-resolution-grid]");
-  await grid.scrollIntoViewIfNeeded();
-  const initialGridBox = await grid.boundingBox();
-  const panelBox = await page.locator(".panel-scroll").boundingBox();
-  expect(initialGridBox).not.toBeNull();
-  expect(panelBox).not.toBeNull();
-  expect(initialGridBox.width).toBeGreaterThan(panelBox.width - 40);
+  await expect(page.locator('[data-control-group="Basic"]')).toHaveCount(5);
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
+    "a tree with chickens",
+  );
+  await expect(page.locator('[data-control-id*="negative" i]')).toHaveCount(0);
 
-  const dragHandle = async (name, targetWidthFraction, targetHeightFraction) => {
-    const handle = grid.locator(`[data-resolution-handle="${name}"]`);
-    await handle.scrollIntoViewIfNeeded();
-    const gridBox = await grid.boundingBox();
-    const handleBox = await handle.boundingBox();
-    expect(gridBox).not.toBeNull();
-    expect(handleBox).not.toBeNull();
-    const targetX = gridBox.x + gridBox.width * targetWidthFraction;
-    const targetY = gridBox.y + gridBox.height * (1 - targetHeightFraction);
-    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(targetX, targetY, { steps: 4 });
-    await page.mouse.up();
-  };
+  const width = page.getByRole("spinbutton", { name: "Width", exact: true });
+  const height = page.getByRole("spinbutton", { name: "Height", exact: true });
+  await expect(width).toHaveValue("1080");
+  await expect(width).toHaveAttribute("min", "16");
+  await expect(width).toHaveAttribute("max", "2048");
+  await expect(width).toHaveAttribute("step", "8");
+  await expect(height).toHaveValue("1920");
+  await expect(height).toHaveAttribute("min", "16");
+  await expect(height).toHaveAttribute("max", "2048");
+  await expect(height).toHaveAttribute("step", "8");
+  await expect(page.locator("[data-resolution-grid]")).toHaveCount(0);
 
-  await dragHandle("both", 0.5, 0.78125);
-  await expect(page.getByLabel("Width", { exact: true })).toHaveValue("1024");
-  await expect(page.getByLabel("Height", { exact: true })).toHaveValue("1600");
-  await expect(page.locator("[data-resolution-summary]")).toHaveText("1024 × 1600 · 1.64 MP · 16:25");
+  const sourceKey = await page.locator("#workflow-source").inputValue();
+  const sourceResponse = await page.evaluate(async (key) => {
+    const response = await fetch(`/api/workflows/${encodeURIComponent(key)}`);
+    return { status: response.status, body: await response.json() };
+  }, sourceKey);
+  expect(sourceResponse.status).toBe(200);
+  expect(
+    sourceResponse.body.interface.outputs.map(({ id, role, kind }) => ({ id, role, kind })),
+  ).toEqual([
+    { id: "base", role: "preview", kind: "image" },
+    { id: "second_pass", role: "comparison", kind: "image" },
+    { id: "final", role: "final", kind: "image" },
+  ]);
 
-  await dragHandle("width", 0.75, 0.5);
-  await expect(page.getByLabel("Width", { exact: true })).toHaveValue("1536");
-  await expect(page.getByLabel("Height", { exact: true })).toHaveValue("1600");
+  const seedMode = page.getByLabel("Seed mode", { exact: true });
+  const seedValue = page.getByLabel("Seed value", { exact: true });
+  await expect(seedMode).toHaveValue("random");
+  await expect(seedValue).toBeDisabled();
+  await seedMode.selectOption("fixed");
+  await expect(seedValue).toBeEnabled();
+  await expect(seedValue).toHaveAttribute("data-maximum", "1125899906842624");
+  await seedValue.fill("1125899906842624");
 
-  await dragHandle("height", 0.5, 0.5);
-  await expect(page.getByLabel("Width", { exact: true })).toHaveValue("1536");
-  await expect(page.getByLabel("Height", { exact: true })).toHaveValue("1024");
-  await expect(page.locator("[data-resolution-summary]")).toHaveText("1536 × 1024 · 1.57 MP · 3:2");
+  const upscale = page.getByLabel("Enable SeedVR2 upscale", { exact: true });
+  await expect(upscale).not.toBeChecked();
+  await upscale.check();
+  await expect(upscale).toBeChecked();
+  await expect(upscale.locator("xpath=..")).toContainText("On");
+
+  await width.fill("1024");
+  await height.fill("1600");
+  await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
+  const advanced = page.locator(".advanced-group");
+  await expect(advanced).not.toHaveAttribute("open", "");
+  await advanced.locator("summary").click();
+  const strength = page.getByRole("spinbutton", { name: "KNP V4.1 strength", exact: true });
+  await expect(strength).toHaveValue("1");
+  await expect(strength).toHaveAttribute("min", "0");
+  await expect(strength).toHaveAttribute("max", "2");
+  await expect(strength).toHaveAttribute("step", "0.05");
+  const strengthSlider = page.getByRole("slider", { name: "KNP V4.1 strength slider" });
+  await expect(strengthSlider).toHaveValue("1");
+  await strengthSlider.fill("1.25");
+  await expect(strength).toHaveValue("1.25");
+  await strength.fill("0.5");
+  await expect(strengthSlider).toHaveValue("0.5");
+  await expect(page.locator(".source-notice.warning")).toHaveCount(0);
+
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("multi authored output hierarchy");
+  await generateAndExpectAccepted(page);
+
+  const card = page.locator(".gallery-card").first();
+  await expect(card).toHaveClass(/status-succeeded/, { timeout: 30_000 });
+  await expect(card.locator(".batch-count")).toHaveText("8");
+  await card.locator(".card-media").click();
+
+  const detailDialog = page.locator("#detail-dialog");
+  await expect(detailDialog).toHaveAttribute("open", "");
+  const primary = detailDialog.locator(".result-image-group").filter({
+    hasText: "Primary result",
+  });
+  const prototypes = detailDialog.locator(".result-image-group").filter({
+    hasText: "Prototypes and earlier passes",
+  });
+  const comparisons = detailDialog.locator(".result-image-group").filter({
+    hasText: "Comparisons and alternates",
+  });
+  const additionalImages = detailDialog.locator(".result-image-group").filter({
+    hasText: "Additional images",
+  });
+
+  await expect(primary.locator("figure")).toHaveCount(2);
+  await expect(primary).toContainText("Final");
+  await expect(primary).toContainText("batch 1");
+  await expect(primary).toContainText("batch 2");
+  await expect(prototypes.locator("figure")).toHaveCount(2);
+  await expect(prototypes).toContainText("Base");
+  await expect(comparisons.locator("figure")).toHaveCount(2);
+  await expect(comparisons).toContainText("Second pass");
+  await expect(additionalImages.locator("figure")).toHaveCount(2);
+  await expect(detailDialog.locator("a.artifact-download")).toHaveCount(8);
+
+  const declaredMetadata = detailDialog.locator("details.result-details");
+  await declaredMetadata.locator("summary").click();
+  await expect(declaredMetadata.locator("pre")).toContainText('"output_id": "base"');
+  await expect(declaredMetadata.locator("pre")).toContainText('"output_id": "second_pass"');
+  await expect(declaredMetadata.locator("pre")).toContainText('"output_id": "final"');
+  await expect(declaredMetadata.locator("pre")).toContainText('"cardinality": "many"');
+
+  const additionalOutputs = detailDialog.locator(".result-section").filter({
+    hasText: "Additional outputs",
+  });
+  await expect(additionalOutputs).toContainText('"900"');
+  await expect(additionalOutputs).toContainText('"901"');
+  await expect(additionalOutputs).toContainText("complete native text result");
+  await expect(additionalOutputs).toContainText("asset_sha256");
+
+  const rawHistory = detailDialog.locator("details.raw-history");
+  await rawHistory.locator("summary").click();
+  await expect(rawHistory.locator("pre")).toContainText('"outputs"');
+  await expect(rawHistory.locator("pre")).toContainText("publisher_timing");
+  await expect(rawHistory.locator("pre")).toContainText("complete native text result");
+  await detailDialog.getByRole("button", { name: "Close", exact: true }).click();
+});
+
+test("backend field errors disclose Advanced controls and stale compositions do not cross sources", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signIn(page, "admin", "E2EAdminPermanent123!");
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  let releaseGeneration;
+  const generationGate = new Promise((resolve) => {
+    releaseGeneration = resolve;
+  });
+  await page.route("**/api/generations", async (route) => {
+    await generationGate;
+    await route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "parameter_validation_failed",
+          message: "Published parameters were rejected.",
+          fields: { knpv4_1_strength: "Server-side strength rejection." },
+        },
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Generate" }).click();
+  await expect(page.locator("#workflow-source")).toBeDisabled();
+  releaseGeneration();
+  const advanced = page.locator(".advanced-group");
+  await expect(advanced).toHaveAttribute("open", "");
+  const strength = page.getByRole("spinbutton", { name: "KNP V4.1 strength", exact: true });
+  await expect(strength).toHaveAttribute("aria-invalid", "true");
+  await expect(strength).toBeFocused();
+  await page.unroute("**/api/generations");
+
+  await selectPublishedSource(page, "Generic Landscape");
+  await page.locator("#prompt-assistant > summary").click();
+  await page.getByRole("textbox", { name: "Creative direction", exact: true }).fill("stale request");
+  let releaseComposition;
+  const compositionGate = new Promise((resolve) => {
+    releaseComposition = resolve;
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await compositionGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        composition_id: "stale-composition",
+        prompt: "this prompt belongs to the previous source",
+        model: "fake-model",
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Compose Prompt" }).click();
+  await expect(page.getByRole("button", { name: "Composing…" })).toBeDisabled();
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  releaseComposition();
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
+    "a tree with chickens",
+  );
+  await expect(page.locator("#toast-region")).toContainText("was not applied");
+  await page.unroute("**/api/prompt-assistant/compose");
 });
 
 test("failed and cancelled attempts remain one-card, recallable history", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");
+  await selectPublishedSource(page, "Generic Landscape");
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("please fail after checkpoint");
-  await page.getByRole("button", { name: "Generate" }).click();
+  await generateAndExpectAccepted(page);
   const card = page.locator(".gallery-card").first();
   await expect(card.locator(".media-status")).toContainText("Failed");
   await expect(card.getByRole("button", { name: "Recall settings" })).toBeEnabled();
@@ -176,10 +354,11 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
 test("working card reserves final aspect ratio and cancels in place", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");
-  await page.getByLabel("Width", { exact: true }).fill("384");
-  await page.getByLabel("Height", { exact: true }).fill("512");
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("384");
+  await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("512");
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow cancellation sample");
-  await page.getByRole("button", { name: "Generate" }).click();
+  await generateAndExpectAccepted(page);
 
   const card = page.locator(".gallery-card").first();
   await expect(card).toHaveClass(/status-running/);

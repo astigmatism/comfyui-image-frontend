@@ -1,5 +1,7 @@
 # Implementation Prompt: Build the ComfyUI Image Generation Front-End
 
+> **Historical implementation input — do not use as the current workflow integration contract.** This prompt describes the retired embedded `FrontendWorkflowContract` node and two-file workflow-pair design. Published-source discovery now requires adjacent `<stem>.json`, `<stem>.api.json`, and `<stem>.interface.json` artifacts using publication/interface v1. See [`published-workflows.md`](published-workflows.md), [`architecture.md`](architecture.md), and [`api.md`](api.md). The file is retained to explain the repository's original scope and older stored records.
+
 You are the senior full-stack engineer responsible for producing a complete, working implementation of a Dockerized web application that serves as a simplified image-generation front end for ComfyUI.
 
 You are being given two normative attachments:
@@ -169,7 +171,7 @@ Implement the workflow contract's compilation and execution pipeline. Keep Comfy
 
 Provide an authenticated application event stream using SSE or an application WebSocket. It must publish queue state, semantic stages, artifact availability, cancellation state, errors, and terminal completion. Reconnection must recover current durable state.
 
-Handle declared progressive outputs immediately when retrievable. Update the same gallery card to the newest meaningful checkpoint while retaining earlier checkpoints for the detail timeline. Mark a final artifact canonical only after terminal success. Keep best-available artifacts explicitly non-final after cancellation or later-stage failure.
+Handle every declared publisher output immediately when retrievable. Parse the publisher's namespaced `artifacts` list as the authority for output identity and batch order, while retaining the complete ordinary publisher result in raw history. Copy every nonpublisher node result untouched into additional outputs; never filter runtime history through a compile-time node inventory. Update the same gallery card to the authored final/newest meaningful checkpoint while retaining preview, comparison, auxiliary, native, and batch-sibling images for detail/download. Mark a final artifact canonical only after terminal success. Keep best-available artifacts explicitly non-final after cancellation or later-stage failure.
 
 Support queued and running cancellation. Model `cancel_requested` separately, reconcile races, retain emitted artifacts, and preserve the record for Recall settings.
 
@@ -211,7 +213,7 @@ Deleting a user must revoke sessions, remove queued work, cancel/reconcile runni
 
 Tests are part of the implementation, not a later suggestion.
 
-Build deterministic fake ComfyUI and Ollama services for tests. The fake ComfyUI must support workflow listing and retrieval, runtime capability information, prompt submission, stage events, progressive artifacts, multiple outputs, cancellation races, history, output retrieval, and failure/disconnect modes. Include valid and invalid paired workflow fixtures.
+Build deterministic fake ComfyUI and Ollama services for tests. The fake ComfyUI must support workflow listing and retrieval, runtime capability information, prompt submission, stage events, exact list-shaped multi-publisher history, multiple batches, arbitrary native custom UI fields, cancellation races, delayed history, output retrieval, and failure/disconnect modes. Include valid and invalid three-file publication fixtures.
 
 Use an appropriate test pyramid:
 

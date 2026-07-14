@@ -40,7 +40,9 @@ class AssetStore:
         if kind == "mask":
             image = _normalize_mask(image)
         else:
-            image = ImageOps.exif_transpose(image).convert("RGBA" if "A" in image.getbands() else "RGB")
+            image = ImageOps.exif_transpose(image).convert(
+                "RGBA" if "A" in image.getbands() else "RGB"
+            )
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
         normalized = buffer.getvalue()
@@ -56,9 +58,13 @@ class AssetStore:
             sha256=hashlib.sha256(normalized).hexdigest(),
         )
 
-    def store_artifact(self, content: bytes, *, generation_id: str, kind: str = "image") -> StoredImage:
+    def store_artifact(
+        self, content: bytes, *, generation_id: str, kind: str = "image"
+    ) -> StoredImage:
         if len(content) > self.settings.upload_max_bytes * 20:
-            raise AppError("artifact_persistence_failed", "Generated artifact exceeds storage limits.")
+            raise AppError(
+                "artifact_persistence_failed", "Generated artifact exceeds storage limits."
+            )
         if kind != "image":
             relative = f"assets/{generation_id}/{uuid.uuid4()}.bin"
             self._atomic_write(relative, content)

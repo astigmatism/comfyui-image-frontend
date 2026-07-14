@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
@@ -12,8 +13,8 @@ from ..models import (
     Artifact,
     AuditLog,
     Generation,
-    GenerationUpload,
     GenerationStatus,
+    GenerationUpload,
     Upload,
     User,
     UserRole,
@@ -67,10 +68,8 @@ class UserDeletionService:
                         prompt_ids.append(generation.comfyui_prompt_id)
             session.commit()
         for prompt_id in prompt_ids:
-            try:
+            with suppress(Exception):
                 await self.comfyui.cancel(prompt_id, running=True)
-            except Exception:
-                pass
 
         for _ in range(20):
             with self.session_factory() as session:
@@ -124,9 +123,7 @@ class UserDeletionService:
             # of the account cleanup without an immediate RESTRICT violation.
             generation_ids = select(Generation.id).where(Generation.owner_id == target_id)
             session.execute(
-                delete(GenerationUpload).where(
-                    GenerationUpload.generation_id.in_(generation_ids)
-                )
+                delete(GenerationUpload).where(GenerationUpload.generation_id.in_(generation_ids))
             )
             session.delete(target)
             session.add(

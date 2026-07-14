@@ -1,200 +1,208 @@
 from __future__ import annotations
 
 import copy
-import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
 from app.domain.compiler import WorkflowCompiler
-from app.domain.contract import validate_profile
+from app.domain.publication import canonical_json_bytes, validate_publication
 from app.errors import AppError
-from tests.fake_services import build_valid_workflow_pair, object_info_fixture
+from tests.publication_fixtures import (
+    PublicationBundle,
+    build_publication_bundle,
+    object_info_fixture,
+)
 
 
-def profile():
-    ui, api = build_valid_workflow_pair()
-    return validate_profile(
-        basename="profiles/progressive",
-        ui_document=ui,
-        api_document=api,
+def publication(bundle: PublicationBundle | None = None):  # type: ignore[no-untyped-def]
+    selected = bundle or build_publication_bundle("krea")
+    return validate_publication(
+        instance_id="test-instance",
+        manifest_path=selected.manifest_path,
+        manifest_bytes=selected.manifest_bytes,
+        workflow_bytes=selected.workflow_bytes,
+        api_bytes=selected.api_bytes,
         object_info=object_info_fixture(),
-        runtime_capabilities={"assets": ["models/fake.safetensors"]},
+        manifest_max_bytes=1024 * 1024,
+        workflow_max_bytes=1024 * 1024,
+        api_max_bytes=1024 * 1024,
     )
 
 
-def test_compile_resolves_seed_derived_values_branch_and_upload_marker() -> None:
-    validated = profile()
-    compiler = WorkflowCompiler(seed_resolver=lambda minimum, maximum: 123456)
-    upload_id = str(uuid.uuid4())
+def required(prompt: str = "a quiet lake") -> dict[str, object]:
+    return {"prompt": prompt, "width": 512, "height": 768}
+
+
+def test_compile_applies_defaults_random_seed_and_every_trusted_binding_without_mutation() -> None:
+    source = publication()
+    original = canonical_json_bytes(source.api_document)
+    compiler = WorkflowCompiler(seed_resolver=lambda minimum, maximum: 42)
+
     result = compiler.compile(
-        contract=validated.resolved_contract,
-        api_document=validated.api_document,
-        object_info=object_info_fixture(),
-        requested_controls={
-            "prompt.text": "a quiet lake",
-            "generation.seed": "random",
-            "size.resolution": {"width": 640, "height": 384},
-            "post.enabled": False,
-            "sampling.steps": 12,
-            "source.image": upload_id,
-            "model.asset": "models/fake.safetensors",
-        },
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls=required(),
     )
 
-    assert result.resolved_seeds == {"generation.seed": 123456}
-    assert result.effective_controls["generation.seed"] == 123456
+    assert result.requested_controls == required()
+    assert result.effective_controls == {
+        "prompt": "a quiet lake",
+        "width": 512,
+        "height": 768,
+        "seed": "42",
+        "enable_seedvr2_upscale": False,
+        "knpv4_1_strength": 1.0,
+    }
+    assert result.resolved_seeds == {"seed": "42"}
     assert result.final_prompt == "a quiet lake"
-    assert result.compiled_graph["1"]["inputs"]["text"] == "a quiet lake"
-    assert result.compiled_graph["2"]["inputs"]["seed"] == 123456
-    assert result.compiled_graph["4"]["inputs"]["width"] == 640
-    assert result.compiled_graph["5"]["inputs"]["height"] == 384
-    assert result.compiled_graph["5"]["inputs"]["enabled"] is False
-    assert result.compiled_graph["6"]["inputs"]["image"]["__app_upload_id__"] == upload_id
-    assert len(result.compiled_graph_hash) == 64
+    assert result.compiled_graph["10"]["inputs"]["value"] == "a quiet lake"
+    assert result.compiled_graph["11"]["inputs"]["value"] == 512
+    assert result.compiled_graph["12"]["inputs"]["value"] == 768
+    assert result.compiled_graph["13"]["inputs"]["value"] == 42
+    assert result.compiled_graph["14"]["inputs"]["value"] is False
+    assert result.compiled_graph["15"]["inputs"]["value"] == 1.0
+    assert canonical_json_bytes(source.api_document) == original
+    assert result.compiled_graph is not source.api_document
 
 
-def test_compile_expands_preset_and_preserves_requested_controls() -> None:
-    validated = profile()
-    compiler = WorkflowCompiler(seed_resolver=lambda minimum, maximum: 7)
-    result = compiler.compile(
-        contract=validated.resolved_contract,
-        api_document=validated.api_document,
-        object_info=object_info_fixture(),
-        requested_controls={"prompt.text": "preset test", "generation.seed": 55},
-        preset_id="quick",
+@pytest.mark.parametrize("seed", [None, "", "random"])
+def test_omitted_null_and_explicit_random_seed_resolve_to_one_concrete_value(seed) -> None:  # type: ignore[no-untyped-def]
+    source = publication()
+    controls = required()
+    controls["seed"] = seed
+    result = WorkflowCompiler(seed_resolver=lambda minimum, maximum: maximum).compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls=controls,
     )
-    assert result.requested_controls == {"prompt.text": "preset test", "generation.seed": 55}
-    assert result.effective_controls["sampling.steps"] == 4
-    assert result.effective_controls["size.resolution"] == {"width": 384, "height": 384}
-    assert result.resolved_seeds["generation.seed"] == 55
+    assert result.effective_controls["seed"] == "1125899906842624"
+    assert result.compiled_graph["13"]["inputs"]["value"] == 1125899906842624
 
 
-def test_unknown_controls_and_outputs_are_rejected() -> None:
-    validated = profile()
-    compiler = WorkflowCompiler()
-    with pytest.raises(AppError) as control_error:
-        compiler.compile(
-            contract=validated.resolved_contract,
-            api_document=validated.api_document,
-            object_info=object_info_fixture(),
-            requested_controls={"prompt.text": "x", "unknown.control": True},
-        )
-    assert control_error.value.code == "control_validation_failed"
-    assert control_error.value.fields == {"unknown.control": "Unknown control."}
-
-    with pytest.raises(AppError) as output_error:
-        compiler.compile(
-            contract=validated.resolved_contract,
-            api_document=validated.api_document,
-            object_info=object_info_fixture(),
-            requested_controls={"prompt.text": "x", "generation.seed": 1},
-            requested_outputs=["undeclared"],
-        )
-    assert output_error.value.code == "control_validation_failed"
+def test_fixed_maximum_seed_round_trips_as_decimal_string_and_exact_graph_integer() -> None:
+    source = publication()
+    maximum = "1125899906842624"
+    result = WorkflowCompiler().compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls={**required(), "seed": maximum},
+    )
+    assert result.resolved_seeds == {"seed": maximum}
+    assert result.effective_controls["seed"] == maximum
+    assert result.compiled_graph["13"]["inputs"]["value"] == int(maximum)
 
 
-def test_seed_out_of_range_is_field_error() -> None:
-    validated = profile()
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {"width": 512, "height": 512},
+        {"prompt": "x", "height": 512},
+        {"prompt": "x", "width": 512},
+    ],
+)
+def test_required_published_parameters_are_enforced(controls: dict[str, object]) -> None:
+    source = publication()
     with pytest.raises(AppError) as exc:
         WorkflowCompiler().compile(
-            contract=validated.resolved_contract,
-            api_document=validated.api_document,
-            object_info=object_info_fixture(),
-            requested_controls={"prompt.text": "x", "generation.seed": 2**40},
+            contract=source.private_contract,
+            api_document=source.api_document,
+            requested_controls=controls,
         )
-    assert exc.value.code == "control_validation_failed"
-    assert "generation.seed" in exc.value.fields
+    assert exc.value.code == "parameter_validation_failed"
+    assert exc.value.fields
 
 
-def test_compiled_graph_rejects_unknown_runtime_input_and_dangling_link() -> None:
-    validated = profile()
-    compiler = WorkflowCompiler(seed_resolver=lambda minimum, maximum: 7)
-
-    graph_with_unknown = copy.deepcopy(validated.api_document)
-    graph_with_unknown["1"]["inputs"]["not_in_runtime_schema"] = "x"
-    with pytest.raises(AppError) as unknown_exc:
-        compiler.compile(
-            contract=validated.resolved_contract,
-            api_document=graph_with_unknown,
-            object_info=object_info_fixture(),
-            requested_controls={"prompt.text": "x", "generation.seed": 1},
-        )
-    assert unknown_exc.value.code == "branch_compilation_failed"
-
-    graph_with_dangling_link = copy.deepcopy(validated.api_document)
-    graph_with_dangling_link["4"]["inputs"]["prompt"] = ["999", 0]
-    with pytest.raises(AppError) as link_exc:
-        compiler.compile(
-            contract=validated.resolved_contract,
-            api_document=graph_with_dangling_link,
-            object_info=object_info_fixture(),
-            requested_controls={"prompt.text": "x", "generation.seed": 1},
-        )
-    assert link_exc.value.code == "branch_compilation_failed"
-    assert "missing node 999" in link_exc.value.message
-
-
-def test_compiled_graph_rejects_missing_required_runtime_input() -> None:
-    validated = profile()
-    runtime = copy.deepcopy(object_info_fixture())
-    runtime["ModelLoader"]["input"]["required"]["runtime_required"] = ["STRING"]
-
+@pytest.mark.parametrize("injected", ["node_id", "bindings", "graph", "userdata_path"])
+def test_unknown_and_private_graph_shaped_parameters_are_rejected(injected: str) -> None:
+    source = publication()
     with pytest.raises(AppError) as exc:
         WorkflowCompiler().compile(
-            contract=validated.resolved_contract,
-            api_document=validated.api_document,
-            object_info=runtime,
-            requested_controls={"prompt.text": "x", "generation.seed": 1},
+            contract=source.private_contract,
+            api_document=source.api_document,
+            requested_controls={**required(), injected: {"10": {"inputs": {"value": "owned"}}}},
         )
+    assert exc.value.code == "parameter_validation_failed"
+    assert exc.value.fields == {injected: "Unknown published parameter."}
 
-    assert exc.value.code == "branch_compilation_failed"
-    assert "missing required inputs" in exc.value.message
 
-
-def test_unavailable_interactive_branch_cannot_be_selected() -> None:
-    ui, api = build_valid_workflow_pair()
-    manifest = ui["nodes"][0]["properties"]["manifest"]
-    from app.domain.contract import extract_manifest, normalized_ui_hash
-
-    _, location = extract_manifest(ui)
-    manifest["branches"].append(
-        {
-            "id": "manual_inpaint",
-            "label": "Manual inpaint",
-            "strategy": "interaction_required",
-            "default_enabled": False,
-        }
-    )
-    manifest["controls"].append(
-        {
-            "id": "manual.inpaint",
-            "label": "Manual inpaint",
-            "type": "boolean",
-            "default": False,
-            "tier": "advanced",
-            "bindings": [{"strategy": "select_branch", "branch_id": "manual_inpaint"}],
-        }
-    )
-    manifest["workflow"]["ui_graph_sha256"] = normalized_ui_hash(ui, location)
-    validated = validate_profile(
-        basename="profiles/manual",
-        ui_document=ui,
-        api_document=api,
-        object_info=object_info_fixture(),
-        runtime_capabilities={"assets": ["models/fake.safetensors"]},
-    )
-
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("width", 513),
+        ("height", True),
+        ("enable_seedvr2_upscale", 1),
+        ("knpv4_1_strength", 2.05),
+        ("seed", "01"),
+    ],
+)
+def test_type_bounds_step_and_canonical_seed_validation_are_authoritative(
+    field: str, value: object
+) -> None:
+    source = publication()
     with pytest.raises(AppError) as exc:
         WorkflowCompiler().compile(
-            contract=validated.resolved_contract,
-            api_document=validated.api_document,
-            object_info=object_info_fixture(),
+            contract=source.private_contract,
+            api_document=source.api_document,
+            requested_controls={**required(), field: value},
+        )
+    assert exc.value.code == "parameter_validation_failed"
+    assert field in exc.value.fields
+
+
+def test_one_public_seed_can_fan_out_to_multiple_trusted_parameter_nodes() -> None:
+    def add_fanout(manifest, workflow, api) -> None:  # type: ignore[no-untyped-def]
+        del workflow
+        api["16"] = {"class_type": "CIFSeedParameter", "inputs": {"value": 0}}
+        manifest["interface"]["inputs"][3]["bindings"].append(
+            {"node_id": "16", "input": "value", "class_type": "CIFSeedParameter"}
+        )
+
+    source = publication(build_publication_bundle(mutate_artifacts=add_fanout))
+    result = WorkflowCompiler().compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls={**required(), "seed": "123456789"},
+    )
+    assert result.compiled_graph["13"]["inputs"]["value"] == 123456789
+    assert result.compiled_graph["16"]["inputs"]["value"] == 123456789
+
+
+def test_simultaneous_compilations_are_isolated_and_cached_graph_stays_identical() -> None:
+    source = publication()
+    original = copy.deepcopy(source.api_document)
+
+    def compile_one(index: int):  # type: ignore[no-untyped-def]
+        return WorkflowCompiler().compile(
+            contract=source.private_contract,
+            api_document=source.api_document,
             requested_controls={
-                "prompt.text": "x",
-                "generation.seed": 1,
-                "manual.inpaint": True,
+                **required(f"prompt {index}"),
+                "width": 512 + index * 8,
+                "seed": str(1000 + index),
+                "knpv4_1_strength": round(index * 0.05, 2),
             },
         )
 
-    assert exc.value.code == "control_validation_failed"
-    assert "manual.inpaint" in exc.value.fields
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(compile_one, range(8)))
+
+    assert source.api_document == original
+    assert len({id(value.compiled_graph) for value in results}) == 8
+    for index, result in enumerate(results):
+        assert result.compiled_graph["10"]["inputs"]["value"] == f"prompt {index}"
+        assert result.compiled_graph["11"]["inputs"]["value"] == 512 + index * 8
+        assert result.compiled_graph["13"]["inputs"]["value"] == 1000 + index
+
+
+def test_preset_and_caller_selected_outputs_are_rejected_for_publications() -> None:
+    source = publication()
+    with pytest.raises(AppError) as exc:
+        WorkflowCompiler().compile(
+            contract=source.private_contract,
+            api_document=source.api_document,
+            requested_controls=required(),
+            preset_id="legacy",
+            requested_outputs=["final_image"],
+        )
+    assert exc.value.code == "parameter_validation_failed"
+    assert set(exc.value.fields) == {"preset_id", "requested_outputs"}

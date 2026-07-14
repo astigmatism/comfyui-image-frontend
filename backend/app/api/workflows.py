@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, get_container, get_db, require_ready_user
-from ..schemas import ServiceStatus, WorkflowDetail, WorkflowSummary
 from ..models import ServiceHealth
+from ..schemas import ServiceStatus, SourceRevision, WorkflowDetail, WorkflowSummary
 
-router = APIRouter(prefix="/api", tags=["workflows"])
+router = APIRouter(prefix="/api", tags=["generation-sources"])
 
 
 @router.get("/workflows", response_model=list[WorkflowSummary])
@@ -20,20 +21,51 @@ def list_workflows(
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> list[WorkflowSummary]:
     container = get_container(request)
-    return [_summary(profile) for profile in container.registry.list_current(session)]
+    health = session.get(ServiceHealth, "comfyui")
+    result = [_summary(profile, health) for profile in container.registry.list_current(session)]
+    existing_keys = {item.source_key for item in result}
+    for raw in container.registry.unavailable_catalog_entries(session):
+        source_key = raw.get("source_key")
+        if not isinstance(source_key, str) or source_key in existing_keys:
+            continue
+        revision = raw.get("revision")
+        if not isinstance(revision, Mapping):
+            continue
+        result.append(
+            WorkflowSummary(
+                source_key=source_key,
+                display_name=str(raw.get("display_name", "Unavailable source")),
+                instance_id=str(raw.get("instance_id", "default")),
+                readiness=str(raw.get("readiness", "unavailable")),
+                available=False,
+                cached=False,
+                message=str(raw.get("message", "This published source is unavailable.")),
+                warnings=[str(value) for value in raw.get("warnings", [])],
+                revision=SourceRevision(
+                    publication_id=str(revision.get("publication_id", "")),
+                    workflow_sha256=str(revision.get("workflow_sha256", "")),
+                    api_sha256=str(revision.get("api_sha256", "")),
+                    manifest_sha256=str(revision.get("manifest_sha256", "")),
+                ),
+            )
+        )
+    return sorted(result, key=lambda item: (item.display_name.casefold(), item.source_key))
 
 
-@router.get("/workflows/{profile_id}", response_model=WorkflowDetail)
+@router.get("/workflows/{source_key}", response_model=WorkflowDetail)
 def get_workflow(
-    profile_id: str,
+    source_key: str,
     request: Request,
     session: Annotated[Session, Depends(get_db)],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> WorkflowDetail:
     container = get_container(request)
-    profile = container.registry.get_current(session, profile_id)
-    summary = _summary(profile)
-    return WorkflowDetail(**summary.model_dump(), contract=_public_contract(profile.resolved_contract_json))
+    profile = container.registry.get_current(session, source_key)
+    health = session.get(ServiceHealth, "comfyui")
+    summary = _summary(profile, health)
+    return WorkflowDetail(
+        **summary.model_dump(), interface=_public_interface(profile.resolved_contract_json)
+    )
 
 
 @router.get("/services", response_model=list[ServiceStatus])
@@ -55,113 +87,105 @@ def service_status(
     return result
 
 
-def _summary(profile: Any) -> WorkflowSummary:
-    states = profile.resolved_contract_json.get("capability_states", {})
-    safe_states = {
-        str(key): {
-            "available": bool(value.get("available", False)),
-            "reason": value.get("reason"),
-        }
-        for key, value in states.items()
-        if isinstance(value, dict)
-    }
+def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
+    online = bool(health and health.available)
+    cached = not online
+    dependency_unavailable = bool(
+        health
+        and profile.source_key
+        in health.capabilities_json.get("dependency_unavailable_source_keys", [])
+    )
+    if health is None:
+        readiness = "loading"
+    elif dependency_unavailable:
+        readiness = "dependency_missing"
+    elif online:
+        readiness = str(profile.readiness or "ready")
+    else:
+        readiness = "cached_offline"
+    publication_id = profile.publication_id or profile.workflow_version
+    manifest_sha256 = profile.manifest_sha256 or profile.contract_sha256
     return WorkflowSummary(
+        source_key=str(profile.source_key),
+        display_name=profile.display_name,
+        instance_id=profile.instance_id or "default",
+        readiness=readiness,
+        available=online and not dependency_unavailable and profile.state.value == "valid",
+        cached=cached,
+        message=(
+            "Required ComfyUI node classes are unavailable for this source."
+            if dependency_unavailable
+            else (health.message if health and not online else None)
+        ),
+        warnings=[str(value) for value in (profile.warnings_json or [])],
+        revision=SourceRevision(
+            publication_id=publication_id,
+            workflow_sha256=profile.ui_graph_sha256,
+            api_sha256=profile.api_graph_sha256,
+            manifest_sha256=manifest_sha256,
+        ),
         profile_id=profile.id,
         workflow_id=profile.workflow_id,
         workflow_version=profile.workflow_version,
         ui_graph_sha256=profile.ui_graph_sha256,
         api_graph_sha256=profile.api_graph_sha256,
         contract_sha256=profile.contract_sha256,
-        display_name=profile.display_name,
         contract_schema_version=profile.contract_schema_version,
         adapter_version=profile.adapter_version,
-        capabilities=safe_states,
     )
 
 
-def _public_contract(contract: dict[str, Any]) -> dict[str, Any]:
-    """Return semantic presentation data only—never selectors, patches, or operator controls."""
-    result: dict[str, Any] = {
-        key: copy.deepcopy(contract[key])
-        for key in ("kind", "contract_schema_version", "presentation", "policies")
-        if key in contract
-    }
-    workflow = contract.get("workflow", {})
-    result["workflow"] = {
-        key: workflow.get(key)
-        for key in ("id", "display_name", "version", "description", "family")
-        if key in workflow
-    }
-    controls: list[dict[str, Any]] = []
-    public_control_ids: set[str] = set()
-    for raw in contract.get("controls", []):
-        if not isinstance(raw, dict) or raw.get("tier") == "operator":
+def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Construct an allowlist projection; private bindings are never copied then removed."""
+
+    inputs: list[dict[str, Any]] = []
+    for raw in contract.get("inputs", []):
+        if not isinstance(raw, Mapping):
             continue
-        control_id = raw.get("id")
-        if isinstance(control_id, str):
-            public_control_ids.add(control_id)
-        control = {
-            key: copy.deepcopy(value)
-            for key, value in raw.items()
-            if key
-            not in {
-                "bindings",
-                "sensitive",
-                "provenance",
-                "internal",
-            }
-        }
-        controls.append(control)
-    result["controls"] = controls
-    result["presets"] = [
-        {
-            key: (
-                {
-                    control_id: copy.deepcopy(value)
-                    for control_id, value in preset.get("values", {}).items()
-                    if control_id in public_control_ids
-                }
-                if key == "values" and isinstance(preset.get("values"), dict)
-                else copy.deepcopy(preset.get(key))
-            )
-            for key in ("id", "label", "description", "values")
-            if key in preset
-        }
-        for preset in contract.get("presets", [])
-        if isinstance(preset, dict)
-    ]
-    result["stages"] = [
-        {
-            key: copy.deepcopy(stage.get(key))
-            for key in ("id", "label", "sequence", "emits_output_ids", "cancellable_after_emission")
-            if key in stage
-        }
-        for stage in contract.get("stages", [])
-        if isinstance(stage, dict)
-    ]
-    result["outputs"] = [
-        {
-            key: copy.deepcopy(output.get(key))
+        public_input = {
+            key: copy.deepcopy(raw[key])
             for key in (
                 "id",
-                "role",
-                "kind",
-                "canonical_on_success",
-                "usable_on_cancel",
-                "presentation",
-                "progression",
-                "batch_semantics",
+                "type",
+                "label",
+                "description",
+                "semantic_role",
+                "required",
+                "advanced",
+                "group",
+                "order",
+                "default",
+                "default_mode",
+                "minimum",
+                "maximum",
+                "step",
             )
-            if key in output
+            if key in raw
         }
-        for output in contract.get("outputs", [])
-        if isinstance(output, dict)
-    ]
-    result["progression"] = copy.deepcopy(contract.get("progression", {}))
-    states = contract.get("capability_states", {})
-    result["capability_states"] = {
-        key: {"available": bool(value.get("available")), "reason": value.get("reason")}
-        for key, value in states.items()
-        if isinstance(value, dict)
+        if public_input.get("type") == "seed":
+            for key in ("minimum", "maximum", "step"):
+                if key in public_input:
+                    public_input[key] = str(public_input[key])
+            public_input["default"] = (
+                None
+                if public_input.get("default_mode") == "random"
+                else str(public_input.get("default"))
+            )
+        inputs.append(public_input)
+    outputs: list[dict[str, Any]] = []
+    for raw in contract.get("outputs", []):
+        if not isinstance(raw, Mapping):
+            continue
+        outputs.append(
+            {
+                key: copy.deepcopy(raw[key])
+                for key in ("id", "role", "kind", "cardinality", "label", "description")
+                if key in raw
+            }
+        )
+    return {
+        "schema": contract.get("schema"),
+        "inputs": inputs,
+        "outputs": outputs,
+        "unmapped_outputs_policy": contract.get("unmapped_outputs_policy", "collect"),
     }
-    return result

@@ -110,6 +110,7 @@ async def refresh_workflows(
             workflow_version=item.workflow_version,
             code=item.code,
             message=item.message,
+            details=item.details_json,
             checked_at=item.checked_at,
         )
         for item in diagnostics
@@ -130,6 +131,7 @@ def workflow_diagnostics(
             workflow_version=item.workflow_version,
             code=item.code,
             message=item.message,
+            details=item.details_json,
             checked_at=item.checked_at,
         )
         for item in get_container(request).registry.diagnostics(session)

@@ -1,5 +1,7 @@
 # ComfyUI Front-End Workflow Contract Design
 
+> **Retired historical design — not an accepted discovery format.** Revision 1.1's embedded `FrontendWorkflowContract` / `FrontendWorkflowArtifact` nodes, `.workflow.json` naming, selectors, transforms, stages, and canonical-output rules have been replaced by deliberately published adjacent `<stem>.json`, `<stem>.api.json`, and `<stem>.interface.json` bundles using `comfyui-image-frontend.publication/v1` and `comfyui-image-frontend.interface/v1`. See [`published-workflows.md`](published-workflows.md) for the current contract. This file remains only for provenance and old-record interpretation.
+
 **Status:** Revision 1.1 — progressive checkpoint artifacts and stage-aware cancellation added  
 **Audience:** Application architects, ComfyUI integrators, workflow authors, and AI coding agents  
 **Primary goal:** Allow a separate front-end application to discover, validate, configure, execute, and collect outputs from a ComfyUI workflow without hard-coding workflow-specific node IDs throughout the application.

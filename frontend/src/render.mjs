@@ -3,9 +3,14 @@ import {
   escapeHtml,
   formatLocalDate,
   footerText,
+  interfaceInputs,
+  isAdvancedInput,
   resolutionConstraints,
   resolutionGridConstraints,
   resolutionSummary,
+  seedAllowsRandom,
+  seedFormValue,
+  sortInterfaceInputs,
   statusLabel,
 } from "./lib.mjs";
 
@@ -87,34 +92,129 @@ export function shellMarkup(state) {
 export function generationPanelMarkup(state, profile, contract) {
   const comfy = state.services.find((item) => item.service === "comfyui");
   const clientErrors = state.fieldErrors || {};
+  const sources = state.sources || state.workflows || [];
+  const activeKey = state.activeSourceKey || state.activeProfileId;
+  const values = state.parameters || state.controls || {};
+  const inputs = sortInterfaceInputs(interfaceInputs(contract));
+  const basic = inputs.filter((item) => !isAdvancedInput(item));
+  const advanced = inputs.filter((item) => isAdvancedInput(item));
+  const advancedHasError = advanced.some((item) => clientErrors[item.id]);
+  const sourceUnavailable = Boolean(profile && profile.available === false);
+  const sourceUnresolved =
+    !activeKey || !profile || !contract || state.sourceDetailLoading || state.sourceDetailError;
   const disabled =
     state.submitting ||
-    !profile ||
+    state.sourceCatalogStatus === "loading" ||
+    sourceUnresolved ||
+    sourceUnavailable ||
     comfy?.available === false ||
     Object.keys(clientErrors).length > 0;
-  const sourceOptions = state.workflows
+  const sourceOptions = sources
     .map(
-      (item) =>
-        `<option value="${escapeHtml(item.profile_id)}" ${item.profile_id === state.activeProfileId ? "selected" : ""}>${escapeHtml(item.display_name)}</option>`,
+      (item) => {
+        const key = sourceKey(item);
+        const instance = item.instance_id ? ` · ${item.instance_id}` : "";
+        const suffix = item.available === false ? " — Unavailable" : item.cached ? " — Cached" : "";
+        return `<option value="${escapeHtml(key)}" ${key === activeKey ? "selected" : ""}>${escapeHtml(`${item.display_name}${instance}${suffix}`)}</option>`;
+      },
     )
     .join("");
   const presets = contract?.presets || [];
-  const basic = (contract?.controls || []).filter((item) => item.tier === "basic");
-  const advanced = (contract?.controls || []).filter((item) => item.tier === "advanced");
   return `
     <div class="panel-layout">
       <div class="panel-fixed">
         <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? "Queueing…" : "Generate"}</button>
-        <label class="field compact"><span>Generation source</span><select id="workflow-source" ${state.workflows.length ? "" : "disabled"}><option value="">${state.workflows.length ? "Select a source" : "No compatible workflows"}</option>${sourceOptions}</select></label>
+        <label class="field compact"><span>Generation source</span><select id="workflow-source" ${sources.length && !state.submitting ? "" : "disabled"}><option value="">${sourceSelectorLabel(state, sources)}</option>${sourceOptions}</select></label>
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
+        ${sourceStateMarkup(state, profile)}
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
-        ${basic.map((control) => controlMarkup(control, state.controls, contract, clientErrors)).join("")}
-        ${advanced.length ? `<details class="advanced-group"><summary>Advanced</summary><div class="advanced-controls">${advanced.map((control) => controlMarkup(control, state.controls, contract, clientErrors)).join("")}</div></details>` : ""}
-        ${!contract ? '<p class="empty-copy">Choose a generation source to load its controls.</p>' : ""}
+        ${groupedControlsMarkup(basic, values, contract, clientErrors)}
+        ${advanced.length ? `<details class="advanced-group"${advancedHasError ? " open" : ""}><summary>Advanced</summary><div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors)}</div></details>` : ""}
+        ${controlEmptyStateMarkup(state, profile, contract)}
       </div>
     </div>`;
+}
+
+function sourceKey(source) {
+  return source?.source_key || source?.profile_id || "";
+}
+
+function sourceSelectorLabel(state, sources) {
+  if (state.sourceCatalogStatus === "loading" && !sources.length) return "Discovering published sources…";
+  if (state.sourceCatalogStatus === "error" && !sources.length) return "Source discovery unavailable";
+  return sources.length ? "Select a source" : "No published sources";
+}
+
+function warningText(warning) {
+  if (typeof warning === "string") return warning;
+  if (warning?.message && warning?.code) return `${warning.code}: ${warning.message}`;
+  return warning?.message || warning?.code || JSON.stringify(warning);
+}
+
+function sourceStateMarkup(state, source) {
+  const notices = [];
+  if (state.sourceCatalogStatus === "loading") {
+    notices.push(
+      `<div class="source-notice" role="status">${source ? "Refreshing published generation sources…" : "Discovering published generation sources…"}</div>`,
+    );
+  }
+  if (state.sourceCatalogStatus === "error") {
+    notices.push(
+      `<div class="source-notice warning" role="status">${escapeHtml(state.sourceCatalogMessage || "Source discovery is temporarily unavailable.")}</div>`,
+    );
+  }
+  if (state.sourceDetailLoading) {
+    notices.push('<div class="source-notice" role="status">Loading the selected source interface…</div>');
+  }
+  if (state.sourceDetailError) {
+    notices.push(`<div class="source-notice error" role="alert">${escapeHtml(state.sourceDetailError)}</div>`);
+  }
+  if (source?.available === false) {
+    notices.push(
+      `<div class="source-notice error" role="status">${escapeHtml(source.message || "This source is unavailable and cannot generate images.")}</div>`,
+    );
+  }
+  if (source?.cached) {
+    notices.push(
+      '<div class="source-notice" role="status">Using the last fully validated cached source descriptor.</div>',
+    );
+  }
+  const warnings = Array.isArray(source?.warnings) ? source.warnings.filter(Boolean) : [];
+  if (warnings.length) {
+    notices.push(
+      `<div class="source-notice warning" role="status"><strong>Source warning${warnings.length === 1 ? "" : "s"}</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warningText(warning))}</li>`).join("")}</ul></div>`,
+    );
+  }
+  return notices.join("");
+}
+
+function controlEmptyStateMarkup(state, source, contract) {
+  if (contract) return "";
+  if (state.sourceCatalogStatus === "loading" || state.sourceDetailLoading) {
+    return '<p class="empty-copy">Published controls are loading.</p>';
+  }
+  if (!source && !(state.sources || state.workflows || []).length) {
+    return '<p class="empty-copy">No published generation sources are available.</p>';
+  }
+  return '<p class="empty-copy">Choose an available generation source to load its controls.</p>';
+}
+
+function groupedControlsMarkup(inputs, values, contract, errors) {
+  let currentGroup = null;
+  let markup = "";
+  for (const input of inputs) {
+    const group = String(input.group || "");
+    if (group !== currentGroup) {
+      if (currentGroup !== null) markup += "</section>";
+      markup += `<section class="control-group" data-interface-group="${escapeHtml(group)}">${group ? `<h3 class="control-group-heading">${escapeHtml(group)}</h3>` : ""}`;
+      currentGroup = group;
+    }
+    markup += controlMarkup(input, values, contract, errors);
+  }
+  if (currentGroup !== null) markup += "</section>";
+  return markup;
 }
 
 function presetMarkup(presets, selected) {
@@ -139,27 +239,53 @@ export function controlMarkup(control, values, contract, errors = {}) {
   const required = presentation.required;
   const error = errors[control.id];
   const description = presentation.reason || control.description;
-  const label = control.id === "prompt.text" ? "Prompt" : control.label;
+  const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
   const descriptionId = description ? `${id}-description` : null;
   const errorId = error ? `${id}-error` : null;
   const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
-  const common = `id="${id}" data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
+  const shared = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
+  const common = `id="${id}" ${shared}`;
   const labelContent = `${escapeHtml(label)}${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}`;
   let input = "";
   let field = "";
   switch (control.type) {
     case "multiline_string":
-      input = `<textarea ${common} rows="${control.ui?.rows || (control.id === "prompt.text" ? 6 : 3)}">${escapeHtml(value ?? "")}</textarea>`;
+      input = `<textarea ${common} rows="${escapeHtml(control.ui?.rows || (control.id === "prompt.text" ? 6 : 3))}">${escapeHtml(value ?? "")}</textarea>`;
       break;
     case "string":
-      input = `<input ${common} type="text" value="${escapeHtml(value ?? "")}" />`;
+      input =
+        control.semantic_role === "positive_prompt"
+          ? `<textarea ${common} rows="${escapeHtml(control.ui?.rows || 6)}">${escapeHtml(value ?? "")}</textarea>`
+          : `<input ${common} type="text" value="${escapeHtml(value ?? "")}" />`;
       break;
     case "integer":
-    case "number":
-      input = `<input ${common} type="number" value="${value ?? ""}" min="${control.constraints?.minimum ?? ""}" max="${control.constraints?.maximum ?? ""}" step="${control.constraints?.step ?? (control.type === "integer" ? 1 : "any")}" />`;
+      input = `<input ${common} type="number" value="${escapeHtml(value ?? "")}" min="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" max="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" step="${escapeHtml(controlConstraint(control, "step") ?? (control.type === "integer" ? 1 : "any"))}" />`;
       break;
+    case "number": {
+      const minimum = controlConstraint(control, "minimum");
+      const maximum = controlConstraint(control, "maximum");
+      const step = controlConstraint(control, "step") ?? "any";
+      const exact = `<input ${common} data-number-entry type="number" value="${escapeHtml(value ?? "")}" min="${escapeHtml(minimum ?? "")}" max="${escapeHtml(maximum ?? "")}" step="${escapeHtml(step)}" aria-label="${escapeHtml(label)}" />`;
+      if (
+        minimum !== undefined &&
+        minimum !== null &&
+        minimum !== "" &&
+        maximum !== undefined &&
+        maximum !== null &&
+        maximum !== "" &&
+        Number.isFinite(Number(minimum)) &&
+        Number.isFinite(Number(maximum)) &&
+        Number(maximum) > Number(minimum)
+      ) {
+        input = `<div class="number-control"><input id="${id}-slider" ${shared} data-number-slider type="range" value="${escapeHtml(value ?? minimum)}" min="${escapeHtml(minimum)}" max="${escapeHtml(maximum)}" step="${escapeHtml(step)}" aria-label="${escapeHtml(label)} slider" />${exact}</div>`;
+        field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend>${labelContent}</legend>${input}</fieldset>`;
+      } else {
+        input = exact;
+      }
+      break;
+    }
     case "seed":
-      input = seedMarkup(control, value, common);
+      input = seedMarkup(control, value, common, disabled);
       field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "boolean":
@@ -196,8 +322,9 @@ export function controlMarkup(control, values, contract, errors = {}) {
       field = `<div class="field"><span>${labelContent}</span>${input}</div>`;
   }
   if (!field) field = `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
-  const assistant = control.id === "prompt.text" ? promptAssistantMarkup() : "";
-  return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}">
+  const assistant =
+    control.semantic_role === "positive_prompt" || control.id === "prompt.text" ? promptAssistantMarkup() : "";
+  return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
     ${description ? `<p class="help-text" id="${descriptionId}">${escapeHtml(description)}</p>` : ""}
     ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
@@ -205,11 +332,19 @@ export function controlMarkup(control, values, contract, errors = {}) {
   </div>`;
 }
 
-function seedMarkup(control, value, common) {
-  const random = value === "random" || value?.mode === "random";
+function controlConstraint(control, name) {
+  return control?.[name] ?? control?.constraints?.[name];
+}
+
+function seedMarkup(control, value, common, disabled) {
+  const seed = seedFormValue(control, value);
+  const random = seed.mode === "random";
+  const modeOptions = seedAllowsRandom(control)
+    ? `<option value="random" ${random ? "selected" : ""}>Random</option><option value="fixed" ${!random ? "selected" : ""}>Fixed</option>`
+    : '<option value="fixed" selected>Fixed</option>';
   return `<div class="seed-control">
-    <select data-seed-mode="${escapeHtml(control.id)}" ${common.includes("disabled") ? "disabled" : ""} aria-label="${escapeHtml(control.label)} mode"><option value="random" ${random ? "selected" : ""}>Random</option><option value="fixed" ${!random ? "selected" : ""}>Fixed</option></select>
-    <input ${common} type="number" value="${random ? "" : value ?? ""}" ${random ? "disabled" : ""} min="${control.constraints?.minimum ?? 0}" max="${control.constraints?.maximum ?? Number.MAX_SAFE_INTEGER}" step="1" aria-label="${escapeHtml(control.label)} value" />
+    <select data-seed-mode="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} aria-label="${escapeHtml(control.label)} mode">${modeOptions}</select>
+    <input ${common} type="text" inputmode="numeric" pattern="-?[0-9]*" value="${random ? "" : escapeHtml(seed.value)}" ${random ? "disabled" : ""} data-minimum="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" data-maximum="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" aria-label="${escapeHtml(control.label)} value" />
   </div>`;
 }
 
@@ -282,12 +417,15 @@ export function galleryMarkup(generations) {
 export function galleryCardMarkup(generation) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
-  const stateClass = generation.status.replaceAll("_", "-");
+  const sourceName = generationSourceName(generation);
+  const stateClass = String(generation.status || "unknown").replaceAll("_", "-");
   const media = hasImage
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${generation.workflow_display_name}, ${statusLabel(generation.status)}, ${footerText("", generation.accepted_at).replace(/^ · /, "")}`)}" />`
+    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}, ${footerText("", generation.accepted_at).replace(/^ · /, "")}`)}" />`
     : statusPlaceholderMarkup(generation);
   const statusOverlay = generation.status === "succeeded" ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
-  const count = generation.final_artifact_count > 1 ? `<div class="batch-count" aria-label="${generation.final_artifact_count} final images">${generation.final_artifact_count}</div>` : "";
+  const finalCount = Number(generation.final_artifact_count) || 0;
+  const imageCount = generation.image_count ?? (finalCount > 0 ? finalCount : generation.artifact_count ?? 0);
+  const count = imageCount > 1 ? `<div class="batch-count" aria-label="${imageCount} images">${imageCount}</div>` : "";
   const width = positiveNumber(generation.expected_width) || positiveNumber(artifact?.width);
   const height = positiveNumber(generation.expected_height) || positiveNumber(artifact?.height);
   const aspectStyle = width && height ? ` style="--gallery-media-aspect: ${width} / ${height}"` : "";
@@ -308,6 +446,15 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
+function generationSourceName(generation) {
+  return (
+    generation?.generation_source?.display_name ||
+    generation?.workflow_display_name ||
+    generation?.generation_source?.source_key ||
+    "Published source"
+  );
+}
+
 function statusPlaceholderMarkup(generation) {
   let label = generation.current_stage_label || statusLabel(generation.status);
   if (generation.status.startsWith("cancelled_")) label = "Cancelled generation";
@@ -318,7 +465,8 @@ function statusPlaceholderMarkup(generation) {
 }
 
 export function cardFooterMarkup(generation) {
-  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(generation.workflow_display_name)}">${escapeHtml(footerText(generation.workflow_display_name, generation.accepted_at))}</div><div class="card-actions">${favoriteButtonMarkup(generation)}<button class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall settings</button></div></footer>`;
+  const sourceName = generationSourceName(generation);
+  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(sourceName)}">${escapeHtml(footerText(sourceName, generation.accepted_at))}</div><div class="card-actions">${favoriteButtonMarkup(generation)}<button class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall settings</button></div></footer>`;
 }
 
 export function favoriteButtonMarkup(generation) {
@@ -343,13 +491,14 @@ export function favoritesMarkup(favorites, nextCursor = null) {
 function favoriteItemMarkup(favorite) {
   const generation = favorite.generation;
   const artifact = generation.display_artifact;
+  const sourceName = generationSourceName(generation);
   const media = artifact?.kind === "image"
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${generation.workflow_display_name}`)}" />`
+    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${sourceName}`)}" />`
     : `<div class="favorite-placeholder"><span aria-hidden="true">◇</span><strong>No retained image</strong></div>`;
   return `<article class="favorite-item" data-favorite-id="${escapeHtml(favorite.id)}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="favorite-thumbnail">${media}</div>
     <div class="favorite-details">
-      <div class="favorite-heading"><div><h3>${escapeHtml(generation.workflow_display_name)}</h3><p>Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
+      <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
       <p class="favorite-prompt">${escapeHtml(favorite.final_prompt || "No prompt was retained.")}</p>
       <div class="favorite-actions">
         <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall</button>
@@ -361,14 +510,45 @@ function favoriteItemMarkup(favorite) {
 
 export function detailMarkup(detail) {
   const artifacts = detail.artifacts || [];
-  const images = artifacts.filter((item) => item.kind === "image");
+  const imageGroups = detailImageGroups(detail, artifacts);
+  const imageCount = Object.values(imageGroups).reduce((count, images) => count + images.length, 0);
+  const source = detail.generation_source || {};
+  const revision = source.revision || source;
+  const legacyWorkflow = detail.workflow || {};
+  const effective = detail.effective_parameters || detail.effective_controls || {};
+  const warnings = messageValues(detail.warnings);
+  const errors = [...messageValues(detail.errors), ...(detail.error_message ? [detail.error_message] : [])];
+  const sourceName = generationSourceName(detail);
   return `<form method="dialog" class="dialog-frame">
-    <header class="dialog-header"><div><h2>${escapeHtml(detail.workflow_display_name)}</h2><p>${escapeHtml(statusLabel(detail.status))}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
+    <header class="dialog-header"><div><h2>${escapeHtml(sourceName)}</h2><p>${escapeHtml(statusLabel(detail.status))}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
     <div class="detail-content">
-      ${detail.error_message ? `<div class="inline-alert error" role="alert">${escapeHtml(detail.error_message)}</div>` : ""}
-      <section class="artifact-viewer" aria-label="Retained images">${images.length ? images.map((artifact) => `<figure><img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${artifact.role}, ${artifact.state}`)}" /><figcaption>${escapeHtml(artifact.role)} · ${escapeHtml(artifact.state)}</figcaption></figure>`).join("") : '<div class="status-placeholder"><strong>No image artifact was retained.</strong></div>'}</section>
-      <section class="timeline"><h3>Checkpoint timeline</h3>${artifacts.length ? `<ol>${artifacts.map((artifact) => `<li><span class="timeline-dot state-${escapeHtml(artifact.state)}"></span><div><strong>${escapeHtml(artifact.role)}</strong><small>${escapeHtml(artifact.state)} · sequence ${artifact.sequence}${artifact.batch_index ? ` · batch ${artifact.batch_index + 1}` : ""}</small></div></li>`).join("")}</ol>` : '<p class="muted">No declared checkpoints were emitted.</p>'}</section>
-      <details class="provenance"><summary>Technical provenance</summary><dl><dt>Workflow</dt><dd>${escapeHtml(detail.workflow.workflow_id)} ${escapeHtml(detail.workflow.workflow_version)}</dd><dt>UI graph</dt><dd><code>${escapeHtml(detail.workflow.ui_graph_sha256)}</code></dd><dt>API graph</dt><dd><code>${escapeHtml(detail.workflow.api_graph_sha256)}</code></dd><dt>Resolved seeds</dt><dd><code>${escapeHtml(JSON.stringify(detail.resolved_seeds))}</code></dd><dt>Final submitted prompt</dt><dd class="provenance-prompt">${escapeHtml(detail.final_prompt)}</dd></dl></details>
+      ${messageAlertMarkup("warning", warnings, "Generation warnings")}
+      ${messageAlertMarkup("error", errors, "Generation errors")}
+      <div class="result-image-groups" aria-label="Generation images">${imageCount ? [
+        detailImageGroupMarkup("Primary result", "The workflow-authored final output.", imageGroups.final),
+        detailImageGroupMarkup("Prototypes and earlier passes", "Useful preview stages retained by the workflow.", imageGroups.preview),
+        detailImageGroupMarkup("Comparisons and alternates", "Authored comparison stages and alternate treatments.", imageGroups.comparison),
+        detailImageGroupMarkup("Auxiliary images", "Other images intentionally published by the workflow.", imageGroups.auxiliary),
+        detailImageGroupMarkup("Additional images", "Native ComfyUI images outside the authored publisher hierarchy.", imageGroups.additional),
+      ].join("") : '<section class="artifact-viewer"><div class="status-placeholder"><strong>No image artifact was retained.</strong></div></section>'}</div>
+      ${resultDetailsMarkup("Declared output metadata", detail.declared_outputs, "No declared outputs were returned.")}
+      ${resultSectionMarkup("Additional outputs", detail.unmapped_outputs, "No additional native outputs were returned.")}
+      ${hasResult(detail.warnings) || hasResult(detail.errors) ? `<details class="provenance"><summary>Warning and error details</summary><pre class="result-json">${escapeHtml(prettyJson({ warnings: detail.warnings || [], errors: detail.errors || [] }))}</pre></details>` : ""}
+      <section class="timeline"><h3>Artifact timeline</h3>${artifacts.length ? `<ol>${artifacts.map((artifact) => `<li><span class="timeline-dot state-${escapeHtml(artifact.state)}"></span><div><strong>${escapeHtml(artifact.role || artifact.output_id || "Output")}</strong><small>${escapeHtml(artifact.state || "available")} · sequence ${artifact.sequence ?? "—"}${Number.isInteger(artifact.batch_index) ? ` · batch ${artifact.batch_index + 1}` : ""}</small></div></li>`).join("")}</ol>` : '<p class="muted">No application-owned artifact timeline was recorded.</p>'}</section>
+      <details class="provenance"><summary>Technical provenance</summary><dl>
+        <dt>Source key</dt><dd><code>${escapeHtml(source.source_key || source.source_id || legacyWorkflow.workflow_id || "—")}</code></dd>
+        <dt>Instance</dt><dd>${escapeHtml(source.instance_id || "—")}</dd>
+        <dt>Publication</dt><dd><code>${escapeHtml(revision.publication_id || legacyWorkflow.workflow_version || "—")}</code></dd>
+        <dt>Workflow hash</dt><dd><code>${escapeHtml(revision.workflow_sha256 || legacyWorkflow.ui_graph_sha256 || "—")}</code></dd>
+        <dt>API hash</dt><dd><code>${escapeHtml(revision.api_sha256 || legacyWorkflow.api_graph_sha256 || "—")}</code></dd>
+        <dt>Manifest hash</dt><dd><code>${escapeHtml(revision.manifest_sha256 || legacyWorkflow.contract_sha256 || "—")}</code></dd>
+        <dt>ComfyUI prompt ID</dt><dd><code>${escapeHtml(detail.prompt_id || "Not assigned")}</code></dd>
+        ${hasResult(detail.comfyui_status) ? `<dt>ComfyUI status</dt><dd><pre class="result-json">${escapeHtml(prettyJson(detail.comfyui_status))}</pre></dd>` : ""}
+        <dt>Effective parameters</dt><dd><pre class="result-json">${escapeHtml(prettyJson(effective))}</pre></dd>
+        ${detail.resolved_seeds ? `<dt>Resolved seeds</dt><dd><pre class="result-json">${escapeHtml(prettyJson(detail.resolved_seeds))}</pre></dd>` : ""}
+        ${detail.final_prompt ? `<dt>Final submitted prompt</dt><dd class="provenance-prompt">${escapeHtml(detail.final_prompt)}</dd>` : ""}
+      </dl></details>
+      <details class="provenance raw-history"><summary>Raw ComfyUI history</summary><pre class="result-json">${escapeHtml(prettyJson(detail.raw_history || {}))}</pre></details>
     </div>
     <footer class="dialog-actions">
       ${detail.cancel_allowed ? `<button type="button" class="button secondary" data-action="cancel-generation" data-generation-id="${escapeHtml(detail.id)}">Cancel generation</button>` : ""}
@@ -376,6 +556,167 @@ export function detailMarkup(detail) {
       <button class="button primary" value="close">Close</button>
     </footer>
   </form>`;
+}
+
+function messageValues(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.flatMap(messageValues);
+  if (typeof value === "string") return [value];
+  if (typeof value === "object" && value.message) {
+    return [value.code ? `${value.code}: ${value.message}` : String(value.message)];
+  }
+  if (typeof value === "object") {
+    return Object.entries(value).map(([key, item]) => `${key}: ${warningText(item)}`);
+  }
+  return [String(value)];
+}
+
+function messageAlertMarkup(kind, messages, heading) {
+  const unique = [...new Set(messages.filter(Boolean))];
+  if (!unique.length) return "";
+  return `<div class="inline-alert ${kind} result-messages" role="${kind === "error" ? "alert" : "status"}"><strong>${escapeHtml(heading)}</strong><ul>${unique.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
+}
+
+function hasResult(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === "object" && Object.keys(value).length);
+}
+
+function resultSectionMarkup(heading, value, emptyMessage) {
+  return `<section class="result-section"><h3>${escapeHtml(heading)}</h3>${hasResult(value) ? `<pre class="result-json">${escapeHtml(prettyJson(value))}</pre>` : `<p class="muted">${escapeHtml(emptyMessage)}</p>`}</section>`;
+}
+
+function resultDetailsMarkup(heading, value, emptyMessage) {
+  return `<details class="provenance result-details"><summary>${escapeHtml(heading)}</summary>${hasResult(value) ? `<pre class="result-json">${escapeHtml(prettyJson(value))}</pre>` : `<p class="muted">${escapeHtml(emptyMessage)}</p>`}</details>`;
+}
+
+function prettyJson(value) {
+  try {
+    return JSON.stringify(value, null, 2) ?? "{}";
+  } catch {
+    return String(value ?? "{}");
+  }
+}
+
+function detailImageGroups(detail, artifacts) {
+  const groups = { final: [], preview: [], comparison: [], auxiliary: [], additional: [] };
+  const declared = declaredOutputList(detail.declared_outputs);
+  const artifactImages = artifacts.filter((item) => item.kind === "image" && item.content_url);
+  const usedArtifactIds = new Set();
+  const usedFallbackKeys = new Set();
+
+  for (const output of declared) {
+    const outputId = String(output.id || output.output_id || "");
+    const role = ["final", "preview", "comparison", "auxiliary"].includes(output.role)
+      ? output.role
+      : "auxiliary";
+    const candidates = [];
+    collectOutputImages(output.artifacts, output.label || outputId || role, candidates);
+    for (const artifact of artifactImages) {
+      if (String(artifact.output_id || "") === outputId) candidates.push(artifact);
+    }
+    for (const image of uniqueLogicalImages(candidates)) {
+      rememberLogicalImage(image, usedArtifactIds, usedFallbackKeys);
+      groups[role].push({
+        ...image,
+        output_id: image.output_id || outputId,
+        role,
+        label: output.label || outputId || roleLabel(role),
+        description: output.description || "",
+      });
+    }
+  }
+
+  for (const artifact of artifactImages) {
+    if (logicalImageWasUsed(artifact, usedArtifactIds, usedFallbackKeys)) continue;
+    groups.additional.push({ ...artifact, label: artifact.output_id || "Native output" });
+    rememberLogicalImage(artifact, usedArtifactIds, usedFallbackKeys);
+  }
+  const nativeImages = [];
+  collectOutputImages(detail.unmapped_outputs, "Native output", nativeImages);
+  for (const image of uniqueLogicalImages(nativeImages)) {
+    if (logicalImageWasUsed(image, usedArtifactIds, usedFallbackKeys)) continue;
+    groups.additional.push(image);
+    rememberLogicalImage(image, usedArtifactIds, usedFallbackKeys);
+  }
+  return groups;
+}
+
+function declaredOutputList(value) {
+  if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object");
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value)
+    .filter(([, item]) => item && typeof item === "object")
+    .map(([id, item]) => ({ id, ...item }));
+}
+
+function uniqueLogicalImages(images) {
+  const seen = new Set();
+  return images.filter((image) => {
+    if (!image?.content_url) return false;
+    const key = logicalImageKey(image);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function logicalImageKey(image) {
+  if (image.id) return `id:${image.id}`;
+  return [image.output_id || "", image.batch_index ?? "", image.content_url || ""].join(":");
+}
+
+function rememberLogicalImage(image, ids, fallbackKeys) {
+  if (image.id) ids.add(String(image.id));
+  else fallbackKeys.add(logicalImageKey(image));
+}
+
+function logicalImageWasUsed(image, ids, fallbackKeys) {
+  return image.id ? ids.has(String(image.id)) : fallbackKeys.has(logicalImageKey(image));
+}
+
+function collectOutputImages(value, label, images) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectOutputImages(item, `${label} ${index + 1}`, images));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const contentUrl = value.content_url || value.asset_url;
+  if (typeof contentUrl === "string" && contentUrl.startsWith("/")) {
+    images.push({
+      ...value,
+      content_url: contentUrl,
+      role: value.role || value.output_id || label,
+      state: value.state || "available",
+    });
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (["content_url", "asset_url", "thumbnail_url"].includes(key)) continue;
+    collectOutputImages(item, value.output_id || value.role || key || label, images);
+  }
+}
+
+function detailImageGroupMarkup(heading, description, images) {
+  if (!images.length) return "";
+  return `<section class="result-image-group"><header><h3>${escapeHtml(heading)}</h3><p>${escapeHtml(description)}</p></header><div class="artifact-viewer">${images.map(detailImageMarkup).join("")}</div></section>`;
+}
+
+function detailImageMarkup(image) {
+  const label = image.label || image.output_id || roleLabel(image.role) || "Generated image";
+  const state = image.state || "available";
+  const batch = Number.isInteger(image.batch_index) ? ` · batch ${image.batch_index + 1}` : "";
+  const description = image.description ? `<span>${escapeHtml(image.description)}</span>` : "";
+  return `<figure><a class="artifact-image-link" href="${escapeHtml(image.content_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(image.content_url)}" alt="${escapeHtml(`${label}, ${state}`)}" /></a><figcaption><span><strong>${escapeHtml(label)}</strong> · ${escapeHtml(state)}${batch}</span>${description}<a class="artifact-download" href="${escapeHtml(image.content_url)}" download>Download image</a></figcaption></figure>`;
+}
+
+function roleLabel(role) {
+  return {
+    final: "Final",
+    preview: "Prototype",
+    comparison: "Comparison",
+    auxiliary: "Auxiliary",
+    unmapped: "Native output",
+  }[role] || "Generated image";
 }
 
 export function serviceBannerMarkup(services) {

@@ -4,15 +4,96 @@ import test from "node:test";
 import {
   clientValidate,
   controlPresentation,
+  createLatestRequestGate,
   defaultsForContract,
+  defaultsForInterface,
   footerText,
+  normalizeInputValue,
   overwriteWithRecall,
+  parametersForRequest,
+  reconcileInterfaceValues,
   resolutionConstraints,
   resolutionGridConstraints,
   resolutionSummary,
   scaleToLayout,
+  seedAllowsRandom,
+  seedFormValue,
   snapResolutionValue,
+  sortInterfaceInputs,
 } from "../src/lib.mjs";
+
+const publishedInterface = {
+  inputs: [
+    {
+      id: "knpv4_1_strength",
+      label: "LoRA strength",
+      type: "number",
+      default: 1,
+      minimum: 0,
+      maximum: 2,
+      step: 0.05,
+      group: "Finishing",
+      order: 60,
+      advanced: true,
+    },
+    {
+      id: "height",
+      label: "Height",
+      type: "integer",
+      default: 1920,
+      minimum: 16,
+      maximum: 2048,
+      step: 8,
+      group: "Size",
+      order: 30,
+      advanced: false,
+    },
+    {
+      id: "prompt",
+      label: "Prompt",
+      type: "string",
+      default: "a tree with chickens",
+      required: true,
+      semantic_role: "positive_prompt",
+      group: "Prompt",
+      order: 10,
+      advanced: false,
+    },
+    {
+      id: "width",
+      label: "Width",
+      type: "integer",
+      default: 1080,
+      minimum: 16,
+      maximum: 2048,
+      step: 8,
+      group: "Size",
+      order: 20,
+      advanced: false,
+    },
+    {
+      id: "seed",
+      label: "Seed",
+      type: "seed",
+      default: null,
+      default_mode: "random",
+      minimum: "0",
+      maximum: "9223372036854775807",
+      group: "Sampling",
+      order: 40,
+      advanced: false,
+    },
+    {
+      id: "enable_seedvr2_upscale",
+      label: "Enable SeedVR2 upscale",
+      type: "boolean",
+      default: false,
+      group: "Finishing",
+      order: 50,
+      advanced: false,
+    },
+  ],
+};
 
 test("gallery scale spans compact thumbnails through a full-width card", () => {
   assert.deepEqual(scaleToLayout(100), { full: true, cardWidth: 1200 });
@@ -125,4 +206,120 @@ test("resolution grid mirrors Resolution Master snapping and live details", () =
 test("footer uses only source, centered dot, and localized submission date text", () => {
   const value = footerText("Portrait Workflow", "2026-07-12T12:00:00Z", "en-US");
   assert.equal(value, "Portrait Workflow · Jul 12, 2026");
+});
+
+test("published inputs sort basic before advanced with deterministic order, group, and id fallbacks", () => {
+  const sorted = sortInterfaceInputs([
+    ...publishedInterface.inputs,
+    { id: "zeta", type: "string", group: "B", advanced: false },
+    { id: "alpha", type: "string", group: "A", advanced: false },
+  ]);
+  assert.deepEqual(sorted.map((input) => input.id), [
+    "prompt",
+    "width",
+    "height",
+    "seed",
+    "enable_seedvr2_upscale",
+    "alpha",
+    "zeta",
+    "knpv4_1_strength",
+  ]);
+});
+
+test("random seeds are omitted and fixed decimal seeds round-trip without Number coercion", () => {
+  const values = defaultsForInterface(publishedInterface);
+  assert.deepEqual(values.seed, { mode: "random", value: "0" });
+  assert.equal(Object.hasOwn(parametersForRequest(publishedInterface, values), "seed"), false);
+
+  values.seed = { mode: "fixed", value: "9223372036854775807" };
+  values.private_binding = "must not leave the browser";
+  const parameters = parametersForRequest(publishedInterface, values);
+  assert.equal(parameters.seed, "9223372036854775807");
+  assert.equal(Object.hasOwn(parameters, "private_binding"), false);
+  assert.deepEqual(clientValidate(publishedInterface, values), {});
+
+  values.seed.value = "9223372036854775808";
+  assert.match(clientValidate(publishedInterface, values).seed, /Maximum/);
+});
+
+test("required random seeds submit an explicit sentinel while fixed-mode seeds submit their default", () => {
+  const requiredRandom = {
+    inputs: [
+      {
+        id: "seed",
+        type: "seed",
+        required: true,
+        default: null,
+        default_mode: "random",
+        minimum: "0",
+        maximum: "1125899906842624",
+      },
+    ],
+  };
+  const randomValues = defaultsForInterface(requiredRandom);
+  assert.equal(seedAllowsRandom(requiredRandom.inputs[0]), true);
+  assert.deepEqual(parametersForRequest(requiredRandom, randomValues), { seed: "random" });
+
+  const fixed = {
+    inputs: [
+      {
+        id: "seed",
+        type: "seed",
+        required: true,
+        default: "424242",
+        default_mode: "fixed",
+        minimum: "0",
+        maximum: "1125899906842624",
+      },
+    ],
+  };
+  assert.equal(seedAllowsRandom(fixed.inputs[0]), false);
+  assert.deepEqual(seedFormValue(fixed.inputs[0]), { mode: "fixed", value: "424242" });
+  assert.deepEqual(seedFormValue(fixed.inputs[0], { mode: "random", value: "7" }), {
+    mode: "fixed",
+    value: "424242",
+  });
+  assert.deepEqual(parametersForRequest(fixed, defaultsForInterface(fixed)), { seed: "424242" });
+});
+
+test("latest request gate rejects stale completions and invalidated generations", () => {
+  const gate = createLatestRequestGate();
+  const first = gate.issue("generation-1");
+  const second = gate.issue("generation-1");
+  assert.equal(gate.isCurrent("generation-1", first), false);
+  assert.equal(gate.isCurrent("generation-1", second), true);
+
+  gate.invalidate("generation-1");
+  assert.equal(gate.isCurrent("generation-1", second), false);
+  const third = gate.issue("generation-1");
+  gate.clear();
+  assert.equal(gate.isCurrent("generation-1", third), false);
+});
+
+test("published numeric validation enforces integer and step contracts", () => {
+  const values = defaultsForInterface(publishedInterface);
+  values.width = 1080.5;
+  assert.match(clientValidate(publishedInterface, values).width, /whole number/);
+  values.width = 1080;
+  values.knpv4_1_strength = 1.03;
+  assert.match(clientValidate(publishedInterface, values).knpv4_1_strength, /increments of 0.05/);
+});
+
+test("integer controls reject values that cannot round-trip as safe JSON numbers", () => {
+  const width = publishedInterface.inputs.find((input) => input.id === "width");
+  const unsafe = normalizeInputValue(width, "9007199254740993");
+  assert.equal(unsafe, "9007199254740993");
+  assert.match(clientValidate({ inputs: [width] }, { width: unsafe }).width, /safe whole number/);
+
+  const safe = normalizeInputValue(width, "2048");
+  assert.equal(safe, 2048);
+  assert.deepEqual(clientValidate({ inputs: [width] }, { width: safe }), {});
+});
+
+test("republished sources retain values only when public id and type still match", () => {
+  const previous = { inputs: [{ id: "prompt", type: "string" }, { id: "seed", type: "string" }] };
+  const values = { prompt: "retained", seed: "old string seed" };
+  const reconciled = reconcileInterfaceValues(publishedInterface, values, previous);
+  assert.equal(reconciled.prompt, "retained");
+  assert.deepEqual(reconciled.seed, { mode: "random", value: "0" });
 });

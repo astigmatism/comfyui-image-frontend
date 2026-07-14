@@ -3,15 +3,17 @@ from __future__ import annotations
 import base64
 import copy
 import json
+from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import PurePath
-from typing import Any, Mapping
+from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain.compiler import CompileResult, WorkflowCompiler
+from ..domain.results import project_public_declared_outputs, project_public_result
 from ..errors import AppError
 from ..models import (
     ACTIVE_STATUSES,
@@ -40,6 +42,7 @@ from ..schemas import (
     GenerationPage,
     GenerationSummary,
     RecallResponse,
+    SourceRevision,
     ValidationResult,
     WorkflowIdentity,
 )
@@ -75,7 +78,7 @@ class GenerationService:
         result = self._compile(session, user=user, profile=profile, request=request)
         return ValidationResult(
             valid=True,
-            effective_controls=result.effective_controls,
+            effective_parameters=result.effective_controls,
             resolved_seeds=result.resolved_seeds,
             compiled_graph_sha256=result.compiled_graph_hash,
         )
@@ -84,10 +87,14 @@ class GenerationService:
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> GenerationSummary:
         health = session.get(ServiceHealth, "comfyui")
-        if health is not None and not health.available:
+        if health is None or not health.available:
             raise AppError(
                 "comfyui_unavailable",
-                "ComfyUI is unavailable. Existing history remains accessible.",
+                (
+                    "ComfyUI source discovery is still loading."
+                    if health is None
+                    else "ComfyUI is unavailable. Existing history remains accessible."
+                ),
                 status_code=503,
             )
         profile = self._profile_for_request(session, request)
@@ -117,6 +124,15 @@ class GenerationService:
             final_prompt=compiled.final_prompt,
             compiled_graph_json=compiled.compiled_graph,
             compiled_graph_sha256=compiled.compiled_graph_hash,
+            generation_source_json={
+                "source_key": profile.source_key,
+                "instance_id": profile.instance_id,
+                "publication_id": profile.publication_id,
+                "workflow_sha256": profile.ui_graph_sha256,
+                "api_sha256": profile.api_graph_sha256,
+                "manifest_sha256": profile.manifest_sha256,
+            },
+            result_warnings_json=copy.deepcopy(profile.warnings_json or []),
         )
         session.add(generation)
         session.flush()
@@ -144,7 +160,27 @@ class GenerationService:
             return self.summary(fresh, stored)
 
     def _profile_for_request(self, session: Session, request: GenerationCreate) -> WorkflowProfile:
-        profile = self.registry.get_current(session, request.profile_id)
+        if request.source_key:
+            profile = self.registry.get_current(session, request.source_key)
+        elif request.profile_id:
+            profile = self.registry.get_current_by_profile(session, request.profile_id)
+        else:  # Pydantic rejects this; keep the service boundary defensive.
+            raise AppError("source_unavailable", "Generation source is required.", status_code=422)
+        revision = request.revision
+        if revision and (
+            revision.publication_id != profile.publication_id
+            or revision.workflow_sha256 != profile.ui_graph_sha256
+            or revision.api_sha256 != profile.api_graph_sha256
+            or revision.manifest_sha256 != profile.manifest_sha256
+        ):
+            raise AppError(
+                "source_republished",
+                (
+                    "The selected source was republished. Review its current controls before "
+                    "generating."
+                ),
+                status_code=409,
+            )
         expected = request.expected_identity
         if expected and (
             expected.workflow_id != profile.workflow_id
@@ -174,7 +210,7 @@ class GenerationService:
             contract=profile.resolved_contract_json,
             api_document=profile.source_api_json,
             object_info=object_info,
-            requested_controls=request.controls,
+            requested_controls=request.public_parameters,
             preset_id=request.preset_id,
             requested_outputs=request.requested_outputs,
         )
@@ -280,7 +316,9 @@ class GenerationService:
             )
         rows = list(
             session.scalars(
-                statement.order_by(Generation.accepted_at.desc(), Generation.id.desc()).limit(limit + 1)
+                statement.order_by(Generation.accepted_at.desc(), Generation.id.desc()).limit(
+                    limit + 1
+                )
             )
         )
         has_more = len(rows) > limit
@@ -384,6 +422,14 @@ class GenerationService:
         display = self._display_artifact(session, generation)
         exact = self._exact_profile(session, generation)
         expected_width, expected_height = self._expected_dimensions(generation)
+        image_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(Artifact)
+                .where(Artifact.generation_id == generation.id, Artifact.kind == "image")
+            )
+            or 0
+        )
         return GenerationSummary(
             id=generation.id,
             status=generation.status.value,
@@ -392,6 +438,7 @@ class GenerationService:
             current_stage_id=generation.current_stage_id,
             current_stage_label=generation.current_stage_label,
             artifact_count=generation.artifact_count,
+            image_count=image_count,
             final_artifact_count=generation.final_artifact_count,
             best_available_artifact_id=generation.best_available_artifact_id,
             canonical_artifact_id=generation.canonical_artifact_id,
@@ -414,6 +461,9 @@ class GenerationService:
                 generation.status in ACTIVE_STATUSES
                 and generation.status != GenerationStatus.CANCEL_REQUESTED
             ),
+            prompt_id=generation.comfyui_prompt_id,
+            source_key=(generation.generation_source_json or {}).get("source_key"),
+            publication_id=(generation.generation_source_json or {}).get("publication_id"),
         )
 
     def detail(self, session: Session, generation: Generation) -> GenerationDetail:
@@ -432,6 +482,12 @@ class GenerationService:
                 .order_by(GenerationEvent.id)
             )
         )
+        artifact_summaries = [self.artifact_summary(item) for item in artifacts]
+        declared_output_order = [
+            str(item.get("id", item.get("output_id")))
+            for item in generation.resolved_contract_json.get("outputs", [])
+            if isinstance(item, Mapping) and isinstance(item.get("id", item.get("output_id")), str)
+        ]
         return GenerationDetail(
             **summary.model_dump(),
             workflow=WorkflowIdentity(
@@ -441,16 +497,31 @@ class GenerationService:
                 api_graph_sha256=generation.api_graph_sha256,
                 contract_sha256=generation.contract_sha256,
             ),
+            generation_source=copy.deepcopy(generation.generation_source_json or {}),
             requested_controls=generation.requested_controls_json,
             effective_controls=generation.effective_controls_json,
-            resolved_seeds={key: int(value) for key, value in generation.resolved_seeds_json.items()},
+            requested_parameters=generation.requested_controls_json,
+            effective_parameters=generation.effective_controls_json,
+            resolved_seeds={
+                key: str(value) for key, value in generation.resolved_seeds_json.items()
+            },
             final_prompt=generation.final_prompt,
-            artifacts=[self.artifact_summary(item) for item in artifacts],
+            artifacts=artifact_summaries,
+            declared_outputs=project_public_declared_outputs(
+                generation.declared_outputs_json or {},
+                output_order=declared_output_order,
+                artifacts=[item.model_dump() for item in artifact_summaries],
+            ),
+            unmapped_outputs=copy.deepcopy(generation.unmapped_outputs_json or {}),
+            raw_history=_public_raw_history(generation.raw_history_json or {}),
+            warnings=copy.deepcopy(generation.result_warnings_json or []),
+            errors=copy.deepcopy(generation.result_errors_json or []),
+            comfyui_status=copy.deepcopy(generation.comfyui_status_json or {}),
             events=[
                 {
                     "id": event.id,
                     "type": event.event_type,
-                    "payload": event.payload_json,
+                    "payload": _public_mapping(event.payload_json),
                     "created_at": event.created_at.isoformat(),
                 }
                 for event in events
@@ -461,24 +532,36 @@ class GenerationService:
 
     @staticmethod
     def _expected_dimensions(generation: Generation) -> tuple[int | None, int | None]:
-        controls = generation.resolved_contract_json.get("controls", [])
-        for control in controls:
+        width: int | None = None
+        height: int | None = None
+        for control in generation.resolved_contract_json.get("inputs", []):
+            if not isinstance(control, Mapping):
+                continue
+            value = generation.effective_controls_json.get(str(control.get("id")))
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                continue
+            if control.get("semantic_role") == "width":
+                width = value
+            elif control.get("semantic_role") == "height":
+                height = value
+        if width is not None or height is not None:
+            return width, height
+        # Historical embedded-contract generations remain readable after the publication
+        # migration; retain their resolution-card hint without reviving legacy discovery.
+        for control in generation.resolved_contract_json.get("controls", []):
             if not isinstance(control, Mapping) or control.get("type") != "resolution":
                 continue
             value = generation.effective_controls_json.get(str(control.get("id")))
             if not isinstance(value, Mapping):
                 continue
-            width = value.get("width")
-            height = value.get("height")
+            old_width, old_height = value.get("width"), value.get("height")
             if (
-                isinstance(width, int)
-                and not isinstance(width, bool)
-                and width > 0
-                and isinstance(height, int)
-                and not isinstance(height, bool)
-                and height > 0
+                isinstance(old_width, int)
+                and not isinstance(old_width, bool)
+                and isinstance(old_height, int)
+                and not isinstance(old_height, bool)
             ):
-                return width, height
+                return old_width, old_height
         return None, None
 
     @staticmethod
@@ -523,10 +606,10 @@ class GenerationService:
 
     def recall(self, session: Session, generation: Generation) -> RecallResponse:
         profile = self._exact_profile(session, generation)
-        if profile is None:
+        if profile is None or not profile.source_key or not profile.publication_id:
             return RecallResponse(
                 available=False,
-                reason="Original workflow version is not currently available.",
+                reason="Original published source revision is not currently available.",
             )
         owner = session.get(User, generation.owner_id)
         if owner is None:
@@ -534,14 +617,18 @@ class GenerationService:
                 available=False,
                 reason="The generation owner is no longer available.",
             )
-        candidate = copy.deepcopy(generation.requested_controls_json)
-        candidate.update(generation.resolved_seeds_json)
-        candidate["prompt.text"] = generation.final_prompt
+        candidate = copy.deepcopy(generation.effective_controls_json)
+        candidate.update({key: str(value) for key, value in generation.resolved_seeds_json.items()})
+        revision = SourceRevision(
+            publication_id=profile.publication_id,
+            workflow_sha256=profile.ui_graph_sha256,
+            api_sha256=profile.api_graph_sha256,
+            manifest_sha256=profile.manifest_sha256 or profile.contract_sha256,
+        )
         request = GenerationCreate(
-            profile_id=profile.id,
-            controls=candidate,
-            preset_id=generation.selected_preset,
-            requested_outputs=list(generation.requested_outputs_json),
+            source_key=profile.source_key,
+            parameters=candidate,
+            revision=revision,
         )
         try:
             compiled = self._compile(
@@ -556,28 +643,6 @@ class GenerationService:
             )
         except AppError:
             exact = False
-        if not exact:
-            candidate = copy.deepcopy(generation.effective_controls_json)
-            candidate.update(generation.resolved_seeds_json)
-            candidate["prompt.text"] = generation.final_prompt
-            request = GenerationCreate(
-                profile_id=profile.id,
-                controls=candidate,
-                requested_outputs=list(generation.requested_outputs_json),
-            )
-            try:
-                compiled = self._compile(
-                    session,
-                    user=owner,
-                    profile=profile,
-                    request=request,
-                )
-                exact = (
-                    compiled.effective_controls == generation.effective_controls_json
-                    and compiled.compiled_graph_hash == generation.compiled_graph_sha256
-                )
-            except AppError:
-                exact = False
         if not exact:
             return RecallResponse(
                 available=False,
@@ -605,6 +670,9 @@ class GenerationService:
                 contract_sha256=profile.contract_sha256,
             ),
             controls=candidate,
+            source_key=profile.source_key,
+            revision=revision,
+            parameters=candidate,
             prompt_assistant=assistant,
         )
 
@@ -646,11 +714,8 @@ class GenerationService:
         session.commit()
         await publish_event(self.broker, event)
         if prompt_id:
-            try:
+            with suppress(Exception):
                 await self.comfyui.cancel(prompt_id, running=True)
-            except Exception:
-                # Reconciliation worker retries and resolves the eventual terminal state.
-                pass
         return self.summary(session, generation)
 
     async def request_delete(self, session: Session, generation: Generation) -> bool:
@@ -691,19 +756,20 @@ class GenerationService:
         generation_id = generation.id
         owner_id = generation.owner_id
         session.execute(
-            delete(PromptAssistantRun).where(
-                PromptAssistantRun.generation_id == generation_id
-            )
+            delete(PromptAssistantRun).where(PromptAssistantRun.generation_id == generation_id)
         )
         session.delete(generation)
         session.flush()
         upload_paths: list[str] = []
         for upload_id in upload_ids:
-            remaining = session.scalar(
-                select(func.count())
-                .select_from(GenerationUpload)
-                .where(GenerationUpload.upload_id == upload_id)
-            ) or 0
+            remaining = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(GenerationUpload)
+                    .where(GenerationUpload.upload_id == upload_id)
+                )
+                or 0
+            )
             if remaining == 0:
                 upload = session.get(Upload, upload_id)
                 if upload:
@@ -727,6 +793,30 @@ def _encode_cursor(accepted_at: datetime, generation_id: str) -> str:
         {"accepted_at": accepted_at.isoformat(), "id": generation_id}, separators=(",", ":")
     ).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _public_raw_history(history: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove only graph-bearing root envelopes from an otherwise exhaustive history result."""
+
+    graph_envelopes = {
+        "api_graph",
+        "extra_data",
+        "graph",
+        "prompt",
+        "prompt_graph",
+        "submitted_graph",
+        "workflow",
+    }
+    return {
+        str(key): copy.deepcopy(value)
+        for key, value in history.items()
+        if str(key).casefold().replace("-", "_") not in graph_envelopes
+    }
+
+
+def _public_mapping(value: Any) -> dict[str, Any]:
+    projected = project_public_result(value)
+    return projected if isinstance(projected, dict) else {}
 
 
 def _decode_cursor(value: str) -> tuple[datetime, str]:

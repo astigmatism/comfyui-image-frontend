@@ -4,12 +4,12 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from app import security
+from app.config import Settings
+from app.main import create_app
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
-from app.config import Settings
-from app import security
-from app.main import create_app
 from tests.fake_services import FakeServiceState, LiveFakeServer
 
 
@@ -41,9 +41,7 @@ def fake_state(fake_services: LiveFakeServer) -> FakeServiceState:
 
 
 @pytest.fixture
-def settings_factory(
-    tmp_path: Path, fake_services: LiveFakeServer
-) -> Callable[..., Settings]:
+def settings_factory(tmp_path: Path, fake_services: LiveFakeServer) -> Callable[..., Settings]:
     counter = 0
 
     def factory(**overrides: object) -> Settings:
@@ -59,7 +57,9 @@ def settings_factory(
             "bootstrap_admin_temporary_password": "AdminTemporary123!",
             "comfyui_base_url": fake_services.base_url,
             "comfyui_ws_url": fake_services.ws_url,
-            "comfyui_workflow_directory": "workflows/front-end",
+            "comfyui_instance_id": "test-instance",
+            "comfyui_user": "fixture-user",
+            "comfyui_workflow_directory": "workflows",
             "ollama_base_url": fake_services.base_url,
             "frontend_dist": Path(__file__).resolve().parents[2] / "frontend" / "dist",
             "dispatch_poll_seconds": 0.02,
@@ -77,7 +77,10 @@ def settings_factory(
 
 
 @pytest.fixture
-def app_client(settings_factory: Callable[..., Settings]) -> Iterator[TestClient]:
+def app_client(
+    settings_factory: Callable[..., Settings], fake_state: FakeServiceState
+) -> Iterator[TestClient]:
+    del fake_state  # The dependency guarantees reset before application startup discovery.
     app = create_app(settings_factory())
     with TestClient(app) as client:
         yield client

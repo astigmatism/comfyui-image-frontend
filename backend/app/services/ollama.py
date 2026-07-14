@@ -70,7 +70,9 @@ class OllamaAdapter:
         direction: str,
     ) -> ComposeResult:
         if not self._client:
-            raise AppError("ollama_unavailable", "Prompt Assistant is not configured.", status_code=503)
+            raise AppError(
+                "ollama_unavailable", "Prompt Assistant is not configured.", status_code=503
+            )
         models = await self.available_models()
         if not models:
             raise AppError(
@@ -120,13 +122,13 @@ class OllamaAdapter:
 def _instruction(*, mode: str, prompt: str, direction: str) -> str:
     if mode == "refine":
         return (
-            "You compose one polished image-generation prompt. Preserve the user's intent and do not "
-            "add policy commentary. Return JSON with exactly one string field named prompt.\n\n"
+            "You compose one polished image-generation prompt. Preserve the user's intent and do "
+            "not add policy commentary. Return JSON with exactly one string field named prompt.\n\n"
             f"Current prompt:\n{prompt}\n\nCreative direction:\n{direction}"
         )
     return (
-        "You compose one polished image-generation prompt from a creative direction. Return JSON with "
-        "exactly one string field named prompt and no commentary.\n\n"
+        "You compose one polished image-generation prompt from a creative direction. Return JSON "
+        "with exactly one string field named prompt and no commentary.\n\n"
         f"Creative direction:\n{direction}"
     )
 
@@ -135,8 +137,9 @@ def _extract_prompt(raw_text: str) -> str:
     text = raw_text.strip()
     try:
         parsed = json.loads(text)
-        if isinstance(parsed, dict) and isinstance(parsed.get("prompt"), str):
-            return parsed["prompt"].strip()
+        prompt = parsed.get("prompt") if isinstance(parsed, dict) else None
+        if isinstance(prompt, str):
+            return prompt.strip()
     except json.JSONDecodeError:
         pass
     if text.startswith("```") and text.endswith("```"):
@@ -144,8 +147,9 @@ def _extract_prompt(raw_text: str) -> str:
         text = "\n".join(lines[1:-1]).strip()
         try:
             parsed = json.loads(text)
-            if isinstance(parsed, dict) and isinstance(parsed.get("prompt"), str):
-                return parsed["prompt"].strip()
+            prompt = parsed.get("prompt") if isinstance(parsed, dict) else None
+            if isinstance(prompt, str):
+                return prompt.strip()
         except json.JSONDecodeError:
             pass
     return text

@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Settings
 
-
 _MIGRATION_LOCK = threading.Lock()
 
 

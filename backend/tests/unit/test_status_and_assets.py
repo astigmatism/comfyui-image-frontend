@@ -3,7 +3,6 @@ from __future__ import annotations
 from io import BytesIO
 
 import pytest
-
 from app.domain.status import assert_transition
 from app.errors import AppError
 from app.models import GenerationStatus

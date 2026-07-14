@@ -3,14 +3,13 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Index,
     Integer,
@@ -31,31 +30,31 @@ def uuid_str() -> str:
 
 
 class Base(DeclarativeBase):
-    type_annotation_map = {dict[str, Any]: JSON, list[Any]: JSON}
+    type_annotation_map: ClassVar[dict[Any, Any]] = {dict[str, Any]: JSON, list[Any]: JSON}
 
 
-class UserRole(str, enum.Enum):
+class UserRole(enum.StrEnum):
     ADMIN = "admin"
     USER = "user"
 
 
-class UserState(str, enum.Enum):
+class UserState(enum.StrEnum):
     ACTIVE = "active"
     DELETING = "deleting"
 
 
-class WorkflowState(str, enum.Enum):
+class WorkflowState(enum.StrEnum):
     VALID = "valid"
     INVALID = "invalid"
     STALE = "stale"
 
 
-class UploadKind(str, enum.Enum):
+class UploadKind(enum.StrEnum):
     IMAGE = "image"
     MASK = "mask"
 
 
-class GenerationStatus(str, enum.Enum):
+class GenerationStatus(enum.StrEnum):
     QUEUED = "queued"
     DISPATCHING = "dispatching"
     RUNNING = "running"
@@ -85,7 +84,7 @@ ACTIVE_STATUSES: set[GenerationStatus] = {
 }
 
 
-class ArtifactState(str, enum.Enum):
+class ArtifactState(enum.StrEnum):
     PROVISIONAL = "provisional"
     SUPERSEDED = "superseded"
     BEST_AVAILABLE = "best_available"
@@ -101,7 +100,9 @@ class User(Base):
     username_normalized: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.USER)
-    state: Mapped[UserState] = mapped_column(Enum(UserState), nullable=False, default=UserState.ACTIVE)
+    state: Mapped[UserState] = mapped_column(
+        Enum(UserState), nullable=False, default=UserState.ACTIVE
+    )
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_bootstrap: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     session_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -121,7 +122,9 @@ class Session(Base):
     csrf_token: Mapped[str] = mapped_column(String(64), nullable=False)
     session_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ip_hash: Mapped[str | None] = mapped_column(String(64))
@@ -174,7 +177,18 @@ class WorkflowProfile(Base):
     source_api_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     resolved_contract_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    runtime_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    runtime_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    source_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    source_id: Mapped[str | None] = mapped_column(String(1024))
+    publication_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    publication_schema: Mapped[str | None] = mapped_column(String(64))
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64))
+    published_at: Mapped[str | None] = mapped_column(String(100))
+    warnings_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    readiness: Mapped[str] = mapped_column(String(40), nullable=False, default="ready")
     state: Mapped[WorkflowState] = mapped_column(
         Enum(WorkflowState), nullable=False, default=WorkflowState.VALID
     )
@@ -304,7 +318,22 @@ class Generation(Base):
 
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
-    internal_diagnostics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    internal_diagnostics_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    generation_source_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    raw_history_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    declared_outputs_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    unmapped_outputs_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    result_warnings_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    result_errors_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    comfyui_status_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     pending_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

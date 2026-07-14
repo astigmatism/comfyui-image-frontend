@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -54,8 +55,8 @@ def first_profile(client: TestClient) -> dict[str, Any]:
     response = client.get("/api/workflows")
     assert response.status_code == 200, response.text
     profiles = response.json()
-    assert len(profiles) == 1
-    return profiles[0]
+    assert profiles
+    return next(item for item in profiles if item["display_name"] == "Krea 2 NSFW V4")
 
 
 def generation_payload(
@@ -68,21 +69,24 @@ def generation_payload(
 ) -> dict[str, Any]:
     profile = first_profile(client)
     controls: dict[str, Any] = {
-        "prompt.text": prompt,
-        "generation.seed": seed,
-        "size.resolution": {"width": 512, "height": 512},
-        "post.enabled": True,
-        "sampling.steps": 8,
-        "model.asset": "models/fake.safetensors",
+        "prompt": prompt,
+        "seed": seed,
+        "width": 512,
+        "height": 512,
+        "enable_seedvr2_upscale": False,
+        "knpv4_1_strength": 1.0,
     }
-    if source_upload_id is not None:
-        controls["source.image"] = source_upload_id
-    return {
-        "profile_id": profile["profile_id"],
-        "controls": controls,
-        "preset_id": preset_id,
-        "requested_outputs": ["base_image", "final_image"],
+    # Publication v1 deliberately exposes only manifest-declared scalar parameters. Upload
+    # fixtures remain useful for authorization/storage tests but are not injected into this source.
+    del source_upload_id
+    payload: dict[str, Any] = {
+        "source_key": profile["source_key"],
+        "revision": profile["revision"],
+        "parameters": controls,
     }
+    if preset_id is not None:
+        payload["preset_id"] = preset_id
+    return payload
 
 
 def create_generation(client: TestClient, prompt: str, **kwargs: Any) -> dict[str, Any]:

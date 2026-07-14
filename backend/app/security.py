@@ -22,7 +22,7 @@ def normalize_username(username: str) -> str:
     if not USERNAME_RE.fullmatch(username):
         raise AppError(
             "invalid_username",
-            "Username must be 3–32 characters using letters, numbers, dot, underscore, or hyphen.",
+            "Username must be 3-32 characters using letters, numbers, dot, underscore, or hyphen.",
             fields={"username": "Use a conservative local username."},
         )
     return username.casefold()
@@ -36,7 +36,9 @@ def validate_password(password: str) -> None:
             fields={"password": "Choose a longer password."},
         )
     if len(password) > 1024:
-        raise AppError("invalid_password", "Password is too long.", fields={"password": "Too long."})
+        raise AppError(
+            "invalid_password", "Password is too long.", fields={"password": "Too long."}
+        )
 
 
 def hash_password(password: str) -> str:

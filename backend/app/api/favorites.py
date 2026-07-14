@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session
@@ -13,7 +13,6 @@ from ..dependencies import (
     require_ready_user,
 )
 from ..schemas import FavoritePage, FavoriteSummary
-from ..services.generations import GenerationService
 
 router = APIRouter(prefix="/api", tags=["favorites"])
 
@@ -26,7 +25,7 @@ def list_favorites(
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=60)] = 40,
 ) -> FavoritePage:
-    service = cast(GenerationService, get_container(request).generations)
+    service = get_container(request).generations
     return service.list_favorites(
         session,
         owner_id=context.user.id,
@@ -42,7 +41,7 @@ def add_favorite(
     session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> FavoriteSummary:
-    service = cast(GenerationService, get_container(request).generations)
+    service = get_container(request).generations
     return service.add_favorite(
         session,
         owner_id=context.user.id,
@@ -57,7 +56,7 @@ def remove_favorite(
     session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> None:
-    service = cast(GenerationService, get_container(request).generations)
+    service = get_container(request).generations
     service.remove_favorite(
         session,
         owner_id=context.user.id,

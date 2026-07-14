@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import copy
 
-from fastapi.testclient import TestClient
-
 from app.main import create_app
+from fastapi.testclient import TestClient
 from tests.conftest import change_password, create_user, csrf, login
 from tests.helpers import (
     ADMIN_PASSWORD,
@@ -14,6 +13,7 @@ from tests.helpers import (
     restore_cookie,
     wait_for_status,
 )
+from tests.publication_fixtures import KREA_STEM
 
 
 def test_cursor_pagination_is_newest_first_and_preference_persists(
@@ -32,9 +32,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "/api/generations", params={"limit": 3, "cursor": second_page["next_cursor"]}
         ).json()
         actual = [
-            item["id"]
-            for page in (first_page, second_page, third_page)
-            for item in page["items"]
+            item["id"] for page in (first_page, second_page, third_page) for item in page["items"]
         ]
         assert actual == expected
         assert len(set(actual)) == 7
@@ -47,11 +45,14 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         )
         assert saved.status_code == 200
         assert saved.json()["gallery_scale"] == 93
-        assert first.put(
-            "/api/preferences",
-            headers={"X-CSRF-Token": csrf(first)},
-            json={"gallery_scale": 101},
-        ).status_code == 422
+        assert (
+            first.put(
+                "/api/preferences",
+                headers={"X-CSRF-Token": csrf(first)},
+                json={"gallery_scale": 101},
+            ).status_code
+            == 422
+        )
 
     with TestClient(create_app(settings)) as second:
         restore_cookie(second, cookie, name=settings.session_cookie_name)
@@ -64,7 +65,7 @@ def test_recall_is_disabled_when_exact_workflow_disappears_but_history_remains(
     settings = settings_factory(enable_background_worker=True)
     original_files = copy.deepcopy(fake_state.workflow_files)
     with TestClient(create_app(settings)) as client:
-        user, user_cookie = provision_user(client, username="recall.user")
+        _, user_cookie = provision_user(client, username="recall.user")
         generation = create_generation(client, "historical exact request", seed=551)
         complete = wait_for_status(client, generation["id"], "succeeded")
         assert complete["recall_available"] is True
@@ -78,7 +79,7 @@ def test_recall_is_disabled_when_exact_workflow_disappears_but_history_remains(
         fake_state.workflow_files = {
             key: value
             for key, value in fake_state.workflow_files.items()
-            if not key.startswith("profiles/progressive.")
+            if not key.startswith(KREA_STEM)
         }
         refreshed = client.post(
             "/api/admin/workflows/refresh",
@@ -175,8 +176,7 @@ def test_favorites_cursor_pagination_is_newest_first(settings_factory, fake_stat
     with TestClient(create_app(settings)) as client:
         provision_user(client, username="favorite.pages")
         generations = [
-            create_generation(client, f"favorite page {index}", seed=index)
-            for index in range(5)
+            create_generation(client, f"favorite page {index}", seed=index) for index in range(5)
         ]
         for generation in generations:
             response = client.put(
@@ -193,9 +193,7 @@ def test_favorites_cursor_pagination_is_newest_first(settings_factory, fake_stat
             "/api/favorites", params={"limit": 2, "cursor": second["next_cursor"]}
         ).json()
         actual = [
-            item["generation"]["id"]
-            for page in (first, second, third)
-            for item in page["items"]
+            item["generation"]["id"] for page in (first, second, third) for item in page["items"]
         ]
         assert actual == [generation["id"] for generation in reversed(generations)]
         assert third["next_cursor"] is None

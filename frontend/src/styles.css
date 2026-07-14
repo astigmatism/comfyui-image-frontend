@@ -716,6 +716,22 @@ code {
   opacity: 0.72;
 }
 
+.control-group {
+  min-width: 0;
+}
+
+.control-group + .control-group {
+  margin-top: var(--space-5);
+}
+
+.control-group-heading {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .field-error,
 .form-error {
   color: #f3a8ae;
@@ -739,17 +755,58 @@ code {
   background: #2c171b;
 }
 
+.source-notice {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.source-notice.warning {
+  border-color: #665439;
+  background: #2a241a;
+  color: #e7d1aa;
+}
+
+.source-notice.error {
+  border-color: #744149;
+  background: #311a1e;
+  color: #f0b4b9;
+}
+
+.source-notice strong {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.source-notice ul,
+.result-messages ul {
+  padding-left: 18px;
+  margin: 3px 0 0;
+}
+
 .switch {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
+  width: fit-content;
   cursor: pointer;
 }
 
 .switch input {
   position: absolute;
+  top: 0;
+  left: 0;
+  width: 38px;
+  height: 22px;
+  min-height: 0;
+  margin: 0;
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
+  z-index: 1;
 }
 
 .switch > span {
@@ -795,6 +852,7 @@ code {
 }
 
 .seed-control,
+.number-control,
 .resolution-control {
   display: grid;
   align-items: end;
@@ -803,6 +861,19 @@ code {
 
 .seed-control {
   grid-template-columns: 92px minmax(0, 1fr);
+}
+
+.number-control {
+  grid-template-columns: minmax(0, 1fr) 92px;
+  align-items: center;
+}
+
+.number-control input[type="range"] {
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .resolution-control {
@@ -1046,6 +1117,16 @@ code {
   border-color: #744149;
   background: #311a1e;
   color: #f0b4b9;
+}
+
+.inline-alert.warning {
+  border-color: #665439;
+  background: #2a241a;
+  color: #e7d1aa;
+}
+
+.result-messages {
+  display: block;
 }
 
 .panel-scrim {
@@ -1324,6 +1405,37 @@ dialog::backdrop {
   gap: var(--space-4);
 }
 
+.result-image-groups {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.result-image-group {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.result-image-group > header h3,
+.result-image-group > header p {
+  margin: 0;
+}
+
+.result-image-group > header h3 {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.result-image-group > header p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.result-image-group:not(:first-child) {
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
 .artifact-viewer figure {
   display: grid;
   gap: 7px;
@@ -1340,9 +1452,75 @@ dialog::backdrop {
   background: #05080c;
 }
 
+.artifact-image-link {
+  display: block;
+  border-radius: var(--radius);
+}
+
 .artifact-viewer figcaption {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 12px;
   color: var(--muted);
   font-size: 0.76rem;
+}
+
+.artifact-viewer figcaption > span {
+  min-width: 0;
+}
+
+.artifact-viewer figcaption > span:nth-child(2) {
+  grid-column: 1;
+}
+
+.artifact-viewer figcaption strong {
+  color: var(--text-soft);
+}
+
+.artifact-download {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.artifact-download:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.result-section {
+  min-width: 0;
+  margin-top: var(--space-5);
+}
+
+.result-section h3 {
+  margin-bottom: var(--space-2);
+}
+
+.result-details > .result-json {
+  margin: 0 12px 14px;
+}
+
+.result-details > .muted {
+  padding: 0 12px 12px;
+  margin: 0;
+}
+
+.result-json {
+  max-width: 100%;
+  max-height: 420px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #080d14;
+  color: #c7d9ee;
+  font: 0.75rem/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .timeline {
@@ -1423,6 +1601,15 @@ dialog::backdrop {
 
 .provenance-prompt {
   white-space: pre-wrap;
+}
+
+.provenance .result-json {
+  max-height: 260px;
+  margin: 0;
+}
+
+.raw-history > .result-json {
+  margin: 0 12px 14px;
 }
 
 .admin-content {
