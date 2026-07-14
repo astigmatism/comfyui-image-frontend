@@ -73,21 +73,73 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator(".gallery-card .card-media img")).toBeVisible();
   await expect(page.locator(".gallery-card")).toHaveClass(/status-(running|succeeded)/);
   await expect(page.locator(".gallery-card .batch-count")).toHaveText("4");
+  await expect(page.locator(".gallery-card")).toHaveClass(/status-succeeded/);
 
   const cardMedia = page.locator(".gallery-card .card-media").first();
   const photoViewer = page.locator("#photo-viewer");
   const detailDialog = page.locator("#detail-dialog");
   await cardMedia.click();
   await expect(photoViewer).toHaveAttribute("open", "");
-  await expect(photoViewer.locator(".photo-viewer-media img")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  const viewerMedia = photoViewer.locator(".photo-viewer-media");
+  const viewerImage = viewerMedia.locator("img");
+  const sizingControls = photoViewer.getByRole("group", { name: "Image sizing" });
+  const fitButton = sizingControls.getByRole("button", { name: "Fit" });
+  const fillButton = sizingControls.getByRole("button", { name: "Fill" });
+  await expect(viewerImage).toBeVisible();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
+  await expect(viewerImage).toHaveCSS("object-fit", "contain");
+  await expect(fitButton).toHaveAttribute("aria-pressed", "true");
+  await fillButton.click();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
+  await expect(viewerImage).toHaveCSS("object-fit", "cover");
+  await expect(fillButton).toHaveAttribute("aria-pressed", "true");
+  await fitButton.click();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
+  await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
+
+  const viewerBounds = await viewerImage.boundingBox();
+  const mediaBounds = await viewerMedia.boundingBox();
+  expect(viewerBounds).toBeTruthy();
+  expect(mediaBounds).toBeTruthy();
+  expect(viewerBounds.width).toBeCloseTo(mediaBounds.width, 4);
+  expect(viewerBounds.height).toBeCloseTo(mediaBounds.height, 4);
+  const imageCenter = {
+    x: viewerBounds.x + viewerBounds.width / 2,
+    y: viewerBounds.y + viewerBounds.height / 2,
+  };
+  await page.mouse.move(imageCenter.x, imageCenter.y);
+  await page.mouse.wheel(0, -100);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(1);
+  const zoomedIn = Number(await viewerImage.getAttribute("data-photo-zoom"));
+  await page.mouse.wheel(0, 100);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeLessThan(zoomedIn);
+
+  await page.mouse.wheel(0, -200);
+  const panXBefore = Number(await viewerImage.getAttribute("data-photo-pan-x"));
+  const panYBefore = Number(await viewerImage.getAttribute("data-photo-pan-y"));
+  await page.mouse.down();
+  await page.mouse.move(imageCenter.x + 36, imageCenter.y + 24);
+  await page.mouse.up();
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-x"))).toBeCloseTo(panXBefore + 36, 4);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(panYBefore + 24, 4);
+
   const viewerClose = photoViewer.getByRole("button", { name: "Close full-screen viewer" });
   await expect(viewerClose).toHaveCSS("opacity", "1");
   await page.waitForTimeout(2200);
   await expect(viewerClose).toHaveCSS("opacity", "0");
   await page.mouse.move(80, 80);
   await expect(viewerClose).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Escape");
+  await expect(photoViewer).not.toHaveAttribute("open", "");
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
+
+  await cardMedia.click();
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
   await viewerClose.click();
   await expect(photoViewer).not.toHaveAttribute("open", "");
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
 
   const metadata = page.locator(".gallery-card .card-metadata").first();
   await metadata.click();

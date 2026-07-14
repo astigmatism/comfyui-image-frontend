@@ -70,11 +70,19 @@ const state = {
   observer: null,
   photoViewerGenerationId: null,
   photoViewerTimer: null,
+  photoViewerMode: "fit",
+  photoViewerZoom: 1,
+  photoViewerPanX: 0,
+  photoViewerPanY: 0,
+  photoViewerFullscreenOwned: false,
+  photoViewerFullscreenPending: false,
+  photoViewerFullscreenRequestToken: 0,
   changingPasswordFromApp: false,
 };
 
 const generationRefreshGate = createLatestRequestGate();
 let activeResolutionDrag = null;
+let activePhotoViewerDrag = null;
 
 async function initialize() {
   bindDelegatedEvents();
@@ -106,6 +114,8 @@ function bindDelegatedEvents() {
   root.addEventListener("pointermove", handlePointerMove);
   root.addEventListener("pointerup", handlePointerEnd);
   root.addEventListener("pointercancel", handlePointerEnd);
+  root.addEventListener("wheel", handlePhotoViewerWheel, { passive: false });
+  document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
   root.addEventListener(
     "toggle",
     (event) => {
@@ -166,6 +176,7 @@ async function handleClick(event) {
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
+    else if (action === "set-photo-view") setPhotoViewerMode(target.dataset.photoViewMode);
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -260,6 +271,26 @@ function handleInput(event) {
 
 function handlePointerDown(event) {
   if (event.button !== 0) return;
+  const photo = event.target.closest("#photo-viewer[open] .photo-viewer-media img");
+  if (photo) {
+    event.preventDefault();
+    activePhotoViewerDrag = {
+      captureTarget: photo,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPanX: state.photoViewerPanX,
+      startPanY: state.photoViewerPanY,
+    };
+    document.querySelector("#photo-viewer")?.classList.add("is-panning");
+    try {
+      photo.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is an enhancement; delegated pointer events remain the fallback.
+    }
+    notePhotoViewerActivity();
+    return;
+  }
   const grid = event.target.closest("[data-resolution-grid]");
   if (!grid || grid.dataset.resolutionDisabled === "true") return;
   const handle = event.target.closest("[data-resolution-handle]");
@@ -281,12 +312,23 @@ function handlePointerDown(event) {
 
 function handlePointerMove(event) {
   if (document.querySelector("#photo-viewer")?.open) notePhotoViewerActivity();
+  if (activePhotoViewerDrag && event.pointerId === activePhotoViewerDrag.pointerId) {
+    event.preventDefault();
+    state.photoViewerPanX = activePhotoViewerDrag.startPanX + event.clientX - activePhotoViewerDrag.startX;
+    state.photoViewerPanY = activePhotoViewerDrag.startPanY + event.clientY - activePhotoViewerDrag.startY;
+    applyPhotoViewerTransform();
+    return;
+  }
   if (!activeResolutionDrag || event.pointerId !== activeResolutionDrag.pointerId) return;
   event.preventDefault();
   updateResolutionFromPointer(event, activeResolutionDrag);
 }
 
 function handlePointerEnd(event) {
+  if (activePhotoViewerDrag && event.pointerId === activePhotoViewerDrag.pointerId) {
+    finishPhotoViewerDrag();
+    return;
+  }
   if (!activeResolutionDrag || event.pointerId !== activeResolutionDrag.pointerId) return;
   const { captureTarget, grid, mode, pointerId } = activeResolutionDrag;
   activeResolutionDrag = null;
@@ -296,6 +338,25 @@ function handlePointerEnd(event) {
     // The browser may release capture before pointercancel reaches the delegated handler.
   }
   renderPanelWithResolutionFocus(grid, mode);
+}
+
+function handlePhotoViewerWheel(event) {
+  const photo = event.target.closest("#photo-viewer[open] .photo-viewer-media img");
+  if (!photo || !event.deltaY) return;
+  event.preventDefault();
+  notePhotoViewerActivity();
+
+  const media = photo.closest(".photo-viewer-media");
+  const rect = media.getBoundingClientRect();
+  const deltaScale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+  const zoomFactor = Math.exp((-event.deltaY * deltaScale * Math.log(1.12)) / 100);
+  const pointerX = event.clientX - (rect.left + rect.width / 2);
+  const pointerY = event.clientY - (rect.top + rect.height / 2);
+
+  state.photoViewerPanX = pointerX - (pointerX - state.photoViewerPanX) * zoomFactor;
+  state.photoViewerPanY = pointerY - (pointerY - state.photoViewerPanY) * zoomFactor;
+  state.photoViewerZoom *= zoomFactor;
+  applyPhotoViewerTransform();
 }
 
 function handleKeyDown(event) {
@@ -337,6 +398,12 @@ function handleKeyDown(event) {
 
 function handlePhotoViewerKeyDown(event) {
   if (!document.querySelector("#photo-viewer")?.open) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closePhotoViewer();
+    return;
+  }
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
   event.stopPropagation();
@@ -1325,12 +1392,21 @@ function photoViewerNavigation(id) {
 function renderPhotoViewer() {
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog || !state.photoViewerGenerationId) return;
+  if (activePhotoViewerDrag) {
+    activePhotoViewerDrag.renderPending = true;
+    return;
+  }
   const generation = state.generations.find((item) => item.id === state.photoViewerGenerationId);
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") {
     closePhotoViewer();
     return;
   }
-  dialog.innerHTML = photoViewerMarkup(generation, photoViewerNavigation(generation.id));
+  dialog.innerHTML = photoViewerMarkup(
+    generation,
+    photoViewerNavigation(generation.id),
+    state.photoViewerMode,
+  );
+  applyPhotoViewerTransform();
 }
 
 function openPhotoViewer(id) {
@@ -1338,9 +1414,11 @@ function openPhotoViewer(id) {
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") return;
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog) return;
+  resetPhotoViewerView("fit");
   state.photoViewerGenerationId = id;
   renderPhotoViewer();
   if (!dialog.open) dialog.showModal();
+  requestPhotoViewerFullscreen(dialog);
   notePhotoViewerActivity();
   dialog.querySelector("[data-action=close-photo]")?.focus({ preventScroll: true });
 }
@@ -1361,8 +1439,85 @@ async function navigatePhotoViewer(direction) {
     return;
   }
   state.photoViewerGenerationId = target.id;
+  resetPhotoViewerView(state.photoViewerMode);
   renderPhotoViewer();
   notePhotoViewerActivity();
+}
+
+function setPhotoViewerMode(mode) {
+  if (!["fit", "fill"].includes(mode)) return;
+  resetPhotoViewerView(mode);
+  const dialog = document.querySelector("#photo-viewer");
+  const media = dialog?.querySelector(".photo-viewer-media");
+  if (media) media.dataset.photoViewMode = mode;
+  for (const button of dialog?.querySelectorAll("[data-action=set-photo-view]") || []) {
+    button.setAttribute("aria-pressed", String(button.dataset.photoViewMode === mode));
+  }
+}
+
+function applyPhotoViewerTransform() {
+  const photo = document.querySelector("#photo-viewer .photo-viewer-media img");
+  if (!photo) return;
+  photo.style.transform = `translate3d(${state.photoViewerPanX}px, ${state.photoViewerPanY}px, 0) scale(${state.photoViewerZoom})`;
+  photo.dataset.photoZoom = String(state.photoViewerZoom);
+  photo.dataset.photoPanX = String(state.photoViewerPanX);
+  photo.dataset.photoPanY = String(state.photoViewerPanY);
+}
+
+function resetPhotoViewerView(mode) {
+  state.photoViewerMode = mode === "fill" ? "fill" : "fit";
+  state.photoViewerZoom = 1;
+  state.photoViewerPanX = 0;
+  state.photoViewerPanY = 0;
+  finishPhotoViewerDrag(false);
+  applyPhotoViewerTransform();
+}
+
+function finishPhotoViewerDrag(renderPending = true) {
+  if (!activePhotoViewerDrag) return;
+  const { captureTarget, pointerId, renderPending: shouldRender } = activePhotoViewerDrag;
+  activePhotoViewerDrag = null;
+  document.querySelector("#photo-viewer")?.classList.remove("is-panning");
+  try {
+    if (captureTarget.hasPointerCapture(pointerId)) captureTarget.releasePointerCapture(pointerId);
+  } catch {
+    // The browser may release capture before pointercancel reaches the delegated handler.
+  }
+  if (renderPending && shouldRender) renderPhotoViewer();
+}
+
+function requestPhotoViewerFullscreen(dialog) {
+  const target = document.documentElement;
+  if (document.fullscreenElement || typeof target.requestFullscreen !== "function") return;
+  const requestToken = ++state.photoViewerFullscreenRequestToken;
+  state.photoViewerFullscreenPending = true;
+  target.requestFullscreen({ navigationUI: "hide" }).then(
+    () => {
+      if (state.photoViewerFullscreenRequestToken !== requestToken || !dialog.open) {
+        if (document.fullscreenElement === target) document.exitFullscreen().catch(() => {});
+        return;
+      }
+      state.photoViewerFullscreenPending = false;
+      state.photoViewerFullscreenOwned = document.fullscreenElement === target;
+    },
+    () => {
+      if (state.photoViewerFullscreenRequestToken === requestToken) {
+        state.photoViewerFullscreenPending = false;
+      }
+    },
+  );
+}
+
+function handlePhotoViewerFullscreenChange() {
+  const dialog = document.querySelector("#photo-viewer");
+  if (document.fullscreenElement) {
+    if (state.photoViewerFullscreenPending && dialog?.open) state.photoViewerFullscreenOwned = true;
+    return;
+  }
+  const shouldClose = state.photoViewerFullscreenOwned && dialog?.open;
+  state.photoViewerFullscreenOwned = false;
+  state.photoViewerFullscreenPending = false;
+  if (shouldClose) closePhotoViewer();
 }
 
 function notePhotoViewerActivity() {
@@ -1378,14 +1533,20 @@ function notePhotoViewerActivity() {
 
 function closePhotoViewer() {
   const dialog = document.querySelector("#photo-viewer");
+  const shouldExitFullscreen = state.photoViewerFullscreenOwned && Boolean(document.fullscreenElement);
   if (dialog?.open) dialog.close();
   else resetPhotoViewerState();
+  if (shouldExitFullscreen) document.exitFullscreen().catch(() => {});
 }
 
 function resetPhotoViewerState() {
   if (state.photoViewerTimer) window.clearTimeout(state.photoViewerTimer);
   state.photoViewerTimer = null;
   state.photoViewerGenerationId = null;
+  state.photoViewerFullscreenOwned = false;
+  state.photoViewerFullscreenPending = false;
+  state.photoViewerFullscreenRequestToken += 1;
+  resetPhotoViewerView("fit");
   document.querySelector("#photo-viewer")?.classList.remove("controls-visible");
 }
 

@@ -610,17 +610,22 @@ export function cardFooterMarkup(generation) {
   </button></div></footer>`;
 }
 
-export function photoViewerMarkup(generation, navigation = {}) {
+export function photoViewerMarkup(generation, navigation = {}, requestedViewMode = "fit") {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
   const hasImage = artifact?.kind === "image";
+  const viewMode = requestedViewMode === "fill" ? "fill" : "fit";
   const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
   const status = generation?.current_stage_label || statusLabel(generation?.status);
   const media = hasImage
-    ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" />`
+    ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="false" />`
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
-    <div class="photo-viewer-media">${media}</div>
+    <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
+    <div class="photo-viewer-mode-toggle photo-viewer-control" role="group" aria-label="Image sizing">
+      <button type="button" class="photo-viewer-mode-button" data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="${viewMode === "fit"}">Fit</button>
+      <button type="button" class="photo-viewer-mode-button" data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="${viewMode === "fill"}">Fill</button>
+    </div>
     <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close full-screen viewer">×</button>
     <button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" ${navigation.hasOlder ? "" : "disabled"} aria-label="View older generation">‹</button>
     <button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" ${navigation.hasNewer ? "" : "disabled"} aria-label="View newer generation">›</button>

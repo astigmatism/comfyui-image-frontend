@@ -303,6 +303,10 @@ test("full-screen photo viewer uses the current artifact, navigation controls, a
     { hasOlder: true, hasNewer: false },
   );
   assert.match(html, /src="\/api\/artifacts\/latest\/content"/);
+  assert.match(html, /data-photo-view-mode="fit"/);
+  assert.match(html, /data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="true"/);
+  assert.match(html, /data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="false"/);
+  assert.match(html, /draggable="false"/);
   assert.match(html, /aria-label="Close full-screen viewer"/);
   assert.match(html, /data-direction="older"/);
   assert.doesNotMatch(html.match(/data-direction="older"[^>]*>/)?.[0] || "", /disabled/);
