@@ -53,6 +53,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await openAccountMenu(page);
   await page.getByRole("menuitem", { name: "Administration" }).click();
   await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
+  await expect(page.getByLabel("Temporary password")).toHaveAttribute("minlength", "8");
   await page.getByLabel("Username", { exact: true }).fill("artist.one");
   await page.getByLabel("Temporary password").fill("E2EUserTemporary123!");
   await page.getByRole("button", { name: "Create user" }).click();

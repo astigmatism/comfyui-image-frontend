@@ -335,10 +335,10 @@ This convention avoids requiring a new custom-node schema field and aligns with 
 
 Ollama is an optional prompt-composition aid. It does not generate images and it does not replace the visible workflow prompt.
 
-- **OLL-001:** Ollama's base URL MUST be server-side configuration.
+- **OLL-001:** Ollama's base URL and exact model name MUST be server-side configuration.
 - **OLL-002:** The browser MUST communicate with Ollama only through the application backend.
 - **OLL-003:** The application MUST NOT expose a model selector or model-management controls to users.
-- **OLL-004:** The backend MUST discover an available Ollama model and choose one automatically. If multiple models are available, selection MUST be deterministic and the actual model MUST be recorded.
+- **OLL-004:** The backend MUST verify that the exact configured Ollama model is available, send that model explicitly with thinking disabled, and record the effective model reported in the response.
 - **OLL-005:** If no usable model is available or Ollama is unreachable, prompt assistance MUST be disabled with a restrained inline explanation. Ordinary ComfyUI generation MUST continue to work.
 
 ### 12.2 User interface and behavior

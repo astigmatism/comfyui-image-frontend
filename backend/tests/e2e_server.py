@@ -34,6 +34,7 @@ def main() -> None:
             comfyui_ws_url=fake.ws_url,
             comfyui_workflow_directory="workflows",
             ollama_base_url=fake.base_url,
+            ollama_model="zeta:latest",
             frontend_dist=root / "frontend" / "dist",
             dispatch_poll_seconds=0.02,
             external_health_interval_seconds=0.05,

@@ -10,7 +10,7 @@ A private image-generation appliance for a trusted home network. It discovers de
 - SQLite persistence with Alembic migrations, WAL mode, foreign keys, a durable fair queue, and restart reconciliation.
 - Owner-scoped image/upload storage with MIME decoding, byte/pixel limits, SHA-256 hashes, and WebP thumbnails.
 - Network-only ComfyUI integration with recursive userdata discovery, strict publication validation, request-local graph compilation, prompt submission, WebSocket/history reconciliation, and safe output retrieval.
-- Optional server-side Ollama Prompt Assistant with deterministic model selection and persisted provenance.
+- Optional server-side Ollama Prompt Assistant with an explicit model and persisted effective-model provenance.
 - A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, favorites, detail/recall, cancellation, and deletion.
 - Deterministic fake services, backend/frontend/browser tests, production image, Compose example, validation scripts, and maintained API/architecture/schema documentation.
 
@@ -81,7 +81,8 @@ CIF_COMFYUI_BASE_URL=http://comfyui:8188
 CIF_COMFYUI_WS_URL=ws://comfyui:8188/ws
 CIF_COMFYUI_INSTANCE_ID=home
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
-CIF_OLLAMA_BASE_URL=http://ollama:11434
+CIF_OLLAMA_BASE_URL=http://local-ai-ollama-router:11434
+CIF_OLLAMA_MODEL=hauhau-qwen3.6-35b-a3b-aggressive-q4-k-m:qwen35-parser
 ```
 
 ComfyUI and Ollama may be unreachable during startup. Accounts and retained history remain available. A last-valid source catalog remains visible as cached/offline, but new dispatch waits for ComfyUI. Only Prompt Assistant depends on Ollama.
@@ -112,6 +113,7 @@ CIF_COMFYUI_BASE_URL=http://127.0.0.1:8188
 CIF_COMFYUI_INSTANCE_ID=local
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
 CIF_OLLAMA_BASE_URL=http://127.0.0.1:11434
+CIF_OLLAMA_MODEL=replace-with-the-exact-model-name-from-api-tags
 ```
 
 Run the source tree:
@@ -238,7 +240,7 @@ With no users, set both bootstrap variables and use a temporary password of at l
 
 ### Prompt Assistant is unavailable
 
-Verify `CIF_OLLAMA_BASE_URL` and that Ollama lists a model. Manual prompt entry and ComfyUI generation are unaffected.
+Verify `CIF_OLLAMA_BASE_URL`, verify `CIF_OLLAMA_MODEL` exactly matches a name from the router's `/api/tags`, and use the Ollama-compatible router rather than its private upstream container. Manual prompt entry and ComfyUI generation are unaffected.
 
 ### Browser receives 403 on a write
 

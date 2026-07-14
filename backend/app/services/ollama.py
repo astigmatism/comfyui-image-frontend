@@ -23,10 +23,11 @@ class OllamaAdapter:
     def __init__(self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
         self.base_url = settings.ollama_base_url
+        self.model = settings.ollama_model
         self._client = (
             httpx.AsyncClient(
                 base_url=self.base_url,
-                timeout=httpx.Timeout(90.0, connect=5.0),
+                timeout=httpx.Timeout(connect=5.0, read=900.0, write=30.0, pool=5.0),
                 transport=transport,
             )
             if self.base_url
@@ -55,11 +56,16 @@ class OllamaAdapter:
         return sorted(names, key=lambda item: (item.casefold(), item))
 
     async def status(self) -> tuple[bool, str | None]:
-        models = await self.available_models()
         if not self._client:
             return False, "Prompt Assistant is not configured."
-        if not models:
-            return False, "Prompt Assistant is unavailable because Ollama has no reachable model."
+        if not self.model:
+            return False, "Prompt Assistant is unavailable because no Ollama model is configured."
+        models = await self.available_models()
+        if self.model not in models:
+            return (
+                False,
+                "Prompt Assistant is unavailable because its Ollama model is not reachable.",
+            )
         return True, None
 
     async def compose(
@@ -73,26 +79,32 @@ class OllamaAdapter:
             raise AppError(
                 "ollama_unavailable", "Prompt Assistant is not configured.", status_code=503
             )
-        models = await self.available_models()
-        if not models:
+        if not self.model:
             raise AppError(
                 "ollama_unavailable",
-                "Prompt Assistant is unavailable; manual prompting still works.",
+                "Prompt Assistant has no configured model; manual prompting still works.",
                 status_code=503,
             )
-        model = models[0]
+        models = await self.available_models()
+        if self.model not in models:
+            raise AppError(
+                "ollama_unavailable",
+                "Prompt Assistant's configured model is unavailable; manual prompting still works.",
+                status_code=503,
+            )
         instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
         payload = {
-            "model": model,
+            "model": self.model,
             "prompt": instruction,
             "stream": False,
+            "think": False,
             "format": {
                 "type": "object",
                 "properties": {"prompt": {"type": "string"}},
                 "required": ["prompt"],
                 "additionalProperties": False,
             },
-            "options": {"temperature": 0.2, "seed": 0},
+            "options": {"temperature": 0.2, "seed": 0, "num_predict": 256},
         }
         started = time.monotonic()
         try:
@@ -111,9 +123,15 @@ class OllamaAdapter:
         final = _extract_prompt(raw_text)
         if not final:
             raise AppError("ollama_invalid_response", "Prompt Assistant returned an empty prompt.")
+        effective_model = data.get("model") if isinstance(data, dict) else None
+        if not isinstance(effective_model, str) or not effective_model.strip():
+            raise AppError(
+                "ollama_invalid_response",
+                "Prompt Assistant did not identify the Ollama model that produced its response.",
+            )
         return ComposeResult(
             prompt=final,
-            model=model,
+            model=effective_model.strip(),
             raw_response=data if isinstance(data, dict) else {},
             duration_ms=int((time.monotonic() - started) * 1000),
         )

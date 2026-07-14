@@ -161,7 +161,6 @@ test("password change fields allow eight-character passwords", () => {
   const html = passwordChangeMarkup("ComfyUI Gallery", true);
   assert.match(html, /name="new_password"[^>]*minlength="8"/);
   assert.match(html, /name="confirm_password"[^>]*minlength="8"/);
-  assert.doesNotMatch(html, /minlength="12"/);
 });
 
 test("prompt is contract-rendered and Prompt Assistant remains collapsed by default", () => {

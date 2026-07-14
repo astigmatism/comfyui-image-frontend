@@ -90,6 +90,7 @@ class FakeServiceState:
     emit_cached_only: bool = False
     terminal_event_type: str | None = None
     models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest"])
+    ollama_effective_model: str | None = None
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -125,6 +126,8 @@ class FakeServiceState:
         self.force_nonterminal_history = False
         self.emit_cached_only = False
         self.terminal_event_type = None
+        self.models = ["zeta:latest", "alpha:latest"]
+        self.ollama_effective_model = None
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -637,7 +640,11 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 .strip()
             )
         composed = f"{current}, {direction}".strip(" ,") or "composed image prompt"
-        return {"response": json.dumps({"prompt": composed}), "done": True}
+        return {
+            "model": state.ollama_effective_model or str(payload.get("model", "")),
+            "response": json.dumps({"prompt": composed}),
+            "done": True,
+        }
 
     return app
 

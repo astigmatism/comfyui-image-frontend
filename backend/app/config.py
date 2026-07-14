@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     reconciliation_grace_seconds: float = 5.0
 
     ollama_base_url: str | None = None
+    ollama_model: str | None = None
     prompt_template_version: str = "v1"
 
     upload_max_bytes: int = 20 * 1024 * 1024
@@ -92,6 +93,12 @@ class Settings(BaseSettings):
     @field_validator("comfyui_user")
     @classmethod
     def normalize_comfyui_user(cls, value: str | None) -> str | None:
+        normalized = value.strip() if value else None
+        return normalized or None
+
+    @field_validator("ollama_model")
+    @classmethod
+    def normalize_ollama_model(cls, value: str | None) -> str | None:
         normalized = value.strip() if value else None
         return normalized or None
 

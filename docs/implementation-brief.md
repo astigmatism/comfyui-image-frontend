@@ -41,7 +41,7 @@ Document the chosen stack and the reasons it fits the requirements.
 2. **Do not use a shared filesystem mount to discover ComfyUI workflows.** Retrieve the configured workflow directory through ComfyUI's network API and isolate route/version differences in a capability-probed adapter.
 3. **Do not expose ComfyUI or Ollama directly to the browser.** All external-service communication belongs in the application backend.
 4. **Do not expose arbitrary ComfyUI widgets.** Render the semantic resolved contract only.
-5. **Do not add a user-facing Ollama model selector.** Select an available model automatically and record what was used.
+5. **Do not add a user-facing Ollama model selector.** Use the exact server-configured model and record the effective model reported by Ollama.
 6. **Do not let administrators inspect another user's prompts, images, controls, uploads, or history.** Enforce this in backend queries and artifact delivery.
 7. **Do not silently replace a missing historical workflow with a newer graph during Recall settings.** Exact identity and hashes must match.
 8. **Do not promise universal pixel-for-pixel reproduction.** Reconstruct the exact request and explain the deterministic-environment qualification.
@@ -138,7 +138,8 @@ Validation must happen before queue acceptance. Resolve random seeds to concrete
 Implement a backend Ollama adapter and the collapsed Prompt Assistant:
 
 - Server-configured base URL.
-- Automatic deterministic selection of an available model, with no user-facing model control.
+- Exact server-configured model validation, with no user-facing model control.
+- Non-thinking generation requests and effective-model provenance from the Ollama response.
 - Creative direction text area.
 - Compact mode choice: Refine current prompt or Create from creative direction.
 - Explicit Compose Prompt action.

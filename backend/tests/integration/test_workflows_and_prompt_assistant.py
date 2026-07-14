@@ -243,11 +243,12 @@ def test_successful_empty_listing_retires_current_catalog(fake_state, settings_f
         assert client.get("/api/workflows").json() == []
 
 
-def test_prompt_assistant_is_explicit_deterministic_and_does_not_queue(
+def test_prompt_assistant_uses_configured_model_and_records_effective_model(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client)
     assert app_client.get("/api/prompt-assistant/status").json()["available"] is True
+    fake_state.ollama_effective_model = "router-active:latest"
     before = app_client.get("/api/generations").json()["items"]
     response = app_client.post(
         "/api/prompt-assistant/compose",
@@ -261,8 +262,18 @@ def test_prompt_assistant_is_explicit_deterministic_and_does_not_queue(
     assert response.status_code == 200, response.text
     composed = response.json()
     assert composed["prompt"] == "portrait, soft window light"
-    assert composed["model"] == "alpha:latest"
-    assert fake_state.ollama_calls[-1]["model"] == "alpha:latest"
+    assert composed["model"] == "router-active:latest"
+    request_payload = fake_state.ollama_calls[-1]
+    assert request_payload["model"] == "zeta:latest"
+    assert request_payload["stream"] is False
+    assert request_payload["think"] is False
+    assert request_payload["format"] == {
+        "type": "object",
+        "properties": {"prompt": {"type": "string"}},
+        "required": ["prompt"],
+        "additionalProperties": False,
+    }
+    assert request_payload["options"] == {"temperature": 0.2, "seed": 0, "num_predict": 256}
     assert app_client.get("/api/generations").json()["items"] == before
 
     payload = generation_payload(app_client, composed["prompt"], seed=123)
@@ -288,7 +299,7 @@ def test_prompt_assistant_is_explicit_deterministic_and_does_not_queue(
         assert run.generation_id == generation_id
         assert run.prompt_before == "portrait"
         assert run.creative_direction == "soft window light"
-        assert run.model_name == "alpha:latest"
+        assert run.model_name == "router-active:latest"
         assert run.ollama_output == composed["prompt"]
     recalled = app_client.get(f"/api/generations/{generation_id}/recall").json()
     assert recalled["available"] is True
@@ -313,6 +324,32 @@ def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_stat
         "/api/generations/validate",
         headers={"X-CSRF-Token": csrf(app_client)},
         json=generation_payload(app_client, "manual prompt", seed=44),
+    )
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["valid"] is True
+
+
+def test_unlisted_configured_ollama_model_only_disables_assistant(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="model.mismatch")
+    fake_state.models = ["alpha:latest"]
+
+    status = app_client.get("/api/prompt-assistant/status")
+    assert status.status_code == 200
+    assert status.json()["available"] is False
+    compose = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={"mode": "create", "prompt": "", "creative_direction": "a moonlit lake"},
+    )
+    assert compose.status_code == 503
+    assert fake_state.ollama_calls == []
+
+    validation = app_client.post(
+        "/api/generations/validate",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json=generation_payload(app_client, "manual prompt", seed=45),
     )
     assert validation.status_code == 200, validation.text
     assert validation.json()["valid"] is True
