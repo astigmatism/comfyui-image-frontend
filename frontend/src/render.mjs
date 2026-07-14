@@ -82,7 +82,7 @@ export function shellMarkup(state) {
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
       <dialog id="detail-dialog" class="detail-dialog"></dialog>
-      <dialog id="photo-viewer" class="photo-viewer" aria-label="Full-screen image viewer"><div class="photo-viewer-host"></div></dialog>
+      <dialog id="photo-viewer" class="photo-viewer" aria-label="Image viewer"><div class="photo-viewer-host"></div></dialog>
       <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
@@ -596,7 +596,7 @@ export function galleryCardMarkup(generation) {
     : "";
   return `<article class="gallery-card status-${stateClass}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
-      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(sourceName)} full screen">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
+      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(sourceName)} image">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
       ${cancel}
     </div>
     ${cardFooterMarkup(generation)}
@@ -657,9 +657,10 @@ export function photoViewerMarkup(generation, navigation = {}, requestedViewMode
       <button type="button" class="photo-viewer-mode-button" data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="${viewMode === "fit"}">Fit</button>
       <button type="button" class="photo-viewer-mode-button" data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="${viewMode === "fill"}">Fill</button>
     </div>
-    <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close full-screen viewer">×</button>
-    <button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" ${navigation.hasOlder ? "" : "disabled"} aria-label="View older generation">‹</button>
-    <button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" ${navigation.hasNewer ? "" : "disabled"} aria-label="View newer generation">›</button>
+    <button type="button" class="photo-viewer-fullscreen photo-viewer-control" data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen</button>
+    <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close image viewer">×</button>
+    <button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" ${navigation.hasNewer ? "" : "disabled"} aria-label="View newer generation">‹</button>
+    <button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" ${navigation.hasOlder ? "" : "disabled"} aria-label="View older generation">›</button>
     ${active ? `<div class="photo-viewer-status" role="status">${escapeHtml(status)}</div>` : ""}
   </div>`;
 }

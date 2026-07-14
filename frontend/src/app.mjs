@@ -10,6 +10,7 @@ import {
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
+  photoViewerImageLayout,
   positivePromptInput,
   reconcileInterfaceValues,
   resolutionSummary,
@@ -75,6 +76,7 @@ const state = {
   photoViewerZoom: 1,
   photoViewerPanX: 0,
   photoViewerPanY: 0,
+  photoViewerNeedsBaseZoom: false,
   photoViewerFullscreenOwned: false,
   photoViewerFullscreenPending: false,
   photoViewerFullscreenRequestToken: 0,
@@ -118,6 +120,7 @@ function bindDelegatedEvents() {
   root.addEventListener("pointercancel", handlePointerEnd);
   root.addEventListener("wheel", handlePhotoViewerWheel, { passive: false });
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
+  window.addEventListener("resize", handlePhotoViewerResize);
   root.addEventListener(
     "toggle",
     (event) => {
@@ -183,6 +186,7 @@ async function handleClick(event) {
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
+    else if (action === "toggle-photo-fullscreen") togglePhotoViewerFullscreen();
     else if (action === "set-photo-view") setPhotoViewerMode(target.dataset.photoViewMode);
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
@@ -515,14 +519,15 @@ function handlePhotoViewerKeyDown(event) {
   if (event.key === "Escape") {
     event.preventDefault();
     event.stopPropagation();
-    closePhotoViewer();
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else closePhotoViewer();
     return;
   }
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
   event.stopPropagation();
   notePhotoViewerActivity();
-  navigatePhotoViewer(event.key === "ArrowLeft" ? "older" : "newer").catch((error) => {
+  navigatePhotoViewer(event.key === "ArrowLeft" ? "newer" : "older").catch((error) => {
     toast(error.message || "Could not navigate the gallery.", "error");
   });
 }
@@ -1523,7 +1528,8 @@ function renderPhotoViewer() {
     photoViewerNavigation(generation.id),
     state.photoViewerMode,
   );
-  applyPhotoViewerTransform();
+  preparePhotoViewerImage();
+  updatePhotoViewerFullscreenControl();
 }
 
 function openPhotoViewer(id) {
@@ -1533,9 +1539,8 @@ function openPhotoViewer(id) {
   if (!dialog) return;
   resetPhotoViewerView("fit");
   state.photoViewerGenerationId = id;
-  renderPhotoViewer();
   if (!dialog.open) dialog.showModal();
-  requestPhotoViewerFullscreen(dialog);
+  renderPhotoViewer();
   notePhotoViewerActivity();
   dialog.querySelector("[data-action=close-photo]")?.focus({ preventScroll: true });
 }
@@ -1570,6 +1575,36 @@ function setPhotoViewerMode(mode) {
   for (const button of dialog?.querySelectorAll("[data-action=set-photo-view]") || []) {
     button.setAttribute("aria-pressed", String(button.dataset.photoViewMode === mode));
   }
+  layoutPhotoViewerImage();
+}
+
+function preparePhotoViewerImage() {
+  const photo = document.querySelector("#photo-viewer .photo-viewer-media img");
+  if (!photo) return;
+  photo.addEventListener("load", layoutPhotoViewerImage, { once: true });
+  if (photo.complete) layoutPhotoViewerImage();
+}
+
+function layoutPhotoViewerImage() {
+  const photo = document.querySelector("#photo-viewer .photo-viewer-media img");
+  const media = photo?.closest(".photo-viewer-media");
+  if (!photo || !media || !photo.naturalWidth || !photo.naturalHeight) return;
+  const layout = photoViewerImageLayout(
+    photo.naturalWidth,
+    photo.naturalHeight,
+    media.clientWidth,
+    media.clientHeight,
+  );
+  if (!layout) return;
+  photo.style.width = `${layout.width}px`;
+  photo.style.height = `${layout.height}px`;
+  if (state.photoViewerNeedsBaseZoom) {
+    state.photoViewerZoom = state.photoViewerMode === "fill" ? layout.fillZoom : 1;
+    state.photoViewerPanX = 0;
+    state.photoViewerPanY = 0;
+    state.photoViewerNeedsBaseZoom = false;
+  }
+  applyPhotoViewerTransform();
 }
 
 function applyPhotoViewerTransform() {
@@ -1586,6 +1621,7 @@ function resetPhotoViewerView(mode) {
   state.photoViewerZoom = 1;
   state.photoViewerPanX = 0;
   state.photoViewerPanY = 0;
+  state.photoViewerNeedsBaseZoom = true;
   finishPhotoViewerDrag(false);
   applyPhotoViewerTransform();
 }
@@ -1626,16 +1662,42 @@ function requestPhotoViewerFullscreen(dialog) {
   );
 }
 
+function togglePhotoViewerFullscreen() {
+  const dialog = document.querySelector("#photo-viewer");
+  if (!dialog?.open) return;
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+    return;
+  }
+  requestPhotoViewerFullscreen(dialog);
+}
+
 function handlePhotoViewerFullscreenChange() {
   const dialog = document.querySelector("#photo-viewer");
   if (document.fullscreenElement) {
     if (state.photoViewerFullscreenPending && dialog?.open) state.photoViewerFullscreenOwned = true;
-    return;
+  } else {
+    state.photoViewerFullscreenOwned = false;
+    state.photoViewerFullscreenPending = false;
   }
-  const shouldClose = state.photoViewerFullscreenOwned && dialog?.open;
-  state.photoViewerFullscreenOwned = false;
-  state.photoViewerFullscreenPending = false;
-  if (shouldClose) closePhotoViewer();
+  updatePhotoViewerFullscreenControl();
+  state.photoViewerNeedsBaseZoom = true;
+  window.requestAnimationFrame(layoutPhotoViewerImage);
+}
+
+function updatePhotoViewerFullscreenControl() {
+  const button = document.querySelector("#photo-viewer [data-action=toggle-photo-fullscreen]");
+  if (!button) return;
+  const active = Boolean(document.fullscreenElement);
+  button.textContent = active ? "Exit full screen" : "Full screen";
+  button.setAttribute("aria-pressed", String(active));
+}
+
+function handlePhotoViewerResize() {
+  const dialog = document.querySelector("#photo-viewer");
+  if (!dialog?.open) return;
+  state.photoViewerNeedsBaseZoom = true;
+  window.requestAnimationFrame(layoutPhotoViewerImage);
 }
 
 function notePhotoViewerActivity() {

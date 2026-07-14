@@ -35,6 +35,20 @@ export function scaleToLayout(value) {
   return { full: false, cardWidth };
 }
 
+export function photoViewerImageLayout(imageWidth, imageHeight, viewportWidth, viewportHeight) {
+  const dimensions = [imageWidth, imageHeight, viewportWidth, viewportHeight].map(Number);
+  if (dimensions.some((value) => !Number.isFinite(value) || value <= 0)) return null;
+  const [naturalWidth, naturalHeight, availableWidth, availableHeight] = dimensions;
+  const fitScale = Math.min(availableWidth / naturalWidth, availableHeight / naturalHeight);
+  const width = naturalWidth * fitScale;
+  const height = naturalHeight * fitScale;
+  return {
+    width,
+    height,
+    fillZoom: Math.max(availableWidth / width, availableHeight / height),
+  };
+}
+
 export function statusLabel(status) {
   const labels = {
     queued: "Queued",

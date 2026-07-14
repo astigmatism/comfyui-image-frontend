@@ -13,6 +13,7 @@ import {
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
+  photoViewerImageLayout,
   reconcileInterfaceValues,
   resolutionConstraints,
   resolutionGridConstraints,
@@ -138,6 +139,20 @@ test("gallery scale spans compact thumbnails through a full-width card", () => {
   assert.deepEqual(scaleToLayout(100), { full: true, cardWidth: 1200 });
   assert.equal(scaleToLayout(0).cardWidth, 170);
   assert.ok(scaleToLayout(75).cardWidth > scaleToLayout(25).cardWidth);
+});
+
+test("photo viewer fill is a reversible zoom over the fitted image", () => {
+  assert.deepEqual(photoViewerImageLayout(1600, 900, 800, 800), {
+    width: 800,
+    height: 450,
+    fillZoom: 800 / 450,
+  });
+  assert.deepEqual(photoViewerImageLayout(900, 1600, 800, 800), {
+    width: 450,
+    height: 800,
+    fillZoom: 800 / 450,
+  });
+  assert.equal(photoViewerImageLayout(0, 1600, 800, 800), null);
 });
 
 test("recall immediately replaces source, controls, seed, and submitted prompt state", () => {

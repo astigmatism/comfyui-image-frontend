@@ -305,7 +305,7 @@ test("one generation renders one card while progressive media changes in place",
   assert.match(first, /data-action="open-detail"/);
 });
 
-test("full-screen photo viewer uses the current artifact, navigation controls, and active status", () => {
+test("photo viewer uses the current artifact, optional fullscreen, navigation controls, and active status", () => {
   const html = photoViewerMarkup(
     {
       id: "g-live",
@@ -324,7 +324,10 @@ test("full-screen photo viewer uses the current artifact, navigation controls, a
   assert.match(html, /data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="true"/);
   assert.match(html, /data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="false"/);
   assert.match(html, /draggable="false"/);
-  assert.match(html, /aria-label="Close full-screen viewer"/);
+  assert.match(html, /data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen/);
+  assert.match(html, /aria-label="Close image viewer"/);
+  assert.match(html, /photo-viewer-newer[^>]*data-direction="newer"[^>]*>‹<\/button>/);
+  assert.match(html, /photo-viewer-older[^>]*data-direction="older"[^>]*>›<\/button>/);
   assert.match(html, /data-direction="older"/);
   assert.doesNotMatch(html.match(/data-direction="older"[^>]*>/)?.[0] || "", /disabled/);
   assert.match(html.match(/data-direction="newer"[^>]*>/)?.[0] || "", /disabled/);

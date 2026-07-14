@@ -1350,22 +1350,17 @@ dialog::backdrop {
 }
 
 .photo-viewer-media img {
-  position: absolute;
-  inset: 0;
   display: block;
-  width: 100%;
-  height: 100%;
+  max-width: none;
+  max-height: none;
   transform-origin: center;
   will-change: transform;
   -webkit-user-drag: none;
 }
 
-.photo-viewer-media[data-photo-view-mode="fit"] img {
-  object-fit: contain;
-}
-
+.photo-viewer-media[data-photo-view-mode="fit"] img,
 .photo-viewer-media[data-photo-view-mode="fill"] img {
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .photo-viewer-placeholder {
@@ -1438,11 +1433,22 @@ dialog::backdrop {
 
 .photo-viewer-mode-toggle {
   top: 18px;
-  right: 72px;
+  right: 190px;
   display: flex;
   height: 42px;
   padding: 3px;
   border-radius: 999px;
+}
+
+.photo-viewer-fullscreen {
+  top: 18px;
+  right: 72px;
+  height: 42px;
+  padding: 0 15px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 .photo-viewer-mode-button {
@@ -1481,11 +1487,11 @@ dialog::backdrop {
   opacity: 0.2;
 }
 
-.photo-viewer-older {
+.photo-viewer-newer {
   left: 18px;
 }
 
-.photo-viewer-newer {
+.photo-viewer-older {
   right: 18px;
 }
 
@@ -2237,14 +2243,19 @@ tr:last-child td {
 
   .photo-viewer-mode-toggle {
     top: 12px;
+    right: 184px;
+  }
+
+  .photo-viewer-fullscreen {
+    top: 12px;
     right: 66px;
   }
 
-  .photo-viewer-older {
+  .photo-viewer-newer {
     left: 10px;
   }
 
-  .photo-viewer-newer {
+  .photo-viewer-older {
     right: 10px;
   }
 
