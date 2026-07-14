@@ -2,7 +2,6 @@ import {
   controlPresentation,
   escapeHtml,
   formatLocalDate,
-  footerText,
   interfaceInputs,
   isAdvancedInput,
   resolutionConstraints,
@@ -83,6 +82,7 @@ export function shellMarkup(state) {
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
       <dialog id="detail-dialog" class="detail-dialog"></dialog>
+      <dialog id="photo-viewer" class="photo-viewer" aria-label="Full-screen image viewer"></dialog>
       <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
@@ -551,7 +551,7 @@ export function galleryCardMarkup(generation) {
   const sourceName = generationSourceName(generation);
   const stateClass = String(generation.status || "unknown").replaceAll("_", "-");
   const media = hasImage
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}, ${footerText("", generation.accepted_at).replace(/^ · /, "")}`)}" />`
+    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" />`
     : statusPlaceholderMarkup(generation);
   const statusOverlay = generation.status === "succeeded" ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
   const finalCount = Number(generation.final_artifact_count) || 0;
@@ -565,7 +565,7 @@ export function galleryCardMarkup(generation) {
     : "";
   return `<article class="gallery-card status-${stateClass}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
-      <button class="card-media" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Open generation details">${media}${statusOverlay}${count}</button>
+      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(sourceName)} full screen">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
       ${cancel}
     </div>
     ${cardFooterMarkup(generation)}
@@ -597,9 +597,35 @@ function statusPlaceholderMarkup(generation) {
 
 export function cardFooterMarkup(generation) {
   const sourceName = generationSourceName(generation);
-  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(sourceName)}">${escapeHtml(footerText(sourceName, generation.accepted_at))}</div><div class="card-actions">${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">
+  const artifact = generation.display_artifact;
+  const download = artifact?.kind === "image"
+    ? `<a class="download-button" href="${escapeHtml(artifact.content_url)}" download aria-label="Download current image" title="Download current image">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>
+    </a>`
+    : `<button type="button" class="download-button" disabled aria-label="Download unavailable" title="No image is available to download">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>
+    </button>`;
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}">${escapeHtml(sourceName)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button></div></footer>`;
+}
+
+export function photoViewerMarkup(generation, navigation = {}) {
+  const artifact = generation?.display_artifact;
+  const sourceName = generationSourceName(generation);
+  const hasImage = artifact?.kind === "image";
+  const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
+  const status = generation?.current_stage_label || statusLabel(generation?.status);
+  const media = hasImage
+    ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" />`
+    : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
+  return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
+    <div class="photo-viewer-media">${media}</div>
+    <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close full-screen viewer">×</button>
+    <button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" ${navigation.hasOlder ? "" : "disabled"} aria-label="View older generation">‹</button>
+    <button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" ${navigation.hasNewer ? "" : "disabled"} aria-label="View newer generation">›</button>
+    ${active ? `<div class="photo-viewer-status" role="status">${escapeHtml(status)}</div>` : ""}
+  </div>`;
 }
 
 export function favoriteButtonMarkup(generation) {
@@ -655,6 +681,7 @@ export function detailMarkup(detail) {
   return `<form method="dialog" class="dialog-frame">
     <header class="dialog-header"><div><h2>${escapeHtml(sourceName)}</h2><p>${escapeHtml(statusLabel(detail.status))}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
     <div class="detail-content">
+      ${generationInputsMarkup(detail)}
       ${messageAlertMarkup("warning", warnings, "Generation warnings")}
       ${messageAlertMarkup("error", errors, "Generation errors")}
       <div class="result-image-groups" aria-label="Generation images">${imageCount ? [
@@ -689,6 +716,72 @@ export function detailMarkup(detail) {
       <button class="button primary" value="close">Close</button>
     </footer>
   </form>`;
+}
+
+function generationInputsMarkup(detail) {
+  const effective = detail.effective_parameters || detail.effective_controls || {};
+  const definitions = Array.isArray(detail.input_definitions) ? detail.input_definitions : [];
+  const known = new Set(definitions.map((input) => String(input.id)));
+  const inputs = [
+    ...definitions,
+    ...Object.keys(effective)
+      .filter((id) => !known.has(id))
+      .map((id) => ({ id, label: humanizeInputId(id) })),
+  ];
+  const promptInput = inputs.find(
+    (input) => input.semantic_role === "positive_prompt" || input.id === "prompt.text" || input.id === "prompt",
+  );
+  const prompt = detail.final_prompt || (promptInput ? effective[promptInput.id] : "");
+  const widthInput = inputs.find((input) => input.semantic_role === "width");
+  const heightInput = inputs.find((input) => input.semantic_role === "height");
+  const resolutionInput = inputs.find((input) => input.type === "resolution");
+  const omitted = new Set([promptInput?.id, widthInput?.id, heightInput?.id, resolutionInput?.id].filter(Boolean));
+  const facts = [];
+  const resolution = resolutionDisplayValue(effective, widthInput, heightInput, resolutionInput);
+  if (resolution) facts.push({ label: "Resolution", value: resolution });
+  for (const input of inputs) {
+    if (omitted.has(input.id) || !Object.hasOwn(effective, input.id)) continue;
+    const value = detail.resolved_seeds?.[input.id] ?? effective[input.id];
+    facts.push({ label: input.label || humanizeInputId(input.id), value: inputDisplayValue(input, value) });
+  }
+  const promptMarkup = prompt
+    ? `<div class="generation-prompt"><span>Prompt</span><p>${escapeHtml(prompt)}</p></div>`
+    : `<div class="generation-prompt empty"><span>Prompt</span><p>No prompt was retained.</p></div>`;
+  const factsMarkup = facts.length
+    ? `<dl class="generation-input-grid">${facts.map((fact) => `<div><dt>${escapeHtml(fact.label)}</dt><dd>${escapeHtml(fact.value)}</dd></div>`).join("")}</dl>`
+    : '<p class="muted generation-input-empty">No additional submitted inputs were retained.</p>';
+  return `<section class="generation-inputs" aria-labelledby="generation-inputs-heading">
+    <h3 id="generation-inputs-heading">Generation inputs</h3>
+    ${promptMarkup}
+    ${factsMarkup}
+  </section>`;
+}
+
+function resolutionDisplayValue(effective, widthInput, heightInput, resolutionInput) {
+  if (widthInput && heightInput && effective[widthInput.id] != null && effective[heightInput.id] != null) {
+    return `${effective[widthInput.id]} × ${effective[heightInput.id]}`;
+  }
+  const value = resolutionInput ? effective[resolutionInput.id] : null;
+  if (value && typeof value === "object" && value.width != null && value.height != null) {
+    return `${value.width} × ${value.height}`;
+  }
+  return "";
+}
+
+function inputDisplayValue(input, value) {
+  if (input.type === "choice" && Array.isArray(input.choices)) {
+    const choice = input.choices.find((item) => (item?.value ?? item) === value);
+    if (choice && typeof choice === "object") return choice.label || choice.value;
+  }
+  if (typeof value === "boolean") return value ? "On" : "Off";
+  if (value == null || value === "") return "Not set";
+  if (typeof value === "object") return prettyJson(value);
+  return String(value);
+}
+
+function humanizeInputId(value) {
+  const words = String(value || "Input").replaceAll(/[._-]+/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function messageValues(value) {

@@ -212,6 +212,10 @@ Generation detail adds:
   "prompt_id": "native-comfyui-prompt-id",
   "requested_parameters": {"prompt": "...", "seed": "random"},
   "effective_parameters": {"prompt": "...", "seed": "793486291720513"},
+  "input_definitions": [
+    {"id": "prompt", "type": "string", "label": "Prompt", "semantic_role": "positive_prompt"},
+    {"id": "width", "type": "integer", "label": "Width", "semantic_role": "width"}
+  ],
   "resolved_seeds": {"seed": "793486291720513"},
   "declared_outputs": [
     {
@@ -257,7 +261,7 @@ Generation detail adds:
 }
 ```
 
-The complete response also carries compatibility `workflow`, `requested_controls`, and `effective_controls` fields so old stored rows remain readable, plus `final_prompt`, `error_code`, and `delete_pending`.
+`input_definitions` is the frozen, public-only presentation subset of the inputs used by that generation. It preserves labels and semantic roles for history UI while excluding private graph bindings. The complete response also carries compatibility `workflow`, `requested_controls`, and `effective_controls` fields so old stored rows remain readable, plus `final_prompt`, `error_code`, and `delete_pending`.
 
 `declared_outputs` is an ordered list following the frozen manifest. Each item contains both `id` and the compatibility alias `output_id`, plus label, role, kind, `cardinality: "many"`, description, and authoritative ordered logical references. Each reference retains its native locator and nests a matching application-owned `artifact` summary when archival succeeded; `artifact` is `null` when no archive is available. Publisher `artifacts[].batch_index` determines logical batch order; the publisher's mirrored ordinary `images` field is retained in `raw_history` but is not counted again. Publisher node IDs and instance UUIDs are private declaration bindings, although their native history payload remains part of raw result metadata.
 

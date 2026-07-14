@@ -216,6 +216,7 @@ class GenerationDetail(GenerationSummary):
     effective_controls: dict[str, Any]
     requested_parameters: dict[str, Any] = Field(default_factory=dict)
     effective_parameters: dict[str, Any] = Field(default_factory=dict)
+    input_definitions: list[dict[str, Any]] = Field(default_factory=list)
     resolved_seeds: dict[str, str]
     final_prompt: str
     artifacts: list[ArtifactSummary]

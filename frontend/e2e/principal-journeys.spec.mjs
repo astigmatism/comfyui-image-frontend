@@ -74,22 +74,41 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator(".gallery-card .batch-count")).toHaveText("4");
 
   const cardMedia = page.locator(".gallery-card .card-media").first();
+  const photoViewer = page.locator("#photo-viewer");
   const detailDialog = page.locator("#detail-dialog");
   await cardMedia.click();
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await expect(photoViewer.locator(".photo-viewer-media img")).toBeVisible();
+  const viewerClose = photoViewer.getByRole("button", { name: "Close full-screen viewer" });
+  await expect(viewerClose).toHaveCSS("opacity", "1");
+  await page.waitForTimeout(2200);
+  await expect(viewerClose).toHaveCSS("opacity", "0");
+  await page.mouse.move(80, 80);
+  await expect(viewerClose).toHaveCSS("opacity", "1");
+  await viewerClose.click();
+  await expect(photoViewer).not.toHaveAttribute("open", "");
+
+  const metadata = page.locator(".gallery-card .card-metadata").first();
+  await metadata.click();
   await expect(detailDialog).toHaveAttribute("open", "");
   await detailDialog.getByRole("button", { name: "Close details" }).click();
   await expect(detailDialog).not.toHaveAttribute("open", "");
-  await cardMedia.click();
+  await metadata.click();
   await expect(detailDialog).toHaveAttribute("open", "");
   await detailDialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
   const footer = page.locator(".gallery-card .card-footer").first();
-  await expect(footer.locator("button")).toHaveCount(2);
+  await expect(footer.locator("button")).toHaveCount(3);
+  await expect(footer.getByRole("link", { name: "Download current image" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
-  await expect(footer.locator(".card-metadata")).toContainText("Generic Landscape ·");
+  await expect(footer.locator(".card-metadata")).toHaveText("Generic Landscape");
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
+
+  const downloadPromise = page.waitForEvent("download");
+  await footer.getByRole("link", { name: "Download current image" }).click();
+  await downloadPromise;
 
   await footer.getByRole("button", { name: "Add to Favorites" }).click();
   await expect(footer.getByRole("button", { name: "Remove from Favorites" })).toHaveAttribute(
@@ -347,10 +366,15 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   const card = page.locator(".gallery-card").first();
   await expect(card).toHaveClass(/status-succeeded/, { timeout: 30_000 });
   await expect(card.locator(".batch-count")).toHaveText("8");
-  await card.locator(".card-media").click();
+  await card.locator(".card-metadata").click();
 
   const detailDialog = page.locator("#detail-dialog");
   await expect(detailDialog).toHaveAttribute("open", "");
+  const submittedInputs = detailDialog.locator(".generation-inputs");
+  await expect(submittedInputs).toContainText("multi authored output hierarchy");
+  await expect(submittedInputs).toContainText("1024 × 1600");
+  await expect(submittedInputs).toContainText("Seed");
+  await expect(submittedInputs).toContainText("KNP v3.1");
   const primary = detailDialog.locator(".result-image-group").filter({
     hasText: "Primary result",
   });
@@ -500,6 +524,19 @@ test("working card reserves final aspect ratio and cancels in place", async ({ p
   await expect(card.locator(".card-media img")).toBeVisible();
   await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
   const generationId = await card.getAttribute("data-generation-id");
+
+  await card.locator(".card-media").click();
+  const photoViewer = page.locator("#photo-viewer");
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await expect(photoViewer.locator(".photo-viewer-status")).toBeVisible();
+  await expect(photoViewer.locator(".photo-viewer-status")).toContainText(/Running|Preparing|image/i);
+  const viewedGenerationId = await photoViewer.locator(".photo-viewer-frame").getAttribute("data-photo-generation-id");
+  await page.keyboard.press("ArrowLeft");
+  await expect(photoViewer.locator(".photo-viewer-frame")).not.toHaveAttribute(
+    "data-photo-generation-id",
+    viewedGenerationId,
+  );
+  await photoViewer.getByRole("button", { name: "Close full-screen viewer" }).click();
 
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(card.locator(".media-status")).toContainText("Cancelled generation");

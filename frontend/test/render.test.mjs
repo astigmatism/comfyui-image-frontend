@@ -8,6 +8,7 @@ import {
   favoritesMarkup,
   galleryCardMarkup,
   generationPanelMarkup,
+  photoViewerMarkup,
 } from "../src/render.mjs";
 
 const promptControl = {
@@ -184,7 +185,7 @@ test("generation panel fixes Generate first, source second, then basic and colla
   assert.doesNotMatch(html, /<details class="advanced-group" open/);
 });
 
-test("card footer places accessible heart and recall icons together", () => {
+test("card footer opens metadata from the source and groups current download with gallery actions", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
@@ -194,10 +195,17 @@ test("card footer places accessible heart and recall icons together", () => {
     is_favorite: false,
     final_prompt: "private prompt",
     resolved_seeds: { seed: 99 },
+    display_artifact: {
+      kind: "image",
+      content_url: "/api/artifacts/current/content",
+    },
   };
   const html = cardFooterMarkup(generation);
-  assert.match(html, /Portrait Workflow · Jul 12, 2026/);
-  assert.equal((html.match(/<button/g) || []).length, 2);
+  assert.match(html, />Portrait Workflow<\/button>/);
+  assert.doesNotMatch(html, /Jul 12|2026/);
+  assert.match(html, /data-action="open-detail"/);
+  assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
+  assert.equal((html.match(/<button/g) || []).length, 3);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
@@ -268,6 +276,30 @@ test("one generation renders one card while progressive media changes in place",
   assert.match(next, /a2\/thumbnail/);
   assert.match(first, /--gallery-media-aspect: 384 \/ 512/);
   assert.match(first, /data-action="cancel-generation"/);
+  assert.match(first, /data-action="open-photo"/);
+  assert.match(first, /data-action="open-detail"/);
+});
+
+test("full-screen photo viewer uses the current artifact, navigation controls, and active status", () => {
+  const html = photoViewerMarkup(
+    {
+      id: "g-live",
+      workflow_display_name: "Progressive source",
+      status: "running",
+      current_stage_label: "Refining details",
+      display_artifact: {
+        kind: "image",
+        content_url: "/api/artifacts/latest/content",
+      },
+    },
+    { hasOlder: true, hasNewer: false },
+  );
+  assert.match(html, /src="\/api\/artifacts\/latest\/content"/);
+  assert.match(html, /aria-label="Close full-screen viewer"/);
+  assert.match(html, /data-direction="older"/);
+  assert.doesNotMatch(html.match(/data-direction="older"[^>]*>/)?.[0] || "", /disabled/);
+  assert.match(html.match(/data-direction="newer"[^>]*>/)?.[0] || "", /disabled/);
+  assert.match(html, /<div class="photo-viewer-status" role="status">Refining details<\/div>/);
 });
 
 test("historical native-only image batches use complete artifact count on the gallery card", () => {
@@ -616,8 +648,17 @@ test("generation detail retains metadata and presents authored roles with every 
     prompt_id: "native-prompt-123",
     effective_parameters: {
       prompt: "a tree with chickens",
+      width: 1024,
+      height: 1600,
       seed: "9223372036854775807",
     },
+    input_definitions: [
+      { id: "prompt", label: "Prompt", type: "string", semantic_role: "positive_prompt" },
+      { id: "width", label: "Width", type: "integer", semantic_role: "width" },
+      { id: "height", label: "Height", type: "integer", semantic_role: "height" },
+      { id: "seed", label: "Seed", type: "seed" },
+    ],
+    final_prompt: "a tree with chickens",
     declared_outputs: [
       {
         id: "first_pass",
@@ -660,6 +701,9 @@ test("generation detail retains metadata and presents authored roles with every 
   assert.match(html, /native-prompt-123/);
   assert.match(html, /publication-1/);
   assert.match(html, /9223372036854775807/);
+  assert.match(html, /Generation inputs/);
+  assert.match(html, /a tree with chickens/);
+  assert.match(html, /1024 × 1600/);
   assert.match(html, /One optional native image was unavailable/);
   assert.match(html, /Primary result/);
   assert.match(html, /Prototypes and earlier passes/);
@@ -672,6 +716,7 @@ test("generation detail retains metadata and presents authored roles with every 
   assert.match(html, /ComfyUI status/);
   assert.equal((html.match(/<img /g) || []).length, 5);
   assert.equal((html.match(/Download image/g) || []).length, 5);
+  assert.ok(html.indexOf("Generation inputs") < html.indexOf("Primary result"));
   assert.ok(html.indexOf("Primary result") < html.indexOf("Prototypes and earlier passes"));
   assert.ok(html.indexOf("Prototypes and earlier passes") < html.indexOf("Comparisons and alternates"));
   assert.match(html, /batch 1/);

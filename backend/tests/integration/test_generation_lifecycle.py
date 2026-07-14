@@ -153,6 +153,11 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         seed = detail["resolved_seeds"]["seed"]
         assert isinstance(seed, str) and seed.isdecimal()
         assert detail["final_prompt"] == "multi gallery image"
+        assert {item["id"] for item in detail["input_definitions"]} == set(
+            detail["effective_parameters"]
+        )
+        assert detail["input_definitions"][0]["label"] == "Prompt"
+        assert all("bindings" not in item for item in detail["input_definitions"])
         assert set(detail["unmapped_outputs"]) == {"900", "901"}
         assert detail["unmapped_outputs"]["901"]["text"] == ["complete native text result"]
         assert [

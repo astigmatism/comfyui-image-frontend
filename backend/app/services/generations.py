@@ -502,6 +502,7 @@ class GenerationService:
             effective_controls=generation.effective_controls_json,
             requested_parameters=generation.requested_controls_json,
             effective_parameters=generation.effective_controls_json,
+            input_definitions=self._input_definitions(generation),
             resolved_seeds={
                 key: str(value) for key, value in generation.resolved_seeds_json.items()
             },
@@ -529,6 +530,28 @@ class GenerationService:
             error_code=generation.error_code,
             delete_pending=generation.pending_delete,
         )
+
+    @staticmethod
+    def _input_definitions(generation: Generation) -> list[dict[str, Any]]:
+        contract = generation.resolved_contract_json or {}
+        inputs = contract.get("inputs") or contract.get("controls") or []
+        public_keys = {
+            "id",
+            "type",
+            "label",
+            "description",
+            "semantic_role",
+            "required",
+            "advanced",
+            "group",
+            "order",
+            "choices",
+        }
+        return [
+            {key: copy.deepcopy(value) for key, value in item.items() if key in public_keys}
+            for item in inputs
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+        ]
 
     @staticmethod
     def _expected_dimensions(generation: Generation) -> tuple[int | None, int | None]:

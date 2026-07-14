@@ -9,7 +9,6 @@ import {
   createLatestRequestGate,
   defaultsForContract,
   defaultsForInterface,
-  footerText,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -237,11 +236,6 @@ test("resolution grid mirrors Resolution Master snapping and live details", () =
     aspectRatio: "16:25",
     text: "1024 × 1600 · 1.64 MP · 16:25",
   });
-});
-
-test("footer uses only source, centered dot, and localized submission date text", () => {
-  const value = footerText("Portrait Workflow", "2026-07-12T12:00:00Z", "en-US");
-  assert.equal(value, "Portrait Workflow · Jul 12, 2026");
 });
 
 test("published inputs sort basic before advanced with deterministic order, group, and id fallbacks", () => {

@@ -71,10 +71,6 @@ export function formatLocalDate(value, locale = undefined) {
   }).format(date);
 }
 
-export function footerText(source, date, locale = undefined) {
-  return `${source} · ${formatLocalDate(date, locale)}`;
-}
-
 export function evaluateWhen(when, values) {
   const current = values?.[when?.control];
   const expected = when?.value;
