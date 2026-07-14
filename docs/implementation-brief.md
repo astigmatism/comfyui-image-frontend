@@ -45,7 +45,7 @@ Document the chosen stack and the reasons it fits the requirements.
 6. **Do not let administrators inspect another user's prompts, images, controls, uploads, or history.** Enforce this in backend queries and artifact delivery.
 7. **Do not silently replace a missing historical workflow with a newer graph during Recall settings.** Exact identity and hashes must match.
 8. **Do not promise universal pixel-for-pixel reproduction.** Reconstruct the exact request and explain the deterministic-environment qualification.
-9. **Do not put extra metadata or actions into the gallery-card footer.** It contains source, centered dot, date, the Favorites heart, and Recall settings only.
+9. Keep the gallery-card footer compact: source metadata plus download, Favorites, Recall settings, and confirmed permanent deletion controls.
 10. **Do not return code that has not been validated as far as the execution environment permits.** Run and report the tests.
 
 ## Required implementation outcomes
@@ -206,7 +206,7 @@ Do not put status in the footer. If one generation returns multiple final images
 
 ### Deletion
 
-Users can permanently delete their own generations from the detail view after confirmation. Active jobs must be cancelled/reconciled before cleanup. Delete application-owned records and files only; do not purge ComfyUI or Ollama.
+Users can permanently delete their own generations from the gallery-card footer or detail view after confirmation. Active jobs must be cancelled/reconciled before cleanup. Delete application-owned records and files only; do not purge ComfyUI or Ollama.
 
 Deleting a user must revoke sessions, remove queued work, cancel/reconcile running work, delete all application-owned content, and then remove the account without orphan rows or files. The administrator performs this operation without being shown the user's content.
 

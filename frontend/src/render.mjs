@@ -562,9 +562,17 @@ function promptAssistantMarkup() {
   </details>`;
 }
 
-export function promptEditorMarkup(controlId, label, value) {
+export function promptEditorMarkup(controlId, label, value, promptAssistant = {}) {
   const text = String(value ?? "");
   const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
+  const assistantMode = promptAssistant.mode === "create" ? "create" : "refine";
+  const creativeDirection = String(promptAssistant.creativeDirection ?? "");
+  const assistantAvailable = promptAssistant.available !== false;
+  const assistantMessage = !assistantAvailable
+    ? promptAssistant.message || "Prompt Assistant is unavailable."
+    : promptAssistant.historicalModel
+      ? `Historical composition used ${promptAssistant.historicalModel}; recall will not invoke it again.`
+      : "";
   return `<form class="dialog-frame prompt-editor-frame" method="dialog">
     <header class="dialog-header prompt-editor-header">
       <div><h2 id="prompt-editor-title">Focused prompt editor</h2><p>Review and refine ${escapeHtml(label || "your prompt")} in a dedicated workspace.</p></div>
@@ -579,6 +587,17 @@ export function promptEditorMarkup(controlId, label, value) {
         </div>
       </div>
       <textarea id="prompt-editor-textarea" data-prompt-editor-input data-prompt-control-id="${escapeHtml(controlId)}" aria-label="Prompt editor" spellcheck="true" autocapitalize="sentences">${escapeHtml(text)}</textarea>
+      <section class="prompt-editor-assistant" aria-labelledby="prompt-editor-assistant-title">
+        <h3 id="prompt-editor-assistant-title">Prompt Assistant</h3>
+        <div class="prompt-editor-assistant-controls">
+          <label class="field"><span>Creative direction</span><textarea id="prompt-editor-creative-direction" rows="3">${escapeHtml(creativeDirection)}</textarea></label>
+          <fieldset class="compact-choice"><legend>Mode</legend><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine current prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> Create from creative direction</label></fieldset>
+          <div class="prompt-editor-assistant-action">
+            <div class="help-text" data-prompt-editor-assistant-message role="status">${escapeHtml(assistantMessage)}</div>
+            <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Compose Prompt</button>
+          </div>
+        </div>
+      </section>
       <p class="prompt-editor-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> applies the draft.</p>
     </div>
     <footer class="dialog-actions">
@@ -648,6 +667,7 @@ function statusPlaceholderMarkup(generation) {
 export function cardFooterMarkup(generation) {
   const sourceName = generationSourceName(generation);
   const artifact = generation.display_artifact;
+  const deletePending = Boolean(generation.delete_pending);
   const download = artifact?.kind === "image"
     ? `<a class="download-button" href="${escapeHtml(artifact.content_url)}" download aria-label="Download current image" title="Download current image">
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>
@@ -657,6 +677,8 @@ export function cardFooterMarkup(generation) {
     </button>`;
   return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}">${escapeHtml(sourceName)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
+  </button><button type="button" class="delete-generation-button" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}" ${deletePending ? "disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
   </button></div></footer>`;
 }
 

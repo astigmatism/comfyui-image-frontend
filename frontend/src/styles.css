@@ -442,7 +442,7 @@ code {
 }
 
 .batch-count {
-  top: 10px;
+  bottom: 10px;
   right: 10px;
   display: grid;
   place-items: center;
@@ -492,7 +492,8 @@ code {
 
 .download-button,
 .favorite-button,
-.recall-button {
+.recall-button,
+.delete-generation-button {
   display: grid;
   place-items: center;
   width: 30px;
@@ -512,7 +513,8 @@ code {
 
 .download-button svg,
 .favorite-button svg,
-.recall-button svg {
+.recall-button svg,
+.delete-generation-button svg {
   width: 18px;
   height: 18px;
   overflow: visible;
@@ -520,7 +522,8 @@ code {
 
 .download-button path,
 .favorite-button path,
-.recall-button path {
+.recall-button path,
+.delete-generation-button path {
   fill: transparent;
   stroke: currentColor;
   stroke-linejoin: round;
@@ -570,6 +573,16 @@ code {
   border-color: #45698f;
   background: #17263a;
   color: #d9eaff;
+}
+
+.delete-generation-button {
+  color: #dca2a7;
+}
+
+.delete-generation-button:hover:not(:disabled) {
+  border-color: #8a4249;
+  background: #351b20;
+  color: #ffdadd;
 }
 
 .button,
@@ -1562,7 +1575,7 @@ dialog::backdrop {
 
 .prompt-editor-dialog {
   width: min(980px, calc(100vw - 48px));
-  height: min(760px, calc(100vh - 48px));
+  height: min(860px, calc(100vh - 32px));
 }
 
 .dialog-frame {
@@ -1604,7 +1617,7 @@ dialog::backdrop {
 
 .prompt-editor-content {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(180px, 1fr) auto auto;
   gap: var(--space-3);
   min-height: 0;
   padding: 20px;
@@ -1650,6 +1663,52 @@ dialog::backdrop {
 
 #prompt-editor-textarea:hover {
   border-color: #506985;
+}
+
+.prompt-editor-assistant {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgb(20 30 42 / 60%);
+}
+
+.prompt-editor-assistant h3 {
+  margin: 0 0 9px;
+  color: var(--text-soft);
+  font-size: 0.88rem;
+}
+
+.prompt-editor-assistant-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(250px, 0.9fr) auto;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.prompt-editor-assistant .field,
+.prompt-editor-assistant .compact-choice {
+  margin: 0;
+}
+
+.prompt-editor-assistant textarea {
+  min-height: 76px;
+  resize: none;
+}
+
+.prompt-editor-assistant-action {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-items: end;
+  width: 142px;
+}
+
+.prompt-editor-assistant-action .help-text {
+  align-self: start;
+  margin: 0 0 6px;
+}
+
+.prompt-editor-assistant-action .button {
+  white-space: nowrap;
 }
 
 .prompt-editor-hint {
@@ -2271,6 +2330,23 @@ tr:last-child td {
     border-radius: 0;
   }
 
+  .prompt-editor-content {
+    overflow: auto;
+  }
+
+  .prompt-editor-assistant-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr);
+  }
+
+  .prompt-editor-assistant-action {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    align-items: center;
+    gap: 12px;
+    width: auto;
+  }
+
   .photo-viewer-close {
     top: 12px;
     right: 12px;
@@ -2336,6 +2412,15 @@ tr:last-child td {
   .prompt-editor-toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .prompt-editor-assistant-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-editor-assistant-action {
+    grid-column: auto;
+    grid-template-columns: 1fr;
   }
 
   .favorite-thumbnail {

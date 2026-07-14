@@ -208,10 +208,11 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
   const footer = page.locator(".gallery-card .card-footer").first();
-  await expect(footer.locator("button")).toHaveCount(3);
+  await expect(footer.locator("button")).toHaveCount(4);
   await expect(footer.getByRole("link", { name: "Download current image" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
+  await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
   await expect(footer.locator(".card-metadata")).toHaveText("Generic Landscape");
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
@@ -272,6 +273,23 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await page.waitForTimeout(400);
   await page.reload();
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
+  await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
+
+  const deleteButton = page
+    .locator(".gallery-card")
+    .first()
+    .getByRole("button", { name: "Delete generation" });
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("It will disappear from your history and cannot be undone.");
+    return dialog.dismiss();
+  });
+  await deleteButton.click();
+  await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await deleteButton.click();
+  await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose - 1);
+  await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
 });
 
 test("all generation sources queues compatible comparisons and reports incomplete sources", async ({
@@ -357,7 +375,9 @@ test("gallery defaults to request initiation order when the page arrives unsorte
   expect(cardIds).toEqual(["newest-active", "previous", "oldest"]);
 });
 
-test("focused prompt editor keeps canceled drafts isolated and applies long-form edits", async ({ page }) => {
+test("focused prompt editor isolates canceled drafts and applies composed prompts and assistant settings", async ({
+  page,
+}) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
@@ -365,28 +385,64 @@ test("focused prompt editor keeps canceled drafts isolated and applies long-form
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const dialog = page.locator("#prompt-editor-dialog");
   const openEditor = page.getByRole("button", { name: "Open focused prompt editor" });
+  const columnAssistant = page.locator("#prompt-assistant");
+  await columnAssistant.locator("summary").click();
+  const columnDirection = columnAssistant.getByRole("textbox", {
+    name: "Creative direction",
+    exact: true,
+  });
+  const columnCreateMode = columnAssistant.getByRole("radio", {
+    name: "Create from creative direction",
+  });
+  await columnDirection.fill("column direction");
+  await columnCreateMode.check();
   await prompt.fill("draft that should remain");
   await openEditor.click();
   await expect(dialog).toHaveAttribute("open", "");
 
   const focusedPrompt = dialog.getByRole("textbox", { name: "Prompt editor" });
+  const focusedDirection = dialog.getByRole("textbox", {
+    name: "Creative direction",
+    exact: true,
+  });
+  const focusedRefineMode = dialog.getByRole("radio", { name: "Refine current prompt" });
+  const focusedCreateMode = dialog.getByRole("radio", {
+    name: "Create from creative direction",
+  });
   await expect(focusedPrompt).toHaveValue("draft that should remain");
+  await expect(focusedDirection).toHaveValue("column direction");
+  await expect(focusedCreateMode).toBeChecked();
   await focusedPrompt.fill("this canceled draft should not be applied");
+  await focusedDirection.fill("canceled direction");
+  await focusedRefineMode.check();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).not.toHaveAttribute("open", "");
   await expect(prompt).toHaveValue("draft that should remain");
+  await expect(columnDirection).toHaveValue("column direction");
+  await expect(columnCreateMode).toBeChecked();
   await expect(openEditor).toBeFocused();
 
   const longPrompt = Array.from({ length: 60 }, () => "cinematic detail").join(" ");
   await openEditor.click();
+  await expect(focusedDirection).toHaveValue("column direction");
+  await expect(focusedCreateMode).toBeChecked();
   await focusedPrompt.fill(longPrompt);
   await expect(dialog.locator("[data-prompt-word-count]")).toHaveText("120 words");
   await expect(dialog.locator("[data-prompt-character-count]")).toHaveText(
     `${longPrompt.length.toLocaleString()} characters`,
   );
+  await focusedDirection.fill("focused assistant direction");
+  await focusedRefineMode.check();
+  await dialog.getByRole("button", { name: "Compose Prompt" }).click();
+  const composedPrompt = `${longPrompt}, focused assistant direction`;
+  await expect(focusedPrompt).toHaveValue(composedPrompt);
+  await expect(prompt).toHaveValue("draft that should remain");
+  await expect(columnDirection).toHaveValue("column direction");
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(dialog).not.toHaveAttribute("open", "");
-  await expect(prompt).toHaveValue(longPrompt);
+  await expect(prompt).toHaveValue(composedPrompt);
+  await expect(columnDirection).toHaveValue("focused assistant direction");
+  await expect(columnAssistant.getByRole("radio", { name: "Refine current prompt" })).toBeChecked();
   await expect(openEditor).toBeFocused();
 });
 

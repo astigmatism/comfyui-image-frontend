@@ -208,8 +208,13 @@ test("prompt is contract-rendered and Prompt Assistant remains collapsed by defa
   assert.match(html, /Compose Prompt/);
 });
 
-test("focused prompt editor renders an escaped draft, editing tools, and draft statistics", () => {
-  const html = promptEditorMarkup("prompt.text", "Prompt", "One <two>\nthree");
+test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {
+  const html = promptEditorMarkup("prompt.text", "Prompt", "One <two>\nthree", {
+    available: true,
+    mode: "create",
+    creativeDirection: "Moody <light>",
+    historicalModel: "model-one",
+  });
   assert.match(html, /<h2 id="prompt-editor-title">Focused prompt editor<\/h2>/);
   assert.match(html, /aria-label="Prompt editor"/);
   assert.match(html, />One &lt;two&gt;\nthree<\/textarea>/);
@@ -217,6 +222,11 @@ test("focused prompt editor renders an escaped draft, editing tools, and draft s
   assert.match(html, />15 characters<\/span>/);
   assert.match(html, /data-action="select-prompt-editor-text"/);
   assert.match(html, /data-action="clear-prompt-editor-text"/);
+  assert.match(html, /<h3 id="prompt-editor-assistant-title">Prompt Assistant<\/h3>/);
+  assert.match(html, /id="prompt-editor-creative-direction"[^>]*>Moody &lt;light&gt;<\/textarea>/);
+  assert.match(html, /name="prompt-editor-assistant-mode" value="create" checked/);
+  assert.match(html, /Historical composition used model-one/);
+  assert.match(html, /data-action="compose-prompt-editor"/);
   assert.match(html, /data-action="cancel-prompt-editor">Cancel<\/button>/);
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
@@ -270,7 +280,7 @@ test("all-sources mode checks its control, disables source selection, and shows 
   assert.match(html, /only the prompt, resolution, and one shared seed/);
 });
 
-test("card footer opens metadata from the source and groups current download with gallery actions", () => {
+test("card footer groups generation actions and exposes permanent deletion", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
@@ -290,17 +300,22 @@ test("card footer opens metadata from the source and groups current download wit
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
-  assert.equal((html.match(/<button/g) || []).length, 3);
+  assert.equal((html.match(/<button/g) || []).length, 4);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
   assert.match(html, /aria-label="Recall settings"[^>]*>[\s\S]*?<svg[^>]+viewBox="0 0 24 24"/);
   assert.doesNotMatch(html, />Recall settings<\/button>/);
-  assert.doesNotMatch(html, /Failed|private prompt|99|Cancel|Delete/);
+  assert.match(html, /data-action="delete-generation"[^>]+aria-label="Delete generation"/);
+  assert.ok(html.indexOf('data-action="recall"') < html.indexOf('data-action="delete-generation"'));
+  assert.doesNotMatch(html, /Failed|private prompt|99|Cancel/);
 
   const active = cardFooterMarkup({ ...generation, is_favorite: true });
   assert.match(active, /aria-label="Remove from Favorites" aria-pressed="true"/);
   assert.match(active, /<svg[^>]+viewBox="0 0 24 24"/);
+
+  const pending = cardFooterMarkup({ ...generation, delete_pending: true });
+  assert.match(pending, /data-action="delete-generation"[^>]+disabled[^>]+aria-label="Deletion pending"/);
 });
 
 test("Favorites modal renders a thumbnail, generation details, recall, and delete", () => {

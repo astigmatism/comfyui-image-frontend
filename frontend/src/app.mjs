@@ -181,6 +181,7 @@ async function handleClick(event) {
     else if (action === "apply-prompt-editor") applyPromptEditor();
     else if (action === "select-prompt-editor-text") selectPromptEditorText();
     else if (action === "clear-prompt-editor-text") clearPromptEditorText();
+    else if (action === "compose-prompt-editor") await composePromptEditor(target);
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "recall-favorite") await recallFavorite(target.dataset.generationId);
@@ -312,8 +313,10 @@ function openPromptEditor(button) {
   };
   promptEditorReturnFocus = button;
   dialog.dataset.promptControlId = controlId;
+  delete dialog.dataset.promptAssistantCompositionId;
+  delete dialog.dataset.promptAssistantModel;
   dialog.returnValue = "";
-  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value);
+  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, state.promptAssistant);
   dialog.showModal();
   queueMicrotask(() => {
     const editor = dialog.querySelector("[data-prompt-editor-input]");
@@ -334,6 +337,10 @@ function closePromptEditor(returnValue) {
 function applyPromptEditor() {
   const dialog = document.querySelector("#prompt-editor-dialog");
   const editor = dialog?.querySelector("[data-prompt-editor-input]");
+  const creativeDirection = dialog?.querySelector("#prompt-editor-creative-direction");
+  const assistantMode = dialog?.querySelector(
+    '[name="prompt-editor-assistant-mode"]:checked',
+  );
   const controlId = dialog?.dataset.promptControlId;
   const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === controlId);
   if (!dialog?.open || !editor || !controlId || !control) return;
@@ -342,11 +349,14 @@ function applyPromptEditor() {
   state.explicitParameterIds.add(controlId);
   delete state.serverFieldErrors[controlId];
   state.formError = null;
+  state.promptAssistant.creativeDirection = creativeDirection?.value || "";
+  state.promptAssistant.mode = assistantMode?.value === "create" ? "create" : "refine";
+  if (dialog.dataset.promptAssistantCompositionId) {
+    state.compositionId = dialog.dataset.promptAssistantCompositionId;
+    state.promptAssistant.historicalModel = dialog.dataset.promptAssistantModel || null;
+  }
   persistActiveParameterState();
-
-  const source = document.querySelector(`[data-control-id="${CSS.escape(controlId)}"]`);
-  if (source) source.value = editor.value;
-  syncParameterValidation(controlId);
+  renderPanel();
   dialog.close("apply");
 }
 
@@ -1473,6 +1483,62 @@ async function composePrompt(button) {
   }
 }
 
+async function composePromptEditor(button) {
+  if (!state.promptAssistant.available) return;
+  const dialog = button.closest("#prompt-editor-dialog[open]");
+  const editor = dialog?.querySelector("[data-prompt-editor-input]");
+  const direction = dialog?.querySelector("#prompt-editor-creative-direction");
+  const checkedMode = dialog?.querySelector('[name="prompt-editor-assistant-mode"]:checked');
+  const message = dialog?.querySelector("[data-prompt-editor-assistant-message]");
+  const controlId = dialog?.dataset.promptControlId;
+  const requestSourceKey = state.activeSourceKey;
+  const requestRevision = structuredClone(sourceRevision(state.activeSource));
+  if (!dialog || !editor || !direction || !checkedMode || !controlId || !requestSourceKey) return;
+
+  const requestMode = checkedMode.value === "create" ? "create" : "refine";
+  const requestPrompt = editor.value;
+  const requestDirection = direction.value;
+  button.disabled = true;
+  button.textContent = "Composing…";
+  if (message) message.textContent = "";
+  try {
+    const result = await api("/api/prompt-assistant/compose", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: requestMode,
+        prompt: requestPrompt,
+        creative_direction: requestDirection,
+      }),
+    });
+    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      toast("Prompt composition finished after the source changed and was not applied.");
+      return;
+    }
+    if (!dialog.open || !button.isConnected || dialog.dataset.promptControlId !== controlId) {
+      toast("Prompt composition finished after the focused editor closed and was not applied.");
+      return;
+    }
+    editor.value = result.prompt;
+    updatePromptEditorStats(result.prompt);
+    dialog.dataset.promptAssistantCompositionId = result.composition_id;
+    dialog.dataset.promptAssistantModel = result.model;
+    if (message) message.textContent = `Composed with ${result.model}.`;
+    editor.focus();
+    toast("Prompt composed in the focused editor. Apply to keep it.", "success");
+  } catch (error) {
+    if (dialog.open && button.isConnected && sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      if (message) message.textContent = error.message;
+    } else {
+      toast(`Focused prompt composition failed: ${error.message}`, "error");
+    }
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "Compose Prompt";
+    }
+  }
+}
+
 async function handleUpload(input) {
   const file = input.files?.[0];
   if (!file) return;
@@ -1954,7 +2020,13 @@ async function cancelGeneration(id, button) {
 }
 
 async function deleteGeneration(id) {
-  if (!window.confirm("Permanently delete this generation and all application-owned files?")) return;
+  if (
+    !window.confirm(
+      "Permanently delete this generation record and all of its application-owned artifacts? It will disappear from your history and cannot be undone.",
+    )
+  ) {
+    return;
+  }
   const response = await fetch(`/api/generations/${encodeURIComponent(id)}`, {
     method: "DELETE",
     credentials: "same-origin",
