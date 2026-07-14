@@ -23,7 +23,6 @@ class OllamaAdapter:
     def __init__(self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
         self.base_url = settings.ollama_base_url
-        self.model = settings.ollama_model
         self._client = (
             httpx.AsyncClient(
                 base_url=self.base_url,
@@ -58,13 +57,11 @@ class OllamaAdapter:
     async def status(self) -> tuple[bool, str | None]:
         if not self._client:
             return False, "Prompt Assistant is not configured."
-        if not self.model:
-            return False, "Prompt Assistant is unavailable because no Ollama model is configured."
         models = await self.available_models()
-        if self.model not in models:
+        if not models:
             return (
                 False,
-                "Prompt Assistant is unavailable because its Ollama model is not reachable.",
+                "Prompt Assistant is unavailable because the Ollama router has no reachable model.",
             )
         return True, None
 
@@ -79,22 +76,15 @@ class OllamaAdapter:
             raise AppError(
                 "ollama_unavailable", "Prompt Assistant is not configured.", status_code=503
             )
-        if not self.model:
-            raise AppError(
-                "ollama_unavailable",
-                "Prompt Assistant has no configured model; manual prompting still works.",
-                status_code=503,
-            )
         models = await self.available_models()
-        if self.model not in models:
+        if not models:
             raise AppError(
                 "ollama_unavailable",
-                "Prompt Assistant's configured model is unavailable; manual prompting still works.",
+                "The Ollama router has no reachable model; manual prompting still works.",
                 status_code=503,
             )
         instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
         payload = {
-            "model": self.model,
             "prompt": instruction,
             "stream": False,
             "think": False,

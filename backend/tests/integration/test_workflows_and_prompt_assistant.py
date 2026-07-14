@@ -243,7 +243,7 @@ def test_successful_empty_listing_retires_current_catalog(fake_state, settings_f
         assert client.get("/api/workflows").json() == []
 
 
-def test_prompt_assistant_uses_configured_model_and_records_effective_model(
+def test_prompt_assistant_uses_router_selected_model_and_records_effective_model(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client)
@@ -264,7 +264,7 @@ def test_prompt_assistant_uses_configured_model_and_records_effective_model(
     assert composed["prompt"] == "portrait, soft window light"
     assert composed["model"] == "router-active:latest"
     request_payload = fake_state.ollama_calls[-1]
-    assert request_payload["model"] == "zeta:latest"
+    assert "model" not in request_payload
     assert request_payload["stream"] is False
     assert request_payload["think"] is False
     assert request_payload["format"] == {
@@ -329,15 +329,16 @@ def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_stat
     assert validation.json()["valid"] is True
 
 
-def test_unlisted_configured_ollama_model_only_disables_assistant(
+def test_empty_router_model_listing_only_disables_assistant(
     app_client: TestClient, fake_state
 ) -> None:
-    provision_user(app_client, username="model.mismatch")
-    fake_state.models = ["alpha:latest"]
+    provision_user(app_client, username="empty.router")
+    fake_state.models = []
 
     status = app_client.get("/api/prompt-assistant/status")
     assert status.status_code == 200
     assert status.json()["available"] is False
+    assert "router has no reachable model" in status.json()["message"]
     compose = app_client.post(
         "/api/prompt-assistant/compose",
         headers={"X-CSRF-Token": csrf(app_client)},

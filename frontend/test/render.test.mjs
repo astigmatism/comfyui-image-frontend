@@ -10,6 +10,7 @@ import {
   generationPanelMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
+  promptEditorMarkup,
 } from "../src/render.mjs";
 
 const promptControl = {
@@ -167,10 +168,26 @@ test("prompt is contract-rendered and Prompt Assistant remains collapsed by defa
   const html = controlMarkup(promptControl, { "prompt.text": "hello" }, contract);
   assert.match(html, />Prompt</);
   assert.doesNotMatch(html, /Positive prompt/);
+  assert.match(html, /data-action="open-prompt-editor"/);
+  assert.match(html, /aria-label="Open focused prompt editor"/);
+  assert.ok(html.indexOf('data-action="open-prompt-editor"') < html.indexOf('data-control-id="prompt.text"'));
   assert.match(html, /data-control-id="prompt.text"[^>]*rows="10"/);
   assert.match(html, /<details class="prompt-assistant" id="prompt-assistant">/);
   assert.doesNotMatch(html, /<details[^>]+open/);
   assert.match(html, /Compose Prompt/);
+});
+
+test("focused prompt editor renders an escaped draft, editing tools, and draft statistics", () => {
+  const html = promptEditorMarkup("prompt.text", "Prompt", "One <two>\nthree");
+  assert.match(html, /<h2 id="prompt-editor-title">Focused prompt editor<\/h2>/);
+  assert.match(html, /aria-label="Prompt editor"/);
+  assert.match(html, />One &lt;two&gt;\nthree<\/textarea>/);
+  assert.match(html, />3 words<\/span>/);
+  assert.match(html, />15 characters<\/span>/);
+  assert.match(html, /data-action="select-prompt-editor-text"/);
+  assert.match(html, /data-action="clear-prompt-editor-text"/);
+  assert.match(html, /data-action="cancel-prompt-editor">Cancel<\/button>/);
+  assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
 
 test("generation panel fixes Generate first, source second, then basic and collapsed advanced controls", () => {

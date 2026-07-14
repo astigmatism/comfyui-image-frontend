@@ -8,6 +8,25 @@ async function signIn(page, username, password) {
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
+async function signInAdminWithCurrentFixturePassword(page) {
+  let responsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/auth/login" &&
+      response.request().method() === "POST",
+  );
+  await signIn(page, "admin", "E2EAdminPermanent123!");
+  if ((await responsePromise).ok()) return;
+
+  responsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/auth/login" &&
+      response.request().method() === "POST",
+  );
+  await signIn(page, "admin", "E2EAdminTemporary123!");
+  expect((await responsePromise).ok()).toBe(true);
+  await setForcedPassword(page, "E2EAdminPermanent123!");
+}
+
 async function setForcedPassword(page, password) {
   await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
   await page.getByLabel("New password", { exact: true }).fill(password);
@@ -46,6 +65,7 @@ async function generateAndExpectAccepted(page) {
 }
 
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto("/");
   await signIn(page, "admin", "E2EAdminTemporary123!");
   await setForcedPassword(page, "E2EAdminPermanent123!");
@@ -80,7 +100,8 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   const detailDialog = page.locator("#detail-dialog");
   await cardMedia.click();
   await expect(photoViewer).toHaveAttribute("open", "");
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  const fullscreenHost = photoViewer.locator(".photo-viewer-host");
+  await expect.poll(() => fullscreenHost.evaluate((host) => document.fullscreenElement === host)).toBe(true);
   const viewerMedia = photoViewer.locator(".photo-viewer-media");
   const viewerImage = viewerMedia.locator("img");
   const sizingControls = photoViewer.getByRole("group", { name: "Image sizing" });
@@ -136,7 +157,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
 
   await cardMedia.click();
   await expect(photoViewer).toHaveAttribute("open", "");
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  await expect.poll(() => fullscreenHost.evaluate((host) => document.fullscreenElement === host)).toBe(true);
   await viewerClose.click();
   await expect(photoViewer).not.toHaveAttribute("open", "");
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
@@ -216,6 +237,39 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await page.waitForTimeout(400);
   await page.reload();
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
+});
+
+test("focused prompt editor keeps canceled drafts isolated and applies long-form edits", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const dialog = page.locator("#prompt-editor-dialog");
+  const openEditor = page.getByRole("button", { name: "Open focused prompt editor" });
+  await prompt.fill("draft that should remain");
+  await openEditor.click();
+  await expect(dialog).toHaveAttribute("open", "");
+
+  const focusedPrompt = dialog.getByRole("textbox", { name: "Prompt editor" });
+  await expect(focusedPrompt).toHaveValue("draft that should remain");
+  await focusedPrompt.fill("this canceled draft should not be applied");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).not.toHaveAttribute("open", "");
+  await expect(prompt).toHaveValue("draft that should remain");
+  await expect(openEditor).toBeFocused();
+
+  const longPrompt = Array.from({ length: 60 }, () => "cinematic detail").join(" ");
+  await openEditor.click();
+  await focusedPrompt.fill(longPrompt);
+  await expect(dialog.locator("[data-prompt-word-count]")).toHaveText("120 words");
+  await expect(dialog.locator("[data-prompt-character-count]")).toHaveText(
+    `${longPrompt.length.toLocaleString()} characters`,
+  );
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(dialog).not.toHaveAttribute("open", "");
+  await expect(prompt).toHaveValue(longPrompt);
+  await expect(openEditor).toBeFocused();
 });
 
 test("background service polling does not interrupt focused generation controls", async ({ page }) => {

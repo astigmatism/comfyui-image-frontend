@@ -640,8 +640,11 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 .strip()
             )
         composed = f"{current}, {direction}".strip(" ,") or "composed image prompt"
+        effective_model = state.ollama_effective_model or payload.get("model")
+        if not effective_model and state.models:
+            effective_model = state.models[0]
         return {
-            "model": state.ollama_effective_model or str(payload.get("model", "")),
+            "model": str(effective_model or ""),
             "response": json.dumps({"prompt": composed}),
             "done": True,
         }

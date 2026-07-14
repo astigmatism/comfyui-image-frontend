@@ -27,7 +27,7 @@ The principal invariants are:
 - `WorkflowCompiler`: public parameter validation/defaults, exact seed resolution, request-local graph clone/bindings/hash.
 - `GenerationService`: owner-scoped API projection, acceptance transaction, recall, cancellation/deletion.
 - `QueueWorker`: durable fair claim, submission, WebSocket/history monitoring, output normalization/archive, recovery.
-- `OllamaAdapter`: configured-model validation, non-thinking structured composition, and effective-model provenance.
+- `OllamaAdapter`: router availability validation, model-free non-thinking structured composition, and effective-model provenance.
 - `EventBroker`: low-latency owner-specific SSE fan-out; the database is the replay source.
 - `UserDeletionService`: revocation, active-job reconciliation, row/file cleanup without content disclosure.
 

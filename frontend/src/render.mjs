@@ -82,9 +82,10 @@ export function shellMarkup(state) {
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
       <dialog id="detail-dialog" class="detail-dialog"></dialog>
-      <dialog id="photo-viewer" class="photo-viewer" aria-label="Full-screen image viewer"></dialog>
+      <dialog id="photo-viewer" class="photo-viewer" aria-label="Full-screen image viewer"><div class="photo-viewer-host"></div></dialog>
       <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
+      <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     </div>`;
 }
@@ -257,6 +258,7 @@ export function controlMarkup(control, values, contract, errors = {}) {
   const error = errors[control.id];
   const description = presentation.reason || control.description;
   const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
+  const isPrompt = control.semantic_role === "positive_prompt" || control.id === "prompt.text";
   const descriptionId = description ? `${id}-description` : null;
   const errorId = error ? `${id}-error` : null;
   const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
@@ -349,9 +351,12 @@ export function controlMarkup(control, values, contract, errors = {}) {
       input = `<p class="control-unavailable">Unsupported semantic control.</p>`;
       field = `<div class="field"><span>${labelContent}</span>${input}</div>`;
   }
-  if (!field) field = `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
-  const assistant =
-    control.semantic_role === "positive_prompt" || control.id === "prompt.text" ? promptAssistantMarkup() : "";
+  if (!field) {
+    field = isPrompt
+      ? `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>${input}</div>`
+      : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
+  }
+  const assistant = isPrompt ? promptAssistantMarkup() : "";
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
     ${description ? `<p class="help-text" id="${descriptionId}">${escapeHtml(description)}</p>` : ""}
@@ -536,6 +541,32 @@ function promptAssistantMarkup() {
       <button type="button" class="button secondary" data-action="compose-prompt">Compose Prompt</button>
     </div>
   </details>`;
+}
+
+export function promptEditorMarkup(controlId, label, value) {
+  const text = String(value ?? "");
+  const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
+  return `<form class="dialog-frame prompt-editor-frame" method="dialog">
+    <header class="dialog-header prompt-editor-header">
+      <div><h2 id="prompt-editor-title">Focused prompt editor</h2><p>Review and refine ${escapeHtml(label || "your prompt")} in a dedicated workspace.</p></div>
+      <button type="button" class="icon-button prompt-editor-close" data-action="cancel-prompt-editor" aria-label="Cancel prompt editing" title="Cancel prompt editing"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+    </header>
+    <div class="prompt-editor-content">
+      <div class="prompt-editor-toolbar">
+        <div class="prompt-editor-stats" aria-label="Draft statistics"><span data-prompt-word-count>${words.toLocaleString()} ${words === 1 ? "word" : "words"}</span><span aria-hidden="true">·</span><span data-prompt-character-count>${text.length.toLocaleString()} ${text.length === 1 ? "character" : "characters"}</span></div>
+        <div class="prompt-editor-tools">
+          <button type="button" class="button low" data-action="select-prompt-editor-text">Select all</button>
+          <button type="button" class="button low" data-action="clear-prompt-editor-text">Clear</button>
+        </div>
+      </div>
+      <textarea id="prompt-editor-textarea" data-prompt-editor-input data-prompt-control-id="${escapeHtml(controlId)}" aria-label="Prompt editor" spellcheck="true" autocapitalize="sentences">${escapeHtml(text)}</textarea>
+      <p class="prompt-editor-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> applies the draft.</p>
+    </div>
+    <footer class="dialog-actions">
+      <button type="button" class="button secondary" data-action="cancel-prompt-editor">Cancel</button>
+      <button type="button" class="button primary" data-action="apply-prompt-editor">Apply</button>
+    </footer>
+  </form>`;
 }
 
 export function galleryMarkup(generations) {

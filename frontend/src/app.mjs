@@ -26,6 +26,7 @@ import {
   loginMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
+  promptEditorMarkup,
   serviceBannerMarkup,
   shellMarkup,
 } from "./render.mjs";
@@ -83,6 +84,7 @@ const state = {
 const generationRefreshGate = createLatestRequestGate();
 let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
+let promptEditorReturnFocus = null;
 
 async function initialize() {
   bindDelegatedEvents();
@@ -165,6 +167,11 @@ async function handleClick(event) {
       document.querySelector(".app-shell")?.classList.toggle("panel-open", state.panelOpen);
       target.setAttribute("aria-expanded", String(state.panelOpen));
     } else if (action === "close-panel") closePanel();
+    else if (action === "open-prompt-editor") openPromptEditor(target);
+    else if (action === "cancel-prompt-editor") closePromptEditor("cancel");
+    else if (action === "apply-prompt-editor") applyPromptEditor();
+    else if (action === "select-prompt-editor-text") selectPromptEditorText();
+    else if (action === "clear-prompt-editor-text") clearPromptEditorText();
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "recall-favorite") await recallFavorite(target.dataset.generationId);
@@ -235,6 +242,10 @@ async function handleChange(event) {
 
 function handleInput(event) {
   const element = event.target;
+  if (element.matches("[data-prompt-editor-input]")) {
+    updatePromptEditorStats(element.value);
+    return;
+  }
   if (element.id === "gallery-scale") {
     updateGalleryScale(element.value, false);
     return;
@@ -267,6 +278,99 @@ function handleInput(event) {
     const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
     if (control?.type === "choice" && companion) syncParameterValidation(companion.id);
   }
+}
+
+function openPromptEditor(button) {
+  const controlId = button.dataset.promptControlId;
+  const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === controlId);
+  const dialog = document.querySelector("#prompt-editor-dialog");
+  const source = document.querySelector(`[data-control-id="${CSS.escape(controlId || "")}"]`);
+  if (!controlId || !control || !dialog || !source || source.disabled) return;
+
+  const label = controlId === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || controlId;
+  const selection = {
+    start: source.selectionStart ?? source.value.length,
+    end: source.selectionEnd ?? source.value.length,
+    direction: source.selectionDirection || "none",
+  };
+  promptEditorReturnFocus = button;
+  dialog.dataset.promptControlId = controlId;
+  dialog.returnValue = "";
+  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value);
+  dialog.showModal();
+  queueMicrotask(() => {
+    const editor = dialog.querySelector("[data-prompt-editor-input]");
+    editor?.focus({ preventScroll: true });
+    try {
+      editor?.setSelectionRange(selection.start, selection.end, selection.direction);
+    } catch {
+      // The prompt editor remains usable if the browser cannot restore a selection range.
+    }
+  });
+}
+
+function closePromptEditor(returnValue) {
+  const dialog = document.querySelector("#prompt-editor-dialog");
+  if (dialog?.open) dialog.close(returnValue);
+}
+
+function applyPromptEditor() {
+  const dialog = document.querySelector("#prompt-editor-dialog");
+  const editor = dialog?.querySelector("[data-prompt-editor-input]");
+  const controlId = dialog?.dataset.promptControlId;
+  const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === controlId);
+  if (!dialog?.open || !editor || !controlId || !control) return;
+
+  state.parameters[controlId] = normalizeInputValue(control, editor.value);
+  state.explicitParameterIds.add(controlId);
+  delete state.serverFieldErrors[controlId];
+  state.formError = null;
+  persistActiveParameterState();
+
+  const source = document.querySelector(`[data-control-id="${CSS.escape(controlId)}"]`);
+  if (source) source.value = editor.value;
+  syncParameterValidation(controlId);
+  dialog.close("apply");
+}
+
+function selectPromptEditorText() {
+  const editor = document.querySelector("#prompt-editor-dialog[open] [data-prompt-editor-input]");
+  editor?.focus();
+  editor?.select();
+}
+
+function clearPromptEditorText() {
+  const editor = document.querySelector("#prompt-editor-dialog[open] [data-prompt-editor-input]");
+  if (!editor) return;
+  editor.value = "";
+  updatePromptEditorStats("");
+  editor.focus();
+}
+
+function updatePromptEditorStats(value) {
+  const dialog = document.querySelector("#prompt-editor-dialog");
+  if (!dialog) return;
+  const text = String(value ?? "");
+  const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
+  const wordCount = dialog.querySelector("[data-prompt-word-count]");
+  const characterCount = dialog.querySelector("[data-prompt-character-count]");
+  if (wordCount) wordCount.textContent = `${words.toLocaleString()} ${words === 1 ? "word" : "words"}`;
+  if (characterCount) {
+    characterCount.textContent = `${text.length.toLocaleString()} ${text.length === 1 ? "character" : "characters"}`;
+  }
+}
+
+function restorePromptEditorFocus(event) {
+  const controlId = event.currentTarget.dataset.promptControlId;
+  const previous = promptEditorReturnFocus;
+  promptEditorReturnFocus = null;
+  queueMicrotask(() => {
+    const fallback = document.querySelector(
+      `[data-action="open-prompt-editor"][data-prompt-control-id="${CSS.escape(controlId || "")}"]`,
+    );
+    const target = previous?.isConnected ? previous : fallback;
+    if (target && !target.disabled) target.focus({ preventScroll: true });
+  });
 }
 
 function handlePointerDown(event) {
@@ -360,6 +464,16 @@ function handlePhotoViewerWheel(event) {
 }
 
 function handleKeyDown(event) {
+  if (
+    event.target.matches("[data-prompt-editor-input]") &&
+    event.key === "Enter" &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.isComposing
+  ) {
+    event.preventDefault();
+    applyPromptEditor();
+    return;
+  }
   const photoViewer = document.querySelector("#photo-viewer");
   if (photoViewer?.open) return;
   const handle = event.target.closest("[data-resolution-handle]");
@@ -776,6 +890,7 @@ async function enterApplication() {
   };
   root.innerHTML = shellMarkup(state);
   document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
+  document.querySelector("#prompt-editor-dialog")?.addEventListener("close", restorePromptEditorFocus);
   renderPanel();
   renderGallery();
   renderServiceBanner();
@@ -1401,7 +1516,9 @@ function renderPhotoViewer() {
     closePhotoViewer();
     return;
   }
-  dialog.innerHTML = photoViewerMarkup(
+  const host = dialog.querySelector(".photo-viewer-host");
+  if (!host) return;
+  host.innerHTML = photoViewerMarkup(
     generation,
     photoViewerNavigation(generation.id),
     state.photoViewerMode,
@@ -1487,7 +1604,8 @@ function finishPhotoViewerDrag(renderPending = true) {
 }
 
 function requestPhotoViewerFullscreen(dialog) {
-  const target = document.documentElement;
+  const target = dialog.querySelector(".photo-viewer-host");
+  if (!target) return;
   if (document.fullscreenElement || typeof target.requestFullscreen !== "function") return;
   const requestToken = ++state.photoViewerFullscreenRequestToken;
   state.photoViewerFullscreenPending = true;
