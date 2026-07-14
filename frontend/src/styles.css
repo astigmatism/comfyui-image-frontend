@@ -880,12 +880,14 @@ code {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 }
 
-.resolution-control > label {
+.resolution-control > label,
+.resolution-axis-field > label {
   display: grid;
   gap: 4px;
 }
 
-.resolution-control > label > span {
+.resolution-control > label > span,
+.resolution-axis-field > label > span {
   color: var(--muted);
   font-size: 0.72rem;
 }
@@ -898,6 +900,19 @@ code {
 .resolution-editor {
   display: grid;
   gap: 8px;
+}
+
+.resolution-axis-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.resolution-axis-field .help-text,
+.resolution-axis-field .field-error {
+  margin: 0;
+  font-size: 0.69rem;
+  font-weight: 500;
 }
 
 .resolution-canvas {

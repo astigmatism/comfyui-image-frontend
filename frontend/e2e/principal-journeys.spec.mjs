@@ -150,7 +150,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await signIn(page, "admin", "E2EAdminPermanent123!");
   await selectPublishedSource(page, "Krea 2 NSFW V4");
 
-  await expect(page.locator('[data-control-group="Basic"]')).toHaveCount(5);
+  await expect(page.locator('[data-control-group="Basic"]')).toHaveCount(4);
   await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
     "a tree with chickens",
   );
@@ -166,7 +166,41 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(height).toHaveAttribute("min", "16");
   await expect(height).toHaveAttribute("max", "2048");
   await expect(height).toHaveAttribute("step", "8");
-  await expect(page.locator("[data-resolution-grid]")).toHaveCount(0);
+
+  const grid = page.locator("[data-resolution-grid]");
+  await expect(grid).toHaveCount(1);
+  await expect(page.locator("[data-resolution-summary]")).toHaveText(
+    "1080 × 1920 · 2.07 MP · 9:16",
+  );
+  const dragHandle = async (name, targetWidthFraction, targetHeightFraction) => {
+    const handle = grid.locator(`[data-resolution-handle="${name}"]`);
+    await handle.scrollIntoViewIfNeeded();
+    const gridBox = await grid.boundingBox();
+    const handleBox = await handle.boundingBox();
+    expect(gridBox).not.toBeNull();
+    expect(handleBox).not.toBeNull();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      gridBox.x + gridBox.width * targetWidthFraction,
+      gridBox.y + gridBox.height * (1 - targetHeightFraction),
+      { steps: 4 },
+    );
+    await page.mouse.up();
+  };
+
+  await dragHandle("both", 0.5, 0.78125);
+  await expect(width).toHaveValue("1024");
+  await expect(height).toHaveValue("1600");
+  await expect(page.locator("[data-resolution-summary]")).toHaveText(
+    "1024 × 1600 · 1.64 MP · 16:25",
+  );
+  await dragHandle("width", 0.75, 0.5);
+  await expect(width).toHaveValue("1536");
+  await expect(height).toHaveValue("1600");
+  await dragHandle("height", 0.5, 0.5);
+  await expect(width).toHaveValue("1536");
+  await expect(height).toHaveValue("1024");
 
   const sourceKey = await page.locator("#workflow-source").inputValue();
   const sourceResponse = await page.evaluate(async (key) => {
@@ -217,6 +251,9 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   await width.fill("1024");
   await height.fill("1600");
+  await expect(page.locator("[data-resolution-summary]")).toHaveText(
+    "1024 × 1600 · 1.64 MP · 16:25",
+  );
   await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
   const advanced = page.locator(".advanced-group");
   await expect(advanced).not.toHaveAttribute("open", "");
@@ -266,6 +303,8 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   const generationResponse = await generateAndExpectAccepted(page);
   const generationRequest = generationResponse.request().postDataJSON();
   expect(generationRequest.parameters).toMatchObject({
+    width: 1024,
+    height: 1600,
     lora: "knp_v3_1",
     lora_strength: 0.7,
   });

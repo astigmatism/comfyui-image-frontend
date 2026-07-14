@@ -231,9 +231,12 @@ function handleInput(event) {
     const control = updateControlFromElement(element);
     syncNumberControlPair(element);
     syncChoiceStrengthControl(control);
-    if (element.dataset.resolutionPart) {
-      const grid = element.closest("[data-control-block]")?.querySelector("[data-resolution-grid]");
-      updateResolutionUi(grid, state.parameters[element.dataset.controlId]);
+    if (element.dataset.resolutionPart || element.dataset.resolutionAxis) {
+      const container = element.dataset.resolutionAxis
+        ? element.closest("[data-resolution-pair-block]")
+        : element.closest("[data-control-block]");
+      const grid = container?.querySelector("[data-resolution-grid]");
+      updateResolutionUi(grid, resolutionValueForGrid(grid));
     }
     if (element.type === "checkbox") {
       const stateLabel = element.closest(".switch")?.querySelector("em");
@@ -282,7 +285,7 @@ function handlePointerEnd(event) {
   } catch {
     // The browser may release capture before pointercancel reaches the delegated handler.
   }
-  renderPanelWithResolutionFocus(grid.dataset.controlId, mode);
+  renderPanelWithResolutionFocus(grid, mode);
 }
 
 function handleKeyDown(event) {
@@ -291,7 +294,7 @@ function handleKeyDown(event) {
   const grid = handle.closest("[data-resolution-grid]");
   if (!grid) return;
   const mode = handle.dataset.resolutionHandle;
-  const current = state.parameters[grid.dataset.controlId] || {};
+  const current = resolutionValueForGrid(grid);
   const limits = resolutionGridLimits(grid);
   let width = Number(current.width) || 0;
   let height = Number(current.height) || 0;
@@ -324,14 +327,14 @@ function handleKeyUp(event) {
   const handle = event.target.closest("[data-resolution-handle]");
   if (!handle || !["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const grid = handle.closest("[data-resolution-grid]");
-  if (grid) renderPanelWithResolutionFocus(grid.dataset.controlId, handle.dataset.resolutionHandle);
+  if (grid) renderPanelWithResolutionFocus(grid, handle.dataset.resolutionHandle);
 }
 
 function updateResolutionFromPointer(event, drag) {
   const rect = drag.grid.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
   const limits = resolutionGridLimits(drag.grid);
-  const current = state.parameters[drag.grid.dataset.controlId] || {};
+  const current = resolutionValueForGrid(drag.grid);
   let width = Number(current.width) || 0;
   let height = Number(current.height) || 0;
   if (drag.mode !== "height") {
@@ -346,13 +349,34 @@ function updateResolutionFromPointer(event, drag) {
 }
 
 function setResolutionValue(grid, width, height) {
-  const id = grid.dataset.controlId;
-  state.parameters[id] = { width, height };
-  state.explicitParameterIds.add(id);
-  delete state.serverFieldErrors[id];
+  const widthId = grid.dataset.resolutionWidthId;
+  const heightId = grid.dataset.resolutionHeightId;
+  if (widthId && heightId) {
+    state.parameters[widthId] = width;
+    state.parameters[heightId] = height;
+    state.explicitParameterIds.add(widthId);
+    state.explicitParameterIds.add(heightId);
+    delete state.serverFieldErrors[widthId];
+    delete state.serverFieldErrors[heightId];
+  } else {
+    const id = grid.dataset.controlId;
+    state.parameters[id] = { width, height };
+    state.explicitParameterIds.add(id);
+    delete state.serverFieldErrors[id];
+  }
   state.formError = null;
   persistActiveParameterState();
-  updateResolutionUi(grid, state.parameters[id]);
+  updateResolutionUi(grid, resolutionValueForGrid(grid));
+}
+
+function resolutionValueForGrid(grid) {
+  if (!grid) return {};
+  const widthId = grid.dataset.resolutionWidthId;
+  const heightId = grid.dataset.resolutionHeightId;
+  if (widthId && heightId) {
+    return { width: state.parameters[widthId], height: state.parameters[heightId] };
+  }
+  return state.parameters[grid.dataset.controlId] || {};
 }
 
 function updateResolutionUi(grid, value) {
@@ -367,9 +391,9 @@ function updateResolutionUi(grid, value) {
   grid.style.setProperty("--resolution-y", `${positionY}%`);
   grid.style.setProperty("--resolution-x-mid", `${positionX / 2}%`);
   grid.style.setProperty("--resolution-y-mid", `${positionY / 2}%`);
-  const block = grid.closest("[data-control-block]");
-  const widthInput = block?.querySelector('[data-resolution-part="width"]');
-  const heightInput = block?.querySelector('[data-resolution-part="height"]');
+  const block = grid.closest("[data-resolution-pair-block], [data-control-block]");
+  const widthInput = block?.querySelector('[data-resolution-axis="width"], [data-resolution-part="width"]');
+  const heightInput = block?.querySelector('[data-resolution-axis="height"], [data-resolution-part="height"]');
   const caption = block?.querySelector("[data-resolution-summary]");
   if (widthInput) widthInput.value = value?.width ?? "";
   if (heightInput) heightInput.value = value?.height ?? "";
@@ -401,12 +425,13 @@ function resolutionPosition(value, minimum, maximum) {
   return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
 }
 
-function renderPanelWithResolutionFocus(controlId, handle) {
+function renderPanelWithResolutionFocus(grid, handle) {
+  const selector = grid.dataset.resolutionWidthId
+    ? `[data-resolution-grid][data-resolution-width-id="${CSS.escape(grid.dataset.resolutionWidthId)}"]`
+    : `[data-resolution-grid][data-control-id="${CSS.escape(grid.dataset.controlId)}"]`;
   renderPanel();
   queueMicrotask(() => {
-    document
-      .querySelector(`[data-resolution-grid][data-control-id="${CSS.escape(controlId)}"] [data-resolution-handle="${handle}"]`)
-      ?.focus();
+    document.querySelector(`${selector} [data-resolution-handle="${handle}"]`)?.focus();
   });
 }
 

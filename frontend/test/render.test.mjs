@@ -90,6 +90,7 @@ const publishedInterface = {
       id: "height",
       label: "Height",
       type: "integer",
+      semantic_role: "height",
       default: 1920,
       minimum: 16,
       maximum: 2048,
@@ -102,6 +103,7 @@ const publishedInterface = {
       id: "width",
       label: "Width",
       type: "integer",
+      semantic_role: "width",
       default: 1080,
       minimum: 16,
       maximum: 2048,
@@ -395,7 +397,7 @@ test("composite resolution controls have distinct programmatic width and height 
   assert.match(html, /id="control-size-resolution-height"/);
 });
 
-test("published source renders all five v1 input types in deterministic Basic and Advanced sections", () => {
+test("published source pairs scalar dimensions in the resolution picker and renders remaining input types", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -417,11 +419,14 @@ test("published source renders all five v1 input types in deterministic Basic an
   const html = generationPanelMarkup(state, publishedSource, publishedInterface);
   const ids = ["prompt", "width", "height", "seed", "enable_seedvr2_upscale", "knpv4_1_strength"];
   ids.forEach((id) => assert.match(html, new RegExp(`data-control-block="${id}"`)));
-  ids.slice(1).forEach((id, index) => {
-    assert.ok(html.indexOf(`data-control-block="${ids[index]}"`) < html.indexOf(`data-control-block="${id}"`));
-  });
   assert.match(html, /data-control-id="prompt"[^>]*rows="6"/);
-  assert.match(html, /data-control-id="width"[^>]*type="number"[^>]*step="8"/);
+  assert.match(html, /data-resolution-width-id="width" data-resolution-height-id="height"/);
+  assert.match(html, /data-control-id="width"[^>]*data-resolution-axis="width"[^>]*type="number"[^>]*step="8"/);
+  assert.match(html, /data-control-id="height"[^>]*data-resolution-axis="height"[^>]*type="number"[^>]*step="8"/);
+  assert.match(html, /data-resolution-summary[^>]*>1080 × 1920 · 2.07 MP · 9:16/);
+  assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf("data-resolution-pair-block"));
+  assert.ok(html.indexOf('data-control-block="width"') < html.indexOf('data-control-block="height"'));
+  assert.ok(html.indexOf('data-control-block="height"') < html.indexOf('data-control-block="seed"'));
   assert.match(html, /data-control-id="seed"[^>]*type="text"[^>]*inputmode="numeric"/);
   assert.match(html, /data-control-id="enable_seedvr2_upscale"[^>]*type="checkbox"/);
   assert.match(

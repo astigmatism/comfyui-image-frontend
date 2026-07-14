@@ -202,19 +202,36 @@ function controlEmptyStateMarkup(state, source, contract) {
 }
 
 function groupedControlsMarkup(inputs, values, contract, errors) {
+  const resolutionPair = pairedResolutionInputs(inputs, values, contract);
+  const firstResolutionInput = resolutionPair
+    ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
+    : null;
   let currentGroup = null;
   let markup = "";
   for (const input of inputs) {
+    if (resolutionPair && (input === resolutionPair.width || input === resolutionPair.height)) {
+      if (input !== firstResolutionInput) continue;
+    }
     const group = String(input.group || "");
     if (group !== currentGroup) {
       if (currentGroup !== null) markup += "</section>";
       markup += `<section class="control-group" data-interface-group="${escapeHtml(group)}">${group ? `<h3 class="control-group-heading">${escapeHtml(group)}</h3>` : ""}`;
       currentGroup = group;
     }
-    markup += controlMarkup(input, values, contract, errors);
+    markup +=
+      resolutionPair && input === firstResolutionInput
+        ? pairedResolutionMarkup(resolutionPair.width, resolutionPair.height, values, contract, errors)
+        : controlMarkup(input, values, contract, errors);
   }
   if (currentGroup !== null) markup += "</section>";
   return markup;
+}
+
+function pairedResolutionInputs(inputs, values, contract) {
+  const visible = inputs.filter((input) => controlPresentation(input, values, contract?.capability_states || {}).visible);
+  const widths = visible.filter((input) => input.type === "integer" && input.semantic_role === "width");
+  const heights = visible.filter((input) => input.type === "integer" && input.semantic_role === "height");
+  return widths.length === 1 && heights.length === 1 ? { width: widths[0], height: heights[0] } : null;
 }
 
 function presetMarkup(presets, selected) {
@@ -371,26 +388,123 @@ function resolutionMarkup(control, value, disabled, required, error, describedBy
   const base = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
   const limits = resolutionConstraints(control);
   const grid = resolutionGridConstraints(control);
-  const summary = resolutionSummary(value?.width, value?.height);
-  const positionX = resolutionPosition(summary.width, grid.minimumWidth, grid.maximumWidth);
-  const positionY = resolutionPosition(summary.height, grid.minimumHeight, grid.maximumHeight);
-  const gridStepX = (grid.widthStep / (grid.maximumWidth - grid.minimumWidth)) * 100;
-  const gridStepY = (grid.heightStep / (grid.maximumHeight - grid.minimumHeight)) * 100;
-  const disabledAttribute = disabled ? "disabled" : "";
+  const canvas = resolutionCanvasMarkup({ controlId: control.id, value, grid, disabled });
   return `<div class="resolution-editor">
-    <div class="resolution-canvas" data-resolution-grid data-control-id="${escapeHtml(control.id)}" data-resolution-disabled="${disabled}" data-resolution-min-width="${grid.minimumWidth}" data-resolution-max-width="${grid.maximumWidth}" data-resolution-min-height="${grid.minimumHeight}" data-resolution-max-height="${grid.maximumHeight}" data-resolution-width-step="${grid.widthStep}" data-resolution-height-step="${grid.heightStep}" style="--resolution-x: ${positionX}%; --resolution-y: ${positionY}%; --resolution-x-mid: ${positionX / 2}%; --resolution-y-mid: ${positionY / 2}%; --resolution-grid-step-x: ${gridStepX}%; --resolution-grid-step-y: ${gridStepY}%; --resolution-canvas-aspect: ${grid.maximumWidth - grid.minimumWidth} / ${grid.maximumHeight - grid.minimumHeight};" aria-label="Resolution grid from ${grid.minimumWidth} by ${grid.minimumHeight} to ${grid.maximumWidth} by ${grid.maximumHeight}">
-      <div class="resolution-selection" aria-hidden="true"></div>
-      <button type="button" class="resolution-handle resolution-handle-both" data-resolution-handle="both" ${disabledAttribute} aria-label="Adjust width and height. ${summary.width} by ${summary.height} pixels. Use the arrow keys."></button>
-      <button type="button" class="resolution-handle resolution-handle-width" data-resolution-handle="width" ${disabledAttribute} aria-label="Adjust width. ${summary.width} pixels. Use the left and right arrow keys."></button>
-      <button type="button" class="resolution-handle resolution-handle-height" data-resolution-handle="height" ${disabledAttribute} aria-label="Adjust height. ${summary.height} pixels. Use the up and down arrow keys."></button>
-    </div>
-    <p class="resolution-summary" data-resolution-summary aria-live="polite">${summary.text}</p>
+    ${canvas}
     <div class="resolution-control">
       <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
       <span aria-hidden="true">×</span>
       <label for="${id}-height"><span>Height</span><input id="${id}-height" ${base} data-resolution-part="height" type="number" value="${value?.height ?? ""}" min="${limits.minimumHeight ?? ""}" max="${limits.maximumHeight ?? ""}" step="${limits.heightStep}" /></label>
     </div>
   </div>`;
+}
+
+function pairedResolutionMarkup(widthControl, heightControl, values, contract, errors) {
+  const capabilityStates = contract?.capability_states || {};
+  const widthPresentation = controlPresentation(widthControl, values, capabilityStates);
+  const heightPresentation = controlPresentation(heightControl, values, capabilityStates);
+  const disabled = !widthPresentation.enabled || !heightPresentation.enabled;
+  const required = widthPresentation.required || heightPresentation.required;
+  const widthError = errors[widthControl.id];
+  const heightError = errors[heightControl.id];
+  const widthDescription = widthPresentation.reason || widthControl.description;
+  const heightDescription = heightPresentation.reason || heightControl.description;
+  const widthId = `control-${widthControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const heightId = `control-${heightControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const widthDescriptionId = widthDescription ? `${widthId}-description` : null;
+  const heightDescriptionId = heightDescription ? `${heightId}-description` : null;
+  const widthErrorId = widthError ? `${widthId}-error` : null;
+  const heightErrorId = heightError ? `${heightId}-error` : null;
+  const describedBy = [widthDescriptionId, heightDescriptionId, widthErrorId, heightErrorId]
+    .filter(Boolean)
+    .join(" ");
+  const grid = resolutionGridConstraints({
+    constraints: {
+      maximum_width: controlConstraint(widthControl, "maximum"),
+      maximum_height: controlConstraint(heightControl, "maximum"),
+    },
+  });
+  const value = { width: values[widthControl.id], height: values[heightControl.id] };
+  const canvas = resolutionCanvasMarkup({
+    widthId: widthControl.id,
+    heightId: heightControl.id,
+    value,
+    grid,
+    disabled,
+  });
+  const widthInput = pairedResolutionInputMarkup(
+    widthControl,
+    "width",
+    value.width,
+    widthPresentation,
+    widthError,
+    widthDescriptionId,
+    widthErrorId,
+    widthId,
+  );
+  const heightInput = pairedResolutionInputMarkup(
+    heightControl,
+    "height",
+    value.height,
+    heightPresentation,
+    heightError,
+    heightDescriptionId,
+    heightErrorId,
+    heightId,
+  );
+  return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-resolution-pair-block="${escapeHtml(`${widthControl.id}:${heightControl.id}`)}" data-control-group="${escapeHtml(widthControl.group || heightControl.group || "")}">
+    <fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}>
+      <legend>Resolution${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</legend>
+      <div class="resolution-editor">
+        ${canvas}
+        <div class="resolution-control">
+          ${widthInput}
+          <span aria-hidden="true">×</span>
+          ${heightInput}
+        </div>
+      </div>
+    </fieldset>
+  </div>`;
+}
+
+function pairedResolutionInputMarkup(
+  control,
+  axis,
+  value,
+  presentation,
+  error,
+  descriptionId,
+  errorId,
+  id,
+) {
+  const description = presentation.reason || control.description;
+  const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
+  const required = presentation.required;
+  const label = control.label || (axis === "width" ? "Width" : "Height");
+  return `<div class="resolution-axis-field" data-control-block="${escapeHtml(control.id)}">
+    <label for="${id}"><span>${escapeHtml(label)}</span><input id="${id}" data-control-id="${escapeHtml(control.id)}" data-resolution-axis="${axis}" type="number" value="${escapeHtml(value ?? "")}" min="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" max="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" step="${escapeHtml(controlConstraint(control, "step") ?? 1)}" ${presentation.enabled ? "" : "disabled"} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""} /></label>
+    ${description ? `<p class="help-text" id="${descriptionId}">${escapeHtml(description)}</p>` : ""}
+    ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
+  </div>`;
+}
+
+function resolutionCanvasMarkup({ controlId = null, widthId = null, heightId = null, value, grid, disabled }) {
+  const summary = resolutionSummary(value?.width, value?.height);
+  const positionX = resolutionPosition(summary.width, grid.minimumWidth, grid.maximumWidth);
+  const positionY = resolutionPosition(summary.height, grid.minimumHeight, grid.maximumHeight);
+  const gridStepX = (grid.widthStep / (grid.maximumWidth - grid.minimumWidth)) * 100;
+  const gridStepY = (grid.heightStep / (grid.maximumHeight - grid.minimumHeight)) * 100;
+  const disabledAttribute = disabled ? "disabled" : "";
+  const identity = controlId
+    ? `data-control-id="${escapeHtml(controlId)}"`
+    : `data-resolution-width-id="${escapeHtml(widthId)}" data-resolution-height-id="${escapeHtml(heightId)}"`;
+  return `<div class="resolution-canvas" data-resolution-grid ${identity} data-resolution-disabled="${disabled}" data-resolution-min-width="${grid.minimumWidth}" data-resolution-max-width="${grid.maximumWidth}" data-resolution-min-height="${grid.minimumHeight}" data-resolution-max-height="${grid.maximumHeight}" data-resolution-width-step="${grid.widthStep}" data-resolution-height-step="${grid.heightStep}" style="--resolution-x: ${positionX}%; --resolution-y: ${positionY}%; --resolution-x-mid: ${positionX / 2}%; --resolution-y-mid: ${positionY / 2}%; --resolution-grid-step-x: ${gridStepX}%; --resolution-grid-step-y: ${gridStepY}%; --resolution-canvas-aspect: ${grid.maximumWidth - grid.minimumWidth} / ${grid.maximumHeight - grid.minimumHeight};" aria-label="Resolution grid from ${grid.minimumWidth} by ${grid.minimumHeight} to ${grid.maximumWidth} by ${grid.maximumHeight}">
+      <div class="resolution-selection" aria-hidden="true"></div>
+      <button type="button" class="resolution-handle resolution-handle-both" data-resolution-handle="both" ${disabledAttribute} aria-label="Adjust width and height. ${summary.width} by ${summary.height} pixels. Use the arrow keys."></button>
+      <button type="button" class="resolution-handle resolution-handle-width" data-resolution-handle="width" ${disabledAttribute} aria-label="Adjust width. ${summary.width} pixels. Use the left and right arrow keys."></button>
+      <button type="button" class="resolution-handle resolution-handle-height" data-resolution-handle="height" ${disabledAttribute} aria-label="Adjust height. ${summary.height} pixels. Use the up and down arrow keys."></button>
+    </div>
+    <p class="resolution-summary" data-resolution-summary aria-live="polite">${summary.text}</p>`;
 }
 
 function resolutionPosition(value, minimum, maximum) {
