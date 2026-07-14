@@ -44,12 +44,13 @@ async function openAccountMenu(page) {
 
 async function selectPublishedSource(page, name) {
   const selector = page.locator("#workflow-source");
-  const option = selector.locator("option").filter({ hasText: name });
+  await selector.click();
+  const option = page.locator("[data-primary-source-key]").filter({ hasText: name });
   await expect(option).toHaveCount(1);
-  const value = await option.getAttribute("value");
+  const value = await option.getAttribute("data-primary-source-key");
   expect(value).toBeTruthy();
-  await selector.selectOption(value);
-  await expect(selector).toHaveValue(value);
+  await option.click();
+  await expect(selector).toHaveAttribute("data-source-key", value);
 }
 
 async function generateAndExpectAccepted(page) {
@@ -292,7 +293,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
 });
 
-test("all generation sources queues compatible comparisons and reports incomplete sources", async ({
+test("checked generation sources share comparison settings and report incompatible selections", async ({
   page,
 }) => {
   await page.goto("/");
@@ -301,7 +302,7 @@ test("all generation sources queues compatible comparisons and reports incomplet
 
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("all-source comparison lighthouse");
+    .fill("selected-source comparison lighthouse");
   await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("768");
   await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("1024");
   await page.getByLabel("Seed mode", { exact: true }).selectOption("fixed");
@@ -315,10 +316,15 @@ test("all generation sources queues compatible comparisons and reports incomplet
     }
   });
 
-  await page.getByLabel("All Generation Sources", { exact: true }).check();
-  await expect(page.locator("#workflow-source")).toBeDisabled();
+  await page.locator("#workflow-source").click();
+  await page
+    .getByLabel("Use Generic Landscape with the same prompt, resolution, and seed", { exact: true })
+    .check();
+  await expect(page.locator("#workflow-source")).toContainText("2 sources");
   await page.getByRole("button", { name: "Generate" }).click();
-  await expect(page.locator("#toast-region")).toContainText("Queued 1 of 2 generation sources.");
+  await expect(page.locator("#toast-region")).toContainText(
+    "Queued 1 of 2 selected generation sources.",
+  );
   await expect(page.locator("#toast-region")).toContainText(
     "Generic Landscape: Does not publish comparison controls for width, height, seed.",
   );
@@ -327,7 +333,7 @@ test("all generation sources queues compatible comparisons and reports incomplet
   const kreaRequest = generationRequests[0];
   expect(kreaRequest).toBeTruthy();
   expect(kreaRequest.parameters).toEqual({
-    prompt: "all-source comparison lighthouse",
+    prompt: "selected-source comparison lighthouse",
     width: 768,
     height: 1024,
     seed: "424242",
@@ -540,7 +546,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(width).toHaveValue("1536");
   await expect(height).toHaveValue("1024");
 
-  const sourceKey = await page.locator("#workflow-source").inputValue();
+  const sourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
   const sourceResponse = await page.evaluate(async (key) => {
     const response = await fetch(`/api/workflows/${encodeURIComponent(key)}`);
     return { status: response.status, body: await response.json() };

@@ -96,8 +96,13 @@ export function generationPanelMarkup(state, profile, contract) {
   const comfy = state.services.find((item) => item.service === "comfyui");
   const clientErrors = state.fieldErrors || {};
   const sources = state.sources || state.workflows || [];
-  const availableSourceCount = sources.filter((item) => item.available !== false).length;
   const activeKey = state.activeSourceKey || state.activeProfileId;
+  const sharedSourceKeys = new Set(state.comparisonSourceKeys || []);
+  sharedSourceKeys.delete(activeKey);
+  const sharedSourceCount = sources.filter(
+    (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
+  ).length;
+  const selectedSourceCount = activeKey ? sharedSourceCount + 1 : sharedSourceCount;
   const values = state.parameters || state.controls || {};
   const inputs = sortInterfaceInputs(interfaceInputs(contract));
   const comparisonReady = missingComparisonRoles(contract).length === 0;
@@ -113,38 +118,15 @@ export function generationPanelMarkup(state, profile, contract) {
     sourceUnresolved ||
     sourceUnavailable ||
     comfy?.available === false ||
-    (state.allGenerationSources && !comparisonReady) ||
+    (sharedSourceCount > 0 && !comparisonReady) ||
     Object.keys(clientErrors).length > 0;
-  const sourceOptions = sources
-    .map(
-      (item) => {
-        const key = sourceKey(item);
-        const instance = item.instance_id ? ` · ${item.instance_id}` : "";
-        const suffix = item.available === false ? " — Unavailable" : item.cached ? " — Cached" : "";
-        return `<option value="${escapeHtml(key)}" ${key === activeKey ? "selected" : ""}>${escapeHtml(`${item.display_name}${instance}${suffix}`)}</option>`;
-      },
-    )
-    .join("");
   const presets = contract?.presets || [];
-  const sourceSelectorDisabled =
-    !sources.length || state.submitting || state.allGenerationSources;
-  const allSourcesDisabled =
-    !availableSourceCount ||
-    !comparisonReady ||
-    state.submitting ||
-    state.sourceCatalogStatus === "loading";
-  const allSourcesHelp = comparisonReady
-    ? `Queue each compatible source from ${availableSourceCount} available with only the prompt, resolution, and one shared seed.`
-    : "Select a source that publishes prompt, width, height, and seed controls to compare all sources.";
+  const sourceSelectorDisabled = !sources.length || state.submitting;
   return `
     <div class="panel-layout">
       <div class="panel-fixed">
-        <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (state.allGenerationSources ? `Queueing ${availableSourceCount}…` : "Queueing…") : "Generate"}</button>
-        <label class="field compact"><span>Generation source</span><select id="workflow-source" ${sourceSelectorDisabled ? "disabled" : ""}><option value="">${sourceSelectorLabel(state, sources)}</option>${sourceOptions}</select></label>
-        <div class="all-sources-option">
-          <label><input id="all-generation-sources" type="checkbox" ${state.allGenerationSources ? "checked" : ""} ${allSourcesDisabled ? "disabled" : ""} aria-describedby="all-generation-sources-help" /><span>All Generation Sources</span></label>
-          <p id="all-generation-sources-help">${allSourcesHelp}</p>
-        </div>
+        <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (sharedSourceCount ? `Queueing ${selectedSourceCount}…` : "Queueing…") : "Generate"}</button>
+        ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, comparisonReady, sourceSelectorDisabled)}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
         ${sourceStateMarkup(state, profile)}
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
@@ -161,10 +143,85 @@ function sourceKey(source) {
   return source?.source_key || source?.profile_id || "";
 }
 
+function sourceDisplayName(source) {
+  if (!source) return "";
+  const instance = source.instance_id ? ` · ${source.instance_id}` : "";
+  const suffix = source.available === false ? " — Unavailable" : source.cached ? " — Cached" : "";
+  return `${source.display_name}${instance}${suffix}`;
+}
+
 function sourceSelectorLabel(state, sources) {
   if (state.sourceCatalogStatus === "loading" && !sources.length) return "Discovering published sources…";
   if (state.sourceCatalogStatus === "error" && !sources.length) return "Source discovery unavailable";
   return sources.length ? "Select a source" : "No published sources";
+}
+
+function sourcePickerMarkup(
+  state,
+  sources,
+  activeKey,
+  sharedSourceKeys,
+  comparisonReady,
+  disabled,
+) {
+  const activeSource = sources.find((item) => sourceKey(item) === activeKey) || null;
+  const activeName = activeSource ? sourceDisplayName(activeSource) : sourceSelectorLabel(state, sources);
+  const sharedCount = sources.filter(
+    (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
+  ).length;
+  const sourceCountCopy = sharedCount
+    ? `${sharedCount + 1} sources · shared prompt, resolution & seed`
+    : "Primary source";
+  const open = Boolean(state.sourceMenuOpen && !disabled);
+  const options = sources
+    .map((item) => {
+      const key = sourceKey(item);
+      const primary = key === activeKey;
+      const shared = !primary && sharedSourceKeys.has(key);
+      const unavailable = item.available === false;
+      const checkboxDisabled =
+        primary || unavailable || !comparisonReady || state.submitting || state.sourceCatalogStatus === "loading";
+      const status = primary
+        ? "Primary source"
+        : unavailable
+          ? "Unavailable"
+          : shared
+            ? "Uses shared settings"
+            : "Select as primary";
+      const shareLabel = primary
+        ? `${item.display_name} is the primary source and is always included`
+        : `Use ${item.display_name} with the same prompt, resolution, and seed`;
+      return `
+        <li class="source-picker-option ${primary ? "is-primary" : ""} ${shared ? "is-shared" : ""} ${unavailable ? "is-unavailable" : ""}">
+          <label class="source-picker-check" title="${escapeHtml(shareLabel)}">
+            <input class="source-share-checkbox" type="checkbox" data-shared-source-key="${escapeHtml(key)}" aria-label="${escapeHtml(shareLabel)}" ${primary || shared ? "checked" : ""} ${checkboxDisabled ? "disabled" : ""} />
+            <span aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2" /></svg></span>
+          </label>
+          <button type="button" class="source-primary-option" data-action="select-generation-source" data-primary-source-key="${escapeHtml(key)}" aria-pressed="${primary}" aria-label="Make ${escapeHtml(item.display_name)} the primary generation source">
+            <strong>${escapeHtml(sourceDisplayName(item))}</strong>
+            <small>${escapeHtml(status)}</small>
+          </button>
+          <span class="source-primary-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" /></svg></span>
+        </li>`;
+    })
+    .join("");
+  const comparisonHelp = comparisonReady
+    ? "Click a name to make it primary. Check additional sources to share the primary prompt, resolution, and seed."
+    : "This primary source must publish prompt, width, height, and seed controls before additional sources can be checked.";
+  return `
+    <div class="field compact source-picker-field">
+      <span id="generation-source-label">Generation source</span>
+      <div class="source-picker ${open ? "is-open" : ""}">
+        <button id="workflow-source" class="source-picker-trigger" type="button" data-action="toggle-generation-source-menu" data-source-key="${escapeHtml(activeKey || "")}" aria-expanded="${open}" aria-controls="generation-source-menu" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
+          <span class="source-picker-current"><strong id="generation-source-value">${escapeHtml(activeName)}</strong><small>${escapeHtml(sourceCountCopy)}</small></span>
+          <svg class="source-picker-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m5.5 7.5 4.5 4.5 4.5-4.5" /></svg>
+        </button>
+        <div id="generation-source-menu" class="source-picker-menu" role="group" aria-labelledby="generation-source-label" aria-describedby="generation-source-help" aria-hidden="${!open}" ${open ? "" : "inert"}>
+          <p id="generation-source-help">${escapeHtml(comparisonHelp)}</p>
+          <ul>${options}</ul>
+        </div>
+      </div>
+    </div>`;
 }
 
 function warningText(warning) {

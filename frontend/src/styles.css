@@ -857,39 +857,311 @@ code {
   margin: 3px 0 0;
 }
 
-.all-sources-option {
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-1);
+.source-picker-field {
+  position: relative;
+  z-index: 5;
 }
 
-.all-sources-option label {
+.source-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.source-picker-trigger {
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: fit-content;
-  color: var(--text-soft);
-  font-weight: 600;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 7px 9px 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(135deg, rgb(91 156 245 / 8%), transparent 55%), #0b1119;
+  color: var(--text);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 23%);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+
+.source-picker-trigger:hover:not(:disabled),
+.source-picker.is-open .source-picker-trigger {
+  border-color: #4a6582;
+  background:
+    linear-gradient(135deg, rgb(91 156 245 / 13%), transparent 58%), #101925;
+}
+
+.source-picker.is-open .source-picker-trigger {
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 23%),
+    0 0 0 1px rgb(91 156 245 / 15%);
+}
+
+.source-picker-current {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
+.source-picker-current strong,
+.source-picker-current small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker-current strong {
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.source-picker-current small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.source-picker-chevron {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--motion) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.source-picker.is-open .source-picker-chevron {
+  transform: rotate(180deg);
+}
+
+.source-picker-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: min(390px, calc(100vh - 175px));
+  overflow: hidden;
+  border: 1px solid #38506a;
+  border-radius: 10px;
+  background: rgb(13 20 30 / 98%);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 55%);
+  opacity: 0;
+  transform: translateY(-7px) scale(0.98);
+  transform-origin: top center;
+  visibility: hidden;
+  pointer-events: none;
+  backdrop-filter: blur(14px);
+  transition:
+    opacity var(--motion) ease,
+    transform var(--motion) cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear var(--motion);
+  z-index: 45;
+}
+
+.source-picker.is-open .source-picker-menu {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.source-picker-menu > p {
+  margin: 0;
+  padding: 10px 11px;
+  border-bottom: 1px solid rgb(57 76 98 / 65%);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.source-picker-menu ul {
+  display: grid;
+  gap: 3px;
+  min-height: 0;
+  padding: 5px;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-color: #3a4d63 transparent;
+  scrollbar-width: thin;
+}
+
+.source-picker-option {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 22px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  transition:
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+
+.source-picker.is-open .source-picker-option {
+  animation: source-option-enter var(--motion) both;
+}
+
+.source-picker.is-open .source-picker-option:nth-child(2) {
+  animation-delay: 25ms;
+}
+
+.source-picker.is-open .source-picker-option:nth-child(3) {
+  animation-delay: 50ms;
+}
+
+.source-picker.is-open .source-picker-option:nth-child(n + 4) {
+  animation-delay: 75ms;
+}
+
+.source-picker-option:hover,
+.source-picker-option:focus-within {
+  border-color: rgb(68 91 118 / 72%);
+  background: var(--surface-2);
+}
+
+.source-picker-option.is-primary {
+  border-color: rgb(91 156 245 / 38%);
+  background: rgb(31 66 105 / 38%);
+}
+
+.source-picker-option.is-shared:not(.is-primary) {
+  background: rgb(35 59 86 / 32%);
+}
+
+.source-picker-option.is-unavailable {
+  opacity: 0.58;
+}
+
+.source-picker-check {
+  position: relative;
+  display: grid;
+  width: 32px;
+  height: 42px;
+  place-items: center;
   cursor: pointer;
 }
 
-.all-sources-option input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-.all-sources-option label:has(input:disabled) {
+.source-picker-check:has(input:disabled) {
   cursor: not-allowed;
-  opacity: 0.52;
 }
 
-.all-sources-option p {
-  margin: 5px 0 0 24px;
+.source-picker-check .source-share-checkbox {
+  position: absolute;
+  width: 28px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.source-picker-check > span {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid #52657b;
+  border-radius: 5px;
+  background: #080e15;
+  color: transparent;
+  transition:
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+
+.source-picker-check > span svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.source-picker-check input:checked + span {
+  border-color: var(--accent);
+  background: var(--accent-pressed);
+  color: #fff;
+  transform: scale(1.04);
+}
+
+.source-picker-check input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.source-picker-check input:disabled + span {
+  opacity: 0.66;
+}
+
+.source-primary-option {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  padding: 5px 3px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-primary-option strong,
+.source-primary-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-primary-option strong {
+  font-size: 0.77rem;
+  font-weight: 620;
+}
+
+.source-primary-option small {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.66rem;
+  font-weight: 500;
+}
+
+.source-picker-option.is-primary .source-primary-option strong {
+  color: #d9eaff;
+}
+
+.source-primary-mark {
+  display: grid;
+  width: 22px;
+  place-items: center;
+  color: transparent;
+}
+
+.source-primary-mark svg {
+  width: 15px;
+  height: 15px;
+  fill: currentcolor;
+}
+
+.source-picker-option.is-primary .source-primary-mark {
+  color: var(--accent-hover);
 }
 
 .switch {
@@ -2234,6 +2506,18 @@ tr:last-child td {
 .diagnostic span {
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+@keyframes source-option-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes spin {

@@ -50,7 +50,8 @@ const state = {
   sourceLoadToken: 0,
   activeSourceKey: null,
   activeSource: null,
-  allGenerationSources: false,
+  comparisonSourceKeys: new Set(),
+  sourceMenuOpen: false,
   parameters: {},
   explicitParameterIds: new Set(),
   parameterStateBySource: {},
@@ -152,6 +153,9 @@ async function handleSubmit(event) {
 }
 
 async function handleClick(event) {
+  if (state.sourceMenuOpen && !event.target.closest(".source-picker")) {
+    setSourceMenuOpen(false);
+  }
   const clearUpload = event.target.closest("[data-clear-upload]");
   if (clearUpload) {
     const id = clearUpload.dataset.clearUpload;
@@ -166,7 +170,18 @@ async function handleClick(event) {
   const action = target.dataset.action;
   try {
     if (action === "generate") await generate();
-    else if (action === "logout") await logout();
+    else if (action === "toggle-generation-source-menu") {
+      setSourceMenuOpen(!state.sourceMenuOpen);
+    } else if (action === "select-generation-source") {
+      const key = target.dataset.primarySourceKey;
+      if (!key || key === state.activeSourceKey) {
+        setSourceMenuOpen(false);
+        return;
+      }
+      state.comparisonSourceKeys.delete(key);
+      setSourceMenuOpen(false);
+      await selectSource(key);
+    } else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
       renderPasswordChange(false);
@@ -212,12 +227,11 @@ async function handleClick(event) {
 
 async function handleChange(event) {
   const element = event.target;
-  if (element.id === "workflow-source") {
-    await selectSource(element.value);
-    return;
-  }
-  if (element.id === "all-generation-sources") {
-    state.allGenerationSources = element.checked;
+  if (element.matches("[data-shared-source-key]")) {
+    const key = element.dataset.sharedSourceKey;
+    if (!key || key === state.activeSourceKey) return;
+    if (element.checked) state.comparisonSourceKeys.add(key);
+    else state.comparisonSourceKeys.delete(key);
     state.serverFieldErrors = {};
     state.formError = null;
     renderPanel();
@@ -256,6 +270,19 @@ async function handleChange(event) {
     const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
     if (control?.type === "choice" && companion) syncParameterValidation(companion.id);
   }
+}
+
+function setSourceMenuOpen(open, { restoreFocus = false } = {}) {
+  state.sourceMenuOpen = Boolean(open);
+  const picker = document.querySelector(".source-picker");
+  const trigger = picker?.querySelector("#workflow-source");
+  const menu = picker?.querySelector("#generation-source-menu");
+  picker?.classList.toggle("is-open", state.sourceMenuOpen);
+  trigger?.setAttribute("aria-expanded", String(state.sourceMenuOpen));
+  menu?.setAttribute("aria-hidden", String(!state.sourceMenuOpen));
+  if (state.sourceMenuOpen) menu?.removeAttribute("inert");
+  else menu?.setAttribute("inert", "");
+  if (restoreFocus) trigger?.focus({ preventScroll: true });
 }
 
 function handleInput(event) {
@@ -491,6 +518,11 @@ function handlePhotoViewerWheel(event) {
 }
 
 function handleKeyDown(event) {
+  if (event.key === "Escape" && state.sourceMenuOpen) {
+    event.preventDefault();
+    setSourceMenuOpen(false, { restoreFocus: true });
+    return;
+  }
   if (
     event.target.matches("[data-prompt-editor-input]") &&
     event.key === "Enter" &&
@@ -753,8 +785,9 @@ function syncNumberControlPair(element) {
 
 function syncParameterValidation(controlId) {
   const contract = sourceInterface(state.activeSource);
+  const validationContract = hasComparisonSources() ? comparisonInterface(contract) : contract;
   const errors = {
-    ...clientValidate(contract, state.parameters),
+    ...clientValidate(validationContract, state.parameters),
     ...withoutNulls(state.serverFieldErrors),
   };
   state.fieldErrors = errors;
@@ -870,7 +903,8 @@ async function logout() {
   state.sources = [];
   state.activeSourceKey = null;
   state.activeSource = null;
-  state.allGenerationSources = false;
+  state.comparisonSourceKeys = new Set();
+  state.sourceMenuOpen = false;
   state.parameters = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
@@ -933,6 +967,16 @@ function sourceKey(source) {
   return source?.source_key || source?.profile_id || null;
 }
 
+function selectedComparisonSourceKeys() {
+  return new Set(
+    [...state.comparisonSourceKeys].filter((key) => key && key !== state.activeSourceKey),
+  );
+}
+
+function hasComparisonSources() {
+  return selectedComparisonSourceKeys().size > 0;
+}
+
 function sourceInterface(source) {
   return source?.interface || source?.contract || null;
 }
@@ -984,6 +1028,16 @@ async function loadSources() {
     const sources = await api("/api/workflows");
     if (catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
+    const availableKeys = new Set(
+      state.sources
+        .filter((item) => item.available !== false)
+        .map((item) => sourceKey(item)),
+    );
+    state.comparisonSourceKeys = new Set(
+      [...state.comparisonSourceKeys].filter(
+        (key) => key !== state.activeSourceKey && availableKeys.has(key),
+      ),
+    );
     state.sourceCatalogStatus = "ready";
     const selected = state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
     const next = selected || state.sources.find((item) => item.available !== false) || state.sources[0] || null;
@@ -1031,6 +1085,7 @@ async function selectSource(key, { summary = null } = {}) {
   persistActiveParameterState();
   const token = ++state.sourceLoadToken;
   const resolvedSummary = summary || state.sources.find((item) => sourceKey(item) === key) || null;
+  state.comparisonSourceKeys.delete(key);
   state.activeSourceKey = key || null;
   state.activeSource = resolvedSummary;
   state.pendingSourceMigration = migration;
@@ -1110,7 +1165,7 @@ function renderPanel() {
   if (!panel) return;
   const focus = capturePanelFocus(panel);
   const contract = sourceInterface(state.activeSource);
-  const validationContract = state.allGenerationSources ? comparisonInterface(contract) : contract;
+  const validationContract = hasComparisonSources() ? comparisonInterface(contract) : contract;
   const clientErrors = clientValidate(validationContract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
   const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
@@ -1187,7 +1242,7 @@ function restorePanelFocus(panel, focus) {
 }
 
 async function generate() {
-  if (state.allGenerationSources) return generateAllSources();
+  if (hasComparisonSources()) return generateSelectedSources();
   return generateSingleSource();
 }
 
@@ -1259,13 +1314,17 @@ async function generateSingleSource() {
   }
 }
 
-async function generateAllSources() {
+async function generateSelectedSources() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const requestCompositionId = state.compositionId;
   const requestParameters = structuredClone(state.parameters);
-  const sources = state.sources.filter((source) => source.available !== false);
+  const selectedKeys = selectedComparisonSourceKeys();
+  selectedKeys.add(requestSourceKey);
+  const sources = state.sources.filter(
+    (source) => source.available !== false && selectedKeys.has(sourceKey(source)),
+  );
   if (
     !requestSourceKey ||
     !state.activeSource ||
@@ -1402,7 +1461,7 @@ async function generateAllSources() {
         .map(({ source, error }) => `${source.display_name}: ${error.message}`)
         .join(" ");
       const omitted = failures.length > 3 ? ` ${failures.length - 3} more failed.` : "";
-      state.formError = `Queued ${queued.length} of ${sources.length} generation sources. ${failureSummary}${omitted}`;
+      state.formError = `Queued ${queued.length} of ${sources.length} selected generation sources. ${failureSummary}${omitted}`;
       const activeFailure = failures.find(({ source }) => sourceKey(source) === requestSourceKey);
       if (activeFailure) {
         state.serverFieldErrors = normalizeParameterErrors(activeFailure.error.fields);
@@ -1410,7 +1469,7 @@ async function generateAllSources() {
       }
       toast(state.formError, "error");
     } else {
-      toast(`${queued.length} generations queued across all available sources.`, "success");
+      toast(`${queued.length} generations queued across ${sources.length} selected sources.`, "success");
     }
   } catch (error) {
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
@@ -1647,7 +1706,8 @@ async function recall(id) {
   const contract = sourceInterface(source);
   state.activeSourceKey = key;
   state.activeSource = { ...source, interface: contract };
-  state.allGenerationSources = false;
+  state.comparisonSourceKeys = new Set();
+  state.sourceMenuOpen = false;
   state.pendingSourceMigration = null;
   state.explicitParameterIds = new Set(
     Object.entries(recalledState.parameters || {})

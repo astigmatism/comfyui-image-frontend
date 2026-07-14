@@ -231,7 +231,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
 
-test("generation panel fixes Generate first, source and all-sources mode next, then controls", () => {
+test("generation panel places the custom source picker before generated controls", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -245,24 +245,24 @@ test("generation panel fixes Generate first, source and all-sources mode next, t
   const html = generationPanelMarkup(state, state.workflows[0], contract);
   const generateIndex = html.indexOf('id="generate-button"');
   const sourceIndex = html.indexOf('id="workflow-source"');
-  const allSourcesIndex = html.indexOf('id="all-generation-sources"');
   const promptIndex = html.indexOf('data-control-block="prompt.text"');
-  assert.ok(
-    generateIndex >= 0 &&
-      generateIndex < sourceIndex &&
-      sourceIndex < allSourcesIndex &&
-      allSourcesIndex < promptIndex,
+  assert.ok(generateIndex >= 0 && generateIndex < sourceIndex && sourceIndex < promptIndex);
+  assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /aria-expanded="false"/);
+  assert.doesNotMatch(html, /<select id="workflow-source"/);
+  assert.doesNotMatch(html, /All Generation Sources/);
+  assert.match(html, /data-primary-source-key="p1"/);
+  assert.match(
+    html.match(/<input[^>]*data-shared-source-key="p1"[^>]*>/)?.[0] || "",
+    /checked[^>]*disabled/,
   );
-  assert.match(html, /All Generation Sources/);
-  assert.match(html, /prompt, width, height, and seed controls/);
   assert.match(html, /<details class="advanced-group"><summary>Advanced<\/summary>/);
   assert.doesNotMatch(html, /<details class="advanced-group" open/);
 });
 
-test("all-sources mode checks its control, disables source selection, and shows the queue count", () => {
+test("source picker marks primary and shared sources and shows the selected queue count", () => {
   const state = {
     submitting: true,
-    allGenerationSources: true,
+    comparisonSourceKeys: new Set(["two"]),
     services: [{ service: "comfyui", available: true }],
     sources: [
       { source_key: "one", display_name: "One", available: true },
@@ -274,10 +274,17 @@ test("all-sources mode checks its control, disables source selection, and shows 
     fieldErrors: {},
   };
   const html = generationPanelMarkup(state, state.sources[0], publishedInterface);
-  assert.match(html.match(/<select id="workflow-source"[^>]*>/)?.[0] || "", /disabled/);
-  assert.match(html.match(/<input id="all-generation-sources"[^>]*>/)?.[0] || "", /checked/);
+  assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /disabled/);
+  assert.match(
+    html.match(/<input[^>]*data-shared-source-key="one"[^>]*>/)?.[0] || "",
+    /checked[^>]*disabled/,
+  );
+  assert.match(
+    html.match(/<input[^>]*data-shared-source-key="two"[^>]*>/)?.[0] || "",
+    /checked[^>]*disabled/,
+  );
   assert.match(html, /Queueing 2…/);
-  assert.match(html, /only the prompt, resolution, and one shared seed/);
+  assert.match(html, /2 sources · shared prompt, resolution &amp; seed/);
 });
 
 test("card footer groups generation actions and exposes permanent deletion", () => {
