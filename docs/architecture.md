@@ -156,4 +156,4 @@ The retired two-file/node-embedded design is not a fallback discovery path. Comp
 
 ## Graceful shutdown
 
-FastAPI lifespan stops new claims, signals worker loops, waits for active monitors to finish/cancel, closes external clients, and disposes SQLite. Already committed queue rows and prompt IDs remain recoverable at the next start.
+Uvicorn gives open request tasks 10 seconds to finish, then cancels any that remain so an SSE or stalled external request cannot indefinitely delay FastAPI lifespan cleanup. FastAPI lifespan stops new claims, signals worker loops, waits for active monitors to finish/cancel, closes external clients, and disposes SQLite. The example Compose service provides a 30-second container grace period, and the update script defers to that value unless `CIF_UPDATE_STOP_TIMEOUT` explicitly overrides it. Already committed queue rows and prompt IDs remain recoverable at the next start.

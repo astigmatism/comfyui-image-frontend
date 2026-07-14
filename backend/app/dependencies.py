@@ -35,6 +35,10 @@ def optional_auth(
     request: Request,
     session: Annotated[Session, Depends(get_db)],
 ) -> AuthContext | None:
+    return resolve_auth_context(request, session)
+
+
+def resolve_auth_context(request: Request, session: Session) -> AuthContext | None:
     container = get_container(request)
     raw = request.cookies.get(container.settings.session_cookie_name)
     resolved = container.auth.resolve_session(session, raw)

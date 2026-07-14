@@ -71,7 +71,7 @@ From a clean checkout with an upstream branch:
 ./update_and_restart
 ```
 
-The script gracefully stops the service, performs a fast-forward-only pull, rebuilds, restarts, and waits for health. It tries to restart the prior image if pull/build fails after shutdown. Override the defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, `CIF_UPDATE_STOP_TIMEOUT`, or `CIF_UPDATE_START_TIMEOUT`.
+The script gracefully stops the service, performs a fast-forward-only pull, rebuilds, restarts, and waits for health. It tries to restart the prior image if pull/build fails after shutdown. By default, Compose's `stop_grace_period` controls the stop deadline (30 seconds in the example); set `CIF_UPDATE_STOP_TIMEOUT` only for an exceptional explicit override. Override other defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, or `CIF_UPDATE_START_TIMEOUT`. Uvicorn cancels lingering request tasks after `CIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` (10 seconds by default), leaving the rest of the container grace period for lifespan cleanup.
 
 ### Connecting to external services
 

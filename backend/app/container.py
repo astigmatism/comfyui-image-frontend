@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+
 import httpx
 
 from .config import Settings
@@ -15,6 +19,8 @@ from .services.queue_worker import QueueWorker
 from .services.speech_to_text import SpeechToTextAdapter
 from .services.user_deletion import UserDeletionService
 from .services.workflow_registry import WorkflowRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class AppContainer:
@@ -64,8 +70,19 @@ class AppContainer:
         )
 
     async def close(self) -> None:
+        started_at = time.monotonic()
+        logger.info("application_shutdown_started")
         await self.worker.stop()
-        await self.comfyui.close()
-        await self.ollama.close()
-        await self.speech_to_text.close()
+        logger.info("worker_cancellation_complete")
+        await asyncio.gather(
+            self.comfyui.close(),
+            self.ollama.close(),
+            self.speech_to_text.close(),
+        )
+        logger.info("external_clients_closed")
         self.db.close()
+        logger.info("database_closed")
+        logger.info(
+            "application_shutdown_complete",
+            extra={"shutdown_duration_seconds": round(time.monotonic() - started_at, 3)},
+        )

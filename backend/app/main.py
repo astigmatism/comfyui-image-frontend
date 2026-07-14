@@ -49,7 +49,14 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in ("request_id", "generation_id", "actor_user_id", "target_id", "action"):
+        for key in (
+            "request_id",
+            "generation_id",
+            "actor_user_id",
+            "target_id",
+            "action",
+            "shutdown_duration_seconds",
+        ):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
@@ -89,6 +96,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await run_migrations(settings)
+        # Alembic applies its CLI-oriented logging configuration while migrations run. Restore
+        # the application's structured logger before startup continues and shutdown begins.
+        configure_logging(settings.log_level)
         with container.db.session_factory() as session:
             container.auth.ensure_bootstrap_admin(session)
         await container.registry.refresh()

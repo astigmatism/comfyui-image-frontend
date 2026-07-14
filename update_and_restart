@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 COMPOSE_FILE=${CIF_COMPOSE_FILE:-compose.example.yml}
 SERVICE=${CIF_COMPOSE_SERVICE:-comfyui-image-frontend}
-STOP_TIMEOUT=${CIF_UPDATE_STOP_TIMEOUT:-60}
+STOP_TIMEOUT=${CIF_UPDATE_STOP_TIMEOUT:-}
 START_TIMEOUT=${CIF_UPDATE_START_TIMEOUT:-120}
 
 die() {
@@ -19,7 +19,10 @@ command -v docker >/dev/null 2>&1 || die "Docker is required."
 docker compose version >/dev/null 2>&1 || die "Docker Compose is required."
 
 [[ -f "$COMPOSE_FILE" ]] || die "Compose file not found: $COMPOSE_FILE"
-[[ "$STOP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "CIF_UPDATE_STOP_TIMEOUT must be a positive integer."
+if [[ -n "$STOP_TIMEOUT" ]]; then
+  [[ "$STOP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] ||
+    die "CIF_UPDATE_STOP_TIMEOUT must be a positive integer."
+fi
 [[ "$START_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "CIF_UPDATE_START_TIMEOUT must be a positive integer."
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Run this script from a Git checkout."
 
@@ -53,7 +56,11 @@ trap 'exit 143' TERM
 
 echo "Stopping $SERVICE gracefully..."
 container_may_be_stopped=1
-"${compose[@]}" stop --timeout "$STOP_TIMEOUT" "$SERVICE"
+if [[ -n "$STOP_TIMEOUT" ]]; then
+  "${compose[@]}" stop --timeout "$STOP_TIMEOUT" "$SERVICE"
+else
+  "${compose[@]}" stop "$SERVICE"
+fi
 
 echo "Updating $BRANCH from $UPSTREAM..."
 git pull --ff-only

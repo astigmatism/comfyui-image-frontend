@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     app_title: str = "ComfyUI Gallery"
     listen_host: str = "0.0.0.0"  # noqa: S104 - configurable application listener default
     listen_port: int = 8000
+    graceful_shutdown_timeout_seconds: int = Field(default=10, gt=0)
     data_dir: Path = Path("./backend/data")
     database_path: Path | None = None
     session_secret: SecretStr = Field(default=SecretStr(""))

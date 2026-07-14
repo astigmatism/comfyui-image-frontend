@@ -3,13 +3,14 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-
 from app.models import Base
+from sqlalchemy import engine_from_config, pool
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Migrations run inside the application lifespan. Do not disable application/Uvicorn
+    # loggers while temporarily applying Alembic's own logging configuration.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
@@ -39,7 +40,9 @@ def run_migrations_online() -> None:
         # then validate the finished schema/data before runtime connections re-enable them.
         connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
         connection.commit()
-        context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
+        context.configure(
+            connection=connection, target_metadata=target_metadata, render_as_batch=True
+        )
         with context.begin_transaction():
             context.run_migrations()
         # SQLite DDL is non-transactional, but Alembic's version-row write
