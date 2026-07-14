@@ -182,7 +182,7 @@ test("generation panel fixes Generate first, source second, then basic and colla
   assert.doesNotMatch(html, /<details class="advanced-group" open/);
 });
 
-test("card footer places an accessible heart immediately before recall", () => {
+test("card footer places accessible heart and recall icons together", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
@@ -198,7 +198,9 @@ test("card footer places an accessible heart immediately before recall", () => {
   assert.equal((html.match(/<button/g) || []).length, 2);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
-  assert.match(html, />Recall settings<\/button>/);
+  assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
+  assert.match(html, /aria-label="Recall settings"[^>]*>[\s\S]*?<svg[^>]+viewBox="0 0 24 24"/);
+  assert.doesNotMatch(html, />Recall settings<\/button>/);
   assert.doesNotMatch(html, /Failed|private prompt|99|Cancel|Delete/);
 
   const active = cardFooterMarkup({ ...generation, is_favorite: true });

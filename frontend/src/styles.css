@@ -478,7 +478,8 @@ code {
   text-overflow: ellipsis;
 }
 
-.favorite-button {
+.favorite-button,
+.recall-button {
   display: grid;
   place-items: center;
   width: 30px;
@@ -495,17 +496,23 @@ code {
     color var(--motion-fast) ease;
 }
 
-.favorite-button svg {
+.favorite-button svg,
+.recall-button svg {
   width: 18px;
   height: 18px;
   overflow: visible;
 }
 
-.favorite-button path {
+.favorite-button path,
+.recall-button path {
   fill: transparent;
   stroke: currentColor;
   stroke-linejoin: round;
   stroke-width: 1.8;
+}
+
+.recall-button path {
+  stroke-linecap: round;
 }
 
 .favorite-button:hover:not(:disabled) {
@@ -525,14 +532,7 @@ code {
 }
 
 .recall-button {
-  min-height: 30px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
   color: #b9d5fa;
-  font-size: 0.76rem;
-  cursor: pointer;
 }
 
 .recall-button:hover:not(:disabled) {

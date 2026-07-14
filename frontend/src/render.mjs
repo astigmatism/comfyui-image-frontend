@@ -483,7 +483,9 @@ function statusPlaceholderMarkup(generation) {
 
 export function cardFooterMarkup(generation) {
   const sourceName = generationSourceName(generation);
-  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(sourceName)}">${escapeHtml(footerText(sourceName, generation.accepted_at))}</div><div class="card-actions">${favoriteButtonMarkup(generation)}<button class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall settings</button></div></footer>`;
+  return `<footer class="card-footer"><div class="card-metadata" title="${escapeHtml(sourceName)}">${escapeHtml(footerText(sourceName, generation.accepted_at))}</div><div class="card-actions">${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
+  </button></div></footer>`;
 }
 
 export function favoriteButtonMarkup(generation) {
