@@ -56,6 +56,11 @@ class JsonFormatter(logging.Formatter):
             "target_id",
             "action",
             "shutdown_duration_seconds",
+            "consecutive_failures",
+            "backoff_seconds",
+            "exception_class",
+            "event_type",
+            "restart_count",
         ):
             value = getattr(record, key, None)
             if value is not None:
@@ -64,6 +69,19 @@ class JsonFormatter(logging.Formatter):
             payload["exception"] = (
                 record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
             )
+            traceback_frames: list[dict[str, Any]] = []
+            traceback = record.exc_info[2]
+            while traceback is not None:
+                code = traceback.tb_frame.f_code
+                traceback_frames.append(
+                    {
+                        "file": code.co_filename,
+                        "line": traceback.tb_lineno,
+                        "function": code.co_name,
+                    }
+                )
+                traceback = traceback.tb_next
+            payload["traceback"] = traceback_frames
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -207,11 +225,17 @@ def create_app(
         )
 
     @app.get("/api/health", tags=["operations"])
-    def health() -> JSONResponse:
-        healthy = container.db.healthcheck()
+    async def health() -> JSONResponse:
+        database_healthy = container.db.healthcheck()
+        worker = container.worker.health_snapshot()
+        healthy = database_healthy and bool(worker["ready"])
         return JSONResponse(
             status_code=200 if healthy else 503,
-            content={"status": "ok" if healthy else "degraded", "database": healthy},
+            content={
+                "status": "ok" if healthy else "degraded",
+                "database": database_healthy,
+                "worker": worker,
+            },
         )
 
     app.include_router(auth.router)

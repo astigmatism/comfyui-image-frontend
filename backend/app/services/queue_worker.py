@@ -4,10 +4,10 @@ import asyncio
 import copy
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from sqlalchemy import func, select, update
@@ -42,6 +42,15 @@ from .ollama import OllamaAdapter
 
 logger = logging.getLogger(__name__)
 
+DispatcherState = Literal[
+    "not_started",
+    "running",
+    "backing_off",
+    "stopping",
+    "stopped",
+    "failed",
+]
+
 
 class QueueWorker:
     def __init__(
@@ -64,59 +73,368 @@ class QueueWorker:
         self.generations = generations
         self._stop = asyncio.Event()
         self._main_task: asyncio.Task[None] | None = None
+        self._dispatcher_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
         self._active: dict[str, asyncio.Task[None]] = {}
+        self._dispatcher_started = asyncio.Event()
+        self._dispatcher_state: DispatcherState = "not_started"
+        self._dispatcher_done = False
+        self._last_heartbeat_monotonic: float | None = None
+        self._last_heartbeat_at: datetime | None = None
+        self._last_failure_at: datetime | None = None
+        self._last_exception_class: str | None = None
+        self._consecutive_failures = 0
+        self._restart_count = 0
 
     async def start(self) -> None:
         if self._main_task is not None:
-            return
+            if not self._main_task.done():
+                return
+            raise RuntimeError("generation dispatcher supervisor is not running")
         self._stop.clear()
+        self._dispatcher_started.clear()
+        self._dispatcher_state = "not_started"
+        self._dispatcher_done = False
         await self._reconcile_startup()
-        self._main_task = asyncio.create_task(self._run(), name="generation-queue-worker")
         self._health_task = asyncio.create_task(self._health_loop(), name="external-health-monitor")
+        self._main_task = asyncio.create_task(
+            self._supervise_dispatcher(),
+            name="generation-queue-supervisor",
+        )
+        self._main_task.add_done_callback(self._observe_supervisor_done)
+        try:
+            await asyncio.wait_for(self._dispatcher_started.wait(), timeout=1.0)
+            await asyncio.sleep(0)
+            if self._main_task.done():
+                raise RuntimeError("generation dispatcher supervisor stopped during startup")
+        except BaseException:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         self._stop.set()
-        tasks = [task for task in (self._main_task, self._health_task) if task]
+        if self._main_task is not None or self._dispatcher_task is not None:
+            self._dispatcher_state = "stopping"
+        tasks = [
+            task for task in (self._main_task, self._dispatcher_task, self._health_task) if task
+        ]
+        active_tasks = list(self._active.values())
         for task in tasks:
             task.cancel()
-        for task in list(self._active.values()):
+        for task in active_tasks:
             task.cancel()
-        await asyncio.gather(*tasks, *self._active.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, *active_tasks, return_exceptions=True)
         self._active.clear()
         self._main_task = None
+        self._dispatcher_task = None
         self._health_task = None
+        self._dispatcher_state = "stopped"
+        logger.info("generation_dispatcher_stopped")
 
-    async def _run(self) -> None:
+    async def _supervise_dispatcher(self) -> None:
         while not self._stop.is_set():
-            for generation_id, task in list(self._active.items()):
-                if task.done():
-                    self._active.pop(generation_id, None)
-                    try:
-                        task.result()
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        logger.exception(
-                            "generation_task_failed", extra={"generation_id": generation_id}
-                        )
-            available_slots = self.settings.comfyui_concurrency - len(self._active)
-            if available_slots > 0 and self._comfyui_available():
-                for _ in range(available_slots):
-                    claim = self._claim_next()
-                    if claim is None:
-                        break
-                    generation_id, event = claim
-                    await publish_event(self.broker, event)
-                    self._active[generation_id] = asyncio.create_task(
-                        self._execute(generation_id), name=f"generation-{generation_id}"
-                    )
+            task = asyncio.create_task(
+                self._run_dispatcher(),
+                name="generation-queue-worker",
+            )
+            self._dispatcher_task = task
+            self._dispatcher_done = False
+            self._dispatcher_state = "running"
+            self._mark_dispatcher_heartbeat()
+            self._dispatcher_started.set()
+            logger.info(
+                "generation_dispatcher_started",
+                extra={"restart_count": self._restart_count},
+            )
+            unexpected: BaseException | None = None
             try:
-                await asyncio.wait_for(
-                    self._stop.wait(), timeout=self.settings.dispatch_poll_seconds
+                await task
+                if not self._stop.is_set():
+                    unexpected = RuntimeError("dispatcher task returned unexpectedly")
+            except asyncio.CancelledError as exc:
+                supervisor = asyncio.current_task()
+                if self._stop.is_set() or (supervisor is not None and supervisor.cancelling()):
+                    raise
+                unexpected = exc
+            except BaseException as exc:
+                unexpected = exc
+            finally:
+                self._dispatcher_done = task.done()
+                if self._dispatcher_task is task:
+                    self._dispatcher_task = None
+
+            if unexpected is None:
+                break
+            self._record_dispatcher_failure(unexpected)
+            backoff = self._dispatcher_backoff(self._consecutive_failures)
+            self._dispatcher_state = "backing_off"
+            logger.error(
+                "generation_dispatcher_unexpected_completion",
+                extra={
+                    "consecutive_failures": self._consecutive_failures,
+                    "backoff_seconds": backoff,
+                    "exception_class": self._last_exception_class,
+                    "restart_count": self._restart_count,
+                },
+                exc_info=(type(unexpected), unexpected, unexpected.__traceback__),
+            )
+            if await self._wait_for_stop_or_backoff(backoff):
+                break
+            self._restart_count += 1
+
+    async def _run_dispatcher(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self._dispatch_iteration()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._record_dispatcher_failure(exc)
+                backoff = self._dispatcher_backoff(self._consecutive_failures)
+                self._dispatcher_state = "backing_off"
+                logger.exception(
+                    "generation_dispatcher_iteration_failed",
+                    extra={
+                        "consecutive_failures": self._consecutive_failures,
+                        "backoff_seconds": backoff,
+                        "exception_class": self._last_exception_class,
+                        "restart_count": self._restart_count,
+                    },
                 )
-            except TimeoutError:
+                logger.info(
+                    "generation_dispatcher_backoff_started",
+                    extra={
+                        "consecutive_failures": self._consecutive_failures,
+                        "backoff_seconds": backoff,
+                    },
+                )
+                if await self._wait_for_stop_or_backoff(backoff):
+                    return
                 continue
+            if self._consecutive_failures:
+                logger.info(
+                    "generation_dispatcher_recovered",
+                    extra={
+                        "consecutive_failures": self._consecutive_failures,
+                        "restart_count": self._restart_count,
+                    },
+                )
+            self._consecutive_failures = 0
+            self._dispatcher_state = "running"
+            self._mark_dispatcher_heartbeat()
+            if await self._wait_for_stop_or_backoff(self.settings.dispatch_poll_seconds):
+                return
+
+    async def _dispatch_iteration(self) -> None:
+        self._reap_active_tasks()
+        available_slots = self.settings.comfyui_concurrency - len(self._active)
+        if available_slots <= 0 or not self._comfyui_available():
+            return
+        for _ in range(available_slots):
+            claim = self._claim_next()
+            if claim is None:
+                break
+            generation_id, event = claim
+            execution = self._execute(generation_id)
+            try:
+                self._start_generation_task(
+                    generation_id,
+                    execution,
+                    name=f"generation-{generation_id}",
+                )
+            except BaseException:
+                await self._requeue_unstarted_claim(generation_id)
+                raise
+            await self._publish_event_best_effort(event, generation_id=generation_id)
+
+    def _start_generation_task(
+        self,
+        generation_id: str,
+        coroutine: Coroutine[Any, Any, None],
+        *,
+        name: str,
+    ) -> None:
+        try:
+            task = asyncio.create_task(coroutine, name=name)
+        except BaseException:
+            coroutine.close()
+            raise
+        self._active[generation_id] = task
+
+        def task_done(completed: asyncio.Task[None]) -> None:
+            self._generation_task_done(generation_id, completed)
+
+        task.add_done_callback(task_done)
+
+    def _generation_task_done(
+        self,
+        generation_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._active.get(generation_id) is not task:
+            return
+        self._active.pop(generation_id, None)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("generation_task_failed", extra={"generation_id": generation_id})
+
+    def _reap_active_tasks(self) -> None:
+        for generation_id, task in list(self._active.items()):
+            if task.done():
+                self._generation_task_done(generation_id, task)
+
+    async def _requeue_unstarted_claim(self, generation_id: str) -> None:
+        event = None
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if (
+                generation is not None
+                and generation.status == GenerationStatus.DISPATCHING
+                and not generation.comfyui_prompt_id
+            ):
+                generation.status = GenerationStatus.QUEUED
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "generation.requeued",
+                    {"reason": "Dispatch task could not be scheduled."},
+                )
+                session.commit()
+        if event is not None:
+            await self._publish_event_best_effort(event, generation_id=generation_id)
+
+    def _record_dispatcher_failure(self, exc: BaseException) -> None:
+        self._consecutive_failures += 1
+        self._last_failure_at = datetime.now(UTC)
+        self._last_exception_class = type(exc).__name__
+        self._dispatcher_state = "failed"
+
+    def _dispatcher_backoff(self, consecutive_failures: int) -> float:
+        base = float(max(self.settings.dispatch_poll_seconds, 0.1))
+        exponent = max(0, min(consecutive_failures - 1, 8))
+        return float(min(base * (2**exponent), 5.0))
+
+    async def _wait_for_stop_or_backoff(self, delay: float) -> bool:
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=delay)
+        except TimeoutError:
+            return False
+        return True
+
+    def _mark_dispatcher_heartbeat(self) -> None:
+        self._last_heartbeat_monotonic = time.monotonic()
+        self._last_heartbeat_at = datetime.now(UTC)
+
+    def health_snapshot(self) -> dict[str, Any]:
+        enabled = self.settings.enable_background_worker
+        dispatcher_running = bool(
+            self._main_task
+            and not self._main_task.done()
+            and self._dispatcher_task
+            and not self._dispatcher_task.done()
+        )
+        heartbeat_age = (
+            time.monotonic() - self._last_heartbeat_monotonic
+            if self._last_heartbeat_monotonic is not None
+            else None
+        )
+        heartbeat_fresh = bool(
+            dispatcher_running
+            and heartbeat_age is not None
+            and heartbeat_age <= self.settings.dispatcher_heartbeat_stale_seconds
+        )
+        ready = not enabled or (
+            dispatcher_running and heartbeat_fresh and self._dispatcher_state == "running"
+        )
+        return {
+            "enabled": enabled,
+            "ready": ready,
+            "dispatcher_running": dispatcher_running,
+            "dispatcher_done": self._dispatcher_done,
+            "heartbeat_fresh": heartbeat_fresh,
+            "state": self._dispatcher_state,
+            "last_heartbeat_at": (
+                self._last_heartbeat_at.isoformat() if self._last_heartbeat_at else None
+            ),
+            "last_failure_at": (
+                self._last_failure_at.isoformat() if self._last_failure_at else None
+            ),
+            "consecutive_failures": self._consecutive_failures,
+            "last_exception_class": self._last_exception_class,
+            "restart_count": self._restart_count,
+        }
+
+    def _observe_supervisor_done(self, task: asyncio.Task[None]) -> None:
+        if self._stop.is_set():
+            with suppress(asyncio.CancelledError, Exception):
+                task.result()
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError as exc:
+            self._record_dispatcher_failure(exc)
+            logger.error(
+                "generation_dispatcher_supervisor_cancelled",
+                extra={"exception_class": type(exc).__name__},
+            )
+        except BaseException as exc:
+            self._record_dispatcher_failure(exc)
+            logger.error(
+                "generation_dispatcher_supervisor_failed",
+                extra={"exception_class": type(exc).__name__},
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        else:
+            unexpected_exit = RuntimeError("dispatcher supervisor returned unexpectedly")
+            self._record_dispatcher_failure(unexpected_exit)
+            logger.error(
+                "generation_dispatcher_supervisor_completed",
+                extra={"exception_class": type(unexpected_exit).__name__},
+            )
+
+    async def _publish_event_best_effort(
+        self,
+        event: Any,
+        *,
+        generation_id: str | None = None,
+    ) -> None:
+        try:
+            await publish_event(self.broker, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "generation_event_notification_failed",
+                extra={
+                    "generation_id": generation_id or getattr(event, "generation_id", None),
+                    "event_type": getattr(event, "event_type", None),
+                    "exception_class": type(exc).__name__,
+                },
+            )
+
+    async def _publish_broker_best_effort(
+        self,
+        owner_id: str,
+        payload: dict[str, Any],
+        *,
+        generation_id: str,
+    ) -> None:
+        try:
+            await self.broker.publish(owner_id, payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "generation_event_notification_failed",
+                extra={
+                    "generation_id": generation_id,
+                    "event_type": payload.get("type"),
+                    "exception_class": type(exc).__name__,
+                },
+            )
 
     def _comfyui_available(self) -> bool:
         with self.session_factory() as session:
@@ -201,30 +519,81 @@ class QueueWorker:
                         "accepted source revision is missing editable workflow metadata"
                     )
                 extra_data = {"extra_pnginfo": {"workflow": editable_workflow}}
-            prompt_id = await self.comfyui.submit_prompt(
-                materialized, generation.comfyui_client_id, extra_data=extra_data
-            )
-        except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException, OSError):
+        except (httpx.TransportError, OSError):
+            # No prompt submission has started yet, so retrying after connectivity returns is
+            # unambiguous and cannot duplicate native work.
             await self._requeue_after_outage(generation_id)
             return
         except Exception as exc:
             await self._fail_before_start(generation_id, exc)
             return
 
+        try:
+            submission_task = asyncio.create_task(
+                self._submit_and_mark_running(
+                    generation_id,
+                    materialized,
+                    generation.comfyui_client_id,
+                    extra_data=extra_data,
+                ),
+                name=f"generation-submit-{generation_id}",
+            )
+            try:
+                prompt_id, event = await asyncio.shield(submission_task)
+            except asyncio.CancelledError:
+                # A remote submission and its durable prompt-ID commit are one critical
+                # section. Let that bounded operation settle before shutdown continues so a
+                # restart never requeues a prompt that ComfyUI may already have accepted.
+                try:
+                    await submission_task
+                except httpx.ConnectError:
+                    await self._requeue_after_outage(generation_id)
+                except (httpx.TransportError, OSError) as exc:
+                    await self._fail_ambiguous_submission(generation_id, exc)
+                except Exception as exc:
+                    await self._fail_before_start(generation_id, exc)
+                raise
+        except httpx.ConnectError:
+            await self._requeue_after_outage(generation_id)
+            return
+        except (httpx.TransportError, OSError) as exc:
+            # A response/read/write failure can occur after ComfyUI accepted the prompt. Since
+            # the native API has no idempotency key, never requeue this ambiguous submission.
+            await self._fail_ambiguous_submission(generation_id, exc)
+            return
+        except Exception as exc:
+            await self._fail_before_start(generation_id, exc)
+            return
+
+        if event is not None:
+            await self._publish_event_best_effort(event, generation_id=generation_id)
+        await self._monitor(generation_id, prompt_id)
+
+    async def _submit_and_mark_running(
+        self,
+        generation_id: str,
+        materialized: dict[str, Any],
+        client_id: str,
+        *,
+        extra_data: dict[str, Any] | None,
+    ) -> tuple[str, Any | None]:
+        prompt_id = await self.comfyui.submit_prompt(
+            materialized,
+            client_id,
+            extra_data=extra_data,
+        )
+        cancel_prompt = False
+        event = None
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None:
-                return
+                raise RuntimeError("generation disappeared after ComfyUI submission")
+            generation.comfyui_prompt_id = prompt_id
+            generation.dispatched_at = datetime.now(UTC)
             if generation.status == GenerationStatus.CANCEL_REQUESTED:
-                # Submission raced with cancellation; retain prompt ID and interrupt immediately.
-                generation.comfyui_prompt_id = prompt_id
-                session.commit()
-                with suppress(Exception):
-                    await self.comfyui.cancel(prompt_id, running=True)
+                cancel_prompt = True
             else:
-                generation.comfyui_prompt_id = prompt_id
                 generation.status = GenerationStatus.RUNNING
-                generation.dispatched_at = datetime.now(UTC)
                 generation.started_at = datetime.now(UTC)
                 event = add_generation_event(
                     session,
@@ -232,9 +601,22 @@ class QueueWorker:
                     "generation.running",
                     {"status": GenerationStatus.RUNNING.value},
                 )
-                session.commit()
-                await publish_event(self.broker, event)
-        await self._monitor(generation_id, prompt_id)
+            session.commit()
+        if cancel_prompt:
+            with suppress(Exception):
+                await self.comfyui.cancel(prompt_id, running=True)
+        return prompt_id, event
+
+    async def _fail_ambiguous_submission(self, generation_id: str, exc: Exception) -> None:
+        await self._fail_before_start(
+            generation_id,
+            AppError(
+                "comfyui_submission_uncertain",
+                "ComfyUI did not confirm whether the workflow request was accepted.",
+                status_code=503,
+                details={"transport": type(exc).__name__},
+            ),
+        )
 
     async def _materialize_uploads(
         self, generation_id: str, graph: dict[str, Any]
@@ -454,7 +836,7 @@ class QueueWorker:
                 },
             )
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
 
     async def _record_progress(self, generation_id: str, data: Mapping[str, Any]) -> None:
         value = data.get("value")
@@ -472,7 +854,7 @@ class QueueWorker:
                 {"value": value, "maximum": maximum},
             )
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
 
     async def _process_node_output(
         self, generation_id: str, node_id: str, output_payload: Mapping[str, Any]
@@ -537,7 +919,7 @@ class QueueWorker:
             )
             self._clear_persistence_failure(generation_id, file_output)
             if event:
-                await publish_event(self.broker, event)
+                await self._publish_event_best_effort(event, generation_id=generation_id)
         except Exception as exc:
             await self._record_persistence_failure(generation_id, file_output, exc)
 
@@ -711,7 +1093,7 @@ class QueueWorker:
                 },
             )
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
 
     def _clear_persistence_failure(self, generation_id: str, file_output: NativeFileOutput) -> None:
         failure_key = _persistence_failure_key(file_output)
@@ -774,7 +1156,7 @@ class QueueWorker:
                 {"code": generation.error_code, "message": generation.error_message},
             )
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
 
     async def _record_reconciliation_error(self, generation_id: str, exc: AppError) -> None:
         with self.session_factory() as session:
@@ -807,7 +1189,7 @@ class QueueWorker:
                 {"code": generation.error_code, "message": generation.error_message},
             )
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
 
     async def _ensure_cancel_sent(self, generation_id: str, prompt_id: str) -> None:
         with self.session_factory() as session:
@@ -1034,13 +1416,13 @@ class QueueWorker:
             pending_delete = generation.pending_delete
             owner_id = generation.owner_id
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
         if pending_delete:
             with self.session_factory() as session:
                 generation = session.get(Generation, generation_id)
                 if generation:
                     self.generations.delete_terminal(session, generation)
-            await self.broker.publish(
+            await self._publish_broker_best_effort(
                 owner_id,
                 {
                     "id": None,
@@ -1049,6 +1431,7 @@ class QueueWorker:
                     "created_at": datetime.now(UTC).isoformat(),
                     "payload": {},
                 },
+                generation_id=generation_id,
             )
 
     async def _finish_without_execution(self, generation_id: str, *, cancelled: bool) -> None:
@@ -1077,7 +1460,7 @@ class QueueWorker:
                 )
                 self._set_health(session, "comfyui", False, "ComfyUI is unreachable.")
                 session.commit()
-                await publish_event(self.broker, event)
+                await self._publish_event_best_effort(event, generation_id=generation_id)
                 return
         await self._finish_without_execution(generation_id, cancelled=True)
 
@@ -1108,13 +1491,13 @@ class QueueWorker:
             pending_delete = generation.pending_delete
             owner_id = generation.owner_id
             session.commit()
-        await publish_event(self.broker, event)
+        await self._publish_event_best_effort(event, generation_id=generation_id)
         if pending_delete:
             with self.session_factory() as session:
                 generation = session.get(Generation, generation_id)
                 if generation:
                     self.generations.delete_terminal(session, generation)
-            await self.broker.publish(
+            await self._publish_broker_best_effort(
                 owner_id,
                 {
                     "id": None,
@@ -1123,6 +1506,7 @@ class QueueWorker:
                     "created_at": datetime.now(UTC).isoformat(),
                     "payload": {},
                 },
+                generation_id=generation_id,
             )
 
     async def _reconcile_startup(self) -> None:
@@ -1149,6 +1533,8 @@ class QueueWorker:
                         generation.completed_at = datetime.now(UTC)
                     else:
                         generation.status = GenerationStatus.QUEUED
+                        generation.submitted_graph_json = None
+                        generation.submitted_graph_sha256 = None
                         requeue_events.append(
                             add_generation_event(
                                 session,
@@ -1161,7 +1547,10 @@ class QueueWorker:
                     prompt_jobs.append((generation.id, generation.comfyui_prompt_id))
             session.commit()
         for event in requeue_events:
-            await publish_event(self.broker, event)
+            await self._publish_event_best_effort(
+                event,
+                generation_id=event.generation_id,
+            )
         for generation_id, prompt_id in prompt_jobs:
             history = None
             history_reachable = True
@@ -1181,7 +1570,8 @@ class QueueWorker:
                 queue_reachable = False
                 queued_ids = set()
             if prompt_id in queued_ids or not (history_reachable and queue_reachable):
-                self._active[generation_id] = asyncio.create_task(
+                self._start_generation_task(
+                    generation_id,
                     self._monitor(generation_id, prompt_id),
                     name=f"generation-recovered-{generation_id}",
                 )
@@ -1201,7 +1591,8 @@ class QueueWorker:
                     await self._record_reconciliation_error(generation_id, exc)
                 # The service became unavailable during the grace period. Preserve the
                 # in-flight state and let the monitor reconcile after connectivity returns.
-                self._active[generation_id] = asyncio.create_task(
+                self._start_generation_task(
+                    generation_id,
                     self._monitor(generation_id, prompt_id),
                     name=f"generation-recovered-{generation_id}",
                 )
@@ -1210,7 +1601,8 @@ class QueueWorker:
             if terminal:
                 await self._finalize(generation_id, history=history or {}, outcome=terminal)
             elif prompt_id in queued_ids:
-                self._active[generation_id] = asyncio.create_task(
+                self._start_generation_task(
+                    generation_id,
                     self._monitor(generation_id, prompt_id),
                     name=f"generation-recovered-{generation_id}",
                 )

@@ -21,7 +21,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200"
+        - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3); p=json.load(r); assert r.status == 200 and p['database'] and p['worker']['ready']"
       interval: 30s
       timeout: 5s
       start_period: 15s

@@ -14,7 +14,22 @@ def test_health_and_structured_shutdown_logs_survive_migration_logging(
     with TestClient(create_app(settings_factory(log_level="INFO"))) as client:
         response = client.get("/api/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "database": True}
+        payload = response.json()
+        assert payload["status"] == "ok"
+        assert payload["database"] is True
+        assert payload["worker"] == {
+            "enabled": False,
+            "ready": True,
+            "dispatcher_running": False,
+            "dispatcher_done": False,
+            "heartbeat_fresh": False,
+            "state": "not_started",
+            "last_heartbeat_at": None,
+            "last_failure_at": None,
+            "consecutive_failures": 0,
+            "last_exception_class": None,
+            "restart_count": 0,
+        }
 
     records: list[dict[str, Any]] = []
     for line in capsys.readouterr().out.splitlines():

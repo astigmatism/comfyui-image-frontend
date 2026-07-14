@@ -29,5 +29,5 @@ USER app
 EXPOSE 8000
 VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD python -c "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3); assert r.status == 200 and json.load(r)['database']" || exit 1
+  CMD python -c "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3); p=json.load(r); assert r.status == 200 and p['database'] and p['worker']['ready']" || exit 1
 CMD ["python", "-m", "app"]

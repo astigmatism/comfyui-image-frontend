@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     comfyui_output_max_bytes: int = 128 * 1024 * 1024
     external_health_interval_seconds: float = 10.0
     dispatch_poll_seconds: float = 0.4
+    dispatcher_heartbeat_stale_seconds: float = 30.0
     reconciliation_grace_seconds: float = 5.0
 
     ollama_base_url: str | None = None
@@ -133,6 +134,14 @@ class Settings(BaseSettings):
             raise ValueError("session_ttl_hours must be positive")
         if self.speech_to_text_timeout_seconds <= 0:
             raise ValueError("speech_to_text_timeout_seconds must be positive")
+        if self.dispatch_poll_seconds <= 0:
+            raise ValueError("dispatch_poll_seconds must be positive")
+        minimum_heartbeat_window = max(15.0, self.dispatch_poll_seconds * 2)
+        if self.dispatcher_heartbeat_stale_seconds <= minimum_heartbeat_window:
+            raise ValueError(
+                "dispatcher_heartbeat_stale_seconds must exceed the SQLite busy timeout "
+                "and two dispatcher poll intervals"
+            )
         secret = self.session_secret.get_secret_value()
         if not self.test_mode and len(secret) < 32:
             raise ValueError("CIF_SESSION_SECRET must contain at least 32 random characters")

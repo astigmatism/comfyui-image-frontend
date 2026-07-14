@@ -37,6 +37,9 @@ port = sys.argv[1]
 with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
     payload = json.load(response)
 assert response.status == 200 and payload["database"] is True
+assert payload["worker"]["ready"] is True
+assert payload["worker"]["dispatcher_running"] is True
+assert payload["worker"]["heartbeat_fresh"] is True
 PY
   then
     echo "Container startup smoke test passed on port ${PORT}."
