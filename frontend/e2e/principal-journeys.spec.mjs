@@ -143,6 +143,40 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
 });
 
+test("background service polling does not interrupt focused generation controls", async ({ page }) => {
+  await page.addInitScript(() => {
+    const setInterval = window.setInterval.bind(window);
+    window.setInterval = (handler, delay, ...args) =>
+      setInterval(handler, delay === 10_000 ? 100 : delay, ...args);
+  });
+  await page.goto("/");
+  await signIn(page, "admin", "E2EAdminPermanent123!");
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("focus remains here");
+  await prompt.press("End");
+  const promptPoll = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/services" &&
+      response.request().method() === "GET",
+  );
+  await promptPoll;
+  await expect(prompt).toBeFocused();
+  await prompt.pressSequentially(" while typing", { delay: 20 });
+  await expect(prompt).toHaveValue("focus remains here while typing");
+
+  const iterations = page.getByRole("spinbutton", { name: "Iterations", exact: true });
+  await iterations.focus();
+  const numericPoll = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/services" &&
+      response.request().method() === "GET",
+  );
+  await numericPoll;
+  await expect(iterations).toBeFocused();
+});
+
 test("published Krea source exposes choice controls, strict outputs, and the authored result hierarchy", async ({
   page,
 }) => {

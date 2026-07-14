@@ -851,6 +851,7 @@ function applyPreset(presetId) {
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
+  const focus = capturePanelFocus(panel);
   const contract = sourceInterface(state.activeSource);
   const clientErrors = clientValidate(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
@@ -871,6 +872,59 @@ function renderPanel() {
     } else if (state.promptAssistant.historicalModel) {
       message.textContent = `Historical composition used ${state.promptAssistant.historicalModel}; recall will not invoke it again.`;
     }
+  }
+  restorePanelFocus(panel, focus);
+}
+
+function capturePanelFocus(panel) {
+  const element = document.activeElement;
+  if (!element || !panel.contains(element)) return null;
+  let selector = null;
+  if (element.id) {
+    selector = `#${CSS.escape(element.id)}`;
+  } else if (element.dataset.seedMode) {
+    selector = `[data-seed-mode="${CSS.escape(element.dataset.seedMode)}"]`;
+  } else if (element.name === "assistant-mode") {
+    selector = `[name="assistant-mode"][value="${CSS.escape(element.value)}"]`;
+  }
+  if (!selector) return null;
+  let selection = null;
+  try {
+    if (element.selectionStart !== null) {
+      selection = {
+        start: element.selectionStart,
+        end: element.selectionEnd,
+        direction: element.selectionDirection,
+      };
+    }
+  } catch {
+    // Selection ranges are only available on text-editing controls.
+  }
+  return {
+    selector,
+    selection,
+    advancedOpen: Boolean(element.closest(".advanced-group[open]")),
+    scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
+  };
+}
+
+function restorePanelFocus(panel, focus) {
+  if (!focus) return;
+  if (focus.advancedOpen) panel.querySelector(".advanced-group")?.setAttribute("open", "");
+  const scroller = panel.querySelector("#panel-scroll");
+  if (scroller) scroller.scrollTop = focus.scrollTop;
+  const element = panel.querySelector(focus.selector);
+  if (!element || element.disabled) return;
+  element.focus({ preventScroll: true });
+  if (!focus.selection) return;
+  try {
+    element.setSelectionRange(
+      focus.selection.start,
+      focus.selection.end,
+      focus.selection.direction,
+    );
+  } catch {
+    // The replacement control may no longer support a text selection.
   }
 }
 
@@ -1303,7 +1357,6 @@ async function refreshServices() {
     const currentComfy = state.services.find((item) => item.service === "comfyui")?.available;
     renderServiceBanner();
     if (previousComfy !== currentComfy) await loadSources();
-    else renderPanel();
   } catch {
     // Session expiry is handled by normal API interaction; avoid disruptive polling errors.
   }
