@@ -300,7 +300,6 @@ class QueueWorker:
 
         pump = asyncio.create_task(websocket_pump(), name=f"comfy-ws-{generation_id}")
         reconciliation_requested = False
-        awaiting_terminal_history = False
         unknown_reachable_since: float | None = None
         latest_history: dict[str, Any] | None = None
         try:
@@ -311,7 +310,6 @@ class QueueWorker:
                         # WebSocket completion/error/cache messages are only wake-up hints.
                         # Native history remains authoritative for every terminal outcome.
                         reconciliation_requested = True
-                        awaiting_terminal_history = True
                 except TimeoutError:
                     pass
                 await self._ensure_cancel_sent(generation_id, prompt_id)
@@ -321,7 +319,6 @@ class QueueWorker:
                 except AppError as exc:
                     await self._record_reconciliation_error(generation_id, exc)
                     reconciliation_requested = True
-                    awaiting_terminal_history = True
                 except (httpx.HTTPError, OSError):
                     history = None
                 if history is not None:
@@ -353,52 +350,47 @@ class QueueWorker:
                         )
                         return
 
-                if history is None or awaiting_terminal_history or pump.done():
-                    # A missing history entry is ambiguous. Keep waiting while ComfyUI is
-                    # unreachable or still reports the prompt in its queue. Once the service is
-                    # reachable and the prompt is absent from the queue without terminal history
-                    # for the configured grace period, make the uncertainty explicit.
-                    try:
-                        queue_state = await self.comfyui.queue()
-                        present = prompt_id in _collect_prompt_ids(queue_state)
-                    except AppError as exc:
-                        await self._record_reconciliation_error(generation_id, exc)
-                        awaiting_terminal_history = True
-                        present = True
-                        unknown_reachable_since = None
-                    except (httpx.HTTPError, OSError):
-                        present = True
-                        unknown_reachable_since = None
-                    if present:
-                        unknown_reachable_since = None
-                    elif unknown_reachable_since is None:
-                        unknown_reachable_since = time.monotonic()
-                    elif (
-                        time.monotonic() - unknown_reachable_since
-                        >= self.settings.reconciliation_grace_seconds
-                    ):
-                        # A prompt that was previously visible may have just left the queue
-                        # before its terminal history entry became readable. Give durable
-                        # history one bounded retry window and retain any latest partial entry.
-                        reconciled = await self._wait_for_history(
-                            prompt_id,
-                            generation_id=generation_id,
-                            initial_history=latest_history,
-                        )
-                        if reconciled is not None:
-                            latest_history = reconciled
-                        terminal = _history_terminal(latest_history)
-                        await self._finalize(
-                            generation_id,
-                            history=latest_history or {},
-                            outcome=terminal or "interrupted",
-                        )
-                        return
-                    if pump.done():
-                        # A transient WebSocket outage must not lose the durable result.
-                        await asyncio.sleep(0.5)
-                else:
+                # A non-terminal history snapshot can outlive the actual prompt after an
+                # external interruption or ComfyUI reset. Always reconcile it against the live
+                # queue so an orphaned prompt cannot retain an application concurrency slot.
+                try:
+                    queue_state = await self.comfyui.queue()
+                    present = prompt_id in _collect_prompt_ids(queue_state)
+                except AppError as exc:
+                    await self._record_reconciliation_error(generation_id, exc)
+                    present = True
                     unknown_reachable_since = None
+                except (httpx.HTTPError, OSError):
+                    present = True
+                    unknown_reachable_since = None
+                if present:
+                    unknown_reachable_since = None
+                elif unknown_reachable_since is None:
+                    unknown_reachable_since = time.monotonic()
+                elif (
+                    time.monotonic() - unknown_reachable_since
+                    >= self.settings.reconciliation_grace_seconds
+                ):
+                    # A prompt that was previously visible may have just left the queue before
+                    # its terminal history entry became readable. Give durable history one
+                    # bounded retry window and retain any latest partial entry.
+                    reconciled = await self._wait_for_history(
+                        prompt_id,
+                        generation_id=generation_id,
+                        initial_history=latest_history,
+                    )
+                    if reconciled is not None:
+                        latest_history = reconciled
+                    terminal = _history_terminal(latest_history)
+                    await self._finalize(
+                        generation_id,
+                        history=latest_history or {},
+                        outcome=terminal or "interrupted",
+                    )
+                    return
+                if pump.done():
+                    # A transient WebSocket outage must not lose the durable result.
+                    await asyncio.sleep(0.5)
         finally:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)

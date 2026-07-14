@@ -299,6 +299,32 @@ def test_comfyui_outage_preserves_history_and_pauses_dispatch(settings_factory, 
         assert completed["best_available_artifact_id"] == completed["canonical_artifact_id"]
 
 
+def test_orphaned_live_prompt_releases_slot_for_next_generation(
+    settings_factory, fake_state
+) -> None:
+    fake_state.orphan_prompt_substrings.add("orphaned outside app")
+    settings = settings_factory(enable_background_worker=True, comfyui_concurrency=1)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="queue.orphan.recovery")
+        orphaned = create_generation(client, "orphaned outside app", seed=141)
+        successor = create_generation(client, "runs after orphan recovery", seed=142)
+
+        interrupted = wait_for_status(client, orphaned["id"], "interrupted", timeout=10)
+        completed = wait_for_status(client, successor["id"], "succeeded", timeout=10)
+
+        assert interrupted["error_code"] == "execution_interrupted"
+        assert interrupted["comfyui_status"] == {
+            "status_str": "running",
+            "completed": False,
+            "messages": [],
+        }
+        assert completed["canonical_artifact_id"] is not None
+        assert [item["prompt"] for item in fake_state.submitted] == [
+            "orphaned outside app",
+            "runs after orphan recovery",
+        ]
+
+
 def test_restart_during_comfyui_outage_defers_unknown_interruption_until_reconnect(
     settings_factory, fake_state
 ) -> None:

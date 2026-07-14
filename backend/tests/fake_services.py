@@ -90,6 +90,7 @@ class FakeServiceState:
     force_nonterminal_history: bool = False
     emit_cached_only: bool = False
     terminal_event_type: str | None = None
+    orphan_prompt_substrings: set[str] = field(default_factory=set)
     models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest"])
     ollama_effective_model: str | None = None
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -130,6 +131,7 @@ class FakeServiceState:
         self.force_nonterminal_history = False
         self.emit_cached_only = False
         self.terminal_event_type = None
+        self.orphan_prompt_substrings.clear()
         self.models = ["zeta:latest", "alpha:latest"]
         self.ollama_effective_model = None
         self.histories.clear()
@@ -223,6 +225,14 @@ class FakeServiceState:
                     },
                 },
             )
+        if any(
+            fragment.casefold() in prompt_text.casefold()
+            for fragment in self.orphan_prompt_substrings
+        ):
+            # Model an external interruption/reset that removes a prompt from ComfyUI's live
+            # queue without updating its partial history or emitting a terminal event.
+            self.running_prompt_ids.discard(prompt_id)
+            return
         await asyncio.sleep(delay)
 
         cancelled = prompt_id in self.cancelled_prompt_ids
