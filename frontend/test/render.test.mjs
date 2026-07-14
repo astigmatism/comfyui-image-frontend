@@ -8,6 +8,7 @@ import {
   favoritesMarkup,
   galleryCardMarkup,
   generationPanelMarkup,
+  passwordChangeMarkup,
   photoViewerMarkup,
 } from "../src/render.mjs";
 
@@ -155,6 +156,13 @@ const loraChoice = {
     { value: "mysticxxx_krea2_v1", label: "MysticXXX Krea2 v1", default_strength: 1 },
   ],
 };
+
+test("password change fields allow eight-character passwords", () => {
+  const html = passwordChangeMarkup("ComfyUI Gallery", true);
+  assert.match(html, /name="new_password"[^>]*minlength="8"/);
+  assert.match(html, /name="confirm_password"[^>]*minlength="8"/);
+  assert.doesNotMatch(html, /minlength="12"/);
+});
 
 test("prompt is contract-rendered and Prompt Assistant remains collapsed by default", () => {
   const html = controlMarkup(promptControl, { "prompt.text": "hello" }, contract);

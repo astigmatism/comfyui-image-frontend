@@ -234,7 +234,7 @@ The API returns `source_republished` when the selected revision no longer matche
 
 ### Startup configuration errors
 
-With no users, set both bootstrap variables and use a temporary password of at least 12 characters. `CIF_SESSION_SECRET` must contain at least 32 random characters. A ComfyUI instance ID must contain 1–64 letters, digits, hyphens, or underscores. Response-size limits must be at least 1024 bytes.
+With no users, set both bootstrap variables and use a temporary password of at least 8 characters. `CIF_SESSION_SECRET` must contain at least 32 random characters. A ComfyUI instance ID must contain 1–64 letters, digits, hyphens, or underscores. Response-size limits must be at least 1024 bytes.
 
 ### Prompt Assistant is unavailable
 

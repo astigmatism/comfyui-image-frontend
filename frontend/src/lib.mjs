@@ -316,6 +316,66 @@ export function reconcileInterfaceValues(
   return applyChoiceStrengthDefaults(contract, result, explicitInputIds);
 }
 
+function interfaceMigrationPairs(targetContract, sourceContract) {
+  const targets = interfaceInputs(targetContract);
+  const sources = interfaceInputs(sourceContract);
+  const sourcesById = new Map(sources.map((input) => [input.id, input]));
+  const roleKey = (input) =>
+    input.semantic_role && input.type ? `${input.type}\u0000${input.semantic_role}` : null;
+  const sourcesByRole = new Map();
+  const targetsByRole = new Map();
+  for (const input of sources) {
+    const key = roleKey(input);
+    if (key) sourcesByRole.set(key, [...(sourcesByRole.get(key) || []), input]);
+  }
+  for (const input of targets) {
+    const key = roleKey(input);
+    if (key) targetsByRole.set(key, [...(targetsByRole.get(key) || []), input]);
+  }
+  return targets.flatMap((target) => {
+    const exact = sourcesById.get(target.id);
+    if (exact?.type === target.type) return [{ source: exact, target }];
+    const key = roleKey(target);
+    const roleSources = key ? sourcesByRole.get(key) || [] : [];
+    const roleTargets = key ? targetsByRole.get(key) || [] : [];
+    return roleSources.length === 1 && roleTargets.length === 1
+      ? [{ source: roleSources[0], target }]
+      : [];
+  });
+}
+
+export function migrateInterfaceState(
+  targetContract,
+  sourceContract,
+  sourceValues = {},
+  sourceExplicitInputIds = [],
+  baseValues = defaultsForInterface(targetContract),
+  baseExplicitInputIds = [],
+) {
+  const result = structuredClone(baseValues || {});
+  const explicit = new Set(baseExplicitInputIds || []);
+  const sourceExplicit = new Set(sourceExplicitInputIds || []);
+  for (const { source, target } of interfaceMigrationPairs(targetContract, sourceContract)) {
+    if (!Object.hasOwn(sourceValues || {}, source.id)) continue;
+    const value = sourceValues[source.id];
+    if (
+      target.type === "choice" &&
+      !choiceOptions(target).some((option) => option.value === value)
+    )
+      continue;
+    result[target.id] =
+      target.type === "seed" ? seedFormValue(target, value) : structuredClone(value);
+    if (sourceExplicit.has(source.id)) explicit.add(target.id);
+    else explicit.delete(target.id);
+  }
+  const targetIds = new Set(interfaceInputs(targetContract).map((input) => input.id));
+  const explicitInputIds = [...explicit].filter((id) => targetIds.has(id));
+  return {
+    values: applyChoiceStrengthDefaults(targetContract, result, explicitInputIds),
+    explicitInputIds,
+  };
+}
+
 export function overwriteWithRecall(current, recall) {
   const sourceKey = recall.source_key ?? recall.profile_id;
   const parameters = structuredClone(recall.parameters || recall.controls || {});

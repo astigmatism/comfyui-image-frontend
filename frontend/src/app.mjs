@@ -6,6 +6,7 @@ import {
   createLatestRequestGate,
   defaultsForInterface,
   interfaceInputs,
+  migrateInterfaceState,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -45,6 +46,7 @@ const state = {
   parameters: {},
   explicitParameterIds: new Set(),
   parameterStateBySource: {},
+  pendingSourceMigration: null,
   selectedPreset: null,
   compositionId: null,
   promptAssistant: { mode: "refine", creativeDirection: "", available: false, message: null },
@@ -662,6 +664,7 @@ async function logout() {
   state.parameters = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
+  state.pendingSourceMigration = null;
   state.sourceCatalogStatus = "idle";
   state.sourceCatalogToken += 1;
   state.sourceLoadToken += 1;
@@ -752,7 +755,7 @@ function sourceContextIsCurrent(key, revision) {
 }
 
 function persistActiveParameterState() {
-  if (!state.activeSourceKey) return;
+  if (!state.activeSourceKey || !sourceInterface(state.activeSource)) return;
   state.parameterStateBySource[state.activeSourceKey] = {
     interface: structuredClone(sourceInterface(state.activeSource)),
     revision: structuredClone(sourceRevision(state.activeSource)),
@@ -805,11 +808,21 @@ async function loadSources() {
 }
 
 async function selectSource(key, { summary = null } = {}) {
+  const activeMigration = sourceInterface(state.activeSource)
+    ? {
+        sourceKey: state.activeSourceKey,
+        interface: structuredClone(sourceInterface(state.activeSource)),
+        values: structuredClone(state.parameters),
+        explicitInputIds: [...state.explicitParameterIds],
+      }
+    : state.pendingSourceMigration;
+  const migration = activeMigration?.sourceKey !== key ? activeMigration : null;
   persistActiveParameterState();
   const token = ++state.sourceLoadToken;
   const resolvedSummary = summary || state.sources.find((item) => sourceKey(item) === key) || null;
   state.activeSourceKey = key || null;
   state.activeSource = resolvedSummary;
+  state.pendingSourceMigration = migration;
   const saved = key ? state.parameterStateBySource[key] : null;
   state.parameters = structuredClone(saved?.values || {});
   state.explicitParameterIds = new Set(saved?.explicitInputIds || []);
@@ -828,12 +841,23 @@ async function selectSource(key, { summary = null } = {}) {
     const contract = sourceInterface(detail);
     if (!contract) throw new Error("The selected source has no public interface.");
     state.activeSource = { ...(resolvedSummary || {}), ...detail, interface: contract };
-    state.parameters = reconcileInterfaceValues(
+    const baseValues = reconcileInterfaceValues(
       contract,
       saved?.values || {},
       saved?.interface || null,
-      state.explicitParameterIds,
+      saved?.explicitInputIds || [],
     );
+    const migrated = migrateInterfaceState(
+      contract,
+      migration?.interface || null,
+      migration?.values || {},
+      migration?.explicitInputIds || [],
+      baseValues,
+      saved?.explicitInputIds || [],
+    );
+    state.parameters = migrated.values;
+    state.explicitParameterIds = new Set(migrated.explicitInputIds);
+    state.pendingSourceMigration = null;
     state.sourceDetailError = null;
     persistActiveParameterState();
   } catch (error) {
@@ -1167,6 +1191,7 @@ async function recall(id) {
   const contract = sourceInterface(source);
   state.activeSourceKey = key;
   state.activeSource = { ...source, interface: contract };
+  state.pendingSourceMigration = null;
   state.explicitParameterIds = new Set(
     Object.entries(recalledState.parameters || {})
       .filter(([, value]) => value !== null && value !== undefined)
@@ -1515,7 +1540,7 @@ function adminMarkup(users, diagnostics) {
   return `<div class="dialog-frame admin-frame">
     <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts and published-source discovery.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
     <div class="admin-content">
-      <section><h3>Users</h3><form id="create-user-form" class="inline-form"><label class="field"><span>Username</span><input name="username" required /></label><label class="field"><span>Temporary password</span><input name="temporary_password" type="password" minlength="12" required /></label><button class="button primary" type="submit">Create user</button></form>
+      <section><h3>Users</h3><form id="create-user-form" class="inline-form"><label class="field"><span>Username</span><input name="username" required /></label><label class="field"><span>Temporary password</span><input name="temporary_password" type="password" minlength="8" required /></label><button class="button primary" type="submit">Create user</button></form>
       <div class="table-wrap"><table><thead><tr><th>Username</th><th>State</th><th>Created</th><th>Account actions</th></tr></thead><tbody>${ordinary.map((user) => `<tr><td>${escapeForAdmin(user.username)}</td><td>${user.must_change_password ? "Temporary password" : "Active"}</td><td>${new Date(user.created_at).toLocaleDateString()}</td><td><div class="button-row"><button type="button" class="button low" data-action="reset-user-password" data-user-id="${user.id}">Reset password</button><button type="button" class="button destructive low" data-action="delete-user" data-user-id="${user.id}" data-username="${escapeForAdmin(user.username)}">Delete</button></div></td></tr>`).join("") || '<tr><td colspan="4">No ordinary users.</td></tr>'}</tbody></table></div></section>
       <section><div class="section-heading"><h3>Published-source diagnostics</h3><button type="button" class="button secondary" data-action="refresh-workflows">Refresh discovery</button></div><div class="diagnostic-list">${diagnostics.map((item) => `<article class="diagnostic ${item.accepted ? "accepted" : "rejected"}"><strong>${escapeForAdmin(item.display_name || item.basename || item.source_key || "Published source")}</strong><span>${item.accepted ? "Accepted" : "Rejected"}</span><p>${escapeForAdmin(item.message)}</p><code>${escapeForAdmin(item.code)}</code></article>`).join("") || '<p class="muted">No discovery diagnostics yet.</p>'}</div></section>
     </div>
@@ -1537,7 +1562,7 @@ async function submitCreateUser(form) {
 }
 
 async function resetUserPassword(userId) {
-  const password = window.prompt("Enter a new temporary password (at least 12 characters):");
+  const password = window.prompt("Enter a new temporary password (at least 8 characters):");
   if (!password) return;
   await api(`/api/admin/users/${userId}/reset-password`, {
     method: "POST",

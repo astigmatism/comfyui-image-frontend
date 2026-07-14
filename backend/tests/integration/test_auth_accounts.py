@@ -65,6 +65,20 @@ def test_admin_creates_user_and_temporary_password_is_forced(app_client: TestCli
     assert app_client.get("/api/generations").status_code == 200
 
 
+def test_eight_character_passwords_work_for_changes_and_temporary_users(
+    app_client: TestClient,
+) -> None:
+    login(app_client, "admin", ADMIN_TEMP)
+    change_password(app_client, "Admin123")
+    create_user(app_client, "eight.user", "Temp1234")
+
+    app_client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf(app_client)})
+    signed_in = login(app_client, "eight.user", "Temp1234")
+    assert signed_in["user"]["must_change_password"] is True
+    change_password(app_client, "Perm1234")
+    assert auth_session(app_client)["user"]["must_change_password"] is False
+
+
 def test_password_reset_revokes_existing_sessions(settings_factory) -> None:
     settings = settings_factory()
     app = create_app(settings)

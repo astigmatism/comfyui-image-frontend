@@ -9,6 +9,7 @@ import {
   createLatestRequestGate,
   defaultsForContract,
   defaultsForInterface,
+  migrateInterfaceState,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -42,6 +43,7 @@ const publishedInterface = {
       label: "Height",
       type: "integer",
       default: 1920,
+      semantic_role: "height",
       minimum: 16,
       maximum: 2048,
       step: 8,
@@ -65,6 +67,7 @@ const publishedInterface = {
       label: "Width",
       type: "integer",
       default: 1080,
+      semantic_role: "width",
       minimum: 16,
       maximum: 2048,
       step: 8,
@@ -78,6 +81,7 @@ const publishedInterface = {
       type: "seed",
       default: null,
       default_mode: "random",
+      semantic_role: "seed",
       minimum: "0",
       maximum: "9223372036854775807",
       group: "Sampling",
@@ -352,6 +356,91 @@ test("republished sources retain values only when public id and type still match
   const reconciled = reconcileInterfaceValues(publishedInterface, values, previous);
   assert.equal(reconciled.prompt, "retained");
   assert.deepEqual(reconciled.seed, { mode: "random", value: "0" });
+});
+
+test("source changes migrate compatible prompt, resolution, seed, and shared controls", () => {
+  const source = structuredClone(publishedInterface);
+  source.inputs = source.inputs
+    .filter((input) => input.id !== "enable_seedvr2_upscale")
+    .map((input) => {
+      const renamed = {
+        prompt: "recalled_prompt",
+        width: "recalled_width",
+        height: "recalled_height",
+        seed: "recalled_seed",
+      }[input.id];
+      return renamed ? { ...input, id: renamed } : input;
+    });
+  const target = structuredClone(publishedInterface);
+  target.inputs.push({
+    id: "target_only",
+    label: "Target only",
+    type: "string",
+    default: "target default",
+  });
+  const base = {
+    ...defaultsForInterface(target),
+    prompt: "stale target prompt",
+    target_only: "remembered target value",
+  };
+  const migrated = migrateInterfaceState(
+    target,
+    source,
+    {
+      recalled_prompt: "recalled final prompt",
+      recalled_width: 1024,
+      recalled_height: 1600,
+      recalled_seed: { mode: "fixed", value: "424242" },
+    },
+    ["recalled_prompt", "recalled_width", "recalled_height", "recalled_seed"],
+    base,
+    ["target_only"],
+  );
+
+  assert.equal(migrated.values.prompt, "recalled final prompt");
+  assert.equal(migrated.values.width, 1024);
+  assert.equal(migrated.values.height, 1600);
+  assert.deepEqual(migrated.values.seed, { mode: "fixed", value: "424242" });
+  assert.equal(migrated.values.target_only, "remembered target value");
+  assert.deepEqual(new Set(migrated.explicitInputIds), new Set([
+    "prompt",
+    "width",
+    "height",
+    "seed",
+    "target_only",
+  ]));
+});
+
+test("source changes keep destination defaults for incompatible and ambiguous controls", () => {
+  const source = {
+    inputs: [
+      { id: "old_choice", type: "choice", semantic_role: "style", choices: [{ value: "old" }] },
+      { id: "first_toggle", type: "boolean", semantic_role: "feature_toggle" },
+      { id: "second_toggle", type: "boolean", semantic_role: "feature_toggle" },
+    ],
+  };
+  const target = {
+    inputs: [
+      {
+        id: "new_choice",
+        type: "choice",
+        semantic_role: "style",
+        default: "new",
+        choices: [{ value: "new" }],
+      },
+      { id: "toggle", type: "boolean", semantic_role: "feature_toggle", default: false },
+    ],
+  };
+  const migrated = migrateInterfaceState(
+    target,
+    source,
+    { old_choice: "old", first_toggle: true, second_toggle: true },
+    ["old_choice", "first_toggle", "second_toggle"],
+  );
+  assert.deepEqual(migrated, {
+    values: { new_choice: "new", toggle: false },
+    explicitInputIds: [],
+  });
 });
 
 test("choice defaults and requests use stable public values", () => {

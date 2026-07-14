@@ -38,8 +38,8 @@ export function passwordChangeMarkup(appTitle, forced = false) {
         <p class="muted">${forced ? `The temporary password for ${escapeHtml(appTitle)} must be replaced before continuing.` : "Use a long, unique local password."}</p>
         <form id="password-form" novalidate>
           ${forced ? "" : '<label class="field"><span>Current password</span><input name="current_password" type="password" autocomplete="current-password" required /></label>'}
-          <label class="field"><span>New password</span><input name="new_password" type="password" minlength="12" autocomplete="new-password" required /></label>
-          <label class="field"><span>Confirm new password</span><input name="confirm_password" type="password" minlength="12" autocomplete="new-password" required /></label>
+          <label class="field"><span>New password</span><input name="new_password" type="password" minlength="8" autocomplete="new-password" required /></label>
+          <label class="field"><span>Confirm new password</span><input name="confirm_password" type="password" minlength="8" autocomplete="new-password" required /></label>
           <div id="auth-error" class="form-error" role="alert"></div>
           <div class="button-row">
             ${forced ? "" : '<button type="button" class="button secondary" data-action="cancel-password">Cancel</button>'}

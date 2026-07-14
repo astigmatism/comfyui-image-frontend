@@ -142,6 +142,9 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
 
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
+
   await page.getByRole("button", { name: "Favorites", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await favoritesDialog.getByRole("button", { name: "Delete", exact: true }).click();
@@ -201,12 +204,13 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 }) => {
   await page.goto("/");
   await signIn(page, "admin", "E2EAdminPermanent123!");
+  const carriedPrompt = await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .inputValue();
   await selectPublishedSource(page, "Krea 2 NSFW V4");
 
   await expect(page.locator('[data-control-group="Basic"]')).toHaveCount(4);
-  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
-    "a tree with chickens",
-  );
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(carriedPrompt);
   await expect(page.locator('[data-control-id*="negative" i]')).toHaveCount(0);
 
   const width = page.getByRole("spinbutton", { name: "Width", exact: true });
@@ -469,6 +473,9 @@ test("backend field errors disclose Advanced controls and stale compositions do 
   await page.unroute("**/api/generations");
 
   await selectPublishedSource(page, "Generic Landscape");
+  const promptBeforeComposition = await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .inputValue();
   await page.locator("#prompt-assistant > summary").click();
   await page.getByRole("textbox", { name: "Creative direction", exact: true }).fill("stale request");
   let releaseComposition;
@@ -492,7 +499,7 @@ test("backend field errors disclose Advanced controls and stale compositions do 
   await selectPublishedSource(page, "Krea 2 NSFW V4");
   releaseComposition();
   await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
-    "a tree with chickens",
+    promptBeforeComposition,
   );
   await expect(page.locator("#toast-region")).toContainText("was not applied");
   await page.unroute("**/api/prompt-assistant/compose");
