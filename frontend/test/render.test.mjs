@@ -167,6 +167,7 @@ test("prompt is contract-rendered and Prompt Assistant remains collapsed by defa
   const html = controlMarkup(promptControl, { "prompt.text": "hello" }, contract);
   assert.match(html, />Prompt</);
   assert.doesNotMatch(html, /Positive prompt/);
+  assert.match(html, /data-control-id="prompt.text"[^>]*rows="10"/);
   assert.match(html, /<details class="prompt-assistant" id="prompt-assistant">/);
   assert.doesNotMatch(html, /<details[^>]+open/);
   assert.match(html, /Compose Prompt/);
@@ -458,7 +459,7 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   const html = generationPanelMarkup(state, publishedSource, publishedInterface);
   const ids = ["prompt", "width", "height", "seed", "enable_seedvr2_upscale", "knpv4_1_strength"];
   ids.forEach((id) => assert.match(html, new RegExp(`data-control-block="${id}"`)));
-  assert.match(html, /data-control-id="prompt"[^>]*rows="6"/);
+  assert.match(html, /data-control-id="prompt"[^>]*rows="10"/);
   assert.match(html, /data-resolution-width-id="width" data-resolution-height-id="height"/);
   assert.match(html, /data-control-id="width"[^>]*data-resolution-axis="width"[^>]*type="number"[^>]*step="8"/);
   assert.match(html, /data-control-id="height"[^>]*data-resolution-axis="height"[^>]*type="number"[^>]*step="8"/);

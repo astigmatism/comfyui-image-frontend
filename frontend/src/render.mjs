@@ -267,12 +267,12 @@ export function controlMarkup(control, values, contract, errors = {}) {
   let field = "";
   switch (control.type) {
     case "multiline_string":
-      input = `<textarea ${common} rows="${escapeHtml(control.ui?.rows || (control.id === "prompt.text" ? 6 : 3))}">${escapeHtml(value ?? "")}</textarea>`;
+      input = `<textarea ${common} rows="${escapeHtml(control.ui?.rows || (control.id === "prompt.text" ? 10 : 3))}">${escapeHtml(value ?? "")}</textarea>`;
       break;
     case "string":
       input =
         control.semantic_role === "positive_prompt"
-          ? `<textarea ${common} rows="${escapeHtml(control.ui?.rows || 6)}">${escapeHtml(value ?? "")}</textarea>`
+          ? `<textarea ${common} rows="${escapeHtml(control.ui?.rows || 10)}">${escapeHtml(value ?? "")}</textarea>`
           : `<input ${common} type="text" value="${escapeHtml(value ?? "")}" />`;
       break;
     case "integer":
