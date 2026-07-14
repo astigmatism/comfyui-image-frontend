@@ -713,7 +713,7 @@ def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
         assert statuses[failed_attempt["id"]] == "failed_with_artifacts"
 
 
-def test_gallery_summary_exposes_target_dimensions_and_queued_cancel_state(
+def test_gallery_summary_exposes_target_dimensions_and_queued_cancel_deletes_record(
     settings_factory, fake_state
 ) -> None:
     settings = settings_factory(enable_background_worker=False)
@@ -736,13 +736,11 @@ def test_gallery_summary_exposes_target_dimensions_and_queued_cancel_state(
             f"/api/generations/{accepted['id']}/cancel",
             headers={"X-CSRF-Token": csrf(client)},
         )
-        assert cancelled.status_code == 200, cancelled.text
-        assert cancelled.json()["status"] == "cancelled_without_artifacts"
-        assert cancelled.json()["cancel_allowed"] is False
-
-        retained = client.get("/api/generations").json()["items"][0]
-        assert retained["id"] == accepted["id"]
-        assert (retained["expected_width"], retained["expected_height"]) == (640, 960)
+        assert cancelled.status_code == 204, cancelled.text
+        assert cancelled.content == b""
+        assert client.get(f"/api/generations/{accepted['id']}").status_code == 404
+        assert client.get("/api/generations").json()["items"] == []
+        assert fake_state.submitted == []
 
 
 def test_validation_rejection_creates_no_record_and_rapid_submissions_are_distinct(

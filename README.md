@@ -160,7 +160,7 @@ When requested by the publication, the accepted editable snapshot is attached as
 
 The server retains complete bounded ComfyUI history. Generation detail removes only top-level submitted `prompt` and `extra_data` graph envelopes; actual outputs, arbitrary JSON-safe custom UI fields, publisher metadata, status/messages/errors, and execution metadata remain intact. It also returns requested/effective parameters, exact seed strings, immutable source revision, ordered publisher outputs with authoritative batch indices, untouched node-keyed unmapped outputs, and every archived image batch member. The gallery uses the authored final as its primary image, while detail groups previews, comparisons, auxiliary publishers, and additional native outputs without dropping any batch sibling.
 
-Browser closure or sign-out does not cancel work. Queued jobs survive restarts. Running jobs reconcile from stored prompt ID, queue state, events, and history. Cancellation is asynchronous; already returned partial files remain available when safely archived.
+Browser closure or sign-out does not cancel work. Queued jobs survive restarts, but cancelling one before dispatch deletes its generation record and removes its gallery card. Running jobs reconcile from stored prompt ID, queue state, events, and history. Running cancellation is asynchronous; already returned partial files remain available when safely archived.
 
 ## Recall and reproducibility
 

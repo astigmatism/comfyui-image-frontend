@@ -192,7 +192,7 @@ Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_ou
 | `GET` | `/api/generations?limit=40&cursor=...` | Newest-first owner page |
 | `GET` | `/api/generations/{id}` | Complete owner-scoped generation/result detail |
 | `GET` | `/api/generations/{id}/recall` | Exact current-publication recall payload |
-| `POST` | `/api/generations/{id}/cancel` | Request cancellation or cancel a queued item |
+| `POST` | `/api/generations/{id}/cancel` | Request running cancellation, or cancel and delete a queued item (`204`) |
 | `DELETE` | `/api/generations/{id}` | Delete owned history/files; may return 202 while active deletion reconciles |
 
 A summary contains lifecycle status, source display name, acceptance/stage state, total artifact count, image count, final-image count, one optional `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native `prompt_id`, `source_key`, and `publication_id`. The display artifact is a gallery convenience selected from the workflow-authored final when available.

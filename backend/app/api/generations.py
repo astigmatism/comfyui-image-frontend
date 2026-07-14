@@ -91,16 +91,27 @@ def recall_generation(
     return service.recall(session, generation)
 
 
-@router.post("/generations/{generation_id}/cancel", response_model=GenerationSummary)
+@router.post(
+    "/generations/{generation_id}/cancel",
+    response_model=GenerationSummary,
+    responses={
+        status.HTTP_204_NO_CONTENT: {
+            "description": "The queued generation was cancelled and deleted."
+        }
+    },
+)
 async def cancel_generation(
     generation_id: str,
     request: Request,
     session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
-) -> GenerationSummary:
+) -> GenerationSummary | Response:
     service = get_container(request).generations
     generation = service.get_owned(session, context.user.id, generation_id)
-    return await service.cancel(session, generation)
+    result = await service.cancel(session, generation)
+    if result is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return result
 
 
 @router.delete("/generations/{generation_id}", status_code=204)

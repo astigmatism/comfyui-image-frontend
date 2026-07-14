@@ -174,7 +174,7 @@ Provide an authenticated application event stream using SSE or an application We
 
 Handle every declared publisher output immediately when retrievable. Parse the publisher's namespaced `artifacts` list as the authority for output identity and batch order, while retaining the complete ordinary publisher result in raw history. Copy every nonpublisher node result untouched into additional outputs; never filter runtime history through a compile-time node inventory. Update the same gallery card to the authored final/newest meaningful checkpoint while retaining preview, comparison, auxiliary, native, and batch-sibling images for detail/download. Mark a final artifact canonical only after terminal success. Keep best-available artifacts explicitly non-final after cancellation or later-stage failure.
 
-Support queued and running cancellation. Model `cancel_requested` separately, reconcile races, retain emitted artifacts, and preserve the record for Recall settings.
+Support queued and running cancellation. Cancelling a queued generation before dispatch must delete its record just like an explicit cancel-and-delete action. For work that has begun dispatching or running, model `cancel_requested` separately, reconcile races, retain emitted artifacts, and preserve the record for Recall settings.
 
 ### Recall settings
 
@@ -193,7 +193,7 @@ Use requested controls for normal user-facing fields when they reproduce the sam
 
 ### Gallery and lifecycle behavior
 
-Every accepted generation remains in the gallery whether it succeeds, fails, is cancelled, or becomes interrupted.
+Every accepted generation remains in the gallery whether it succeeds, fails, is cancelled after dispatch begins, or becomes interrupted. A generation cancelled while it is still queued is deleted and removed from the gallery.
 
 - Queued: status placeholder.
 - Running before an artifact: semantic stage/progress placeholder.

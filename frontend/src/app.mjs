@@ -2068,6 +2068,13 @@ async function cancelGeneration(id, button) {
   }
   try {
     const result = await api(`/api/generations/${id}/cancel`, { method: "POST" });
+    if (result === null) {
+      removeGeneration(id);
+      const detailDialog = document.querySelector("#detail-dialog");
+      if (detailDialog?.dataset.generationId === id) detailDialog.close();
+      toast("Queued generation cancelled and removed.", "success");
+      return;
+    }
     await refreshGeneration(id);
     toast(result.status === "cancel_requested" ? "Cancellation requested." : "Generation cancelled.", "success");
   } catch (error) {

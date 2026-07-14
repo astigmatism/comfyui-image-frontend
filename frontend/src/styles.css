@@ -1952,34 +1952,63 @@ dialog::backdrop {
 
 .prompt-editor-assistant-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(250px, 0.9fr) auto;
-  align-items: stretch;
-  gap: 12px;
+  gap: 10px;
 }
 
-.prompt-editor-assistant .field,
-.prompt-editor-assistant .compact-choice {
+.prompt-editor-assistant .field {
   margin: 0;
 }
 
 .prompt-editor-assistant textarea {
-  min-height: 76px;
+  width: 100%;
+  min-height: 82px;
   resize: none;
 }
 
-.prompt-editor-assistant-action {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+.prompt-editor-assistant-action-row {
+  display: flex;
   align-items: end;
-  width: 142px;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.prompt-editor-assistant-action .help-text {
-  align-self: start;
-  margin: 0 0 6px;
+.prompt-editor-assistant-modes {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
-.prompt-editor-assistant-action .button {
+.prompt-editor-assistant-modes legend {
+  margin-bottom: 5px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.prompt-editor-assistant-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.prompt-editor-assistant-mode-options label {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.prompt-editor-assistant-action-row .button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.prompt-editor-assistant-message {
+  min-width: 0;
+  min-height: 1.2em;
+  margin: 0;
+  overflow: hidden;
+  line-height: 1.2;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2618,19 +2647,6 @@ tr:last-child td {
     overflow: auto;
   }
 
-  .prompt-editor-assistant-controls {
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr);
-  }
-
-  .prompt-editor-assistant-action {
-    grid-column: 1 / -1;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto;
-    align-items: center;
-    gap: 12px;
-    width: auto;
-  }
-
   .photo-viewer-close {
     top: 12px;
     right: 12px;
@@ -2698,13 +2714,13 @@ tr:last-child td {
     flex-direction: column;
   }
 
-  .prompt-editor-assistant-controls {
-    grid-template-columns: 1fr;
+  .prompt-editor-assistant-action-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
-  .prompt-editor-assistant-action {
-    grid-column: auto;
-    grid-template-columns: 1fr;
+  .prompt-editor-assistant-action-row .button {
+    width: 100%;
   }
 
   .favorite-thumbnail {

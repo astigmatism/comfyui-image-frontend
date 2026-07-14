@@ -225,8 +225,18 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /<h3 id="prompt-editor-assistant-title">Prompt Assistant<\/h3>/);
   assert.match(html, /id="prompt-editor-creative-direction"[^>]*>Moody &lt;light&gt;<\/textarea>/);
   assert.match(html, /name="prompt-editor-assistant-mode" value="create" checked/);
+  assert.match(html, /class="prompt-editor-assistant-action-row"/);
+  assert.match(html, /class="help-text prompt-editor-assistant-message"[^>]*aria-live="polite"/);
   assert.match(html, /Historical composition used model-one/);
   assert.match(html, /data-action="compose-prompt-editor"/);
+  assert.ok(
+    html.indexOf('id="prompt-editor-creative-direction"') <
+      html.indexOf('class="prompt-editor-assistant-action-row"'),
+  );
+  assert.ok(
+    html.indexOf('class="prompt-editor-assistant-action-row"') <
+      html.indexOf('data-prompt-editor-assistant-message'),
+  );
   assert.match(html, /data-action="cancel-prompt-editor">Cancel<\/button>/);
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });

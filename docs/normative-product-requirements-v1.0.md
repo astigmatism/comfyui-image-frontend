@@ -1,7 +1,7 @@
 # ComfyUI Image Generation Front-End
 ## Product and Implementation Requirements
 
-> **Historical v1.0 baseline.** Requirement IDs in this document remain the input to generated product traceability, but workflow discovery, controls, compilation, outputs, and recall language that depends on the retired embedded-node/two-file contract is superseded by the implemented three-file publication boundary. Follow [`published-workflows.md`](published-workflows.md), [`architecture.md`](architecture.md), and [`api.md`](api.md) for current behavior. Do not use this archive to accept `.workflow.json` / `.api.json` pairs or embedded `FrontendWorkflowContract` nodes.
+> **Historical v1.0 baseline.** Requirement IDs in this document remain the input to generated product traceability, but workflow discovery, controls, compilation, outputs, and recall language that depends on the retired embedded-node/two-file contract is superseded by the implemented three-file publication boundary. Queued-cancellation behavior is also superseded: see [`traceability.md`](traceability.md) and [`api.md`](api.md) for the current cancel-and-delete rule. Follow [`published-workflows.md`](published-workflows.md), [`architecture.md`](architecture.md), and [`api.md`](api.md) for current behavior. Do not use this archive to accept `.workflow.json` / `.api.json` pairs or embedded `FrontendWorkflowContract` nodes.
 
 **Version:** 1.0  
 **Status:** Implementation-ready  

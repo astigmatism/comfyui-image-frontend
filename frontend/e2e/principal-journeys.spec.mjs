@@ -804,6 +804,48 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
   await expect(card).toHaveCount(1);
 });
 
+test("cancelling a queued generation removes its card and history", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+
+  await prompt.fill("slow queued cancellation blocker");
+  const blockerResponse = await generateAndExpectAccepted(page);
+  const blocker = await blockerResponse.json();
+  const blockerCard = page.locator(
+    `.gallery-card[data-generation-id="${blocker.id}"]`,
+  );
+  await expect(blockerCard).toHaveClass(/status-running/);
+
+  await prompt.fill("remove this queued generation");
+  const queuedResponse = await generateAndExpectAccepted(page);
+  const queued = await queuedResponse.json();
+  const queuedCard = page.locator(`.gallery-card[data-generation-id="${queued.id}"]`);
+  await expect(queuedCard).toHaveClass(/status-queued/);
+
+  const cancelResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/generations/${queued.id}/cancel` &&
+      response.request().method() === "POST",
+  );
+  await queuedCard.getByRole("button", { name: "Cancel", exact: true }).click();
+  const cancelResponse = await cancelResponsePromise;
+  expect(cancelResponse.status()).toBe(204);
+  await expect(queuedCard).toHaveCount(0);
+  await expect(page.locator("#toast-region")).toContainText(
+    "Queued generation cancelled and removed.",
+  );
+
+  const deletedLookup = await page.request.get(`/api/generations/${queued.id}`);
+  expect(deletedLookup.status()).toBe(404);
+
+  await expect(blockerCard).toHaveClass(/status-succeeded/);
+  page.once("dialog", (dialog) => dialog.accept());
+  await blockerCard.getByRole("button", { name: "Delete generation" }).click();
+  await expect(blockerCard).toHaveCount(0);
+});
+
 test("working card reserves final aspect ratio and cancels in place", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");

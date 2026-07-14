@@ -709,22 +709,27 @@ class GenerationService:
             contract_hash=generation.contract_sha256,
         )
 
-    async def cancel(self, session: Session, generation: Generation) -> GenerationSummary:
+    async def cancel(self, session: Session, generation: Generation) -> GenerationSummary | None:
         if generation.status in TERMINAL_STATUSES:
             return self.summary(session, generation)
         if generation.status == GenerationStatus.QUEUED:
+            generation_id = generation.id
+            owner_id = generation.owner_id
             generation.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
             generation.cancel_requested_at = datetime.now(UTC)
             generation.completed_at = datetime.now(UTC)
-            event = add_generation_event(
-                session,
-                generation,
-                "generation.cancelled",
-                {"status": generation.status.value, "queued": True},
+            self.delete_terminal(session, generation)
+            await self.broker.publish(
+                owner_id,
+                {
+                    "id": None,
+                    "type": "generation.deleted",
+                    "generation_id": generation_id,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "payload": {"reason": "queued_cancellation"},
+                },
             )
-            session.commit()
-            await publish_event(self.broker, event)
-            return self.summary(session, generation)
+            return None
         generation.status = GenerationStatus.CANCEL_REQUESTED
         generation.cancel_requested_at = datetime.now(UTC)
         event = add_generation_event(
@@ -744,7 +749,6 @@ class GenerationService:
     async def request_delete(self, session: Session, generation: Generation) -> bool:
         if generation.status == GenerationStatus.QUEUED:
             await self.cancel(session, generation)
-            self.delete_terminal(session, generation)
             return True
         if generation.status in ACTIVE_STATUSES:
             generation.pending_delete = True

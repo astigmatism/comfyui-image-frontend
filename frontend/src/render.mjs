@@ -648,11 +648,11 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
         <h3 id="prompt-editor-assistant-title">Prompt Assistant</h3>
         <div class="prompt-editor-assistant-controls">
           <label class="field"><span>Creative direction</span><textarea id="prompt-editor-creative-direction" rows="3">${escapeHtml(creativeDirection)}</textarea></label>
-          <fieldset class="compact-choice"><legend>Mode</legend><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine current prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> Create from creative direction</label></fieldset>
-          <div class="prompt-editor-assistant-action">
-            <div class="help-text" data-prompt-editor-assistant-message role="status">${escapeHtml(assistantMessage)}</div>
+          <div class="prompt-editor-assistant-action-row">
+            <fieldset class="prompt-editor-assistant-modes"><legend>Mode</legend><div class="prompt-editor-assistant-mode-options"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine current prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> Create from creative direction</label></div></fieldset>
             <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Compose Prompt</button>
           </div>
+          <div class="help-text prompt-editor-assistant-message" data-prompt-editor-assistant-message role="status" aria-live="polite">${escapeHtml(assistantMessage)}</div>
         </div>
       </section>
       <p class="prompt-editor-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> applies the draft.</p>
