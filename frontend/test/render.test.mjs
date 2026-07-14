@@ -7,6 +7,7 @@ import {
   detailMarkup,
   favoritesMarkup,
   galleryCardMarkup,
+  galleryMarkup,
   generationPanelMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
@@ -62,6 +63,7 @@ const publishedInterface = {
       type: "seed",
       default: null,
       default_mode: "random",
+      semantic_role: "seed",
       minimum: "0",
       maximum: "9223372036854775807",
       group: "Sampling",
@@ -158,6 +160,35 @@ const loraChoice = {
   ],
 };
 
+test("gallery defaults to newest request first regardless of input order", () => {
+  const markup = galleryMarkup([
+    {
+      id: "oldest",
+      accepted_at: "2026-07-14T12:00:00Z",
+      status: "succeeded",
+      workflow_display_name: "Oldest",
+    },
+    {
+      id: "newest",
+      accepted_at: "2026-07-14T12:02:00Z",
+      status: "running",
+      workflow_display_name: "Newest",
+    },
+    {
+      id: "previous",
+      accepted_at: "2026-07-14T12:01:00Z",
+      status: "succeeded",
+      workflow_display_name: "Previous",
+    },
+  ]);
+  const cardIds = Array.from(
+    markup.matchAll(/<article class="gallery-card[^"]*" data-generation-id="([^"]+)"/g),
+    (match) => match[1],
+  );
+
+  assert.deepEqual(cardIds, ["newest", "previous", "oldest"]);
+});
+
 test("password change fields allow eight-character passwords", () => {
   const html = passwordChangeMarkup("ComfyUI Gallery", true);
   assert.match(html, /name="new_password"[^>]*minlength="8"/);
@@ -190,7 +221,7 @@ test("focused prompt editor renders an escaped draft, editing tools, and draft s
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
 
-test("generation panel fixes Generate first, source second, then basic and collapsed advanced controls", () => {
+test("generation panel fixes Generate first, source and all-sources mode next, then controls", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -204,10 +235,39 @@ test("generation panel fixes Generate first, source second, then basic and colla
   const html = generationPanelMarkup(state, state.workflows[0], contract);
   const generateIndex = html.indexOf('id="generate-button"');
   const sourceIndex = html.indexOf('id="workflow-source"');
+  const allSourcesIndex = html.indexOf('id="all-generation-sources"');
   const promptIndex = html.indexOf('data-control-block="prompt.text"');
-  assert.ok(generateIndex >= 0 && generateIndex < sourceIndex && sourceIndex < promptIndex);
+  assert.ok(
+    generateIndex >= 0 &&
+      generateIndex < sourceIndex &&
+      sourceIndex < allSourcesIndex &&
+      allSourcesIndex < promptIndex,
+  );
+  assert.match(html, /All Generation Sources/);
+  assert.match(html, /prompt, width, height, and seed controls/);
   assert.match(html, /<details class="advanced-group"><summary>Advanced<\/summary>/);
   assert.doesNotMatch(html, /<details class="advanced-group" open/);
+});
+
+test("all-sources mode checks its control, disables source selection, and shows the queue count", () => {
+  const state = {
+    submitting: true,
+    allGenerationSources: true,
+    services: [{ service: "comfyui", available: true }],
+    sources: [
+      { source_key: "one", display_name: "One", available: true },
+      { source_key: "two", display_name: "Two", available: true },
+      { source_key: "offline", display_name: "Offline", available: false },
+    ],
+    activeSourceKey: "one",
+    parameters: { "prompt.text": "hello" },
+    fieldErrors: {},
+  };
+  const html = generationPanelMarkup(state, state.sources[0], publishedInterface);
+  assert.match(html.match(/<select id="workflow-source"[^>]*>/)?.[0] || "", /disabled/);
+  assert.match(html.match(/<input id="all-generation-sources"[^>]*>/)?.[0] || "", /checked/);
+  assert.match(html, /Queueing 2…/);
+  assert.match(html, /only the prompt, resolution, and one shared seed/);
 });
 
 test("card footer opens metadata from the source and groups current download with gallery actions", () => {

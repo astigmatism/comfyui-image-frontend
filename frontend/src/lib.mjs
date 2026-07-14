@@ -28,6 +28,38 @@ export function createLatestRequestGate() {
   };
 }
 
+function acceptedAtFraction(value) {
+  const match = String(value || "").match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/);
+  return (match?.[1] || "").padEnd(9, "0").slice(0, 9);
+}
+
+export function compareGenerationsNewestFirst(left, right) {
+  const leftAcceptedAt = String(left?.accepted_at || "");
+  const rightAcceptedAt = String(right?.accepted_at || "");
+  const leftTime = Date.parse(leftAcceptedAt);
+  const rightTime = Date.parse(rightAcceptedAt);
+  const leftHasTime = Number.isFinite(leftTime);
+  const rightHasTime = Number.isFinite(rightTime);
+
+  if (leftHasTime && rightHasTime) {
+    if (leftTime !== rightTime) return rightTime - leftTime;
+    const fractionOrder = acceptedAtFraction(rightAcceptedAt).localeCompare(
+      acceptedAtFraction(leftAcceptedAt),
+    );
+    if (fractionOrder) return fractionOrder;
+  } else if (leftHasTime !== rightHasTime) {
+    return leftHasTime ? -1 : 1;
+  } else if (leftAcceptedAt !== rightAcceptedAt) {
+    return rightAcceptedAt.localeCompare(leftAcceptedAt);
+  }
+
+  return String(right?.id || "").localeCompare(String(left?.id || ""));
+}
+
+export function sortGenerationsNewestFirst(generations) {
+  return [...(generations || [])].sort(compareGenerationsNewestFirst);
+}
+
 export function scaleToLayout(value) {
   const normalized = Math.max(0, Math.min(100, Number(value) || 0));
   if (normalized >= 96) return { full: true, cardWidth: 1200 };
@@ -192,6 +224,35 @@ function compareText(first, second) {
 
 export function positivePromptInput(contract) {
   return interfaceInputs(contract).find((input) => input.semantic_role === "positive_prompt") || null;
+}
+
+const COMPARISON_INPUT_TYPES = new Map([
+  ["positive_prompt", "string"],
+  ["width", "integer"],
+  ["height", "integer"],
+  ["seed", "seed"],
+]);
+const COMPARISON_SEMANTIC_ROLES = new Set(COMPARISON_INPUT_TYPES.keys());
+
+export function comparisonInputs(contract) {
+  return interfaceInputs(contract).filter((input) =>
+    COMPARISON_SEMANTIC_ROLES.has(input.semantic_role),
+  );
+}
+
+export function comparisonInterface(contract) {
+  if (!contract) return contract;
+  return { ...contract, inputs: comparisonInputs(contract) };
+}
+
+export function missingComparisonRoles(contract) {
+  const inputs = interfaceInputs(contract);
+  return [...COMPARISON_INPUT_TYPES].flatMap(([role, type]) => {
+    const matches = inputs.filter(
+      (input) => input.semantic_role === role && input.type === type,
+    );
+    return matches.length === 1 ? [] : [role];
+  });
 }
 
 function inputConstraint(input, name) {
@@ -461,6 +522,33 @@ export function parametersForRequest(contract, values) {
     } else if (value !== undefined && value !== null) {
       parameters[input.id] = structuredClone(value);
     }
+  }
+  return parameters;
+}
+
+export function comparisonParametersForRequest(
+  sourceContract,
+  sourceValues,
+  targetContract,
+  resolvedSeed = undefined,
+) {
+  const sourceParameters = parametersForRequest(sourceContract, sourceValues);
+  const sourceInputsByRole = new Map();
+  for (const input of comparisonInputs(sourceContract)) {
+    const role = input.semantic_role;
+    sourceInputsByRole.set(role, [...(sourceInputsByRole.get(role) || []), input]);
+  }
+
+  const parameters = {};
+  for (const target of comparisonInputs(targetContract)) {
+    const candidates = sourceInputsByRole.get(target.semantic_role) || [];
+    if (candidates.length !== 1 || candidates[0].type !== target.type) continue;
+    const source = candidates[0];
+    const value =
+      target.semantic_role === "seed" && resolvedSeed !== undefined
+        ? String(resolvedSeed)
+        : sourceParameters[source.id];
+    if (value !== undefined && value !== null) parameters[target.id] = structuredClone(value);
   }
   return parameters;
 }

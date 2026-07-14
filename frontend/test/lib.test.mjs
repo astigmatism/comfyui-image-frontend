@@ -5,11 +5,15 @@ import {
   applyChoiceStrengthDefaults,
   clientValidate,
   choiceStrengthCompanion,
+  comparisonInputs,
+  comparisonInterface,
+  comparisonParametersForRequest,
   controlPresentation,
   createLatestRequestGate,
   defaultsForContract,
   defaultsForInterface,
   migrateInterfaceState,
+  missingComparisonRoles,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -22,6 +26,7 @@ import {
   seedAllowsRandom,
   seedFormValue,
   snapResolutionValue,
+  sortGenerationsNewestFirst,
   sortInterfaceInputs,
 } from "../src/lib.mjs";
 
@@ -100,6 +105,92 @@ const publishedInterface = {
     },
   ],
 };
+
+test("generations sort by request acceptance time newest first with the API tie-breaker", () => {
+  const generations = [
+    { id: "older", accepted_at: "2026-07-14T12:00:00.100000Z" },
+    { id: "same-a", accepted_at: "2026-07-14T12:00:01.123456Z" },
+    { id: "newest", accepted_at: "2026-07-14T12:00:02.000000Z" },
+    { id: "same-z", accepted_at: "2026-07-14T12:00:01.123456Z" },
+    { id: "microsecond-newer", accepted_at: "2026-07-14T12:00:01.123457Z" },
+  ];
+
+  assert.deepEqual(
+    sortGenerationsNewestFirst(generations).map((generation) => generation.id),
+    ["newest", "microsecond-newer", "same-z", "same-a", "older"],
+  );
+  assert.deepEqual(generations.map((generation) => generation.id), [
+    "older",
+    "same-a",
+    "newest",
+    "same-z",
+    "microsecond-newer",
+  ]);
+});
+
+test("comparison requests map only prompt, resolution, and one concrete seed by semantic role", () => {
+  const target = {
+    inputs: [
+      { id: "text", type: "string", semantic_role: "positive_prompt" },
+      { id: "image_width", type: "integer", semantic_role: "width" },
+      { id: "image_height", type: "integer", semantic_role: "height" },
+      { id: "noise_seed", type: "seed", semantic_role: "seed" },
+      { id: "steps", type: "integer", semantic_role: "iteration_count", default: 20 },
+    ],
+  };
+  const values = {
+    prompt: "same scene",
+    width: 1024,
+    height: 1600,
+    seed: { mode: "random", value: "0" },
+    knpv4_1_strength: 0.7,
+  };
+
+  assert.deepEqual(
+    comparisonParametersForRequest(publishedInterface, values, target, "424242"),
+    {
+      text: "same scene",
+      image_width: 1024,
+      image_height: 1600,
+      noise_seed: "424242",
+    },
+  );
+  assert.deepEqual(
+    comparisonInputs(publishedInterface).map((input) => input.semantic_role),
+    ["height", "positive_prompt", "width", "seed"],
+  );
+  assert.deepEqual(
+    comparisonInterface(publishedInterface).inputs.map((input) => input.semantic_role),
+    ["height", "positive_prompt", "width", "seed"],
+  );
+  assert.deepEqual(missingComparisonRoles(publishedInterface), []);
+});
+
+test("comparison requests omit roles a target does not publish and ignore ambiguous mappings", () => {
+  const source = {
+    inputs: [
+      { id: "prompt_a", type: "string", semantic_role: "positive_prompt" },
+      { id: "prompt_b", type: "string", semantic_role: "positive_prompt" },
+      { id: "width", type: "integer", semantic_role: "width" },
+      { id: "seed", type: "seed", semantic_role: "seed" },
+    ],
+  };
+  const target = {
+    inputs: [
+      { id: "prompt", type: "string", semantic_role: "positive_prompt" },
+      { id: "width", type: "integer", semantic_role: "width" },
+    ],
+  };
+  assert.deepEqual(
+    comparisonParametersForRequest(
+      source,
+      { prompt_a: "one", prompt_b: "two", width: 768, seed: { mode: "fixed", value: "9" } },
+      target,
+    ),
+    { width: 768 },
+  );
+  assert.deepEqual(missingComparisonRoles(target), ["height", "seed"]);
+});
 
 const choiceInterface = {
   inputs: [

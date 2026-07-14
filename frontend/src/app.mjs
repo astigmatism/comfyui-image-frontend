@@ -3,10 +3,14 @@ import {
   applyChoiceStrengthDefaults,
   clientValidate,
   choiceStrengthCompanion,
+  comparisonInputs,
+  comparisonInterface,
+  comparisonParametersForRequest,
   createLatestRequestGate,
   defaultsForInterface,
   interfaceInputs,
   migrateInterfaceState,
+  missingComparisonRoles,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -17,6 +21,7 @@ import {
   scaleToLayout,
   seedFormValue,
   snapResolutionValue,
+  sortGenerationsNewestFirst,
 } from "./lib.mjs";
 import {
   detailMarkup,
@@ -45,6 +50,7 @@ const state = {
   sourceLoadToken: 0,
   activeSourceKey: null,
   activeSource: null,
+  allGenerationSources: false,
   parameters: {},
   explicitParameterIds: new Set(),
   parameterStateBySource: {},
@@ -207,6 +213,13 @@ async function handleChange(event) {
   const element = event.target;
   if (element.id === "workflow-source") {
     await selectSource(element.value);
+    return;
+  }
+  if (element.id === "all-generation-sources") {
+    state.allGenerationSources = element.checked;
+    state.serverFieldErrors = {};
+    state.formError = null;
+    renderPanel();
     return;
   }
   if (element.id === "preset-select") {
@@ -847,6 +860,7 @@ async function logout() {
   state.sources = [];
   state.activeSourceKey = null;
   state.activeSource = null;
+  state.allGenerationSources = false;
   state.parameters = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
@@ -884,7 +898,7 @@ async function enterApplication() {
   ]);
   state.galleryScale = preferences.gallery_scale;
   state.services = services;
-  state.generations = page.items;
+  state.generations = sortGenerationsNewestFirst(page.items);
   state.nextCursor = page.next_cursor;
   state.favorites = [];
   state.favoritesNextCursor = null;
@@ -1086,7 +1100,8 @@ function renderPanel() {
   if (!panel) return;
   const focus = capturePanelFocus(panel);
   const contract = sourceInterface(state.activeSource);
-  const clientErrors = clientValidate(contract, state.parameters);
+  const validationContract = state.allGenerationSources ? comparisonInterface(contract) : contract;
+  const clientErrors = clientValidate(validationContract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
   const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
   panel.innerHTML = generationPanelMarkup(state, selected, contract);
@@ -1162,6 +1177,11 @@ function restorePanelFocus(panel, focus) {
 }
 
 async function generate() {
+  if (state.allGenerationSources) return generateAllSources();
+  return generateSingleSource();
+}
+
+async function generateSingleSource() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -1197,18 +1217,194 @@ async function generate() {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    state.generations = [generation, ...state.generations.filter((item) => item.id !== generation.id)];
+    state.generations = sortGenerationsNewestFirst([
+      generation,
+      ...state.generations.filter((item) => item.id !== generation.id),
+    ]);
     if (
       sourceContextIsCurrent(requestSourceKey, requestRevision) &&
       state.compositionId === requestCompositionId
     ) {
       state.compositionId = null;
     }
-    upsertGalleryCard(generation, true);
+    upsertGalleryCard(generation);
     toast("Generation queued.", "success");
   } catch (error) {
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       toast(`Generation request for the previous source failed: ${error.message}`, "error");
+      return;
+    }
+    state.formError = error.message;
+    state.serverFieldErrors = normalizeParameterErrors(error.fields);
+    focusErrors = Object.keys(state.serverFieldErrors).length > 0;
+    if (["source_republished", "source_unavailable"].includes(error.code)) {
+      const message = error.message;
+      await loadSources();
+      if (state.activeSourceKey === requestSourceKey) state.formError = message;
+    }
+  } finally {
+    state.submitting = false;
+    renderPanel();
+    if (focusErrors) focusFirstInvalid();
+  }
+}
+
+async function generateAllSources() {
+  const contract = sourceInterface(state.activeSource);
+  const requestSourceKey = state.activeSourceKey;
+  const requestRevision = structuredClone(sourceRevision(state.activeSource));
+  const requestCompositionId = state.compositionId;
+  const requestParameters = structuredClone(state.parameters);
+  const sources = state.sources.filter((source) => source.available !== false);
+  if (
+    !requestSourceKey ||
+    !state.activeSource ||
+    !contract ||
+    state.activeSource.available === false ||
+    !sources.length
+  )
+    return;
+
+  const missingSourceRoles = missingComparisonRoles(contract);
+  if (missingSourceRoles.length) {
+    state.formError = `The selected source cannot provide a complete comparison: ${missingSourceRoles.join(", ")}.`;
+    renderPanel();
+    return;
+  }
+
+  const errors = clientValidate(comparisonInterface(contract), requestParameters);
+  if (Object.keys(errors).length) {
+    state.serverFieldErrors = errors;
+    state.formError = "Review the highlighted comparison controls.";
+    renderPanel();
+    focusFirstInvalid();
+    return;
+  }
+
+  state.submitting = true;
+  state.formError = null;
+  state.serverFieldErrors = {};
+  renderPanel();
+  let focusErrors = false;
+  try {
+    const comparisonParameters = comparisonParametersForRequest(
+      contract,
+      requestParameters,
+      contract,
+    );
+    const validation = await api("/api/generations/validate", {
+      method: "POST",
+      body: JSON.stringify({
+        source_key: requestSourceKey,
+        revision: requestRevision,
+        parameters: comparisonParameters,
+      }),
+    });
+    const seedInput = comparisonInputs(contract).find(
+      (input) => input.semantic_role === "seed",
+    );
+    const resolvedSeed = seedInput ? validation.resolved_seeds?.[seedInput.id] : undefined;
+
+    const detailResults = await Promise.allSettled(
+      sources.map(async (summary) => {
+        const key = sourceKey(summary);
+        if (
+          key === requestSourceKey &&
+          sourceInterface(state.activeSource) &&
+          revisionsMatch(summary, state.activeSource)
+        ) {
+          return { ...summary, ...state.activeSource };
+        }
+        return api(`/api/workflows/${encodeURIComponent(key)}`);
+      }),
+    );
+    const queueTargets = [];
+    const failures = [];
+    for (let index = 0; index < detailResults.length; index += 1) {
+      const result = detailResults[index];
+      const summary = sources[index];
+      if (result.status === "rejected") {
+        failures.push({ source: summary, error: result.reason });
+        continue;
+      }
+      const detail = result.value;
+      const targetContract = sourceInterface(detail);
+      if (!targetContract) {
+        failures.push({ source: summary, error: new Error("No public interface is available.") });
+        continue;
+      }
+      const missingRoles = missingComparisonRoles(targetContract);
+      if (missingRoles.length) {
+        failures.push({
+          source: summary,
+          error: new Error(`Does not publish comparison controls for ${missingRoles.join(", ")}.`),
+        });
+        continue;
+      }
+      const payload = {
+        source_key: sourceKey(detail),
+        revision: structuredClone(sourceRevision(detail)),
+        parameters: comparisonParametersForRequest(
+          contract,
+          requestParameters,
+          targetContract,
+          resolvedSeed,
+        ),
+      };
+      if (payload.source_key === requestSourceKey && requestCompositionId) {
+        payload.prompt_assistant_run_id = requestCompositionId;
+      }
+      queueTargets.push({ source: summary, payload });
+    }
+
+    const queueResults = await Promise.allSettled(
+      queueTargets.map(({ payload }) =>
+        api("/api/generations", { method: "POST", body: JSON.stringify(payload) }),
+      ),
+    );
+    const queued = [];
+    for (let index = 0; index < queueResults.length; index += 1) {
+      const result = queueResults[index];
+      if (result.status === "fulfilled") queued.push(result.value);
+      else failures.push({ source: queueTargets[index].source, error: result.reason });
+    }
+
+    if (queued.length) {
+      const queuedIds = new Set(queued.map((generation) => generation.id));
+      const currentById = new Map(state.generations.map((generation) => [generation.id, generation]));
+      state.generations = sortGenerationsNewestFirst([
+        ...queued.map((generation) => currentById.get(generation.id) || generation),
+        ...state.generations.filter((generation) => !queuedIds.has(generation.id)),
+      ]);
+      renderGallery();
+    }
+    if (
+      queued.some((generation) => generation.source_key === requestSourceKey) &&
+      sourceContextIsCurrent(requestSourceKey, requestRevision) &&
+      state.compositionId === requestCompositionId
+    ) {
+      state.compositionId = null;
+    }
+
+    if (failures.length) {
+      const failureSummary = failures
+        .slice(0, 3)
+        .map(({ source, error }) => `${source.display_name}: ${error.message}`)
+        .join(" ");
+      const omitted = failures.length > 3 ? ` ${failures.length - 3} more failed.` : "";
+      state.formError = `Queued ${queued.length} of ${sources.length} generation sources. ${failureSummary}${omitted}`;
+      const activeFailure = failures.find(({ source }) => sourceKey(source) === requestSourceKey);
+      if (activeFailure) {
+        state.serverFieldErrors = normalizeParameterErrors(activeFailure.error.fields);
+        focusErrors = Object.keys(state.serverFieldErrors).length > 0;
+      }
+      toast(state.formError, "error");
+    } else {
+      toast(`${queued.length} generations queued across all available sources.`, "success");
+    }
+  } catch (error) {
+    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      toast(`Comparison request for the previous source failed: ${error.message}`, "error");
       return;
     }
     state.formError = error.message;
@@ -1298,12 +1494,13 @@ async function handleUpload(input) {
 function renderGallery() {
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
+  state.generations = sortGenerationsNewestFirst(state.generations);
   gallery.innerHTML = galleryMarkup(state.generations);
   const sentinel = document.querySelector("#gallery-sentinel");
   if (sentinel) sentinel.hidden = !state.nextCursor;
 }
 
-function upsertGalleryCard(generation, prepend = false) {
+function upsertGalleryCard(generation) {
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
   const empty = gallery.querySelector(".empty-gallery");
@@ -1311,10 +1508,14 @@ function upsertGalleryCard(generation, prepend = false) {
   const existing = gallery.querySelector(`[data-generation-id="${CSS.escape(generation.id)}"]`);
   if (existing) {
     existing.outerHTML = galleryCardMarkup(generation);
-  } else if (prepend) {
-    gallery.insertAdjacentHTML("afterbegin", galleryCardMarkup(generation));
   } else {
-    gallery.insertAdjacentHTML("beforeend", galleryCardMarkup(generation));
+    const index = state.generations.findIndex((item) => item.id === generation.id);
+    const nextGeneration = index >= 0 ? state.generations[index + 1] : null;
+    const nextCard = nextGeneration
+      ? gallery.querySelector(`[data-generation-id="${CSS.escape(nextGeneration.id)}"]`)
+      : null;
+    if (nextCard) nextCard.insertAdjacentHTML("beforebegin", galleryCardMarkup(generation));
+    else gallery.insertAdjacentHTML("beforeend", galleryCardMarkup(generation));
   }
 }
 
@@ -1327,6 +1528,7 @@ async function loadMore() {
     for (const item of page.items) {
       if (!known.has(item.id)) state.generations.push(item);
     }
+    state.generations = sortGenerationsNewestFirst(state.generations);
     state.nextCursor = page.next_cursor;
     renderGallery();
     setupPaginationObserver();
@@ -1356,7 +1558,8 @@ async function refreshGeneration(id) {
     const index = state.generations.findIndex((item) => item.id === id);
     if (index >= 0) state.generations[index] = detail;
     else state.generations.unshift(detail);
-    upsertGalleryCard(detail, index < 0);
+    state.generations = sortGenerationsNewestFirst(state.generations);
+    upsertGalleryCard(detail);
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);
     if (state.photoViewerGenerationId === id) renderPhotoViewer();
@@ -1378,6 +1581,7 @@ async function recall(id) {
   const contract = sourceInterface(source);
   state.activeSourceKey = key;
   state.activeSource = { ...source, interface: contract };
+  state.allGenerationSources = false;
   state.pendingSourceMigration = null;
   state.explicitParameterIds = new Set(
     Object.entries(recalledState.parameters || {})

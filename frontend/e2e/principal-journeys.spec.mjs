@@ -274,6 +274,89 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
 });
 
+test("all generation sources queues compatible comparisons and reports incomplete sources", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("all-source comparison lighthouse");
+  await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("768");
+  await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("1024");
+  await page.getByLabel("Seed mode", { exact: true }).selectOption("fixed");
+  await page.getByLabel("Seed value", { exact: true }).fill("424242");
+
+  const generationRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      generationRequests.push(request.postDataJSON());
+    }
+  });
+
+  await page.getByLabel("All Generation Sources", { exact: true }).check();
+  await expect(page.locator("#workflow-source")).toBeDisabled();
+  await page.getByRole("button", { name: "Generate" }).click();
+  await expect(page.locator("#toast-region")).toContainText("Queued 1 of 2 generation sources.");
+  await expect(page.locator("#toast-region")).toContainText(
+    "Generic Landscape: Does not publish comparison controls for width, height, seed.",
+  );
+  await expect.poll(() => generationRequests.length).toBe(1);
+
+  const kreaRequest = generationRequests[0];
+  expect(kreaRequest).toBeTruthy();
+  expect(kreaRequest.parameters).toEqual({
+    prompt: "all-source comparison lighthouse",
+    width: 768,
+    height: 1024,
+    seed: "424242",
+  });
+  await expect(page.locator(".gallery-card").nth(0)).toContainText("Krea 2 NSFW V4");
+});
+
+test("gallery defaults to request initiation order when the page arrives unsorted", async ({
+  page,
+}) => {
+  await page.route("**/api/generations?limit=24", async (route) => {
+    const generation = (id, acceptedAt, status) => ({
+      id,
+      accepted_at: acceptedAt,
+      status,
+      workflow_display_name: id,
+      artifact_count: 0,
+      image_count: 0,
+      final_artifact_count: 0,
+      display_artifact: null,
+      recall_available: false,
+      cancel_allowed: status === "running",
+      is_favorite: false,
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          generation("oldest", "2026-07-14T12:00:00Z", "succeeded"),
+          generation("newest-active", "2026-07-14T12:02:00Z", "running"),
+          generation("previous", "2026-07-14T12:01:00Z", "succeeded"),
+        ],
+        next_cursor: null,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await expect(page.locator(".gallery-card")).toHaveCount(3);
+  const cardIds = await page
+    .locator(".gallery-card")
+    .evaluateAll((cards) => cards.map((card) => card.dataset.generationId));
+  expect(cardIds).toEqual(["newest-active", "previous", "oldest"]);
+});
+
 test("focused prompt editor keeps canceled drafts isolated and applies long-form edits", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);

@@ -4,11 +4,13 @@ import {
   formatLocalDate,
   interfaceInputs,
   isAdvancedInput,
+  missingComparisonRoles,
   resolutionConstraints,
   resolutionGridConstraints,
   resolutionSummary,
   seedAllowsRandom,
   seedFormValue,
+  sortGenerationsNewestFirst,
   sortInterfaceInputs,
   statusLabel,
 } from "./lib.mjs";
@@ -94,9 +96,11 @@ export function generationPanelMarkup(state, profile, contract) {
   const comfy = state.services.find((item) => item.service === "comfyui");
   const clientErrors = state.fieldErrors || {};
   const sources = state.sources || state.workflows || [];
+  const availableSourceCount = sources.filter((item) => item.available !== false).length;
   const activeKey = state.activeSourceKey || state.activeProfileId;
   const values = state.parameters || state.controls || {};
   const inputs = sortInterfaceInputs(interfaceInputs(contract));
+  const comparisonReady = missingComparisonRoles(contract).length === 0;
   const basic = inputs.filter((item) => !isAdvancedInput(item));
   const advanced = inputs.filter((item) => isAdvancedInput(item));
   const advancedHasError = advanced.some((item) => clientErrors[item.id]);
@@ -109,6 +113,7 @@ export function generationPanelMarkup(state, profile, contract) {
     sourceUnresolved ||
     sourceUnavailable ||
     comfy?.available === false ||
+    (state.allGenerationSources && !comparisonReady) ||
     Object.keys(clientErrors).length > 0;
   const sourceOptions = sources
     .map(
@@ -121,11 +126,25 @@ export function generationPanelMarkup(state, profile, contract) {
     )
     .join("");
   const presets = contract?.presets || [];
+  const sourceSelectorDisabled =
+    !sources.length || state.submitting || state.allGenerationSources;
+  const allSourcesDisabled =
+    !availableSourceCount ||
+    !comparisonReady ||
+    state.submitting ||
+    state.sourceCatalogStatus === "loading";
+  const allSourcesHelp = comparisonReady
+    ? `Queue each compatible source from ${availableSourceCount} available with only the prompt, resolution, and one shared seed.`
+    : "Select a source that publishes prompt, width, height, and seed controls to compare all sources.";
   return `
     <div class="panel-layout">
       <div class="panel-fixed">
-        <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? "Queueing…" : "Generate"}</button>
-        <label class="field compact"><span>Generation source</span><select id="workflow-source" ${sources.length && !state.submitting ? "" : "disabled"}><option value="">${sourceSelectorLabel(state, sources)}</option>${sourceOptions}</select></label>
+        <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (state.allGenerationSources ? `Queueing ${availableSourceCount}…` : "Queueing…") : "Generate"}</button>
+        <label class="field compact"><span>Generation source</span><select id="workflow-source" ${sourceSelectorDisabled ? "disabled" : ""}><option value="">${sourceSelectorLabel(state, sources)}</option>${sourceOptions}</select></label>
+        <div class="all-sources-option">
+          <label><input id="all-generation-sources" type="checkbox" ${state.allGenerationSources ? "checked" : ""} ${allSourcesDisabled ? "disabled" : ""} aria-describedby="all-generation-sources-help" /><span>All Generation Sources</span></label>
+          <p id="all-generation-sources-help">${allSourcesHelp}</p>
+        </div>
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
         ${sourceStateMarkup(state, profile)}
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
@@ -573,7 +592,7 @@ export function galleryMarkup(generations) {
   if (!generations.length) {
     return `<section class="empty-gallery"><h2>No generations yet</h2><p>Choose a source, set a prompt, and queue the first image.</p></section>`;
   }
-  return generations.map(galleryCardMarkup).join("");
+  return sortGenerationsNewestFirst(generations).map(galleryCardMarkup).join("");
 }
 
 export function galleryCardMarkup(generation) {
