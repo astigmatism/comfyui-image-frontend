@@ -2,7 +2,7 @@
 
 ## Scope and invariants
 
-This is one application container for a small trusted network, not a public multi-tenant platform. It uses one FastAPI process, one SQLite database, application-owned files, and in-process asynchronous workers. There is no broker, separate database, workflow editor, model installer, ComfyUI filesystem mount, or direct browser connection to ComfyUI/Ollama.
+This is one application container for a small trusted network, not a public multi-tenant platform. It uses one FastAPI process, one SQLite database, application-owned files, and in-process asynchronous workers. There is no broker, separate database, workflow editor, model installer, ComfyUI filesystem mount, or direct browser connection to ComfyUI, Ollama, or the speech-to-text service.
 
 The principal invariants are:
 
@@ -28,10 +28,13 @@ The principal invariants are:
 - `GenerationService`: owner-scoped API projection, acceptance transaction, recall, cancellation/deletion.
 - `QueueWorker`: durable fair claim, submission, WebSocket/history monitoring, output normalization/archive, recovery.
 - `OllamaAdapter`: router availability validation, model-free non-thinking structured composition, and effective-model provenance.
+- `SpeechToTextAdapter`: bounded authenticated forwarding to an OpenAI-compatible transcription endpoint without persisting recordings.
 - `EventBroker`: low-latency owner-specific SSE fan-out; the database is the replay source.
 - `UserDeletionService`: revocation, active-job reconciliation, row/file cleanup without content disclosure.
 
 FastAPI serves the built frontend after `/api` routes. Public source details are constructed by allowlist; private values are never copied and then redacted.
+
+The browser is the only microphone boundary. One `MediaRecorder` session may be active at a time; stopping it uploads the resulting audio through the authenticated, CSRF-protected application route. The browser never receives speech-service connection details or credentials. Transcribed text is inserted at the saved textarea selection and then follows the same editable state path as typed text. HTTPS is required for browser microphone capture outside localhost.
 
 ## Persistence boundaries
 

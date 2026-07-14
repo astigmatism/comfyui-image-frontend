@@ -452,6 +452,106 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(openEditor).toBeFocused();
 });
 
+test("voice input records and inserts transcripts at the cursor in every prompt surface", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const stream = { getTracks: () => [{ stop() {} }] };
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: async () => stream },
+    });
+    class FakeMediaRecorder {
+      static isTypeSupported() {
+        return true;
+      }
+
+      constructor(_stream, options = {}) {
+        this.mimeType = options.mimeType || "audio/webm";
+        this.state = "inactive";
+        this.ondataavailable = null;
+        this.onerror = null;
+        this.onstop = null;
+      }
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+        queueMicrotask(() => {
+          this.ondataavailable?.({
+            data: new Blob(["deterministic microphone audio"], { type: this.mimeType }),
+          });
+          this.onstop?.();
+        });
+      }
+    }
+    Object.defineProperty(window, "MediaRecorder", {
+      configurable: true,
+      value: FakeMediaRecorder,
+    });
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const promptMic = page.locator('[data-speech-target="control-prompt"]');
+  await prompt.fill("blue sky");
+  await prompt.evaluate((element) => element.setSelectionRange(4, 4));
+  await promptMic.click();
+  await expect(promptMic).toHaveAttribute("aria-label", "Stop recording for Prompt");
+  await expect(promptMic).toHaveClass(/is-recording/);
+  await promptMic.click();
+  await expect(prompt).toHaveValue("blue transcribed speech sky");
+
+  const columnAssistant = page.locator("#prompt-assistant");
+  await columnAssistant.locator("summary").click();
+  const columnDirection = columnAssistant.getByRole("textbox", {
+    name: "Creative direction",
+    exact: true,
+  });
+  const columnDirectionMic = columnAssistant.locator(
+    '[data-speech-target="creative-direction"]',
+  );
+  await columnDirection.fill("soft light");
+  await columnDirection.evaluate((element) => element.setSelectionRange(4, 4));
+  await columnDirectionMic.click();
+  await columnDirectionMic.click();
+  await expect(columnDirection).toHaveValue("soft transcribed speech light");
+
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  const dialog = page.locator("#prompt-editor-dialog");
+  const focusedPrompt = dialog.getByRole("textbox", { name: "Prompt editor" });
+  const focusedPromptMic = dialog.locator('[data-speech-target="prompt-editor-textarea"]');
+  await focusedPrompt.evaluate((element) => {
+    const cursor = element.value.length;
+    element.setSelectionRange(cursor, cursor);
+  });
+  await focusedPromptMic.click();
+  await focusedPromptMic.click();
+  await expect(focusedPrompt).toHaveValue(
+    "blue transcribed speech sky transcribed speech",
+  );
+
+  const focusedDirection = dialog.getByRole("textbox", {
+    name: "Creative direction",
+    exact: true,
+  });
+  const focusedDirectionMic = dialog.locator(
+    '[data-speech-target="prompt-editor-creative-direction"]',
+  );
+  await focusedDirection.evaluate((element) => element.setSelectionRange(0, 0));
+  await focusedDirectionMic.click();
+  await focusedDirectionMic.click();
+  await expect(focusedDirection).toHaveValue(
+    "transcribed speech soft transcribed speech light",
+  );
+});
+
 test("background service polling does not interrupt focused generation controls", async ({ page }) => {
   await page.addInitScript(() => {
     const setInterval = window.setInterval.bind(window);

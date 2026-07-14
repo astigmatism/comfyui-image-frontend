@@ -292,6 +292,15 @@ ComfyUI file references are never accepted from callers. The worker extracts onl
 
 Composition returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation. Prompt Assistant is never invoked implicitly by generation or recall.
 
+## Speech to text
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/speech-to-text/status` | Authenticated voice-input configuration status |
+| `POST` | `/api/speech-to-text/transcriptions` | CSRF-protected browser audio transcription |
+
+The transcription request is multipart with one `file` field whose media type is `audio/*` or `video/webm`. The application rejects empty audio and recordings over `CIF_SPEECH_TO_TEXT_MAX_BYTES`, then forwards the bytes to the configured OpenAI-compatible endpoint. A successful response is `{ "text": "..." }`. Audio is held only for the request and is not persisted; the upstream URL, API key, and raw upstream response remain server-side.
+
 ## Favorites and preferences
 
 | Method | Route | Purpose |

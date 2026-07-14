@@ -676,12 +676,60 @@ code {
   gap: var(--space-2);
 }
 
+.prompt-field-actions,
+.speech-field-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.speech-field-heading {
+  justify-content: space-between;
+}
+
 .prompt-editor-launch {
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
   border-color: var(--border-strong);
   color: var(--text-soft);
+}
+
+.speech-button {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-color: var(--border-strong);
+  color: var(--text-soft);
+}
+
+.speech-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.speech-button.is-recording {
+  border-color: #e36c78;
+  background: #4a2027;
+  color: #ffd7da;
+  animation: speech-recording-pulse 1.25s ease-in-out infinite;
+}
+
+.speech-button.is-transcribing {
+  border-color: #527eb3;
+  background: #172b43;
+  color: #c8e0ff;
+}
+
+@keyframes speech-recording-pulse {
+  50% {
+    box-shadow: 0 0 0 4px rgb(227 108 120 / 18%);
+  }
 }
 
 .prompt-editor-launch svg,

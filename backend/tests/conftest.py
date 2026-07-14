@@ -61,6 +61,8 @@ def settings_factory(tmp_path: Path, fake_services: LiveFakeServer) -> Callable[
             "comfyui_user": "fixture-user",
             "comfyui_workflow_directory": "workflows",
             "ollama_base_url": fake_services.base_url,
+            "speech_to_text_url": f"{fake_services.base_url}/v1/audio/transcriptions",
+            "speech_to_text_api_key": "test-whisper-secret",
             "frontend_dist": Path(__file__).resolve().parents[2] / "frontend" / "dist",
             "dispatch_poll_seconds": 0.02,
             "external_health_interval_seconds": 0.05,

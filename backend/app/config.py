@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     ollama_base_url: str | None = None
     prompt_template_version: str = "v1"
 
+    speech_to_text_url: str | None = None
+    speech_to_text_api_key: SecretStr | None = None
+    speech_to_text_model: str = "whisper-1"
+    speech_to_text_max_bytes: int = 25 * 1024 * 1024
+    speech_to_text_timeout_seconds: float = 120.0
+
     upload_max_bytes: int = 20 * 1024 * 1024
     upload_max_pixels: int = 50_000_000
     thumbnail_max_edge: int = 640
@@ -66,10 +72,18 @@ class Settings(BaseSettings):
     enable_background_worker: bool = True
     test_mode: bool = False
 
-    @field_validator("comfyui_base_url", "ollama_base_url")
+    @field_validator("comfyui_base_url", "ollama_base_url", "speech_to_text_url")
     @classmethod
     def strip_trailing_slash(cls, value: str | None) -> str | None:
         return value.rstrip("/") if value else value
+
+    @field_validator("speech_to_text_model")
+    @classmethod
+    def validate_speech_to_text_model(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("speech-to-text model must not be empty")
+        return normalized
 
     @field_validator("comfyui_workflow_directory")
     @classmethod
@@ -110,11 +124,14 @@ class Settings(BaseSettings):
             "comfyui_api_max_bytes",
             "comfyui_history_max_bytes",
             "comfyui_output_max_bytes",
+            "speech_to_text_max_bytes",
         ):
             if getattr(self, field_name) < 1024:
                 raise ValueError(f"{field_name} must be at least 1024 bytes")
         if self.session_ttl_hours < 1:
             raise ValueError("session_ttl_hours must be positive")
+        if self.speech_to_text_timeout_seconds <= 0:
+            raise ValueError("speech_to_text_timeout_seconds must be positive")
         secret = self.session_secret.get_secret_value()
         if not self.test_mode and len(secret) < 32:
             raise ValueError("CIF_SESSION_SECRET must contain at least 32 random characters")

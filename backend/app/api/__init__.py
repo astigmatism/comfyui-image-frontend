@@ -6,6 +6,7 @@ from . import (
     generations,
     preferences,
     prompt_assistant,
+    speech_to_text,
     uploads,
     workflows,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "generations",
     "preferences",
     "prompt_assistant",
+    "speech_to_text",
     "uploads",
     "workflows",
 ]

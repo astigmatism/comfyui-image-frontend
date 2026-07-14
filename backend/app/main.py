@@ -25,6 +25,7 @@ from .api import (
     generations,
     preferences,
     prompt_assistant,
+    speech_to_text,
     uploads,
     workflows,
 )
@@ -74,6 +75,7 @@ def create_app(
     *,
     comfy_transport: httpx.AsyncBaseTransport | None = None,
     ollama_transport: httpx.AsyncBaseTransport | None = None,
+    speech_to_text_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -81,6 +83,7 @@ def create_app(
         settings,
         comfy_transport=comfy_transport,
         ollama_transport=ollama_transport,
+        speech_to_text_transport=speech_to_text_transport,
     )
 
     @asynccontextmanager
@@ -115,7 +118,7 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
@@ -205,6 +208,7 @@ def create_app(
     app.include_router(workflows.router)
     app.include_router(uploads.router)
     app.include_router(prompt_assistant.router)
+    app.include_router(speech_to_text.router)
     app.include_router(preferences.router)
     app.include_router(generations.router)
     app.include_router(favorites.router)

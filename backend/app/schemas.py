@@ -273,6 +273,15 @@ class PromptAssistantStatus(APIModel):
     message: str | None = None
 
 
+class SpeechToTextStatus(APIModel):
+    available: bool
+    message: str | None = None
+
+
+class TranscriptionResponse(APIModel):
+    text: str
+
+
 class UploadResponse(APIModel):
     id: str
     kind: str

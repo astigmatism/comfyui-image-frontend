@@ -7,6 +7,24 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+export function insertTranscription(value, transcript, selectionStart, selectionEnd) {
+  const source = String(value ?? "");
+  const spoken = String(transcript ?? "").trim();
+  const start = Math.max(0, Math.min(source.length, Number(selectionStart) || 0));
+  const end = Math.max(start, Math.min(source.length, Number(selectionEnd) || start));
+  if (!spoken) return { value: source, cursor: start };
+
+  let insertion = spoken;
+  const before = source[start - 1] || "";
+  const after = source[end] || "";
+  if (before && !/\s/u.test(before) && !/^[,.;:!?)]/u.test(insertion)) insertion = ` ${insertion}`;
+  if (after && !/\s/u.test(after) && !/[([{]$/u.test(insertion)) insertion = `${insertion} `;
+  return {
+    value: `${source.slice(0, start)}${insertion}${source.slice(end)}`,
+    cursor: start + insertion.length,
+  };
+}
+
 export function createLatestRequestGate() {
   let sequence = 0;
   const latest = new Map();

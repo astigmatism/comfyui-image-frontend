@@ -9,6 +9,7 @@ import {
   createLatestRequestGate,
   defaultsForInterface,
   interfaceInputs,
+  insertTranscription,
   migrateInterfaceState,
   missingComparisonRoles,
   normalizeInputValue,
@@ -59,6 +60,7 @@ const state = {
   selectedPreset: null,
   compositionId: null,
   promptAssistant: { mode: "refine", creativeDirection: "", available: false, message: null },
+  speechToText: { available: false, message: null },
   generations: [],
   nextCursor: null,
   loadingMore: false,
@@ -94,6 +96,8 @@ const generationRefreshGate = createLatestRequestGate();
 let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
+let activeSpeechSession = null;
+let speechSessionSequence = 0;
 
 async function initialize() {
   bindDelegatedEvents();
@@ -192,6 +196,7 @@ async function handleClick(event) {
       target.setAttribute("aria-expanded", String(state.panelOpen));
     } else if (action === "close-panel") closePanel();
     else if (action === "open-prompt-editor") openPromptEditor(target);
+    else if (action === "toggle-speech-recording") await toggleSpeechRecording(target);
     else if (action === "cancel-prompt-editor") closePromptEditor("cancel");
     else if (action === "apply-prompt-editor") applyPromptEditor();
     else if (action === "select-prompt-editor-text") selectPromptEditorText();
@@ -345,6 +350,7 @@ function openPromptEditor(button) {
   dialog.returnValue = "";
   dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, state.promptAssistant);
   dialog.showModal();
+  syncSpeechControls();
   queueMicrotask(() => {
     const editor = dialog.querySelector("[data-prompt-editor-input]");
     editor?.focus({ preventScroll: true });
@@ -412,6 +418,266 @@ function updatePromptEditorStats(value) {
   if (characterCount) {
     characterCount.textContent = `${text.length.toLocaleString()} ${text.length === 1 ? "character" : "characters"}`;
   }
+}
+
+function speechCaptureUnavailableMessage() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return "This browser cannot access a microphone from this page.";
+  }
+  if (!("MediaRecorder" in window)) {
+    return "This browser does not support microphone recording.";
+  }
+  return null;
+}
+
+function syncSpeechControls() {
+  const browserMessage = speechCaptureUnavailableMessage();
+  for (const button of root.querySelectorAll('[data-action="toggle-speech-recording"]')) {
+    const targetId = button.dataset.speechTarget;
+    const label = button.dataset.speechLabel || "text";
+    const session = activeSpeechSession;
+    const matchesSession = Boolean(session && session.targetId === targetId);
+    const permanentlyDisabled = button.dataset.speechControlDisabled === "true";
+    let actionLabel = `Start voice input for ${label}`;
+    let title = actionLabel;
+    let disabled =
+      permanentlyDisabled ||
+      !document.getElementById(targetId) ||
+      !state.speechToText.available ||
+      Boolean(browserMessage) ||
+      Boolean(session && !matchesSession);
+
+    button.classList.toggle("is-recording", matchesSession && session.phase === "recording");
+    button.classList.toggle("is-transcribing", matchesSession && session.phase === "transcribing");
+    button.setAttribute(
+      "aria-pressed",
+      String(matchesSession && session.phase === "recording"),
+    );
+    button.removeAttribute("aria-busy");
+
+    if (!state.speechToText.available) {
+      title = state.speechToText.message || "Voice input is unavailable.";
+    } else if (browserMessage) {
+      title = browserMessage;
+    } else if (matchesSession && session.phase === "requesting") {
+      actionLabel = `Cancel microphone request for ${label}`;
+      title = actionLabel;
+      disabled = false;
+      button.setAttribute("aria-busy", "true");
+    } else if (matchesSession && session.phase === "recording") {
+      actionLabel = `Stop recording for ${label}`;
+      title = actionLabel;
+      disabled = false;
+    } else if (matchesSession && session.phase === "transcribing") {
+      actionLabel = `Transcribing voice input for ${label}`;
+      title = actionLabel;
+      disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
+    button.disabled = disabled;
+    button.setAttribute("aria-label", actionLabel);
+    button.title = title;
+  }
+}
+
+async function toggleSpeechRecording(button) {
+  const targetId = button.dataset.speechTarget;
+  const label = button.dataset.speechLabel || "text";
+  const target = document.getElementById(targetId);
+  if (!targetId || !target) return;
+
+  if (activeSpeechSession) {
+    if (activeSpeechSession.targetId !== targetId) return;
+    if (activeSpeechSession.targetElement === target) {
+      activeSpeechSession.selection = textSelection(target);
+    }
+    if (activeSpeechSession.phase === "requesting") discardSpeechSession();
+    else if (activeSpeechSession.phase === "recording") stopSpeechRecording(activeSpeechSession);
+    return;
+  }
+
+  if (!state.speechToText.available) {
+    throw new Error(state.speechToText.message || "Voice input is unavailable.");
+  }
+  const browserMessage = speechCaptureUnavailableMessage();
+  if (browserMessage) throw new Error(browserMessage);
+
+  const session = {
+    id: ++speechSessionSequence,
+    targetId,
+    targetElement: target,
+    label,
+    selection: textSelection(target),
+    phase: "requesting",
+    stream: null,
+    recorder: null,
+    chunks: [],
+    discarded: false,
+  };
+  activeSpeechSession = session;
+  syncSpeechControls();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    session.stream = stream;
+    if (session.discarded || activeSpeechSession !== session) {
+      stopSpeechTracks(stream);
+      return;
+    }
+    const mimeType = preferredRecordingMimeType();
+    const recorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
+    session.recorder = recorder;
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) session.chunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      session.discarded = true;
+      stopSpeechTracks(session.stream);
+      if (activeSpeechSession === session) activeSpeechSession = null;
+      syncSpeechControls();
+      toast("The browser could not record microphone audio.", "error");
+    };
+    recorder.onstop = () => {
+      transcribeSpeechSession(session).catch((error) => {
+        toast(error.message || "Voice input failed.", "error");
+      });
+    };
+    recorder.start();
+    session.phase = "recording";
+    syncSpeechControls();
+  } catch (error) {
+    if (session.discarded && activeSpeechSession !== session) return;
+    session.discarded = true;
+    stopSpeechTracks(session.stream);
+    if (activeSpeechSession === session) activeSpeechSession = null;
+    syncSpeechControls();
+    throw new Error(microphoneErrorMessage(error));
+  }
+}
+
+function textSelection(element) {
+  const fallback = String(element.value ?? "").length;
+  return {
+    start: element.selectionStart ?? fallback,
+    end: element.selectionEnd ?? fallback,
+  };
+}
+
+function preferredRecordingMimeType() {
+  const choices = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus",
+  ];
+  return choices.find((value) => MediaRecorder.isTypeSupported?.(value)) || "";
+}
+
+function stopSpeechRecording(session) {
+  if (session.recorder?.state !== "recording") return;
+  session.phase = "transcribing";
+  syncSpeechControls();
+  try {
+    session.recorder.stop();
+  } catch {
+    session.discarded = true;
+    stopSpeechTracks(session.stream);
+    if (activeSpeechSession === session) activeSpeechSession = null;
+    syncSpeechControls();
+    toast("The browser could not finish the recording.", "error");
+  }
+}
+
+async function transcribeSpeechSession(session) {
+  stopSpeechTracks(session.stream);
+  if (session.discarded) return;
+  const contentType =
+    session.recorder?.mimeType || session.chunks.find((chunk) => chunk.type)?.type || "audio/webm";
+  const recording = new Blob(session.chunks, { type: contentType });
+  if (!recording.size) {
+    finishSpeechSession(session);
+    throw new Error("The recording was empty. Try speaking after the recording indicator appears.");
+  }
+  const file = new File(
+    [recording],
+    `recording-${session.id}.${recordingExtension(contentType)}`,
+    { type: contentType },
+  );
+  try {
+    const result = await upload("/api/speech-to-text/transcriptions", file);
+    if (session.discarded) return;
+    const target = document.getElementById(session.targetId);
+    const dialog = document.querySelector("#prompt-editor-dialog");
+    if (!target || (dialog?.contains(target) && !dialog.open)) {
+      throw new Error("The voice transcript finished after its editor closed and was not inserted.");
+    }
+    const inserted = insertTranscription(
+      target.value,
+      result.text,
+      session.selection.start,
+      session.selection.end,
+    );
+    target.value = inserted.value;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.focus({ preventScroll: true });
+    target.setSelectionRange?.(inserted.cursor, inserted.cursor);
+    toast(`Voice transcript inserted into ${session.label}.`, "success");
+  } finally {
+    finishSpeechSession(session);
+  }
+}
+
+function finishSpeechSession(session) {
+  stopSpeechTracks(session.stream);
+  if (activeSpeechSession === session) activeSpeechSession = null;
+  syncSpeechControls();
+}
+
+function discardSpeechSession() {
+  const session = activeSpeechSession;
+  if (!session) return;
+  session.discarded = true;
+  stopSpeechTracks(session.stream);
+  if (session.recorder && session.recorder.state !== "inactive") {
+    try {
+      session.recorder.stop();
+    } catch {
+      // Tracks are already stopped and the discarded transcript will never be inserted.
+    }
+  }
+  activeSpeechSession = null;
+  syncSpeechControls();
+}
+
+function stopSpeechTracks(stream) {
+  for (const track of stream?.getTracks?.() || []) track.stop();
+}
+
+function recordingExtension(contentType) {
+  if (contentType.includes("ogg")) return "ogg";
+  if (contentType.includes("mp4")) return "m4a";
+  if (contentType.includes("mpeg")) return "mp3";
+  if (contentType.includes("wav")) return "wav";
+  return "webm";
+}
+
+function microphoneErrorMessage(error) {
+  if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+    return "Microphone access was denied. Allow access in the browser and try again.";
+  }
+  if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+    return "No microphone was found.";
+  }
+  return "The browser could not start microphone recording.";
+}
+
+function handlePromptEditorClose(event) {
+  const target = activeSpeechSession
+    ? document.getElementById(activeSpeechSession.targetId)
+    : null;
+  if (target && event.currentTarget.contains(target)) discardSpeechSession();
+  restorePromptEditorFocus(event);
 }
 
 function restorePromptEditorFocus(event) {
@@ -934,11 +1200,12 @@ async function enterApplication() {
   stopLiveUpdates();
   state.sourceCatalogStatus = "loading";
   state.sourceCatalogMessage = null;
-  const [preferences, services, page, assistant] = await Promise.all([
+  const [preferences, services, page, assistant, speechToText] = await Promise.all([
     api("/api/preferences"),
     api("/api/services"),
     api("/api/generations?limit=24"),
     api("/api/prompt-assistant/status"),
+    api("/api/speech-to-text/status"),
   ]);
   state.galleryScale = preferences.gallery_scale;
   state.services = services;
@@ -951,9 +1218,10 @@ async function enterApplication() {
     available: assistant.available,
     message: assistant.message,
   };
+  state.speechToText = speechToText;
   root.innerHTML = shellMarkup(state);
   document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
-  document.querySelector("#prompt-editor-dialog")?.addEventListener("close", restorePromptEditorFocus);
+  document.querySelector("#prompt-editor-dialog")?.addEventListener("close", handlePromptEditorClose);
   renderPanel();
   renderGallery();
   renderServiceBanner();
@@ -1187,6 +1455,7 @@ function renderPanel() {
     }
   }
   restorePanelFocus(panel, focus);
+  syncSpeechControls();
 }
 
 function capturePanelFocus(panel) {
@@ -2155,6 +2424,7 @@ function startLiveUpdates() {
 }
 
 function stopLiveUpdates() {
+  discardSpeechSession();
   state.eventSource?.close();
   state.eventSource = null;
   generationRefreshGate.clear();

@@ -11,6 +11,7 @@ A private image-generation appliance for a trusted home network. It discovers de
 - Owner-scoped image/upload storage with MIME decoding, byte/pixel limits, SHA-256 hashes, and WebP thumbnails.
 - Network-only ComfyUI integration with recursive userdata discovery, strict publication validation, request-local graph compilation, prompt submission, WebSocket/history reconciliation, and safe output retrieval.
 - Optional server-side Prompt Assistant through an Ollama-compatible router with persisted effective-model provenance.
+- Optional browser voice input through a server-side OpenAI-compatible speech-to-text proxy; service credentials never reach the browser.
 - A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, favorites, detail/recall, cancellation, and deletion.
 - Deterministic fake services, backend/frontend/browser tests, production image, Compose example, validation scripts, and maintained API/architecture/schema documentation.
 
@@ -26,8 +27,8 @@ Browser (public source interface + gallery)
        FastAPI application + queue worker
           |             |              |
        SQLite       app-owned       adapters
-       records      files            |     |
-                                  ComfyUI Ollama
+       records      files            |    |    |
+                                  ComfyUI Ollama STT
 ```
 
 The main stack is Python 3.12/3.13, FastAPI, SQLAlchemy/Alembic, SQLite, browser-native ES modules/CSS, authenticated Server-Sent Events, pytest, deterministic HTTP/WebSocket fakes, Node's test runner, and Playwright. See [`docs/architecture.md`](docs/architecture.md) for the component and trust boundaries.
@@ -58,7 +59,7 @@ For production, Docker Compose is the recommended path.
    docker compose -f compose.example.yml logs -f comfyui-image-frontend
    ```
 
-4. Open `http://<appliance-host>:8000` and sign in with the bootstrap administrator. The first sign-in requires a permanent password.
+4. Open `http://<appliance-host>:8000` and sign in with the bootstrap administrator. The first sign-in requires a permanent password. Put the app behind HTTPS before using browser microphone input from a LAN hostname or IP.
 
 Bootstrap variables are read only when the database has no users. Replacing the container does not reset an existing password.
 
@@ -82,9 +83,14 @@ CIF_COMFYUI_WS_URL=ws://comfyui:8188/ws
 CIF_COMFYUI_INSTANCE_ID=home
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
 CIF_OLLAMA_BASE_URL=http://local-ai-ollama-router:11434
+CIF_SPEECH_TO_TEXT_URL=http://192.168.1.22:9000/v1/audio/transcriptions
+CIF_SPEECH_TO_TEXT_API_KEY=replace-with-whisper-api-key
+CIF_SPEECH_TO_TEXT_MODEL=whisper-1
 ```
 
 Do not set `CIF_OLLAMA_MODEL` when using the router. The backend omits the model from `/api/generate`, allowing the router to select its active model, and records the effective model returned in the response. Keep both `/api/tags` and `/api/generate` routed through the router; never point the application at its private upstream Ollama container.
+
+Voice input records in the browser until the microphone button is pressed again, then sends the bounded audio upload to the application. The application adds `CIF_SPEECH_TO_TEXT_API_KEY` and forwards it to the configured OpenAI-compatible transcription endpoint with `model=whisper-1` and `response_format=json`. The recording is not retained. Browser microphone capture requires a secure context: use HTTPS for access by LAN hostname/IP (localhost is the browser-development exception).
 
 ComfyUI and the Ollama router may be unreachable during startup. Accounts and retained history remain available. A last-valid source catalog remains visible as cached/offline, but new dispatch waits for ComfyUI. Only Prompt Assistant depends on the Ollama router.
 
@@ -114,6 +120,8 @@ CIF_COMFYUI_BASE_URL=http://127.0.0.1:8188
 CIF_COMFYUI_INSTANCE_ID=local
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
 CIF_OLLAMA_BASE_URL=http://local-ai-ollama-router:11434
+CIF_SPEECH_TO_TEXT_URL=http://192.168.1.22:9000/v1/audio/transcriptions
+CIF_SPEECH_TO_TEXT_API_KEY=replace-with-whisper-api-key
 ```
 
 Run the source tree:
@@ -241,6 +249,10 @@ With no users, set both bootstrap variables and use a temporary password of at l
 ### Prompt Assistant is unavailable
 
 Verify `CIF_OLLAMA_BASE_URL` points to the Ollama-compatible router, omit `CIF_OLLAMA_MODEL`, and confirm the router exposes at least one model through `/api/tags`. Use the router rather than its private upstream Ollama container. Manual prompt entry and ComfyUI generation are unaffected.
+
+### Voice input is unavailable
+
+Verify `CIF_SPEECH_TO_TEXT_URL` is the complete `/v1/audio/transcriptions` endpoint and `CIF_SPEECH_TO_TEXT_API_KEY` matches the Whisper service. Access the frontend over HTTPS when using a LAN hostname or IP, allow microphone permission in the browser, and confirm the application container can reach the voice host. A speech-to-text outage affects only microphone transcription; typing, Prompt Assistant, and generation remain available.
 
 ### Browser receives 403 on a write
 

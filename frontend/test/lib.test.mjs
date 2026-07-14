@@ -12,6 +12,7 @@ import {
   createLatestRequestGate,
   defaultsForContract,
   defaultsForInterface,
+  insertTranscription,
   migrateInterfaceState,
   missingComparisonRoles,
   normalizeInputValue,
@@ -29,6 +30,21 @@ import {
   sortGenerationsNewestFirst,
   sortInterfaceInputs,
 } from "../src/lib.mjs";
+
+test("voice transcripts insert at or replace the saved text selection", () => {
+  assert.deepEqual(insertTranscription("hello world", "brave", 5, 5), {
+    value: "hello brave world",
+    cursor: 11,
+  });
+  assert.deepEqual(insertTranscription("paint the daytime sky", "nighttime", 10, 17), {
+    value: "paint the nighttime sky",
+    cursor: 19,
+  });
+  assert.deepEqual(insertTranscription("", "  a moonlit lake  ", 0, 0), {
+    value: "a moonlit lake",
+    cursor: 14,
+  });
+});
 
 const publishedInterface = {
   inputs: [

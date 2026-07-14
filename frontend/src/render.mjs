@@ -429,7 +429,7 @@ export function controlMarkup(control, values, contract, errors = {}) {
   }
   if (!field) {
     field = isPrompt
-      ? `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>${input}</div>`
+      ? `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><div class="prompt-field-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div>${input}</div>`
       : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
   }
   const assistant = isPrompt ? promptAssistantMarkup() : "";
@@ -611,7 +611,7 @@ function promptAssistantMarkup() {
   return `<details class="prompt-assistant" id="prompt-assistant">
     <summary>Prompt Assistant</summary>
     <div class="assistant-body">
-      <label class="field"><span>Creative direction</span><textarea id="creative-direction" rows="3"></textarea></label>
+      ${speechTextareaMarkup("creative-direction", "Creative direction", "", 3)}
       <fieldset class="compact-choice"><legend>Mode</legend><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine current prompt</label><label><input type="radio" name="assistant-mode" value="create" /> Create from creative direction</label></fieldset>
       <div id="assistant-message" class="help-text"></div>
       <button type="button" class="button secondary" data-action="compose-prompt">Compose Prompt</button>
@@ -639,6 +639,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
       <div class="prompt-editor-toolbar">
         <div class="prompt-editor-stats" aria-label="Draft statistics"><span data-prompt-word-count>${words.toLocaleString()} ${words === 1 ? "word" : "words"}</span><span aria-hidden="true">·</span><span data-prompt-character-count>${text.length.toLocaleString()} ${text.length === 1 ? "character" : "characters"}</span></div>
         <div class="prompt-editor-tools">
+          ${speechButtonMarkup("prompt-editor-textarea", "Prompt editor")}
           <button type="button" class="button low" data-action="select-prompt-editor-text">Select all</button>
           <button type="button" class="button low" data-action="clear-prompt-editor-text">Clear</button>
         </div>
@@ -647,7 +648,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
       <section class="prompt-editor-assistant" aria-labelledby="prompt-editor-assistant-title">
         <h3 id="prompt-editor-assistant-title">Prompt Assistant</h3>
         <div class="prompt-editor-assistant-controls">
-          <label class="field"><span>Creative direction</span><textarea id="prompt-editor-creative-direction" rows="3">${escapeHtml(creativeDirection)}</textarea></label>
+          ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative direction", creativeDirection, 3)}
           <div class="prompt-editor-assistant-action-row">
             <fieldset class="prompt-editor-assistant-modes"><legend>Mode</legend><div class="prompt-editor-assistant-mode-options"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine current prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> Create from creative direction</label></div></fieldset>
             <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Compose Prompt</button>
@@ -662,6 +663,14 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
       <button type="button" class="button primary" data-action="apply-prompt-editor">Apply</button>
     </footer>
   </form>`;
+}
+
+function speechTextareaMarkup(id, label, value, rows) {
+  return `<div class="field speech-field"><div class="speech-field-heading"><label for="${escapeHtml(id)}">${escapeHtml(label)}</label>${speechButtonMarkup(id, label)}</div><textarea id="${escapeHtml(id)}" rows="${escapeHtml(rows)}">${escapeHtml(value)}</textarea></div>`;
+}
+
+function speechButtonMarkup(targetId, label, controlDisabled = false) {
+  return `<button type="button" class="icon-button speech-button" data-action="toggle-speech-recording" data-speech-target="${escapeHtml(targetId)}" data-speech-label="${escapeHtml(label)}" data-speech-control-disabled="${controlDisabled}" aria-label="Start voice input for ${escapeHtml(label)}" aria-pressed="false" title="Start voice input for ${escapeHtml(label)}" ${controlDisabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7" /></svg></button>`;
 }
 
 export function galleryMarkup(generations) {

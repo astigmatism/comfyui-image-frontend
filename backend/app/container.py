@@ -12,6 +12,7 @@ from .services.event_broker import EventBroker
 from .services.generations import GenerationService
 from .services.ollama import OllamaAdapter
 from .services.queue_worker import QueueWorker
+from .services.speech_to_text import SpeechToTextAdapter
 from .services.user_deletion import UserDeletionService
 from .services.workflow_registry import WorkflowRegistry
 
@@ -23,6 +24,7 @@ class AppContainer:
         *,
         comfy_transport: httpx.AsyncBaseTransport | None = None,
         ollama_transport: httpx.AsyncBaseTransport | None = None,
+        speech_to_text_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.settings = settings
         self.db = Database(settings)
@@ -31,6 +33,10 @@ class AppContainer:
         self.broker = EventBroker()
         self.comfyui = ComfyUIAdapter(settings, transport=comfy_transport)
         self.ollama = OllamaAdapter(settings, transport=ollama_transport)
+        self.speech_to_text = SpeechToTextAdapter(
+            settings,
+            transport=speech_to_text_transport,
+        )
         self.registry = WorkflowRegistry(self.db.session_factory, self.comfyui)
         self.compiler = WorkflowCompiler()
         self.generations = GenerationService(
@@ -61,4 +67,5 @@ class AppContainer:
         await self.worker.stop()
         await self.comfyui.close()
         await self.ollama.close()
+        await self.speech_to_text.close()
         self.db.close()

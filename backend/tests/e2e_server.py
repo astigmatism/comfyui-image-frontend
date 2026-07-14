@@ -34,6 +34,8 @@ def main() -> None:
             comfyui_ws_url=fake.ws_url,
             comfyui_workflow_directory="workflows",
             ollama_base_url=fake.base_url,
+            speech_to_text_url=f"{fake.base_url}/v1/audio/transcriptions",
+            speech_to_text_api_key="e2e-whisper-secret",
             frontend_dist=root / "frontend" / "dist",
             dispatch_poll_seconds=0.02,
             external_health_interval_seconds=0.05,

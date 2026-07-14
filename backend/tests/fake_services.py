@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import (
     FastAPI,
     File,
+    Form,
     HTTPException,
     Request,
     UploadFile,
@@ -102,6 +103,9 @@ class FakeServiceState:
     websocket_clients: dict[str, list[WebSocket]] = field(default_factory=dict)
     submitted: list[dict[str, Any]] = field(default_factory=list)
     ollama_calls: list[dict[str, Any]] = field(default_factory=list)
+    speech_to_text_available: bool = True
+    speech_to_text_result: str = "transcribed speech"
+    speech_to_text_calls: list[dict[str, Any]] = field(default_factory=list)
     uploaded: list[str] = field(default_factory=list)
     comfy_user_headers: list[tuple[str, str | None]] = field(default_factory=list)
     userdata_raw_paths: list[bytes] = field(default_factory=list)
@@ -139,6 +143,9 @@ class FakeServiceState:
         self.websocket_clients.clear()
         self.submitted.clear()
         self.ollama_calls.clear()
+        self.speech_to_text_available = True
+        self.speech_to_text_result = "transcribed speech"
+        self.speech_to_text_calls.clear()
         self.uploaded.clear()
         self.comfy_user_headers.clear()
         self.userdata_raw_paths.clear()
@@ -648,6 +655,28 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             "response": json.dumps({"prompt": composed}),
             "done": True,
         }
+
+    @app.post("/v1/audio/transcriptions")
+    async def speech_to_text(
+        request: Request,
+        file: UploadFile = File(...),
+        model: str = Form(...),
+        response_format: str = Form(...),
+    ) -> dict[str, str]:
+        if not state.speech_to_text_available:
+            raise HTTPException(status_code=503)
+        content = await file.read()
+        state.speech_to_text_calls.append(
+            {
+                "authorization": request.headers.get("authorization"),
+                "filename": file.filename,
+                "content_type": file.content_type,
+                "content": content,
+                "model": model,
+                "response_format": response_format,
+            }
+        )
+        return {"text": state.speech_to_text_result}
 
     return app
 

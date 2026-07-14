@@ -201,9 +201,12 @@ test("prompt is contract-rendered and Prompt Assistant remains collapsed by defa
   assert.doesNotMatch(html, /Positive prompt/);
   assert.match(html, /data-action="open-prompt-editor"/);
   assert.match(html, /aria-label="Open focused prompt editor"/);
+  assert.match(html, /data-speech-target="control-prompt-text"/);
+  assert.match(html, /aria-label="Start voice input for Prompt"/);
   assert.ok(html.indexOf('data-action="open-prompt-editor"') < html.indexOf('data-control-id="prompt.text"'));
   assert.match(html, /data-control-id="prompt.text"[^>]*rows="10"/);
   assert.match(html, /<details class="prompt-assistant" id="prompt-assistant">/);
+  assert.match(html, /data-speech-target="creative-direction"/);
   assert.doesNotMatch(html, /<details[^>]+open/);
   assert.match(html, /Compose Prompt/);
 });
@@ -217,6 +220,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   });
   assert.match(html, /<h2 id="prompt-editor-title">Focused prompt editor<\/h2>/);
   assert.match(html, /aria-label="Prompt editor"/);
+  assert.match(html, /data-speech-target="prompt-editor-textarea"/);
   assert.match(html, />One &lt;two&gt;\nthree<\/textarea>/);
   assert.match(html, />3 words<\/span>/);
   assert.match(html, />15 characters<\/span>/);
@@ -224,6 +228,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /data-action="clear-prompt-editor-text"/);
   assert.match(html, /<h3 id="prompt-editor-assistant-title">Prompt Assistant<\/h3>/);
   assert.match(html, /id="prompt-editor-creative-direction"[^>]*>Moody &lt;light&gt;<\/textarea>/);
+  assert.match(html, /data-speech-target="prompt-editor-creative-direction"/);
   assert.match(html, /name="prompt-editor-assistant-mode" value="create" checked/);
   assert.match(html, /class="prompt-editor-assistant-action-row"/);
   assert.match(html, /class="help-text prompt-editor-assistant-message"[^>]*aria-live="polite"/);
