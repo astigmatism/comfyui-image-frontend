@@ -3,7 +3,11 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from app.domain.publication import parse_json_object, validate_publication
+from app.domain.publication import (
+    EDITABLE_WORKFLOW_DRIFT_WARNING,
+    parse_json_object,
+    validate_publication,
+)
 from app.errors import ContractError
 from tests.publication_fixtures import (
     KREA_PUBLICATION_ID,
@@ -36,7 +40,7 @@ def test_krea_like_publication_validates_exact_bytes_and_safe_public_interface()
     assert publication.display_name == "Krea 2 NSFW V4"
     assert publication.workflow_sha256 == hashlib.sha256(bundle.workflow_bytes).hexdigest()
     assert publication.api_sha256 == hashlib.sha256(bundle.api_bytes).hexdigest()
-    assert publication.node_count == 10
+    assert publication.node_count == 11
     assert publication.readiness == "ready"
     assert publication.warnings == ()
     inputs = publication.public_interface["inputs"]
@@ -46,12 +50,30 @@ def test_krea_like_publication_validates_exact_bytes_and_safe_public_interface()
         "height",
         "seed",
         "enable_seedvr2_upscale",
-        "knpv4_1_strength",
+        "lora",
+        "lora_strength",
     ]
     assert sum(not value["advanced"] for value in inputs) == 5
     assert inputs[-1]["advanced"] is True
     assert inputs[3]["default"] is None
     assert inputs[3]["maximum"] == 1125899906842624
+    choice = inputs[-2]
+    assert choice["default"] == "knp_v4_1"
+    assert choice["choices"] == [
+        {"value": "knp_v4_1", "label": "KNP v4.1", "default_strength": 1.0},
+        {"value": "knp_v3_1", "label": "KNP v3.1", "default_strength": 0.5},
+        {"value": "knp_v2", "label": "KNP v2", "default_strength": 1.0},
+        {
+            "value": "mysticxxx_krea2_v1",
+            "label": "MysticXXX Krea2 v1",
+            "default_strength": 1.0,
+        },
+    ]
+    assert all(
+        set(option) <= {"value", "label", "default_strength"} for option in choice["choices"]
+    )
+    assert "options_json" not in str(publication.public_interface)
+    assert "safetensors" not in str(publication.public_interface)
     assert [
         (value["id"], value["role"], value["kind"], value["cardinality"])
         for value in publication.public_interface["outputs"]
@@ -63,6 +85,179 @@ def test_krea_like_publication_validates_exact_bytes_and_safe_public_interface()
     assert "native_outputs" not in publication.public_interface
     assert len(publication.private_contract["native_outputs"]) == 4
     assert all("bindings" not in value and "instance_uuid" not in value for value in inputs)
+
+
+@pytest.mark.parametrize("size", [1, 100])
+def test_choice_contract_accepts_nonempty_bounded_unique_public_options(size: int) -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        choice = manifest["interface"]["inputs"][-2]
+        choice["choices"] = [
+            {"value": f"option_{index}", "label": f"Option {index}"} for index in range(size)
+        ]
+        choice["default"] = "option_0"
+
+    publication = validate(build_publication_bundle(mutate_manifest=mutate))
+
+    choice = publication.public_interface["inputs"][-2]
+    assert len(choice["choices"]) == size
+    assert choice["default"] == "option_0"
+
+
+@pytest.mark.parametrize("size", [0, 101])
+def test_choice_contract_rejects_empty_or_oversized_option_lists(size: int) -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        choice = manifest["interface"]["inputs"][-2]
+        choice["choices"] = [
+            {"value": f"option_{index}", "label": f"Option {index}"} for index in range(size)
+        ]
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert ".choices must contain 1 to 100 entries" in exc.value.message
+
+
+def test_choice_contract_rejects_duplicate_public_values() -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        choices = manifest["interface"]["inputs"][-2]["choices"]
+        choices[1]["value"] = choices[0]["value"]
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert "duplicate value" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["KNP_v4_1", "1st_option", "knp-v4-1", "private/path", "a" * 65],
+)
+def test_choice_contract_rejects_unsafe_public_values(value: str) -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["choices"][0]["value"] = value
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert "valid public ID" in exc.value.message
+
+
+@pytest.mark.parametrize("default", [None, 1, True, ["knp_v4_1"]])
+def test_choice_contract_requires_a_string_default(default) -> None:  # type: ignore[no-untyped-def]
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["default"] = default
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert ".default must be a string" in exc.value.message
+
+
+@pytest.mark.parametrize("default", ["", "KNP v4.1", "missing_choice"])
+def test_choice_contract_requires_default_membership(default: str) -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["default"] = default
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert "must match exactly one choice value" in exc.value.message
+
+
+@pytest.mark.parametrize("label", ["", "  \t\n"])
+def test_choice_contract_rejects_blank_labels(label: str) -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["choices"][0]["label"] = label
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert "label" in exc.value.message
+
+
+@pytest.mark.parametrize("default_strength", [True, False, None, "0.5", float("inf")])
+def test_choice_contract_rejects_nonfinite_boolean_or_nonnumeric_default_strength(
+    default_strength,
+) -> None:  # type: ignore[no-untyped-def]
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["choices"][0]["default_strength"] = default_strength
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+
+
+@pytest.mark.parametrize(
+    "private_field",
+    ["binding", "bindings", "path", "prompt_path", "node_id", "lora_name", "options_json"],
+)
+def test_choice_contract_rejects_private_or_binding_fields(private_field: str) -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["choices"][0][private_field] = "secret"
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert "unsupported or private field" in exc.value.message
+    assert "secret" not in exc.value.message
+
+
+def test_choice_contract_rejects_nonobject_entries() -> None:
+    def mutate(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["interface"]["inputs"][-2]["choices"][0] = "knp_v4_1"
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate))
+
+    assert exc.value.code == "manifest_invalid"
+    assert "must be an object" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda manifest, api: manifest["interface"]["inputs"][-2]["bindings"][0].__setitem__(
+            "input", "options_json"
+        ),
+        lambda manifest, api: (
+            manifest["interface"]["inputs"][-2]["bindings"][0].__setitem__("node_id", "20"),
+            manifest["interface"]["inputs"][-2]["bindings"][0].__setitem__("input", "lora_name"),
+        ),
+        lambda manifest, api: (
+            api["202"].__setitem__("class_type", "CIFTextParameter"),
+            manifest["interface"]["inputs"][-2]["bindings"][0].__setitem__(
+                "class_type", "CIFTextParameter"
+            ),
+        ),
+    ],
+)
+def test_choice_binding_must_target_cif_choice_parameter_value(mutation) -> None:  # type: ignore[no-untyped-def]
+    def mutate_artifacts(manifest, _workflow, api) -> None:  # type: ignore[no-untyped-def]
+        mutation(manifest, api)
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_artifacts=mutate_artifacts))
+
+    assert exc.value.code == "manifest_invalid"
+
+
+def test_choice_binding_runtime_value_must_be_string_typed() -> None:
+    object_info = object_info_fixture()
+    object_info["CIFChoiceParameter"]["input"]["required"]["value"] = ["INT"]
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(), object_info=object_info)
+
+    assert exc.value.code == "manifest_invalid"
+    assert "runtime input type" in exc.value.message
 
 
 def test_manifest_output_type_is_normalized_to_contract_kind() -> None:
@@ -116,6 +311,7 @@ def test_second_generic_source_has_independent_contract_and_declared_output() ->
     assert publication.readiness == "ready"
     assert "native_outputs" not in publication.public_interface
     assert set(publication.private_contract["native_outputs"]) == {"120", "130"}
+    assert all(value["type"] != "choice" for value in publication.public_interface["inputs"])
 
 
 @pytest.mark.parametrize(
@@ -389,15 +585,127 @@ def test_source_id_and_adjacent_stems_must_match_listing(mutation) -> None:  # t
     assert exc.value.code == "manifest_invalid"
 
 
-@pytest.mark.parametrize(
-    ("artifact", "code"),
-    [("workflow", "workflow_hash_mismatch"), ("api", "api_hash_mismatch")],
-)
-def test_hashes_cover_exact_raw_artifact_bytes(artifact: str, code: str) -> None:
-    bundle = build_publication_bundle(corrupt=artifact)
+def test_editable_workflow_hash_drift_is_a_nonfatal_structured_warning() -> None:
+    bundle = build_publication_bundle(corrupt="workflow")
     # A trailing newline preserves valid JSON but changes the authoritative exact bytes.
+
+    publication = validate(bundle)
+
+    assert publication.readiness == "ready_with_warnings"
+    assert publication.warnings == (EDITABLE_WORKFLOW_DRIFT_WARNING,)
+    assert publication.private_contract["warnings"] == [EDITABLE_WORKFLOW_DRIFT_WARNING]
+    assert publication.workflow_sha256 == bundle.manifest()["workflow"]["sha256"]
+    assert publication.observed_workflow_sha256 == hashlib.sha256(bundle.workflow_bytes).hexdigest()
+    assert publication.observed_workflow_sha256 != publication.workflow_sha256
+    assert publication.editable_workflow_drifted is True
+    assert publication.api_document == bundle.api()
+
+
+def test_editable_workflow_drift_is_appended_to_valid_publisher_warnings() -> None:
+    bundle = build_publication_bundle(
+        corrupt="workflow",
+        mutate_manifest=lambda manifest: manifest.__setitem__(
+            "warnings", [{"message": "Publisher-authored warning."}]
+        ),
+    )
+
+    publication = validate(bundle)
+
+    assert publication.warnings == (
+        "Publisher-authored warning.",
+        EDITABLE_WORKFLOW_DRIFT_WARNING,
+    )
+
+
+def test_api_hash_mismatch_remains_a_hard_rejection() -> None:
+    bundle = build_publication_bundle(corrupt="api")
+
     with pytest.raises(ContractError) as exc:
         validate(bundle)
+
+    assert exc.value.code == "api_hash_mismatch"
+
+
+def test_api_hash_mismatch_remains_fatal_when_editable_workflow_also_drifted() -> None:
+    workflow_drifted = build_publication_bundle(corrupt="workflow")
+    both_drifted = PublicationBundle(
+        **{**workflow_drifted.__dict__, "api_bytes": workflow_drifted.api_bytes + b"\n"}
+    )
+
+    with pytest.raises(ContractError) as exc:
+        validate(both_drifted)
+
+    assert exc.value.code == "api_hash_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutate_artifacts", "mutate_manifest", "code"),
+    [
+        (
+            lambda manifest, workflow, api: api["202"].pop("inputs"),
+            None,
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest["api"].__setitem__("node_count", 999),
+            "api_node_count_mismatch",
+        ),
+        (
+            None,
+            lambda manifest: manifest["interface"]["inputs"][-2]["bindings"][0].__setitem__(
+                "node_id", "999"
+            ),
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest["interface"]["inputs"][-2]["choices"].__setitem__(0, {}),
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest["interface"]["inputs"][-2].__setitem__(
+                "type", "future-choice"
+            ),
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest["interface"]["outputs"][-1].__setitem__("type", "text"),
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest["dependencies"]["class_types"].remove("CIFChoiceParameter"),
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest.__setitem__("source_id", "workflows/other/source.json"),
+            "manifest_invalid",
+        ),
+        (
+            None,
+            lambda manifest: manifest.__setitem__(
+                "contract_schema", "comfyui-image-frontend.interface/v2"
+            ),
+            "unsupported_contract_schema",
+        ),
+    ],
+)
+def test_editable_workflow_drift_does_not_relax_frozen_contract_validation(
+    mutate_artifacts, mutate_manifest, code: str
+) -> None:  # type: ignore[no-untyped-def]
+    bundle = build_publication_bundle(
+        corrupt="workflow",
+        mutate_artifacts=mutate_artifacts,
+        mutate_manifest=mutate_manifest,
+    )
+
+    with pytest.raises(ContractError) as exc:
+        validate(bundle)
+
     assert exc.value.code == code
 
 

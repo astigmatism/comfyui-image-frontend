@@ -171,6 +171,16 @@ def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
                 if public_input.get("default_mode") == "random"
                 else str(public_input.get("default"))
             )
+        elif public_input.get("type") == "choice":
+            public_input["choices"] = [
+                {
+                    key: copy.deepcopy(choice[key])
+                    for key in ("value", "label", "default_strength")
+                    if key in choice
+                }
+                for choice in raw.get("choices", [])
+                if isinstance(choice, Mapping)
+            ]
         inputs.append(public_input)
     outputs: list[dict[str, Any]] = []
     for raw in contract.get("outputs", []):

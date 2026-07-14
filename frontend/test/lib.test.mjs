@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyChoiceStrengthDefaults,
   clientValidate,
+  choiceStrengthCompanion,
   controlPresentation,
   createLatestRequestGate,
   defaultsForContract,
@@ -91,6 +93,40 @@ const publishedInterface = {
       group: "Finishing",
       order: 50,
       advanced: false,
+    },
+  ],
+};
+
+const choiceInterface = {
+  inputs: [
+    {
+      id: "lora",
+      label: "LoRA",
+      type: "choice",
+      default: "knp_v4_1",
+      semantic_role: "lora",
+      advanced: true,
+      group: "Advanced",
+      order: 55,
+      choices: [
+        { value: "knp_v4_1", label: "KNP v4.1", default_strength: 1 },
+        { value: "knp_v3_1", label: "KNP v3.1", default_strength: 0.5 },
+        { value: "knp_v2", label: "KNP v2", default_strength: 1 },
+        { value: "mysticxxx_krea2_v1", label: "MysticXXX Krea2 v1", default_strength: 1 },
+      ],
+    },
+    {
+      id: "lora_strength",
+      label: "LoRA Strength",
+      type: "number",
+      default: 1,
+      semantic_role: "lora",
+      minimum: 0,
+      maximum: 2,
+      step: 0.05,
+      advanced: true,
+      group: "Advanced",
+      order: 60,
     },
   ],
 };
@@ -322,4 +358,108 @@ test("republished sources retain values only when public id and type still match
   const reconciled = reconcileInterfaceValues(publishedInterface, values, previous);
   assert.equal(reconciled.prompt, "retained");
   assert.deepEqual(reconciled.seed, { mode: "random", value: "0" });
+});
+
+test("choice defaults and requests use stable public values", () => {
+  const values = defaultsForInterface(choiceInterface);
+  assert.deepEqual(values, { lora: "knp_v4_1", lora_strength: 1 });
+  assert.deepEqual(clientValidate(choiceInterface, values), {});
+  assert.deepEqual(parametersForRequest(choiceInterface, values), values);
+
+  values.lora = "knp_v3_1";
+  const initialized = applyChoiceStrengthDefaults(choiceInterface, values, ["lora"], "lora");
+  assert.deepEqual(initialized, { lora: "knp_v3_1", lora_strength: 0.5 });
+  assert.deepEqual(parametersForRequest(choiceInterface, initialized), initialized);
+});
+
+test("choice validation rejects empty, labeled, unknown, and private-looking values", () => {
+  const required = {
+    inputs: [{ ...choiceInterface.inputs[0], required: true }],
+  };
+  assert.match(clientValidate(required, { lora: null }).lora, /Required/);
+  assert.match(clientValidate(required, { lora: "" }).lora, /knp_v4_1/);
+  for (const value of ["", "KNP v3.1", "unknown", "Krea2/KNPV4.1_pre.safetensors"]) {
+    const error = clientValidate(choiceInterface, { lora: value }).lora;
+    assert.match(error, /knp_v4_1/);
+    assert.doesNotMatch(error, /safetensors|Krea2\//);
+  }
+});
+
+test("choice strength hints initialize companions without replacing explicit overrides", () => {
+  assert.equal(choiceStrengthCompanion(choiceInterface, choiceInterface.inputs[0]).id, "lora_strength");
+  const selected = { lora: "knp_v3_1", lora_strength: 1 };
+  assert.equal(
+    applyChoiceStrengthDefaults(choiceInterface, selected, ["lora"], "lora").lora_strength,
+    0.5,
+  );
+  assert.equal(
+    applyChoiceStrengthDefaults(
+      choiceInterface,
+      { ...selected, lora_strength: 0.7 },
+      ["lora", "lora_strength"],
+      "lora",
+    ).lora_strength,
+    0.7,
+  );
+
+  const withoutHint = structuredClone(choiceInterface);
+  delete withoutHint.inputs[0].choices[1].default_strength;
+  assert.equal(
+    applyChoiceStrengthDefaults(withoutHint, selected, ["lora"], "lora").lora_strength,
+    1,
+  );
+
+  const semanticFallback = structuredClone(choiceInterface);
+  semanticFallback.inputs[1].id = "model_weight";
+  assert.equal(
+    choiceStrengthCompanion(semanticFallback, semanticFallback.inputs[0]).id,
+    "model_weight",
+  );
+  const ambiguousChoices = structuredClone(semanticFallback);
+  ambiguousChoices.inputs.push({
+    ...structuredClone(ambiguousChoices.inputs[0]),
+    id: "secondary_lora",
+  });
+  assert.equal(choiceStrengthCompanion(ambiguousChoices, ambiguousChoices.inputs[0]), null);
+  assert.equal(choiceStrengthCompanion(ambiguousChoices, ambiguousChoices.inputs[2]), null);
+  const mismatchedExact = structuredClone(choiceInterface);
+  mismatchedExact.inputs[1].semantic_role = "unrelated_strength";
+  assert.equal(choiceStrengthCompanion(mismatchedExact, mismatchedExact.inputs[0]), null);
+  semanticFallback.inputs.push({ id: "clip_weight", type: "number", semantic_role: "lora" });
+  assert.equal(choiceStrengthCompanion(semanticFallback, semanticFallback.inputs[0]), null);
+});
+
+test("choice reconciliation retains only values still declared by the current publication", () => {
+  const previous = structuredClone(choiceInterface);
+  const retained = reconcileInterfaceValues(
+    choiceInterface,
+    { lora: "knp_v3_1", lora_strength: 0.7 },
+    previous,
+    ["lora", "lora_strength"],
+  );
+  assert.deepEqual(retained, { lora: "knp_v3_1", lora_strength: 0.7 });
+
+  const republished = structuredClone(choiceInterface);
+  republished.inputs[0].default = "knp_v2";
+  republished.inputs[0].choices = republished.inputs[0].choices.filter(
+    (option) => option.value !== "knp_v3_1",
+  );
+  const reset = reconcileInterfaceValues(
+    republished,
+    { lora: "knp_v3_1", lora_strength: 1 },
+    previous,
+    ["lora"],
+  );
+  assert.deepEqual(reset, { lora: "knp_v2", lora_strength: 1 });
+  assert.equal(
+    reconcileInterfaceValues(choiceInterface, { lora: null }, null).lora,
+    "knp_v4_1",
+  );
+
+  const changedType = structuredClone(previous);
+  changedType.inputs[0].type = "string";
+  assert.equal(
+    reconcileInterfaceValues(choiceInterface, { lora: "knp_v2" }, changedType).lora,
+    "knp_v4_1",
+  );
 });

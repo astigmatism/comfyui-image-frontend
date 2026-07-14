@@ -32,9 +32,9 @@ make validate-available
 
 `backend/tests/publication_fixtures.py` builds exact-byte three-file bundles with two different public interfaces. Hashes are calculated after deliberate fixture mutation so tests can distinguish a valid changed publication from raw-byte corruption. The fixtures include:
 
-- the six-input Krea-compatible shape with five Basic fields, one Advanced number, a large random seed range, workflow metadata attachment, and three connected publishers (`base`, `second_pass`, `final`);
+- the seven-input Krea-compatible shape with five Basic fields, an Advanced finite LoRA choice plus companion strength, a large random seed range, workflow metadata attachment, and three connected publishers (`base`, `second_pass`, `final`);
 - a different generic source with independently bound publisher declarations;
-- exact manifest/workflow/API paths and hashes, node count, dependencies, bindings, public metadata, warnings, and runtime policy;
+- exact manifest/workflow/API paths and recorded hashes, strict frozen API integrity, editable-drift warnings, node count, dependencies, bindings, public metadata, warnings, and runtime policy;
 - mutation hooks for invalid paths/schemas/IDs/bindings/hashes/count/dependencies and republish behavior.
 
 Tests must remain general: they may prove the Krea compatibility target but cannot make its publication ID, hashes, node IDs, dependency count, or control set the catalog implementation.
@@ -43,21 +43,21 @@ Tests must remain general: they may prove the Krea compatibility target but cann
 
 The publication/registry/adapter/compiler/result tests cover:
 
-- strict JSON, schemas, size limits, safe `workflows/` paths, adjacent stems/source agreement, raw-byte hashes, and graph node count;
+- strict JSON, schemas, size limits, safe `workflows/` paths, adjacent stems/source agreement, warning-only editable byte drift, fail-closed frozen API raw-byte hashes, and API graph node count;
 - recursive preferred/fallback userdata listing, `Comfy-User`, whole-path single-segment encoding, and bounded listing/object-info/artifact/history/output responses;
 - empty and multiple-source catalogs, independent candidate failures, safe diagnostics, warning readiness, missing dependencies, last-valid cache, bad republish retention, and revision retirement;
-- all five v1 input types, public IDs, defaults/ranges/steps, required/optional rules, one positive prompt, and trusted CIF binding/class matching;
-- unknown/private-field rejection, canonical large seed strings, random seed bounds, exact effective values, multi-binding patching, cached-graph immutability, and compilation isolation;
+- all six v1 input types, finite choice membership/labels/default-strength hints, public IDs, defaults/ranges/steps, required/optional rules, one positive prompt, and trusted CIF binding/class matching;
+- unknown/private-field rejection, choice-specific companion-strength precedence, canonical large seed strings, random seed bounds, exact effective values, multi-binding patching, cached-graph immutability, and compilation isolation;
 - exact list-shaped publisher history normalization, authoritative `artifacts[].batch_index`, multiple declared roles and batches, untouched node-keyed nonpublisher results, runtime independence from `native_outputs`, publisher mismatch errors, status/error/warning preservation, and public removal of only top-level native prompt/extra-data graph envelopes;
 - file-reference allowlists, asset path safety, status transitions, and owner-specific event serialization.
 
-Frontend unit/render tests cover source-driven control ordering and defaults, Advanced disclosure, all input types, absence of invented controls, BigInt-safe seed behavior, revision-aware request payloads, field errors, loading/ready/warning/offline/unavailable/empty states, multiple artifacts, unmapped output provenance, recall, favorites, and accessible markup.
+Frontend unit/render tests cover source-driven control ordering and defaults, Advanced disclosure, all input types, finite single-select choices, stale-option reconciliation, absence of invented controls, BigInt-safe seed behavior, revision-aware request payloads, field errors, loading/ready/warning/offline/unavailable/empty states, multiple artifacts, unmapped output provenance, recall, favorites, and accessible markup.
 
 ## Integration coverage
 
 Integration tests run the real FastAPI lifespan against temporary SQLite/data directories and deterministic fake ComfyUI/Ollama HTTP/WebSocket services. Relevant scenarios include:
 
-- startup/administrator discovery through publication bundles and precise diagnostics;
+- startup/administrator discovery through publication bundles and precise diagnostics, including both current sources surviving editable-only drift as `ready_with_warnings` across refresh;
 - preferred and fallback userdata route compatibility plus nested retrieval;
 - exact source descriptor privacy (no bindings, graphs, node IDs, paths, or dependencies);
 - revision mismatch and invalid republish behavior;
@@ -104,14 +104,15 @@ python3 scripts/generate_traceability.py --check
 
 Automated tests never require household services. For a live check, configure `.env`, start the app, and use only ComfyUI network APIs—not the server filesystem:
 
-1. Refresh **Administration → Workflow diagnostics** and record the accepted publication ID/hashes and warnings.
+1. Refresh **Administration → Workflow diagnostics** and record the accepted publication ID/hashes and warnings. If editable bytes changed after publication, confirm the source remains accepted as `ready_with_warnings`; an API hash mismatch must still be rejected.
 2. Confirm the source's public interface contains only manifest inputs and no bindings/node data.
 3. Queue a low-cost/base-path request with expensive optional branches disabled.
 4. Record the native `prompt_id`; wait for bounded history reconciliation.
 5. Inspect effective parameters/concrete seed, graph-envelope-safe raw history, raw ComfyUI status/error details, ordered declared output list, untouched unmapped output map, and every retained batch artifact; confirm top-level submitted prompt/extra-data graphs are absent but custom result fields remain.
 6. Replay the concrete seed only after the base path succeeds; compare within the limits of the pinned graph/models/runtime/hardware.
-7. With that seed and the remaining controls pinned, run the Krea publication once with `knpv4_1_strength=0` and once with `knpv4_1_strength=1`; confirm each effective value and compare the retained results.
-8. Run the Krea publication with `enable_seedvr2_upscale=true`; confirm the effective Boolean, native branch behavior, complete history outputs, and retained artifacts.
-9. Submit two deliberately different concurrent requests and confirm parameters, graphs, prompt IDs, status, and files do not cross.
+7. After Krea has been republished, confirm `lora` exposes only the published option values/labels and that `knpv4_1_strength` is absent.
+8. With a concrete seed pinned, run the saved default choice and one nondefault choice; confirm effective public IDs, choice-specific/default or explicit `lora_strength`, and unchanged exhaustive output behavior.
+9. Run the Krea publication with `enable_seedvr2_upscale=true`; confirm the effective Boolean, native branch behavior, complete history outputs, and retained artifacts.
+10. Submit two deliberately different concurrent requests and confirm choices, strengths, graphs, prompt IDs, status, and files do not cross.
 
 Do not claim live end-to-end completion unless the exact latest publication was discovered, queued through `/prompt`, reconciled through `/history/{prompt_id}`, and its `/view` assets were retained. Report the exact prompt ID and result. If the live server is unavailable, state that and report deterministic commands/results plus this remaining procedure.

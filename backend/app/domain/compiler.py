@@ -103,7 +103,9 @@ class WorkflowCompiler:
             value = requested_controls.get(input_id, _MISSING)
             required = bool(declaration.get("required"))
             input_type = declaration.get("type")
-            missing_value = value is _MISSING or value is None or value == ""
+            missing_value = (
+                value is _MISSING or value is None or (value == "" and input_type != "choice")
+            )
             if required and (not supplied or missing_value):
                 errors[input_id] = "This published parameter is required."
                 continue
@@ -126,6 +128,27 @@ class WorkflowCompiler:
                 effective[input_id] = _validate_value(declaration, value)
             except ValueError as exc:
                 errors[input_id] = str(exc)
+
+        for strength_id, choice_id in _choice_companions(inputs).items():
+            if strength_id in errors or choice_id in errors:
+                continue
+            explicitly_supplied = (
+                strength_id in requested_controls and requested_controls[strength_id] is not None
+            )
+            if explicitly_supplied:
+                continue
+            selected_choice = effective.get(choice_id)
+            if not isinstance(selected_choice, str):
+                continue
+            choice_default = _choice_default_strength(inputs[choice_id], selected_choice)
+            if choice_default is _MISSING:
+                choice_default = inputs[strength_id].get("default", _MISSING)
+            if choice_default is _MISSING:
+                continue
+            try:
+                effective[strength_id] = _validate_value(inputs[strength_id], choice_default)
+            except ValueError as exc:
+                errors[strength_id] = str(exc)
         if errors:
             raise AppError(
                 "parameter_validation_failed",
@@ -158,6 +181,11 @@ class WorkflowCompiler:
                     raise ContractError(
                         "manifest_invalid",
                         f"Parameter {input_id!r} binding is no longer resolvable.",
+                    )
+                if declaration.get("type") == "choice" and input_name != "value":
+                    raise ContractError(
+                        "manifest_invalid",
+                        f"Choice parameter {input_id!r} does not target its declaration value.",
                     )
                 node_inputs = node.get("inputs")
                 if not isinstance(node_inputs, dict) or input_name not in node_inputs:
@@ -272,7 +300,83 @@ def _validate_value(declaration: Mapping[str, Any], value: Any) -> Any:
             declaration.get("step"),
         )
         return value
+    if input_type == "choice":
+        options = _choice_options(declaration)
+        if not isinstance(value, str) or value not in options:
+            raise ValueError(f"Choose one of: {', '.join(options)}.")
+        return value
     raise ContractError("manifest_invalid", f"Unsupported accepted input type {input_type!r}.")
+
+
+def _choice_options(
+    declaration: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    raw_choices = declaration.get("choices")
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise ContractError("manifest_invalid", "Accepted choice contract is invalid.")
+    result: dict[str, Mapping[str, Any]] = {}
+    for option in raw_choices:
+        if not isinstance(option, Mapping) or not isinstance(option.get("value"), str):
+            raise ContractError("manifest_invalid", "Accepted choice contract is invalid.")
+        public_id = option["value"]
+        if public_id in result:
+            raise ContractError("manifest_invalid", "Accepted choice contract is invalid.")
+        result[public_id] = option
+    return result
+
+
+def _choice_default_strength(declaration: Mapping[str, Any], selected_choice: str) -> Any:
+    option = _choice_options(declaration).get(selected_choice)
+    if option is None:
+        raise ContractError("manifest_invalid", "Accepted choice contract is invalid.")
+    return option.get("default_strength", _MISSING)
+
+
+def _choice_companions(
+    inputs: Mapping[str, Mapping[str, Any]],
+) -> dict[str, str]:
+    choices = {
+        input_id: declaration
+        for input_id, declaration in inputs.items()
+        if declaration.get("type") == "choice"
+    }
+    numbers = {
+        input_id: declaration
+        for input_id, declaration in inputs.items()
+        if declaration.get("type") == "number"
+    }
+    companions: dict[str, str] = {}
+    matched_choices: set[str] = set()
+
+    for choice_id, choice in choices.items():
+        exact_id = f"{choice_id}_strength"
+        exact = numbers.get(exact_id)
+        if exact is None or exact.get("semantic_role") != choice.get("semantic_role"):
+            continue
+        companions[exact_id] = choice_id
+        matched_choices.add(choice_id)
+
+    roles = dict.fromkeys(
+        declaration["semantic_role"]
+        for choice_id, declaration in choices.items()
+        if choice_id not in matched_choices and isinstance(declaration.get("semantic_role"), str)
+    )
+    for role in roles:
+        role_choices = [
+            choice_id
+            for choice_id, declaration in choices.items()
+            if choice_id not in matched_choices and declaration.get("semantic_role") == role
+        ]
+        role_numbers = [
+            input_id
+            for input_id, declaration in numbers.items()
+            if input_id not in companions and declaration.get("semantic_role") == role
+        ]
+        if len(role_choices) == 1 and len(role_numbers) == 1:
+            companions[role_numbers[0]] = role_choices[0]
+            matched_choices.add(role_choices[0])
+
+    return companions
 
 
 def _validate_numeric_constraints(

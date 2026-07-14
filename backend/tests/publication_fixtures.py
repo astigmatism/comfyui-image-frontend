@@ -78,6 +78,14 @@ def object_info_fixture() -> JsonObject:
         "CIFDecimalParameter": {"input": {"required": {"value": ["FLOAT"]}}},
         "CIFBooleanParameter": {"input": {"required": {"value": ["BOOLEAN"]}}},
         "CIFSeedParameter": {"input": {"required": {"value": ["INT"]}}},
+        "CIFChoiceParameter": {
+            "input": {
+                "required": {
+                    "value": ["STRING"],
+                    "options_json": ["STRING"],
+                }
+            }
+        },
         "CIFPublishImage": {"input": {"required": {"images": ["IMAGE"]}}},
         "FakeImageOutput": {
             "input": {
@@ -88,6 +96,7 @@ def object_info_fixture() -> JsonObject:
                     "seed": ["INT"],
                     "enabled": ["BOOLEAN"],
                     "strength": ["FLOAT"],
+                    "lora_name": ["STRING"],
                 }
             }
         },
@@ -118,9 +127,30 @@ def _publisher_inputs(
 
 def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
     stem = KREA_STEM
+    private_choice_options = json.dumps(
+        [
+            {
+                "value": "knp_v4_1",
+                "binding": "Krea2/KNPV4.1_pre.safetensors",
+            },
+            {
+                "value": "knp_v3_1",
+                "binding": "Krea2/KNPV3.1_pre.safetensors",
+            },
+            {
+                "value": "knp_v2",
+                "binding": "Krea2/KNPV2_pre.safetensors",
+            },
+            {
+                "value": "mysticxxx_krea2_v1",
+                "binding": "Krea2/MysticXXX_Krea2_v1.safetensors",
+            },
+        ],
+        separators=(",", ":"),
+    )
     workflow: JsonObject = {
         "id": "fixture-krea-editable",
-        "last_node_id": 201,
+        "last_node_id": 202,
         "links": [],
         "nodes": [
             *[
@@ -134,6 +164,11 @@ def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, J
                     (15, "CIFDecimalParameter", 1.0),
                 )
             ],
+            {
+                "id": 202,
+                "type": "CIFChoiceParameter",
+                "widgets_values": ["knp_v4_1", private_choice_options],
+            },
             {"id": 199, "type": "CIFPublishImage", "widgets_values": []},
             {"id": 200, "type": "CIFPublishImage", "widgets_values": []},
             {"id": 201, "type": "CIFPublishImage", "widgets_values": []},
@@ -147,6 +182,13 @@ def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, J
         "13": {"class_type": "CIFSeedParameter", "inputs": {"value": 0}},
         "14": {"class_type": "CIFBooleanParameter", "inputs": {"value": False}},
         "15": {"class_type": "CIFDecimalParameter", "inputs": {"value": 1.0}},
+        "202": {
+            "class_type": "CIFChoiceParameter",
+            "inputs": {
+                "value": "knp_v4_1",
+                "options_json": private_choice_options,
+            },
+        },
         "20": {
             "class_type": "FakeImageOutput",
             "inputs": {
@@ -156,6 +198,7 @@ def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, J
                 "seed": ["13", 0],
                 "enabled": ["14", 0],
                 "strength": ["15", 0],
+                "lora_name": ["202", 0],
             },
         },
         "199": {
@@ -271,12 +314,50 @@ def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, J
             "bindings": _binding("14", "CIFBooleanParameter"),
         },
         {
-            "id": "knpv4_1_strength",
+            "id": "lora",
+            "type": "choice",
+            "instance_uuid": "00000000-0000-4000-8000-000000000202",
+            "label": "LoRA",
+            "description": "Selects the LoRA applied by the primary model-only LoRA loader.",
+            "semantic_role": "lora",
+            "required": False,
+            "advanced": True,
+            "group": "Advanced",
+            "order": 55,
+            "default": "knp_v4_1",
+            "choices": [
+                {
+                    "value": "knp_v4_1",
+                    "label": "KNP v4.1",
+                    "default_strength": 1.0,
+                },
+                {
+                    "value": "knp_v3_1",
+                    "label": "KNP v3.1",
+                    "default_strength": 0.5,
+                },
+                {
+                    "value": "knp_v2",
+                    "label": "KNP v2",
+                    "default_strength": 1.0,
+                },
+                {
+                    "value": "mysticxxx_krea2_v1",
+                    "label": "MysticXXX Krea2 v1",
+                    "default_strength": 1.0,
+                },
+            ],
+            "bindings": _binding("202", "CIFChoiceParameter"),
+        },
+        {
+            "id": "lora_strength",
             "type": "number",
             "instance_uuid": "00000000-0000-4000-8000-000000000015",
-            "label": "KNP V4.1 strength",
-            "description": "LoRA strength; zero disables it.",
-            "semantic_role": "strength",
+            "label": "LoRA Strength",
+            "description": (
+                "Controls the model strength of the selected LoRA. Set 0 to disable its effect."
+            ),
+            "semantic_role": "lora",
             "required": False,
             "advanced": True,
             "group": "Advanced",

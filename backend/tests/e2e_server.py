@@ -13,7 +13,9 @@ from tests.fake_services import LiveFakeServer
 
 
 def main() -> None:
-    fake = LiveFakeServer().start()
+    fake = LiveFakeServer()
+    fake.state.slow_stage_delay = 2.0
+    fake.start()
     configured_data = os.getenv("CIF_E2E_DATA_DIR")
     data_dir = (
         Path(configured_data) if configured_data else Path(tempfile.mkdtemp(prefix="cif-e2e-"))

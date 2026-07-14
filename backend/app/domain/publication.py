@@ -18,7 +18,11 @@ from ..errors import ContractError
 
 PUBLICATION_SCHEMA = "comfyui-image-frontend.publication/v1"
 INTERFACE_SCHEMA = "comfyui-image-frontend.interface/v1"
-SUPPORTED_INPUT_TYPES = {"string", "integer", "number", "boolean", "seed"}
+EDITABLE_WORKFLOW_DRIFT_WARNING = (
+    "Editable workflow bytes do not match the publication's recorded SHA-256; "
+    "generation remains pinned to the verified frozen API graph."
+)
+SUPPORTED_INPUT_TYPES = {"string", "integer", "number", "boolean", "seed", "choice"}
 OUTPUT_ROLES = {"final", "preview", "comparison", "auxiliary"}
 OUTPUT_KINDS = {"image"}
 PUBLIC_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -27,6 +31,7 @@ SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 CANONICAL_INTEGER_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 ENCODED_SEPARATOR_RE = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 MAX_INPUTS = 256
+MAX_CHOICES = 100
 MAX_OUTPUTS = 256
 MAX_WARNINGS = 256
 MAX_API_NODES = 10_000
@@ -44,6 +49,7 @@ EXPECTED_PARAMETER_CLASSES: dict[str, set[str]] = {
     "number": {"CIFDecimalParameter", "CIFImageFrontendInterface"},
     "boolean": {"CIFBooleanParameter", "CIFImageFrontendInterface"},
     "seed": {"CIFSeedParameter", "CIFImageFrontendInterface"},
+    "choice": {"CIFChoiceParameter"},
 }
 EXPECTED_RUNTIME_INPUT_TYPES = {
     "string": "STRING",
@@ -51,6 +57,7 @@ EXPECTED_RUNTIME_INPUT_TYPES = {
     "number": "FLOAT",
     "boolean": "BOOLEAN",
     "seed": "INT",
+    "choice": "STRING",
 }
 TYPED_PARAMETER_CLASSES = {
     "CIFTextParameter",
@@ -58,7 +65,10 @@ TYPED_PARAMETER_CLASSES = {
     "CIFDecimalParameter",
     "CIFBooleanParameter",
     "CIFSeedParameter",
+    "CIFChoiceParameter",
 }
+
+CHOICE_PUBLIC_FIELDS = frozenset({"value", "label", "default_strength"})
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,8 @@ class ValidatedPublication:
     api_path: str
     manifest_path: str
     workflow_sha256: str
+    observed_workflow_sha256: str
+    editable_workflow_drifted: bool
     api_sha256: str
     manifest_sha256: str
     identity_key: str
@@ -357,10 +369,8 @@ def validate_publication(
     api_path = envelope.api_path
     workflow_sha256 = envelope.workflow_sha256
     api_sha256 = envelope.api_sha256
-    if sha256_bytes(workflow_bytes) != workflow_sha256:
-        raise ContractError(
-            "workflow_hash_mismatch", "Editable workflow bytes do not match the manifest."
-        )
+    observed_workflow_sha256 = sha256_bytes(workflow_bytes)
+    editable_workflow_drifted = observed_workflow_sha256 != workflow_sha256
     if sha256_bytes(api_bytes) != api_sha256:
         raise ContractError(
             "api_hash_mismatch", "Frozen API graph bytes do not match the manifest."
@@ -382,6 +392,8 @@ def validate_publication(
         sorted(value for value in dependencies if value not in object_info)
     )
     warnings = _validate_warnings(manifest.get("warnings", []))
+    if editable_workflow_drifted and EDITABLE_WORKFLOW_DRIFT_WARNING not in warnings:
+        warnings = (*warnings, EDITABLE_WORKFLOW_DRIFT_WARNING)
     runtime = _validate_runtime(manifest.get("runtime", {}))
 
     source_key = source_key_for(instance_id, source_id)
@@ -416,6 +428,8 @@ def validate_publication(
         api_path=api_path,
         manifest_path=candidate_path,
         workflow_sha256=workflow_sha256,
+        observed_workflow_sha256=observed_workflow_sha256,
+        editable_workflow_drifted=editable_workflow_drifted,
         api_sha256=api_sha256,
         manifest_sha256=manifest_sha256,
         identity_key=identity_key,
@@ -613,6 +627,10 @@ def _validate_input(
         default = _boolean(raw_input.get("default"), f"{context}.default")
         private_input["default"] = default
         public_input["default"] = default
+    elif input_type == "choice":
+        default, choices = _choice_contract(raw_input, context)
+        private_input.update(default=default, choices=copy.deepcopy(choices))
+        public_input.update(default=default, choices=choices)
     else:
         minimum, maximum, step = _numeric_contract(raw_input, input_type, context)
         private_input.update(minimum=minimum, maximum=maximum, step=step)
@@ -643,6 +661,58 @@ def _validate_input(
             private_input["default"] = numeric_default
             public_input["default"] = numeric_default
     return private_input, public_input
+
+
+def _choice_contract(
+    raw_input: Mapping[str, Any], context: str
+) -> tuple[str, list[dict[str, Any]]]:
+    default = raw_input.get("default")
+    if not isinstance(default, str):
+        raise ContractError("manifest_invalid", f"{context}.default must be a string.")
+
+    raw_choices = raw_input.get("choices")
+    if not isinstance(raw_choices, list) or not 1 <= len(raw_choices) <= MAX_CHOICES:
+        raise ContractError(
+            "manifest_invalid",
+            f"{context}.choices must contain 1 to {MAX_CHOICES} entries.",
+        )
+
+    choices: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw_choice in enumerate(raw_choices):
+        choice_context = f"{context}.choices[{index}]"
+        if not isinstance(raw_choice, Mapping):
+            raise ContractError("manifest_invalid", f"{choice_context} must be an object.")
+        unsupported_fields = set(raw_choice) - CHOICE_PUBLIC_FIELDS
+        if unsupported_fields:
+            field = min(str(value) for value in unsupported_fields)
+            raise ContractError(
+                "manifest_invalid",
+                f"{choice_context} contains unsupported or private field {field!r}.",
+            )
+
+        value = _public_id(raw_choice.get("value"), f"{choice_context}.value")
+        if value in seen:
+            raise ContractError(
+                "manifest_invalid", f"{context}.choices contains duplicate value {value!r}."
+            )
+        seen.add(value)
+
+        label = _bounded_string(raw_choice.get("label"), f"{choice_context}.label", 1, 200)
+        if not label.strip():
+            raise ContractError("manifest_invalid", f"{choice_context}.label must not be blank.")
+        choice: dict[str, Any] = {"value": value, "label": label}
+        if "default_strength" in raw_choice:
+            choice["default_strength"] = _number_value(
+                raw_choice["default_strength"], f"{choice_context}.default_strength"
+            )
+        choices.append(choice)
+
+    if default not in seen:
+        raise ContractError(
+            "manifest_invalid", f"{context}.default must match exactly one choice value."
+        )
+    return default, choices
 
 
 def _numeric_contract(

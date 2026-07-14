@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from app.domain.compiler import WorkflowCompiler
 from app.domain.publication import canonical_json_bytes, validate_publication
-from app.errors import AppError
+from app.errors import AppError, ContractError
 from tests.publication_fixtures import (
     PublicationBundle,
     build_publication_bundle,
@@ -51,7 +51,8 @@ def test_compile_applies_defaults_random_seed_and_every_trusted_binding_without_
         "height": 768,
         "seed": "42",
         "enable_seedvr2_upscale": False,
-        "knpv4_1_strength": 1.0,
+        "lora": "knp_v4_1",
+        "lora_strength": 1.0,
     }
     assert result.resolved_seeds == {"seed": "42"}
     assert result.final_prompt == "a quiet lake"
@@ -61,6 +62,12 @@ def test_compile_applies_defaults_random_seed_and_every_trusted_binding_without_
     assert result.compiled_graph["13"]["inputs"]["value"] == 42
     assert result.compiled_graph["14"]["inputs"]["value"] is False
     assert result.compiled_graph["15"]["inputs"]["value"] == 1.0
+    assert result.compiled_graph["202"]["inputs"]["value"] == "knp_v4_1"
+    assert (
+        result.compiled_graph["202"]["inputs"]["options_json"]
+        == source.api_document["202"]["inputs"]["options_json"]
+    )
+    assert result.compiled_graph["20"]["inputs"]["lora_name"] == ["202", 0]
     assert canonical_json_bytes(source.api_document) == original
     assert result.compiled_graph is not source.api_document
 
@@ -131,7 +138,7 @@ def test_unknown_and_private_graph_shaped_parameters_are_rejected(injected: str)
         ("width", 513),
         ("height", True),
         ("enable_seedvr2_upscale", 1),
-        ("knpv4_1_strength", 2.05),
+        ("lora_strength", 2.05),
         ("seed", "01"),
     ],
 )
@@ -167,6 +174,211 @@ def test_one_public_seed_can_fan_out_to_multiple_trusted_parameter_nodes() -> No
     assert result.compiled_graph["16"]["inputs"]["value"] == 123456789
 
 
+@pytest.mark.parametrize("include_null", [False, True], ids=["omitted", "null"])
+def test_omitted_and_null_optional_choice_resolve_to_public_default(
+    include_null: bool,
+) -> None:
+    source = publication()
+    controls = required()
+    if include_null:
+        controls["lora"] = None
+    result = WorkflowCompiler().compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls=controls,
+    )
+
+    assert result.effective_controls["lora"] == "knp_v4_1"
+    assert result.effective_controls["lora_strength"] == 1.0
+    assert result.compiled_graph["202"]["inputs"]["value"] == "knp_v4_1"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "",
+        "retired_option",
+        "KNP v3.1",
+        "Krea2/KNPV4.1_pre.safetensors",
+        1,
+    ],
+)
+def test_choice_accepts_only_current_public_ids_and_reports_only_allowed_ids(
+    invalid: object,
+) -> None:
+    source = publication()
+    with pytest.raises(AppError) as exc:
+        WorkflowCompiler().compile(
+            contract=source.private_contract,
+            api_document=source.api_document,
+            requested_controls={**required(), "lora": invalid},
+        )
+
+    allowed = "knp_v4_1, knp_v3_1, knp_v2, mysticxxx_krea2_v1"
+    assert exc.value.code == "parameter_validation_failed"
+    assert exc.value.fields == {"lora": f"Choose one of: {allowed}."}
+    assert "KNP v3.1" not in exc.value.fields["lora"]
+    assert ".safetensors" not in exc.value.fields["lora"]
+
+
+@pytest.mark.parametrize(
+    ("controls", "expected_choice", "expected_strength"),
+    [
+        ({}, "knp_v4_1", 1.0),
+        ({"lora": "knp_v3_1"}, "knp_v3_1", 0.5),
+        ({"lora": "knp_v3_1", "lora_strength": None}, "knp_v3_1", 0.5),
+        ({"lora": "knp_v3_1", "lora_strength": 0.7}, "knp_v3_1", 0.7),
+        ({"lora_strength": 0.8}, "knp_v4_1", 0.8),
+    ],
+)
+def test_choice_companion_strength_resolution_precedence(
+    controls: dict[str, object], expected_choice: str, expected_strength: float
+) -> None:
+    source = publication()
+    result = WorkflowCompiler().compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls={**required(), **controls},
+    )
+
+    assert result.effective_controls["lora"] == expected_choice
+    assert result.effective_controls["lora_strength"] == expected_strength
+    assert result.compiled_graph["202"]["inputs"]["value"] == expected_choice
+    assert result.compiled_graph["15"]["inputs"]["value"] == expected_strength
+
+
+def test_choice_without_strength_hint_uses_numeric_manifest_default() -> None:
+    source = publication()
+    contract = copy.deepcopy(source.private_contract)
+    choice = next(value for value in contract["inputs"] if value["id"] == "lora")
+    option = next(value for value in choice["choices"] if value["value"] == "mysticxxx_krea2_v1")
+    option.pop("default_strength")
+    strength = next(value for value in contract["inputs"] if value["id"] == "lora_strength")
+    strength["default"] = 0.75
+
+    result = WorkflowCompiler().compile(
+        contract=contract,
+        api_document=source.api_document,
+        requested_controls={**required(), "lora": "mysticxxx_krea2_v1"},
+    )
+    assert result.effective_controls["lora_strength"] == 0.75
+    assert result.compiled_graph["15"]["inputs"]["value"] == 0.75
+
+
+def test_choice_compiler_refuses_a_binding_other_than_declaration_value() -> None:
+    source = publication()
+    contract = copy.deepcopy(source.private_contract)
+    choice = next(value for value in contract["inputs"] if value["id"] == "lora")
+    choice["bindings"][0]["input"] = "options_json"
+    original = copy.deepcopy(source.api_document)
+
+    with pytest.raises(ContractError) as exc:
+        WorkflowCompiler().compile(
+            contract=contract,
+            api_document=source.api_document,
+            requested_controls={**required(), "lora": "knp_v3_1"},
+        )
+    assert exc.value.code == "manifest_invalid"
+    assert source.api_document == original
+
+
+@pytest.mark.parametrize("include_null", [False, True], ids=["omitted", "null"])
+def test_required_choice_rejects_omission_and_null(include_null: bool) -> None:
+    source = publication()
+    contract = copy.deepcopy(source.private_contract)
+    declaration = next(value for value in contract["inputs"] if value["id"] == "lora")
+    declaration["required"] = True
+    controls = required()
+    if include_null:
+        controls["lora"] = None
+
+    with pytest.raises(AppError) as exc:
+        WorkflowCompiler().compile(
+            contract=contract,
+            api_document=source.api_document,
+            requested_controls=controls,
+        )
+    assert exc.value.fields == {"lora": "This published parameter is required."}
+
+
+def test_empty_required_choice_is_an_invalid_id_not_an_omission() -> None:
+    source = publication()
+    contract = copy.deepcopy(source.private_contract)
+    declaration = next(value for value in contract["inputs"] if value["id"] == "lora")
+    declaration["required"] = True
+
+    with pytest.raises(AppError) as exc:
+        WorkflowCompiler().compile(
+            contract=contract,
+            api_document=source.api_document,
+            requested_controls={**required(), "lora": ""},
+        )
+    assert exc.value.fields["lora"].startswith("Choose one of:")
+
+
+def test_unique_semantic_role_companion_is_used_without_id_convention() -> None:
+    source = publication()
+    contract = copy.deepcopy(source.private_contract)
+    strength = next(value for value in contract["inputs"] if value["id"] == "lora_strength")
+    strength["id"] = "model_influence"
+
+    result = WorkflowCompiler().compile(
+        contract=contract,
+        api_document=source.api_document,
+        requested_controls={**required(), "lora": "knp_v3_1"},
+    )
+    assert result.effective_controls["model_influence"] == 0.5
+    assert result.compiled_graph["15"]["inputs"]["value"] == 0.5
+
+
+def test_exact_companion_does_not_cross_couple_another_numeric_with_same_role() -> None:
+    source = publication()
+    contract = copy.deepcopy(source.private_contract)
+    graph = copy.deepcopy(source.api_document)
+    strength = next(value for value in contract["inputs"] if value["id"] == "lora_strength")
+    other_strength = copy.deepcopy(strength)
+    other_strength.update(
+        {
+            "id": "secondary_lora_control",
+            "instance_uuid": "00000000-0000-4000-8000-000000000203",
+            "default": 0.9,
+            "bindings": [
+                {
+                    "node_id": "203",
+                    "input": "value",
+                    "class_type": "CIFDecimalParameter",
+                }
+            ],
+        }
+    )
+    contract["inputs"].append(other_strength)
+    graph["203"] = {"class_type": "CIFDecimalParameter", "inputs": {"value": 0.9}}
+
+    result = WorkflowCompiler().compile(
+        contract=contract,
+        api_document=graph,
+        requested_controls={**required(), "lora": "knp_v3_1"},
+    )
+    assert result.effective_controls["lora_strength"] == 0.5
+    assert result.effective_controls["secondary_lora_control"] == 0.9
+    assert result.compiled_graph["15"]["inputs"]["value"] == 0.5
+    assert result.compiled_graph["203"]["inputs"]["value"] == 0.9
+
+
+def test_old_source_without_choices_compiles_unchanged() -> None:
+    source = publication(build_publication_bundle("generic"))
+    result = WorkflowCompiler().compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls={"prompt": "an old compatible source"},
+    )
+    assert result.effective_controls == {
+        "prompt": "an old compatible source",
+        "iterations": 1,
+    }
+    assert result.compiled_graph["110"]["inputs"]["value"] == "an old compatible source"
+
+
 def test_simultaneous_compilations_are_isolated_and_cached_graph_stays_identical() -> None:
     source = publication()
     original = copy.deepcopy(source.api_document)
@@ -179,7 +391,8 @@ def test_simultaneous_compilations_are_isolated_and_cached_graph_stays_identical
                 **required(f"prompt {index}"),
                 "width": 512 + index * 8,
                 "seed": str(1000 + index),
-                "knpv4_1_strength": round(index * 0.05, 2),
+                "lora": "knp_v3_1" if index % 2 else "knp_v2",
+                "lora_strength": round(index * 0.05, 2),
             },
         )
 
@@ -192,6 +405,15 @@ def test_simultaneous_compilations_are_isolated_and_cached_graph_stays_identical
         assert result.compiled_graph["10"]["inputs"]["value"] == f"prompt {index}"
         assert result.compiled_graph["11"]["inputs"]["value"] == 512 + index * 8
         assert result.compiled_graph["13"]["inputs"]["value"] == 1000 + index
+        expected_choice = "knp_v3_1" if index % 2 else "knp_v2"
+        assert result.effective_controls["lora"] == expected_choice
+        assert result.compiled_graph["202"]["inputs"]["value"] == expected_choice
+        assert result.compiled_graph["15"]["inputs"]["value"] == round(index * 0.05, 2)
+        assert (
+            result.compiled_graph["202"]["inputs"]["options_json"]
+            == source.api_document["202"]["inputs"]["options_json"]
+        )
+        assert result.compiled_graph["20"]["inputs"]["lora_name"] == ["202", 0]
 
 
 def test_preset_and_caller_selected_outputs_are_rejected_for_publications() -> None:

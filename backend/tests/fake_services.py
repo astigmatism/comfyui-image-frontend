@@ -80,7 +80,9 @@ class FakeServiceState:
     retrieval_failure_substrings: set[str] = field(default_factory=set)
     retrieval_failures_remaining: int = 0
     disconnect_websocket: bool = False
+    initial_event_delay: float = 0.02
     default_stage_delay: float = 0.08
+    slow_stage_delay: float = 0.5
     listing_mode: str = "v2"
     history_delay_polls: int = 0
     hide_history: bool = False
@@ -114,6 +116,9 @@ class FakeServiceState:
         self.retrieval_failure_substrings.clear()
         self.retrieval_failures_remaining = 0
         self.disconnect_websocket = False
+        self.initial_event_delay = 0.02
+        self.default_stage_delay = 0.08
+        self.slow_stage_delay = 0.5
         self.listing_mode = "v2"
         self.history_delay_polls = 0
         self.hide_history = False
@@ -165,7 +170,9 @@ class FakeServiceState:
         prompt_text = str(_node_value(graph, "CIFTextParameter", ""))
         stage_node = _first_node_id(graph, "FakeImageOutput", "900")
         publisher_nodes = _nodes(graph, "CIFPublishImage")
-        delay = 0.5 if "slow" in prompt_text.casefold() else self.default_stage_delay
+        delay = (
+            self.slow_stage_delay if "slow" in prompt_text.casefold() else self.default_stage_delay
+        )
         self.queued_prompt_ids.discard(prompt_id)
         self.running_prompt_ids.add(prompt_id)
         self.histories[prompt_id] = {
@@ -174,7 +181,7 @@ class FakeServiceState:
             "prompt": [0, prompt_id, copy.deepcopy(graph), copy.deepcopy(record.get("extra_data"))],
             "extra_data": copy.deepcopy(record.get("extra_data")),
         }
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(self.initial_event_delay)
 
         base_ref = self._record_image(prompt_id, "base", "base")
         base_output = {
@@ -507,6 +514,8 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 "prompt": str(_node_value(graph, "CIFTextParameter", "")),
                 "seed": str(_node_value(graph, "CIFSeedParameter", "")),
                 "width": _node_value(graph, "CIFIntegerParameter"),
+                "choice": _node_value(graph, "CIFChoiceParameter"),
+                "strength": _node_value(graph, "CIFDecimalParameter"),
                 "extra_data": copy.deepcopy(extra_data),
                 "graph": copy.deepcopy(graph),
             }

@@ -199,6 +199,8 @@ class WorkflowRegistry:
                         "source_key": publication.source_key,
                         "publication_id": publication.publication_id,
                         "workflow_sha256": publication.workflow_sha256,
+                        "observed_workflow_sha256": publication.observed_workflow_sha256,
+                        "editable_workflow_drifted": publication.editable_workflow_drifted,
                         "api_sha256": publication.api_sha256,
                         "manifest_sha256": publication.manifest_sha256,
                         "warnings": list(publication.warnings),
@@ -380,6 +382,10 @@ class WorkflowRegistry:
                 runtime_snapshot_json={
                     "dependencies": list(publication.dependencies),
                     "node_count": publication.node_count,
+                    "stored_editable_workflow_sha256": publication.observed_workflow_sha256,
+                    "stored_editable_workflow_matches_publication": (
+                        not publication.editable_workflow_drifted
+                    ),
                 },
                 instance_id=publication.instance_id,
                 source_key=publication.source_key,
@@ -397,10 +403,12 @@ class WorkflowRegistry:
             )
             session.add(existing)
         else:
-            # Accepted revisions are immutable. Rediscovery updates only liveness metadata.
+            # Accepted revisions are immutable. Rediscovery updates only validation/liveness
+            # metadata; frozen graph and manifest snapshots remain the accepted revision.
             existing.is_current = True
             existing.state = WorkflowState.VALID
             existing.readiness = publication.readiness
+            existing.warnings_json = list(publication.warnings)
             existing.last_seen_at = now
         return existing
 

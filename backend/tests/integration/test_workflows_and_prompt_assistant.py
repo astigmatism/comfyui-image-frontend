@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING
 from app.main import create_app
 from fastapi.testclient import TestClient
 from tests.conftest import csrf
@@ -46,10 +47,36 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
         "height",
         "seed",
         "enable_seedvr2_upscale",
-        "knpv4_1_strength",
+        "lora",
+        "lora_strength",
     ]
     assert interface["inputs"][3]["maximum"] == "1125899906842624"
     assert interface["inputs"][3]["default"] is None
+    choice = interface["inputs"][5]
+    assert choice == {
+        "id": "lora",
+        "type": "choice",
+        "label": "LoRA",
+        "description": "Selects the LoRA applied by the primary model-only LoRA loader.",
+        "semantic_role": "lora",
+        "required": False,
+        "advanced": True,
+        "group": "Advanced",
+        "order": 55,
+        "default": "knp_v4_1",
+        "choices": [
+            {"value": "knp_v4_1", "label": "KNP v4.1", "default_strength": 1.0},
+            {"value": "knp_v3_1", "label": "KNP v3.1", "default_strength": 0.5},
+            {"value": "knp_v2", "label": "KNP v2", "default_strength": 1.0},
+            {
+                "value": "mysticxxx_krea2_v1",
+                "label": "MysticXXX Krea2 v1",
+                "default_strength": 1.0,
+            },
+        ],
+    }
+    assert "safetensors" not in str(interface)
+    assert "options_json" not in str(interface)
     assert [output["id"] for output in interface["outputs"]] == [
         "base",
         "second_pass",
@@ -97,6 +124,107 @@ def test_discovery_uses_recursive_fallback_with_headers_and_encoded_artifacts(
         assert any(path == "/userdata" for path, _ in fake_state.comfy_user_headers)
         assert fake_state.userdata_raw_paths
         assert all(b"%2F" in path for path in fake_state.userdata_raw_paths)
+
+
+def test_editable_workflow_drift_keeps_both_sources_visible_through_refresh(
+    fake_state, settings_factory
+) -> None:
+    editable_paths = [
+        path
+        for path in fake_state.workflow_files
+        if path.endswith(".json") and not path.endswith((".api.json", ".interface.json"))
+    ]
+    assert len(editable_paths) == 2
+    for path in editable_paths:
+        # Valid JSON with different raw bytes models an ordinary post-publication save.
+        fake_state.workflow_files[path] += b"\n"
+
+    with TestClient(create_app(settings_factory())) as client:
+        _, user_cookie = provision_user(client, username="editable.drift")
+        startup_sources = client.get("/api/workflows")
+        assert startup_sources.status_code == 200, startup_sources.text
+        sources = startup_sources.json()
+        assert {item["display_name"] for item in sources} == {
+            "Generic Landscape",
+            "Krea 2 NSFW V4",
+        }
+        assert all(item["available"] is True for item in sources)
+        assert all(item["readiness"] == "ready_with_warnings" for item in sources)
+        assert all(item["warnings"] == [EDITABLE_WORKFLOW_DRIFT_WARNING] for item in sources)
+        source_keys = {item["source_key"] for item in sources}
+
+        login_ready_admin(client)
+        refreshed = client.post(
+            "/api/admin/workflows/refresh",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        assert {
+            (item["basename"], item["accepted"], item["code"]) for item in refreshed.json()
+        } == {
+            ("Generic Landscape", True, "ready_with_warnings"),
+            ("Krea 2 NSFW V4", True, "ready_with_warnings"),
+        }
+        assert all(
+            item["details"]["editable_workflow_drifted"] is True
+            and item["details"]["observed_workflow_sha256"] != item["details"]["workflow_sha256"]
+            for item in refreshed.json()
+        )
+
+        restore_cookie(client, user_cookie)
+        after_refresh = client.get("/api/workflows")
+        assert after_refresh.status_code == 200, after_refresh.text
+        refreshed_sources = after_refresh.json()
+        assert {item["source_key"] for item in refreshed_sources} == source_keys
+        assert all(item["available"] is True for item in refreshed_sources)
+        assert all(item["readiness"] == "ready_with_warnings" for item in refreshed_sources)
+        assert all(
+            item["warnings"] == [EDITABLE_WORKFLOW_DRIFT_WARNING] for item in refreshed_sources
+        )
+
+
+def test_choice_defaults_strength_precedence_and_invalid_public_values_fail_before_prompt(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="choice.validation")
+
+    def validate(parameters: dict[str, Any]) -> Any:
+        payload = generation_payload(app_client, "choice validation", seed=73)
+        payload["parameters"].update(parameters)
+        return app_client.post(
+            "/api/generations/validate",
+            headers={"X-CSRF-Token": csrf(app_client)},
+            json=payload,
+        )
+
+    cases = [
+        ({}, "knp_v4_1", 1.0),
+        ({"lora": None}, "knp_v4_1", 1.0),
+        ({"lora": "knp_v3_1"}, "knp_v3_1", 0.5),
+        ({"lora": "knp_v3_1", "lora_strength": 0.7}, "knp_v3_1", 0.7),
+        ({"lora_strength": 0.8}, "knp_v4_1", 0.8),
+    ]
+    for parameters, expected_choice, expected_strength in cases:
+        response = validate(parameters)
+        assert response.status_code == 200, response.text
+        effective = response.json()["effective_parameters"]
+        assert effective["lora"] == expected_choice
+        assert effective["lora_strength"] == expected_strength
+
+    for invalid in (
+        "",
+        "KNP v3.1",
+        "Krea2/KNPV4.1_pre.safetensors",
+        "not_published",
+    ):
+        response = validate({"lora": invalid})
+        assert response.status_code == 422, response.text
+        body = response.json()
+        assert body["error"]["code"] == "parameter_validation_failed"
+        assert set(body["error"]["fields"]) == {"lora"}
+        assert "safetensors" not in body["error"]["fields"]["lora"]
+
+    assert fake_state.submitted == []
 
 
 def test_successful_empty_listing_retires_current_catalog(fake_state, settings_factory) -> None:

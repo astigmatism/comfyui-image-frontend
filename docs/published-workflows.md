@@ -14,7 +14,7 @@ A committed publication is one adjacent bundle beneath ComfyUI userdata `workflo
 <stem>.interface.json
 ```
 
-- `<stem>.json` is the editable workflow used as matching runtime metadata.
+- `<stem>.json` is mutable editable-workflow metadata. It is parsed and retained for optional PNG workflow metadata, but its bytes are not the executable publication boundary.
 - `<stem>.api.json` is the frozen executable API graph.
 - `<stem>.interface.json` is the commit marker, public interface, trusted private bindings, hashes, dependency inventory, warnings, and runtime policy.
 
@@ -106,7 +106,11 @@ Bindings, node IDs, artifact paths, and executable graphs are private compiler d
 
 ### Inputs
 
-Publication v1 supports `string`, `integer`, `number`, `boolean`, and `seed`. Every input has a valid public `id`, label, description, semantic role, required/advanced flags, group, order, default, and one or more trusted bindings. Numeric inputs also have `minimum`, `maximum`, and `step`. A seed additionally declares `default_mode` as `fixed` or `random`.
+Publication v1 supports `string`, `integer`, `number`, `boolean`, `seed`, and `choice`. Every input has a valid public `id`, label, description, semantic role, required/advanced flags, group, order, default, and one or more trusted bindings. Numeric inputs also have `minimum`, `maximum`, and `step`. A seed additionally declares `default_mode` as `fixed` or `random`.
+
+A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. The frontend renders a single select and sends only the public value. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
+
+When a choice has a companion number named `<choice-id>_strength`—or exactly one numeric input shares its semantic role—an explicit non-null number wins. Otherwise the selected option's `default_strength` applies, falling back to the number input's ordinary default. Both concrete public values are returned in effective parameters and patched only through their trusted declaration-node `value` bindings.
 
 Exactly one input must have semantic role `positive_prompt`. The frontend orders non-advanced inputs before advanced inputs, then uses `order`, `group`, and `id` as deterministic fallbacks. The backend remains authoritative for all types, ranges, steps, defaults, and required fields.
 
@@ -160,13 +164,15 @@ Discovery runs at startup, through `POST /api/admin/workflows/refresh`, and once
 3. Keep only safe normalized paths ending in `.interface.json`.
 4. Fetch the manifest and its adjacent editable and API documents. A nested userdata path is percent-encoded in full as one route segment, including `/` as `%2F`.
 5. Parse strict UTF-8 JSON within the configured byte limits and validate the whole candidate.
-6. Atomically publish the new immutable revision only after every check succeeds.
+6. Atomically publish the new immutable revision only after every hard check succeeds, retaining any nonfatal warnings.
 
 When configured, `CIF_COMFYUI_USER` is forwarded as `Comfy-User` on the relevant HTTP and WebSocket operations.
 
-Validation rejects absolute paths, backslashes, dot segments, traversal, encoded separators in manifest paths, mismatched stems, source/path disagreement, duplicate JSON keys, non-finite values, unsupported schemas, raw-byte hash mismatches, wrong node counts, invalid input/output declarations, absent or duplicate publishers, disconnected publishers, zero or multiple final outputs, invalid cardinality, unsafe or missing binding targets, binding/class mismatches, uncovered or missing node dependencies, missing native-output inventory, and over-limit responses. `dependencies.class_types` must cover the frozen graph and each class must exist in `/object_info`.
+Validation rejects absolute paths, backslashes, dot segments, traversal, encoded separators in manifest paths, mismatched stems, source/path disagreement, duplicate JSON keys, non-finite values, unsupported schemas, a frozen API raw-byte hash mismatch, wrong API node counts, invalid API graph structure, invalid input/output declarations, absent or duplicate publishers, disconnected publishers, zero or multiple final outputs, invalid cardinality, unsafe or missing binding targets, binding/class mismatches, uncovered or missing node dependencies, missing native-output inventory, and over-limit responses. `dependencies.class_types` must cover the frozen graph and each class must exist in `/object_info`.
 
-Candidates are independent: one failure does not hide other valid sources. Warnings are preserved but do not become errors. The administrative diagnostic codes include `server_unreachable`, `listing_failed`, `manifest_fetch_failed`, `workflow_fetch_failed`, `api_fetch_failed`, validation codes such as `manifest_invalid`, hash-specific failures, `dependency_missing`, `ready_with_warnings`, and `ready`.
+The editable workflow is still required, path-checked, size-bounded, and parsed as strict JSON. If its current raw bytes differ from `workflow.sha256`, discovery adds a nonfatal editable-workflow drift warning and continues validating the frozen API and interface. This commonly follows a normal ComfyUI save, layout change, or unpublished authoring edit. Discovery does not rewrite either artifact, and the frozen `.api.json` hash comparison remains fail-closed.
+
+Candidates are independent: one failure does not hide other valid sources. Warnings are preserved but do not become errors. An accepted source with editable drift is diagnosed as `ready_with_warnings`; administrator details contain both the manifest-recorded and currently observed editable hashes, while an API hash mismatch remains a rejected `api_hash_mismatch`. Other administrative diagnostic codes include `server_unreachable`, `listing_failed`, `manifest_fetch_failed`, `workflow_fetch_failed`, `api_fetch_failed`, `manifest_invalid`, `dependency_missing`, and `ready`.
 
 ## Source identity, revisions, and refresh behavior
 
@@ -183,13 +189,14 @@ Candidates are independent: one failure does not hide other valid sources. Warni
 
 The current `display_name` is derived from the editable workflow filename stem; it is presentation metadata and not identity.
 
-The manifest hash is calculated from the exact downloaded manifest bytes. A generation optionally sends the selected revision; if the source was republished after selection, the backend returns `source_republished` instead of silently compiling against new controls.
+The manifest hash is calculated from the exact downloaded manifest bytes. `workflow_sha256` is the editable hash recorded by the deliberate publication and remains revision metadata even if a later ordinary save changes the current editable bytes. Execution and compilation use the exact accepted frozen API snapshot and its verified `api_sha256`. A generation optionally sends the selected revision; if the source was republished after selection, the backend returns `source_republished` instead of silently compiling against new controls.
 
 Refresh behavior is deliberately conservative:
 
 - A transport/listing failure leaves the last valid catalog intact. Entries are reported as `cached_offline`, `cached: true`, `available: false`; retained history is still usable, but new submission is disabled while ComfyUI is offline.
 - Offline-to-online recovery triggers a full atomic discovery automatically; an operator refresh is not required to recover an empty startup catalog.
 - A listed candidate whose replacement bundle is invalid keeps its previous accepted revision active.
+- Editable-workflow byte drift alone does not make a candidate invalid: the source remains current and refresh updates its warning/readiness metadata.
 - A successful authoritative listing retires sources whose manifests disappeared.
 - A missing dependency creates an unavailable catalog entry rather than an executable source.
 - Startup before health is known reports `loading`.
@@ -222,7 +229,7 @@ The current public request is a source reference plus public parameters:
 }
 ```
 
-The backend rejects unknown IDs and private graph/binding/path fields, applies manifest defaults, resolves seeds, deep-clones the accepted frozen graph, and patches only the manifest-trusted CIF parameter `inputs.value` bindings. It verifies that the cached graph was not mutated. When the publication runtime flag requires it, submission includes the matching editable workflow at `extra_data.extra_pnginfo.workflow`. ComfyUI receives a request-specific client ID and returns the native `prompt_id`.
+The backend rejects unknown IDs and private graph/binding/path fields, applies manifest and choice-specific defaults, resolves seeds, deep-clones the accepted frozen graph, and patches only the manifest-trusted CIF parameter `inputs.value` bindings. A choice binding receives its stable public ID; the frozen `CIFChoiceParameter` resolves the private destination while `options_json` and downstream loader inputs remain unchanged. The compiler verifies that the cached graph was not mutated. When the publication runtime flag requires it, submission includes the accepted editable snapshot at `extra_data.extra_pnginfo.workflow`; this metadata never replaces or patches the verified frozen API graph. ComfyUI receives a request-specific client ID and returns the native `prompt_id`.
 
 `POST /api/generations/validate` performs the same compilation checks without queuing. `POST /api/generations` commits the immutable source revision, requested/effective parameters, resolved seeds, and compiled graph before the durable queue accepts the job.
 
@@ -248,7 +255,7 @@ CIF publisher metadata is read from the top-level list-shaped `comfyui_image_fro
 
 The gallery uses the authored `final` result as its primary image when available. Detail presents previews as prototypes/earlier passes, comparisons as alternates, auxiliary publishers next, and native results as additional outputs. Every batch sibling remains independently inspectable and downloadable; presentation hierarchy never discards an earlier stage or native output.
 
-The public history boundary removes submitted graph envelopes, not result metadata. Arbitrary JSON-safe custom UI fields, publisher declarations, output-node keys, batches, raw status/error detail, and execution metadata remain available. ComfyUI URLs, credentials, userdata discovery paths, executable graphs, and private manifest bindings stay server-side.
+The public JSON/history boundary removes submitted graph envelopes, not result metadata. Arbitrary JSON-safe custom UI fields, publisher declarations, output-node keys, batches, raw status/error detail, and execution metadata remain available. ComfyUI URLs, credentials, userdata discovery paths, executable graphs, and private manifest bindings stay server-side. Original owner-scoped artifact bytes may contain native ComfyUI prompt/workflow metadata; users should strip it before sharing files outside the appliance if that server-side metadata is sensitive.
 
 ## Configuration
 
@@ -278,7 +285,7 @@ See [`.env.example`](../.env.example) for the complete application configuration
 - Complete native history is persisted server-side. Public history removes top-level submitted graph envelopes while preserving actual result/status/error/execution data; private manifest bindings, discovery paths, ComfyUI URLs, and credentials are never injected into those results.
 - The browser can submit only a known `source_key`, optional exact revision, and manifest-declared public parameter map.
 - Every candidate path is untrusted until normalized and constrained beneath `workflows/`.
-- Exact raw-byte hashes make a publication revision immutable.
+- Exact frozen-API and manifest raw-byte hashes, together with the manifest-recorded editable hash, make the accepted revision identity immutable; current editable drift remains warning metadata.
 - Compilation is request-local; cached source graphs are never patched in place.
 - History and output responses have independent byte caps; file references use a narrow allowlist.
 - Application asset routes are authenticated and owner-scoped.

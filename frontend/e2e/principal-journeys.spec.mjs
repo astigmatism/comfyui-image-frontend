@@ -42,6 +42,7 @@ async function generateAndExpectAccepted(page) {
   await page.getByRole("button", { name: "Generate" }).click();
   const response = await responsePromise;
   expect(response.status(), await response.text()).toBe(201);
+  return response;
 }
 
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
@@ -142,7 +143,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#gallery-scale")).toHaveValue("100");
 });
 
-test("published Krea source exposes strict outputs and the complete authored result hierarchy", async ({
+test("published Krea source exposes choice controls, strict outputs, and the authored result hierarchy", async ({
   page,
 }) => {
   await page.goto("/");
@@ -180,6 +181,24 @@ test("published Krea source exposes strict outputs and the complete authored res
     { id: "second_pass", role: "comparison", kind: "image" },
     { id: "final", role: "final", kind: "image" },
   ]);
+  const publishedLora = sourceResponse.body.interface.inputs.find(({ id }) => id === "lora");
+  expect(publishedLora).toMatchObject({
+    id: "lora",
+    type: "choice",
+    label: "LoRA",
+    default: "knp_v4_1",
+    choices: [
+      { value: "knp_v4_1", label: "KNP v4.1", default_strength: 1 },
+      { value: "knp_v3_1", label: "KNP v3.1", default_strength: 0.5 },
+      { value: "knp_v2", label: "KNP v2", default_strength: 1 },
+      {
+        value: "mysticxxx_krea2_v1",
+        label: "MysticXXX Krea2 v1",
+        default_strength: 1,
+      },
+    ],
+  });
+  expect(JSON.stringify(publishedLora)).not.toMatch(/safetensors|options_json|binding/i);
 
   const seedMode = page.getByLabel("Seed mode", { exact: true });
   const seedValue = page.getByLabel("Seed value", { exact: true });
@@ -202,23 +221,55 @@ test("published Krea source exposes strict outputs and the complete authored res
   const advanced = page.locator(".advanced-group");
   await expect(advanced).not.toHaveAttribute("open", "");
   await advanced.locator("summary").click();
-  const strength = page.getByRole("spinbutton", { name: "KNP V4.1 strength", exact: true });
+  const lora = page.getByRole("combobox", { name: "LoRA", exact: true });
+  await expect(lora).toHaveValue("knp_v4_1");
+  await expect(lora.locator("option")).toHaveCount(4);
+  await expect(lora.locator("option")).toHaveText([
+    "KNP v4.1",
+    "KNP v3.1",
+    "KNP v2",
+    "MysticXXX Krea2 v1",
+  ]);
+  const loraValues = await lora
+    .locator("option")
+    .evaluateAll((options) => options.map(({ value }) => value));
+  expect(loraValues).toEqual([
+    "knp_v4_1",
+    "knp_v3_1",
+    "knp_v2",
+    "mysticxxx_krea2_v1",
+  ]);
+  await expect(advanced).not.toContainText(/safetensors|options_json/i);
+
+  const strength = page.getByRole("spinbutton", { name: "LoRA Strength", exact: true });
   await expect(strength).toHaveValue("1");
   await expect(strength).toHaveAttribute("min", "0");
   await expect(strength).toHaveAttribute("max", "2");
   await expect(strength).toHaveAttribute("step", "0.05");
-  const strengthSlider = page.getByRole("slider", { name: "KNP V4.1 strength slider" });
-  await expect(strengthSlider).toHaveValue("1");
-  await strengthSlider.fill("1.25");
-  await expect(strength).toHaveValue("1.25");
-  await strength.fill("0.5");
+  await lora.selectOption("knp_v3_1");
+  await expect(lora).toHaveValue("knp_v3_1");
+  await expect(strength).toHaveValue("0.5");
+
+  const strengthSlider = page.getByRole("slider", { name: "LoRA Strength slider" });
   await expect(strengthSlider).toHaveValue("0.5");
+  await strength.fill("0.7");
+  await expect(strengthSlider).toHaveValue("0.7");
+  await lora.selectOption("knp_v2");
+  await expect(strength).toHaveValue("0.7");
+  await lora.selectOption("knp_v3_1");
+  await expect(strength).toHaveValue("0.7");
   await expect(page.locator(".source-notice.warning")).toHaveCount(0);
 
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .fill("multi authored output hierarchy");
-  await generateAndExpectAccepted(page);
+  const generationResponse = await generateAndExpectAccepted(page);
+  const generationRequest = generationResponse.request().postDataJSON();
+  expect(generationRequest.parameters).toMatchObject({
+    lora: "knp_v3_1",
+    lora_strength: 0.7,
+  });
+  expect(JSON.stringify(generationRequest)).not.toMatch(/safetensors|options_json|binding/i);
 
   const card = page.locator(".gallery-card").first();
   await expect(card).toHaveClass(/status-succeeded/, { timeout: 30_000 });
@@ -266,6 +317,17 @@ test("published Krea source exposes strict outputs and the complete authored res
   await expect(additionalOutputs).toContainText("complete native text result");
   await expect(additionalOutputs).toContainText("asset_sha256");
 
+  const technicalProvenance = detailDialog.locator("details.provenance").filter({
+    hasText: "Technical provenance",
+  });
+  await technicalProvenance.locator("summary").click();
+  const effectiveParameters = technicalProvenance
+    .getByText("Effective parameters", { exact: true })
+    .locator("xpath=following-sibling::dd[1]");
+  await expect(effectiveParameters).toContainText('"lora": "knp_v3_1"');
+  await expect(effectiveParameters).toContainText('"lora_strength": 0.7');
+  await expect(effectiveParameters).not.toContainText(/safetensors|options_json|binding/i);
+
   const rawHistory = detailDialog.locator("details.raw-history");
   await rawHistory.locator("summary").click();
   await expect(rawHistory.locator("pre")).toContainText('"outputs"');
@@ -294,7 +356,7 @@ test("backend field errors disclose Advanced controls and stale compositions do 
         error: {
           code: "parameter_validation_failed",
           message: "Published parameters were rejected.",
-          fields: { knpv4_1_strength: "Server-side strength rejection." },
+          fields: { lora_strength: "Server-side strength rejection." },
         },
       }),
     });
@@ -304,7 +366,7 @@ test("backend field errors disclose Advanced controls and stale compositions do 
   releaseGeneration();
   const advanced = page.locator(".advanced-group");
   await expect(advanced).toHaveAttribute("open", "");
-  const strength = page.getByRole("spinbutton", { name: "KNP V4.1 strength", exact: true });
+  const strength = page.getByRole("spinbutton", { name: "LoRA Strength", exact: true });
   await expect(strength).toHaveAttribute("aria-invalid", "true");
   await expect(strength).toBeFocused();
   await page.unroute("**/api/generations");

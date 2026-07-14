@@ -14,9 +14,11 @@ The application now treats ComfyUI's deliberately published three-file bundle as
 - The embedded `FrontendWorkflowContract` / `FrontendWorkflowArtifact` node parser, selector/transform/preset/stage model, and fixed control assumptions are retired.
 - The `.interface.json` manifest supplies the only public input/output schema and trusted private CIF parameter bindings.
 - Public requests use `source_key`, optional immutable `revision`, and `parameters`; compilation clones the accepted frozen API graph per request.
-- Source revision identity is publication UUID plus exact workflow/API/manifest SHA-256 values.
+- Source revision identity is publication UUID plus the manifest-recorded editable-workflow SHA-256 and exact verified API/manifest SHA-256 values.
 - Generation results retain native prompt ID, complete server-side history/status, effective parameters, manifest-ordered publisher outputs with authoritative batch indices, untouched node-keyed nonpublisher outputs, warnings/errors, and every archived batch image. Public history removes top-level submitted prompt/extra-data graph envelopes while preserving actual node results, publisher metadata, custom UI fields, raw status/errors, and execution metadata.
 - New publications must have connected `CIFPublishImage` declarations with `cardinality: many`, unique public IDs/instance UUIDs/node bindings, exactly one `final`, explicit `unmapped_outputs_policy: collect`, and a native-output diagnostic inventory. Previously accepted publisher-less publication shapes must be republished.
+- Publication v1 also accepts finite `choice` inputs. Clients render their public values as a single select and never expose or submit the frozen CIF node's private option mapping. Choice-free publications remain valid without migration.
+- A later normal ComfyUI save may change editable `.json` bytes without changing the published runtime. Discovery now preserves that source with an editable-drift warning; frozen `.api.json` hash integrity and all manifest/interface/dependency checks remain hard requirements.
 - A convenient gallery image does not create a contract-declared final output.
 
 ## Existing database records

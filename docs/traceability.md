@@ -300,7 +300,7 @@ The current integration accepts only deliberate three-file publications using `c
 | **PUB-04** | Nested userdata paths are encoded as one segment | whole-value `quote(..., safe='')` encoding in `services/comfyui.py` | nested-path and encoded-slash adapter tests |
 | **PUB-05** | Every response class is conservatively bounded | listing/object-info/manifest/workflow/API/history/output limits in config and adapter | over-limit adapter/publication fixtures |
 | **PUB-06** | Paths, schemas, stems, source ID, strict JSON and node count fail closed | `domain/publication.py` | adversarial publication validation tests |
-| **PUB-07** | Artifact identity uses hashes of exact raw bytes | raw-byte SHA-256 validation in `domain/publication.py` | workflow/API corruption and manifest revision fixtures |
+| **PUB-07** | Frozen API integrity uses the hash of exact raw bytes | fail-closed API raw-byte SHA-256 validation in `domain/publication.py` | API corruption and manifest revision fixtures |
 | **PUB-08** | Public inputs and private bindings are strictly validated | interface/type/default/range/step/role/binding checks in `domain/publication.py` | all-type, duplicate-ID, prompt-role, missing-target and class-mismatch tests |
 | **PUB-09** | Declared dependencies must cover and exist in object info | dependency coverage and readiness in `domain/publication.py` / `services/workflow_registry.py` | omitted/missing dependency fixtures |
 | **PUB-10** | Candidate acceptance and refresh are atomic | immutable revision publication in `services/workflow_registry.py` | bad republish retains prior accepted revision; independent candidate failure tests |
@@ -311,7 +311,7 @@ The current integration accepts only deliberate three-file publications using `c
 | **PUB-15** | Unknown fields and graph/binding injection are rejected | `domain/compiler.py` and forbidden-extra request schemas | compiler/API rejection tests |
 | **PUB-16** | Large fixed and random seeds round-trip exactly | decimal-string seed semantics in compiler/schema/frontend | maximum-range, omitted/null/random, effective-value and recall tests |
 | **PUB-17** | Compilation is request-local and patches trusted bindings only | deep clone, binding patch and cache mutation assertion in `domain/compiler.py` | multi-binding, graph immutability and isolated compilation tests |
-| **PUB-18** | Matching editable workflow metadata is attached when declared | publication runtime snapshot and `queue_worker.py` prompt `extra_data` | submission payload tests |
+| **PUB-18** | Accepted editable workflow metadata is attached when declared without becoming the executable boundary | publication runtime snapshot and `queue_worker.py` prompt `extra_data` | submission payload tests plus separate observed/published hash diagnostics |
 | **PUB-19** | Native prompt ID and accepted source/parameters are durable | generation acceptance and prompt transition in generation/queue services | lifecycle, restart and recall integration tests |
 | **PUB-20** | History is terminal truth with bounded reconciliation | WebSocket plus history monitor/recovery in `queue_worker.py` | delayed history, cached execution, restart and outage tests |
 | **PUB-21** | Connected multi-publisher declarations have unique IDs/UUIDs/nodes, cardinality many, and exactly one final | `domain/publication.py` | strict publication/output/native-inventory fixtures and contract tests |
@@ -321,6 +321,9 @@ The current integration accepts only deliberate three-file publications using `c
 | **PUB-25** | Authoritative publisher batches remain ordered, archived, inspectable, and downloadable without double-counting mirrored images | result normalization, queue/asset services, ordered detail API and role-grouped renderer | multiple-publisher/multiple-batch lifecycle and render tests |
 | **PUB-26** | Legacy rows remain readable while legacy discovery is retired | additive Alembic migration and compatibility projections | migration and historical generation/recall tests |
 | **PUB-27** | Publication behavior is documented operationally | `.env.example`, `docs/published-workflows.md`, API/architecture/database/testing docs | link checks, generated traceability check and documented live procedure |
+| **PUB-28** | Finite choices expose only stable public values while private mappings remain frozen | choice validation/projection/compiler paths in `domain/publication.py`, `api/workflows.py`, and `domain/compiler.py` | choice manifest, API privacy, invalid request, and graph-isolation tests |
+| **PUB-29** | Choice companion strengths resolve deterministically without weakening exhaustive outputs | choice/default resolution in `domain/compiler.py` and selector state in frontend modules | default-strength precedence, explicit override, concurrency, lifecycle, and output regression tests |
+| **PUB-30** | Mutable editable-workflow drift warns without hiding a valid frozen runtime | warning-only editable hash comparison in `domain/publication.py` plus refresh metadata in `services/workflow_registry.py` | contract and registry tests for initial discovery, repeated refresh, two-source availability, and strict API mismatch rejection |
 
 ## Normative boundary
 

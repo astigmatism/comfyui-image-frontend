@@ -48,7 +48,7 @@ SQLite owns structured state and authorization. Binary data is beneath the confi
 
 Prompts and user/ComfyUI filenames are never storage paths. Application paths are generated, stored relative to the data root, and resolved beneath that root before open/delete. SQLite uses foreign keys, WAL, `synchronous=NORMAL`, and a busy timeout. Network work, hashing, decoding, and thumbnails occur outside long write transactions where practical.
 
-Publication documents are durably snapshotted as JSON in `workflow_profiles`; exact raw-byte SHA-256 values preserve identity even though raw source files remain externally owned by ComfyUI. Generations copy the source revision and result structures needed for historical display.
+Publication documents are durably snapshotted as JSON in `workflow_profiles`; the exact frozen-API and manifest SHA-256 values plus the manifest-recorded editable hash preserve identity even though current editable bytes and all source files remain externally owned by ComfyUI. Generations copy the source revision and result structures needed for historical display.
 
 ## Authentication and authorization
 
@@ -66,13 +66,13 @@ At startup, administrator refresh, and an offline-to-online health transition, `
 2. Recursively list the configured userdata namespace, preferring `/v2/userdata?path=workflows` and falling back to `/userdata?dir=workflows&recurse=true&full_info=true`.
 3. Filter safe normalized `.interface.json` paths.
 4. Retrieve each manifest and adjacent `<stem>.json` / `<stem>.api.json`; nested paths are encoded whole as one route segment.
-5. Parse strict UTF-8 JSON and validate publication/interface schemas, path/stem/source agreement, exact raw-byte hashes, graph node count/shape, public IDs/types/defaults/ranges/steps, one positive prompt, trusted bindings, dependencies, warnings, and runtime flags.
+5. Parse strict UTF-8 JSON; strictly verify the frozen API raw-byte hash; compare editable bytes for warning-only drift; and validate publication/interface schemas, path/stem/source agreement, API graph node count/shape, public IDs/types/defaults/ranges/steps, finite choice values/labels/hints, one positive prompt, trusted bindings, dependencies, warnings, and runtime flags.
 6. Match all declared class types against `/object_info`.
 7. Atomically publish each complete accepted revision and safe diagnostic.
 
 The optional `Comfy-User` header is applied consistently to the relevant HTTP and WebSocket traffic. Listing, manifest, workflow, API, object-info, history, and output responses have separate byte caps.
 
-`source_key` is stable for one configured `instance_id + source_id`. The immutable revision consists of publication UUID and exact workflow/API/manifest hashes. A bad republish cannot replace its last accepted revision. One rejected candidate cannot remove independent valid sources. A transport/listing failure retains the last valid catalog as cached/offline; a successful authoritative listing retires disappeared sources and old embedded-contract profiles. Missing dependencies produce an unavailable catalog record.
+`source_key` is stable for one configured `instance_id + source_id`. The immutable revision consists of the publication UUID and manifest-recorded workflow hash plus exact verified API and manifest hashes. Current editable-workflow drift is liveness metadata: it produces `ready_with_warnings`, not rejection, and does not alter the frozen executable snapshot or revision identity. A bad frozen republish cannot replace its last accepted revision. One rejected candidate cannot remove independent valid sources. A transport/listing failure retains the last valid catalog as cached/offline; a successful authoritative listing retires disappeared sources and old embedded-contract profiles. Missing dependencies produce an unavailable catalog record.
 
 Ordinary source APIs contain display name, stable key, instance identity, readiness/cached/availability, warnings, revision, and public interface inputs/outputs. They omit source path, graph, bindings, node IDs, instance UUIDs, and dependencies.
 
@@ -83,6 +83,7 @@ Canonical generation input is `{source_key, revision?, parameters, prompt_assist
 - current source resolution and optional exact revision check;
 - rejection of unknown public IDs and legacy graph/binding/path injection;
 - required/default/type/range/step validation;
+- finite-choice membership and deterministic companion-strength resolution;
 - canonical decimal parsing and request-local random resolution for seeds;
 - owner validation for any linked Prompt Assistant run;
 - deep clone of the accepted frozen API graph;
@@ -90,7 +91,7 @@ Canonical generation input is `{source_key, revision?, parameters, prompt_assist
 - verification that the cached graph remained byte-for-byte/logically unchanged;
 - positive-prompt extraction and compiled graph SHA-256.
 
-Seed values remain decimal strings in public/effective state so values beyond JavaScript's safe integer range round-trip exactly; the cloned graph receives the validated integer.
+Seed values remain decimal strings in public/effective state so values beyond JavaScript's safe integer range round-trip exactly; the cloned graph receives the validated integer. Choice values remain stable public IDs throughout application state. Only the trusted choice declaration's prompt-local `value` is patched; private `options_json` mappings and downstream model/file inputs remain frozen and server-side.
 
 One transaction inserts the generation, queue sequence, source revision snapshot, requested/effective parameters, resolved seeds, compiled graph/hash, Prompt Assistant linkage, and initial durable event. Only then does the API return a card.
 
@@ -100,7 +101,7 @@ Temporary legacy request/response aliases are isolated at the schema/service bou
 
 The worker maintains up to `CIF_COMFYUI_CONCURRENCY` active jobs. A SQLite lock row serializes fair selection: oldest queued item per user, round-robin across owners, preserving each owner's FIFO order.
 
-Before `/prompt`, the worker reuses the generation's immutable compiled graph. When the accepted publication runtime flag requests it, the matching editable workflow snapshot is attached at `extra_data.extra_pnginfo.workflow`. Submission uses a request-specific client ID. The returned native `prompt_id` is persisted before monitoring.
+Before `/prompt`, the worker reuses the generation's immutable compiled graph. When the accepted publication runtime flag requests it, the accepted editable snapshot is attached only as `extra_data.extra_pnginfo.workflow`; its observed hash is tracked separately when it differs from the publication record. Submission uses a request-specific client ID. The returned native `prompt_id` is persisted before monitoring.
 
 The monitor combines WebSocket progress with bounded history polling/retry. WebSocket events are timely but incomplete: cached runs may omit them, and a terminal event may precede history persistence. `/history/{prompt_id}` is therefore terminal/recovery truth.
 
@@ -135,7 +136,7 @@ When health monitoring sees ComfyUI move from offline to online, it reruns full 
 The production frontend uses browser-native modules:
 
 - `api.mjs`: same-origin JSON/multipart and CSRF handling.
-- `lib.mjs`: source-input ordering/defaults/validation, seed-safe serialization, recall/state helpers.
+- `lib.mjs`: source-input ordering/defaults/validation, finite-choice reconciliation, seed-safe serialization, recall/state helpers.
 - `render.mjs`: escaped semantic HTML for source-driven controls, cards, detail, warnings and service states.
 - `app.mjs`: state transitions, source selection/revision refresh, submission, pagination, SSE and administration.
 - `styles.css`: design tokens, control geometry, responsive layout, focus and reduced-motion behavior.

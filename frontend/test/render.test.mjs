@@ -135,6 +135,24 @@ const publishedSource = {
   },
 };
 
+const loraChoice = {
+  id: "lora",
+  label: "LoRA",
+  description: "Selects the LoRA applied by the primary loader.",
+  type: "choice",
+  default: "knp_v4_1",
+  semantic_role: "lora",
+  advanced: true,
+  group: "Advanced",
+  order: 55,
+  choices: [
+    { value: "knp_v4_1", label: "KNP v4.1", default_strength: 1 },
+    { value: "knp_v3_1", label: "KNP v3.1", default_strength: 0.5 },
+    { value: "knp_v2", label: "KNP v2", default_strength: 1 },
+    { value: "mysticxxx_krea2_v1", label: "MysticXXX Krea2 v1", default_strength: 1 },
+  ],
+};
+
 test("prompt is contract-rendered and Prompt Assistant remains collapsed by default", () => {
   const html = controlMarkup(promptControl, { "prompt.text": "hello" }, contract);
   assert.match(html, />Prompt</);
@@ -417,6 +435,53 @@ test("published source renders all five v1 input types in deterministic Basic an
   assert.doesNotMatch(html, /negative.prompt|Negative prompt/i);
   const button = html.match(/<button id="generate-button"[^>]*>/)?.[0] || "";
   assert.doesNotMatch(button, /disabled/);
+});
+
+test("choice inputs render one finite single-select with public values and labels", () => {
+  const html = controlMarkup(loraChoice, { lora: "knp_v3_1" }, { inputs: [loraChoice] });
+  assert.equal((html.match(/<select\b/g) || []).length, 1);
+  assert.equal((html.match(/<option\b/g) || []).length, 4);
+  assert.match(html, /<select[^>]*data-control-id="lora"[^>]*>/);
+  assert.match(html, /<option value="knp_v3_1" selected>KNP v3\.1<\/option>/);
+  assert.match(html, /<option value="mysticxxx_krea2_v1" >MysticXXX Krea2 v1<\/option>/);
+  assert.match(html, /Selects the LoRA applied by the primary loader\./);
+  assert.doesNotMatch(html, /\bmultiple\b|type="text"|<textarea|safetensors|options_json/);
+
+  const defaults = controlMarkup(loraChoice, {}, { inputs: [loraChoice] });
+  assert.match(defaults, /<option value="knp_v4_1" selected>KNP v4\.1<\/option>/);
+});
+
+test("choice controls honor advanced grouping and order before their strength companion", () => {
+  const strength = {
+    id: "lora_strength",
+    label: "LoRA Strength",
+    type: "number",
+    default: 1,
+    semantic_role: "lora",
+    minimum: 0,
+    maximum: 2,
+    step: 0.05,
+    advanced: true,
+    group: "Advanced",
+    order: 60,
+  };
+  const choiceContract = { inputs: [strength, loraChoice] };
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: { lora: "knp_v4_1", lora_strength: 1 },
+    fieldErrors: {},
+    formError: null,
+  };
+  const html = generationPanelMarkup(state, publishedSource, choiceContract);
+  assert.match(html, /<details class="advanced-group"><summary>Advanced<\/summary>/);
+  assert.match(html, /<section class="control-group" data-interface-group="Advanced">/);
+  assert.ok(html.indexOf('data-control-block="lora"') < html.indexOf('data-control-block="lora_strength"'));
+  assert.doesNotMatch(html, /Krea2\/KNPV4\.1_pre\.safetensors/);
 });
 
 test("fixed-mode seed renders no random choice and exposes its exact default", () => {

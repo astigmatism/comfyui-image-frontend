@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from app.domain.publication import source_key_for
+from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING, source_key_for
 from app.errors import AppError
 from app.models import Base, ServiceHealth, WorkflowProfile, WorkflowState
 from app.services.comfyui import ComfyCapabilities
@@ -15,8 +15,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from tests.publication_fixtures import (
     GENERIC_PUBLICATION_ID,
     KREA_PUBLICATION_ID,
+    PublicationBundle,
     build_publication_bundle,
     build_publication_files,
+    exact_json_bytes,
     object_info_fixture,
 )
 
@@ -101,7 +103,20 @@ def test_refresh_discovers_two_output_aware_publications() -> None:
             GENERIC_PUBLICATION_ID,
             KREA_PUBLICATION_ID,
         }
+        generic = next(
+            profile for profile in profiles if profile.display_name == "Generic Landscape"
+        )
         krea = next(profile for profile in profiles if profile.display_name.startswith("Krea"))
+        assert all(value["type"] != "choice" for value in generic.resolved_contract_json["inputs"])
+        assert [value["id"] for value in krea.resolved_contract_json["inputs"][-2:]] == [
+            "lora",
+            "lora_strength",
+        ]
+        assert krea.resolved_contract_json["inputs"][-2]["choices"][1] == {
+            "value": "knp_v3_1",
+            "label": "KNP v3.1",
+            "default_strength": 0.5,
+        }
         assert krea.warnings_json == []
         assert [output["id"] for output in krea.resolved_contract_json["outputs"]] == [
             "base",
@@ -113,6 +128,126 @@ def test_refresh_discovers_two_output_aware_publications() -> None:
         assert health is not None
         assert health.available is True
         assert health.capabilities_json["ready_sources"] == 2
+    engine.dispose()
+
+
+def test_known_publication_tracks_editable_workflow_drift_as_current_warning_metadata() -> None:
+    original = build_publication_bundle("krea")
+    adapter = FixturePublicationAdapter(dict(original.files))
+    registry, session_factory, engine = make_registry(adapter)
+    assert [item.code for item in asyncio.run(registry.refresh())] == ["ready"]
+    source_key = source_key_for("test-instance", original.manifest()["source_id"])
+
+    with session_factory() as session:
+        original_profile = registry.get_current(session, source_key)
+        original_profile_id = original_profile.id
+        original_ui_snapshot = original_profile.source_ui_json
+
+    edited_workflow = original.workflow()
+    edited_workflow["nodes"][0]["widgets_values"][0] = "locally edited prompt"
+    drifted = PublicationBundle(
+        **{
+            **original.__dict__,
+            "workflow_bytes": exact_json_bytes(edited_workflow),
+        }
+    )
+    adapter.files = dict(drifted.files)
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.accepted is True
+    assert diagnostic.code == "ready_with_warnings"
+    assert diagnostic.details_json["warnings"] == [EDITABLE_WORKFLOW_DRIFT_WARNING]
+    assert diagnostic.details_json["workflow_sha256"] == original.manifest()["workflow"]["sha256"]
+    assert (
+        diagnostic.details_json["observed_workflow_sha256"]
+        != diagnostic.details_json["workflow_sha256"]
+    )
+    assert diagnostic.details_json["editable_workflow_drifted"] is True
+    with session_factory() as session:
+        drifted_profile = registry.get_current(session, source_key)
+        assert drifted_profile.id == original_profile_id
+        assert drifted_profile.publication_id == KREA_PUBLICATION_ID
+        assert drifted_profile.readiness == "ready_with_warnings"
+        assert drifted_profile.warnings_json == [EDITABLE_WORKFLOW_DRIFT_WARNING]
+        assert drifted_profile.source_ui_json == original_ui_snapshot
+        assert drifted_profile.source_api_json == original.api()
+        assert drifted_profile.manifest_json == original.manifest()
+        assert (
+            drifted_profile.runtime_snapshot_json["stored_editable_workflow_matches_publication"]
+            is True
+        )
+
+    adapter.files = dict(original.files)
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [item.code for item in diagnostics] == ["ready"]
+    with session_factory() as session:
+        restored_profile = registry.get_current(session, source_key)
+        assert restored_profile.id == original_profile_id
+        assert restored_profile.readiness == "ready"
+        assert restored_profile.warnings_json == []
+        assert restored_profile.source_ui_json == original_ui_snapshot
+    engine.dispose()
+
+
+def test_initial_editable_drift_tracks_the_observed_snapshot_separately() -> None:
+    original = build_publication_bundle("krea")
+    edited_workflow = original.workflow()
+    edited_workflow["nodes"][0]["widgets_values"][0] = "unpublished editable prompt"
+    drifted = PublicationBundle(
+        **{
+            **original.__dict__,
+            "workflow_bytes": exact_json_bytes(edited_workflow),
+        }
+    )
+    adapter = FixturePublicationAdapter(dict(drifted.files))
+    registry, session_factory, engine = make_registry(adapter)
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [item.code for item in diagnostics] == ["ready_with_warnings"]
+    diagnostic = diagnostics[0]
+    source_key = source_key_for("test-instance", original.manifest()["source_id"])
+    with session_factory() as session:
+        profile = registry.get_current(session, source_key)
+        assert profile.ui_graph_sha256 == original.manifest()["workflow"]["sha256"]
+        assert (
+            profile.runtime_snapshot_json["stored_editable_workflow_sha256"]
+            == (diagnostic.details_json["observed_workflow_sha256"])
+        )
+        assert (
+            profile.runtime_snapshot_json["stored_editable_workflow_matches_publication"] is False
+        )
+        assert profile.source_ui_json["nodes"][0]["widgets_values"][0] == (
+            "unpublished editable prompt"
+        )
+        assert profile.source_api_json == original.api()
+    engine.dispose()
+
+
+def test_missing_choice_dependency_does_not_hide_nonchoice_source() -> None:
+    object_info = object_info_fixture()
+    object_info.pop("CIFChoiceParameter")
+    adapter = FixturePublicationAdapter(object_info=object_info)
+    registry, session_factory, engine = make_registry(adapter)
+
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [(item.basename, item.code) for item in diagnostics] == [
+        ("Generic Landscape", "ready"),
+        ("Krea 2 NSFW V4", "dependency_missing"),
+    ]
+    with session_factory() as session:
+        assert [profile.display_name for profile in registry.list_current(session)] == [
+            "Generic Landscape"
+        ]
+        dependency_diagnostic = next(
+            item for item in registry.diagnostics(session) if item.code == "dependency_missing"
+        )
+        assert dependency_diagnostic.details_json["missing_class_types"] == ["CIFChoiceParameter"]
     engine.dispose()
 
 

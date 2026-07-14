@@ -60,7 +60,7 @@ The historical route name `workflows` is retained, but objects now represent del
 }
 ```
 
-`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled. Ordinary source responses describe missing dependencies generically; exact class names remain restricted to administrator diagnostics.
+`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. A source whose mutable editable workflow changed after publication remains available as `ready_with_warnings`; its frozen API hash and contract are still verified strictly. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled. Ordinary source responses describe missing dependencies generically; exact class names remain restricted to administrator diagnostics.
 
 During client migration, summaries also carry legacy `profile_id`, workflow/version/hash, contract-schema, and adapter fields. They are compatibility metadata, not the logical source/revision API; new clients use `source_key` and `revision`.
 
@@ -82,6 +82,22 @@ A source detail adds only this public projection:
         "group": "Basic",
         "order": 10,
         "default": "mountain lake"
+      },
+      {
+        "id": "lora",
+        "type": "choice",
+        "label": "LoRA",
+        "description": "Selects the primary model-only LoRA.",
+        "semantic_role": "lora",
+        "required": false,
+        "advanced": true,
+        "group": "Advanced",
+        "order": 55,
+        "default": "knp_v4_1",
+        "choices": [
+          {"value": "knp_v4_1", "label": "KNP v4.1", "default_strength": 1.0},
+          {"value": "knp_v3_1", "label": "KNP v3.1", "default_strength": 0.5}
+        ]
       }
     ],
     "outputs": [
@@ -107,7 +123,7 @@ A source detail adds only this public projection:
 }
 ```
 
-Numeric fields additionally include `minimum`, `maximum`, and `step`; seeds include `default_mode` and use a decimal-string default when fixed (or `null` when random). Published manifests declare output `type: "image"`, but this public interface intentionally exposes the normalized field `kind: "image"`. Output descriptions contain public `id`, `role`, `kind`, `cardinality`, `label`, and `description`. Bindings, instance UUIDs, class types, node IDs, dependencies, paths, and graphs are never copied into the public source projection.
+Numeric fields additionally include `minimum`, `maximum`, and `step`; seeds include `default_mode` and use a decimal-string default when fixed (or `null` when random). A choice contains only its stable public values, labels, and optional finite `default_strength` hints. Private option mappings, `options_json`, filenames, bindings, and destination nodes are never projected. Published manifests declare output `type: "image"`, but this public interface intentionally exposes the normalized field `kind: "image"`. Output descriptions contain public `id`, `role`, `kind`, `cardinality`, `label`, and `description`. Bindings, instance UUIDs, class types, node IDs, dependencies, paths, and graphs are never copied into the public source projection.
 
 Administrator refresh returns diagnostic records with `basename`, `accepted`, optional source/revision hints, `code`, safe `message`, and `checked_at`. Important codes include transport failures (`server_unreachable`, `listing_failed`), candidate fetch failures, validation/hash failures, `dependency_missing`, `ready_with_warnings`, and `ready`.
 
@@ -134,6 +150,7 @@ Canonical request:
     "width": 1024,
     "height": 1024,
     "seed": "1125899906842624",
+    "lora": "knp_v3_1",
     "enable_upscale": false
   },
   "prompt_assistant_run_id": null
@@ -142,7 +159,7 @@ Canonical request:
 
 `revision` is optional for a fresh caller but recommended for a UI selection. If the selected source was republished, a mismatch returns HTTP 409 with `source_republished`; the backend never compiles against a silently changed graph.
 
-`parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings.
+`parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Optional choices treat omission or `null` as default selection, but reject empty strings, labels, private filenames, and values absent from the current publication. If a companion strength is omitted, the selected option's `default_strength` wins before the numeric input's ordinary default; an explicit non-null numeric value always wins. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings.
 
 Successful validation:
 
@@ -154,6 +171,8 @@ Successful validation:
     "width": 1024,
     "height": 1024,
     "seed": "793486291720513",
+    "lora": "knp_v3_1",
+    "lora_strength": 0.5,
     "enable_upscale": false
   },
   "resolved_seeds": {"seed": "793486291720513"},

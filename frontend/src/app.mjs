@@ -1,6 +1,8 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
 import {
+  applyChoiceStrengthDefaults,
   clientValidate,
+  choiceStrengthCompanion,
   createLatestRequestGate,
   defaultsForInterface,
   interfaceInputs,
@@ -40,6 +42,7 @@ const state = {
   activeSourceKey: null,
   activeSource: null,
   parameters: {},
+  explicitParameterIds: new Set(),
   parameterStateBySource: {},
   selectedPreset: null,
   compositionId: null,
@@ -124,7 +127,9 @@ async function handleSubmit(event) {
 async function handleClick(event) {
   const clearUpload = event.target.closest("[data-clear-upload]");
   if (clearUpload) {
-    state.parameters[clearUpload.dataset.clearUpload] = null;
+    const id = clearUpload.dataset.clearUpload;
+    state.parameters[id] = null;
+    state.explicitParameterIds.add(id);
     persistActiveParameterState();
     renderPanel();
     return;
@@ -187,6 +192,7 @@ async function handleChange(event) {
     if (!input) return;
     const current = seedFormValue(input, state.parameters[id]);
     state.parameters[id] = { mode: element.value === "random" ? "random" : "fixed", value: current.value };
+    state.explicitParameterIds.add(id);
     state.serverFieldErrors[id] = null;
     persistActiveParameterState();
     renderPanel();
@@ -197,10 +203,13 @@ async function handleChange(event) {
     return;
   }
   if (element.matches("[data-control-id]")) {
-    updateControlFromElement(element);
+    const control = updateControlFromElement(element);
     syncNumberControlPair(element);
+    syncChoiceStrengthControl(control);
     persistActiveParameterState();
     syncParameterValidation(element.dataset.controlId);
+    const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
+    if (control?.type === "choice" && companion) syncParameterValidation(companion.id);
   }
 }
 
@@ -219,8 +228,9 @@ function handleInput(event) {
     return;
   }
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
-    updateControlFromElement(element);
+    const control = updateControlFromElement(element);
     syncNumberControlPair(element);
+    syncChoiceStrengthControl(control);
     if (element.dataset.resolutionPart) {
       const grid = element.closest("[data-control-block]")?.querySelector("[data-resolution-grid]");
       updateResolutionUi(grid, state.parameters[element.dataset.controlId]);
@@ -231,6 +241,8 @@ function handleInput(event) {
     }
     persistActiveParameterState();
     syncParameterValidation(element.dataset.controlId);
+    const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
+    if (control?.type === "choice" && companion) syncParameterValidation(companion.id);
   }
 }
 
@@ -336,6 +348,7 @@ function updateResolutionFromPointer(event, drag) {
 function setResolutionValue(grid, width, height) {
   const id = grid.dataset.controlId;
   state.parameters[id] = { width, height };
+  state.explicitParameterIds.add(id);
   delete state.serverFieldErrors[id];
   state.formError = null;
   persistActiveParameterState();
@@ -400,7 +413,7 @@ function renderPanelWithResolutionFocus(controlId, handle) {
 function updateControlFromElement(element) {
   const id = element.dataset.controlId;
   const control = interfaceInputs(state.activeSource?.interface).find((item) => item.id === id);
-  if (!id || !control) return;
+  if (!id || !control) return null;
   if (element.dataset.resolutionPart) {
     const current = state.parameters[id] || {};
     state.parameters[id] = {
@@ -412,7 +425,7 @@ function updateControlFromElement(element) {
       state.parameters[id] = JSON.parse(element.value);
     } catch {
       state.serverFieldErrors[id] = "Enter valid JSON.";
-      return;
+      return null;
     }
   } else if (control.type === "boolean") {
     state.parameters[id] = element.checked;
@@ -421,8 +434,42 @@ function updateControlFromElement(element) {
   } else {
     state.parameters[id] = normalizeInputValue(control, element.value);
   }
+  if (control.type === "number" && state.parameters[id] === null) {
+    state.explicitParameterIds.delete(id);
+  } else {
+    state.explicitParameterIds.add(id);
+  }
+  if (control.type === "choice") {
+    const contract = sourceInterface(state.activeSource);
+    const companion = choiceStrengthCompanion(contract, control);
+    state.parameters = applyChoiceStrengthDefaults(
+      contract,
+      state.parameters,
+      state.explicitParameterIds,
+      control.id,
+    );
+    if (companion && !state.explicitParameterIds.has(companion.id)) {
+      delete state.serverFieldErrors[companion.id];
+    }
+  }
   delete state.serverFieldErrors[id];
   state.formError = null;
+  return control;
+}
+
+function syncChoiceStrengthControl(control) {
+  if (control?.type !== "choice") return;
+  const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
+  if (!companion || state.explicitParameterIds.has(companion.id)) return;
+  const block = document.querySelector(
+    `[data-control-block="${CSS.escape(companion.id)}"]`,
+  );
+  if (!block) return;
+  const value = state.parameters[companion.id] ?? "";
+  const entry = block.querySelector("[data-number-entry]");
+  const slider = block.querySelector("[data-number-slider]");
+  if (entry) entry.value = value;
+  if (slider) slider.value = value;
 }
 
 function syncNumberControlPair(element) {
@@ -567,6 +614,7 @@ async function logout() {
   state.activeSourceKey = null;
   state.activeSource = null;
   state.parameters = {};
+  state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
   state.sourceCatalogStatus = "idle";
   state.sourceCatalogToken += 1;
@@ -662,6 +710,7 @@ function persistActiveParameterState() {
     interface: structuredClone(sourceInterface(state.activeSource)),
     revision: structuredClone(sourceRevision(state.activeSource)),
     values: structuredClone(state.parameters),
+    explicitInputIds: [...state.explicitParameterIds],
   };
 }
 
@@ -683,6 +732,7 @@ async function loadSources() {
       state.activeSourceKey = null;
       state.activeSource = null;
       state.parameters = {};
+      state.explicitParameterIds = new Set();
       state.sourceDetailLoading = false;
       state.sourceDetailError = null;
       renderPanel();
@@ -715,6 +765,7 @@ async function selectSource(key, { summary = null } = {}) {
   state.activeSource = resolvedSummary;
   const saved = key ? state.parameterStateBySource[key] : null;
   state.parameters = structuredClone(saved?.values || {});
+  state.explicitParameterIds = new Set(saved?.explicitInputIds || []);
   state.sourceDetailLoading = Boolean(key);
   state.sourceDetailError = null;
   state.selectedPreset = null;
@@ -730,7 +781,12 @@ async function selectSource(key, { summary = null } = {}) {
     const contract = sourceInterface(detail);
     if (!contract) throw new Error("The selected source has no public interface.");
     state.activeSource = { ...(resolvedSummary || {}), ...detail, interface: contract };
-    state.parameters = reconcileInterfaceValues(contract, saved?.values || {}, saved?.interface || null);
+    state.parameters = reconcileInterfaceValues(
+      contract,
+      saved?.values || {},
+      saved?.interface || null,
+      state.explicitParameterIds,
+    );
     state.sourceDetailError = null;
     persistActiveParameterState();
   } catch (error) {
@@ -749,7 +805,18 @@ function applyPreset(presetId) {
   const contract = sourceInterface(state.activeSource);
   state.parameters = defaultsForInterface(contract);
   const preset = contract?.presets?.find((item) => item.id === presetId);
-  if (preset) Object.assign(state.parameters, structuredClone(preset.values || {}));
+  const presetValues = structuredClone(preset?.values || {});
+  state.explicitParameterIds = new Set(
+    Object.entries(presetValues)
+      .filter(([, value]) => value !== null && value !== undefined)
+      .map(([id]) => id),
+  );
+  Object.assign(state.parameters, presetValues);
+  state.parameters = applyChoiceStrengthDefaults(
+    contract,
+    state.parameters,
+    state.explicitParameterIds,
+  );
   state.serverFieldErrors = {};
   state.formError = null;
   persistActiveParameterState();
@@ -874,6 +941,7 @@ async function composePrompt(button) {
       return;
     }
     state.parameters[promptInput.id] = result.prompt;
+    state.explicitParameterIds.add(promptInput.id);
     persistActiveParameterState();
     state.compositionId = result.composition_id;
     state.promptAssistant.historicalModel = result.model;
@@ -905,6 +973,7 @@ async function handleUpload(input) {
   try {
     const result = await upload(`/api/uploads/${input.dataset.uploadKind}`, file);
     state.parameters[id] = result.id;
+    state.explicitParameterIds.add(id);
     delete state.serverFieldErrors[id];
     persistActiveParameterState();
     renderPanel();
@@ -996,7 +1065,17 @@ async function recall(id) {
   const contract = sourceInterface(source);
   state.activeSourceKey = key;
   state.activeSource = { ...source, interface: contract };
-  state.parameters = reconcileInterfaceValues(contract, recalledState.parameters, null);
+  state.explicitParameterIds = new Set(
+    Object.entries(recalledState.parameters || {})
+      .filter(([, value]) => value !== null && value !== undefined)
+      .map(([id]) => id),
+  );
+  state.parameters = reconcileInterfaceValues(
+    contract,
+    recalledState.parameters,
+    null,
+    state.explicitParameterIds,
+  );
   state.promptAssistant = recalledState.promptAssistant;
   state.compositionId = null;
   state.serverFieldErrors = {};

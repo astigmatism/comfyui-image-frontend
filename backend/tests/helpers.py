@@ -74,7 +74,6 @@ def generation_payload(
         "width": 512,
         "height": 512,
         "enable_seedvr2_upscale": False,
-        "knpv4_1_strength": 1.0,
     }
     # Publication v1 deliberately exposes only manifest-declared scalar parameters. Upload
     # fixtures remain useful for authorization/storage tests but are not injected into this source.

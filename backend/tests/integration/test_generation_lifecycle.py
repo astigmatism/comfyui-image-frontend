@@ -111,6 +111,10 @@ def _declared_output_list(value: Any) -> list[dict[str, Any]]:
 def test_progressive_success_multiple_outputs_and_exact_recall(
     settings_factory, fake_state
 ) -> None:
+    # Leave enough deterministic fake-runtime time for the worker to subscribe before the
+    # progressive event, even on a heavily loaded full-suite run.
+    fake_state.initial_event_delay = 0.5
+    fake_state.default_stage_delay = 0.5
     settings = settings_factory(enable_background_worker=True)
     with TestClient(create_app(settings)) as client:
         provision_user(client)
@@ -237,6 +241,94 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         thumbnail = client.get(artifact["thumbnail_url"])
         assert content.status_code == 200 and content.headers["content-type"] == "image/png"
         assert thumbnail.status_code == 200 and thumbnail.headers["content-type"] == "image/webp"
+
+
+def test_concurrent_choice_submissions_apply_public_values_and_option_strength_hints(
+    settings_factory, fake_state
+) -> None:
+    fake_state.slow_stage_delay = 2.0
+    settings = settings_factory(enable_background_worker=True, comfyui_concurrency=2)
+    source_api = build_publication_bundle("krea").api()
+    private_choice_node = source_api["202"]
+
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="choice.isolation")
+        requests = (
+            ("slow choice v3", "knp_v3_1", 0.5, 601),
+            ("slow choice v2", "knp_v2", 1.0, 602),
+        )
+        accepted: dict[str, dict[str, Any]] = {}
+        for prompt, choice, _, seed in requests:
+            payload = generation_payload(client, prompt, seed=seed)
+            payload["parameters"]["lora"] = choice
+            assert "lora_strength" not in payload["parameters"]
+            response = client.post(
+                "/api/generations",
+                headers={"X-CSRF-Token": csrf(client)},
+                json=payload,
+            )
+            assert response.status_code == 201, response.text
+            accepted[prompt] = response.json()
+
+        # Slow fake executions plus two worker slots ensure the differently selected choices
+        # are materialized at the same time, exercising per-generation graph isolation.
+        for prompt, _, _, _ in requests:
+            wait_for_generation(
+                client,
+                accepted[prompt]["id"],
+                lambda item: item["status"] == "running",
+            )
+        assert all(
+            client.get(f"/api/generations/{accepted[prompt]['id']}").json()["status"] == "running"
+            for prompt, _, _, _ in requests
+        )
+
+        completed = {
+            prompt: wait_for_status(client, accepted[prompt]["id"], "succeeded", timeout=10)
+            for prompt, _, _, _ in requests
+        }
+        submitted = {item["prompt"]: item for item in fake_state.submitted}
+        assert set(submitted) == {prompt for prompt, _, _, _ in requests}
+
+        for prompt, choice, expected_strength, _ in requests:
+            detail = completed[prompt]
+            assert detail["requested_controls"]["lora"] == choice
+            assert "lora_strength" not in detail["requested_controls"]
+            assert detail["effective_controls"]["lora"] == choice
+            assert detail["effective_controls"]["lora_strength"] == expected_strength
+
+            submission = submitted[prompt]
+            assert submission["choice"] == choice
+            assert submission["strength"] == expected_strength
+            assert submission["graph"]["202"] == {
+                **private_choice_node,
+                "inputs": {**private_choice_node["inputs"], "value": choice},
+            }
+            assert (
+                submission["graph"]["202"]["inputs"]["options_json"]
+                == private_choice_node["inputs"]["options_json"]
+            )
+            assert submission["graph"]["20"] == source_api["20"]
+            assert submission["graph"]["20"]["inputs"]["lora_name"] == ["202", 0]
+
+            assert detail["artifact_count"] == 5
+            assert {item["output_id"] for item in detail["artifacts"]} == {
+                "native:900",
+                "native:901",
+                "base",
+                "second_pass",
+                "final",
+            }
+            assert [
+                item.get("output_id", item.get("id"))
+                for item in _declared_output_list(detail["declared_outputs"])
+            ] == ["base", "second_pass", "final"]
+            assert set(detail["unmapped_outputs"]) == {"900", "901"}
+
+        assert submitted["slow choice v3"]["graph"] is not submitted["slow choice v2"]["graph"]
+        assert submitted["slow choice v3"]["graph"]["202"]["inputs"]["value"] == "knp_v3_1"
+        assert submitted["slow choice v2"]["graph"]["202"]["inputs"]["value"] == "knp_v2"
+        assert private_choice_node["inputs"]["value"] == "knp_v4_1"
 
 
 def test_authored_multi_publisher_batches_and_native_history_are_exhaustive(
@@ -747,6 +839,9 @@ def test_generation_deletion_removes_application_files_only(settings_factory, fa
 def test_required_declared_durable_artifact_failure_is_not_reported_as_success(
     settings_factory, fake_state
 ) -> None:
+    # Keep the final artifact pending long enough to switch retrieval into failure mode after
+    # the provisional artifact checkpoint under full-suite scheduler contention.
+    fake_state.slow_stage_delay = 2.0
     settings = settings_factory(enable_background_worker=True)
     with TestClient(create_app(settings)) as client:
         provision_user(client, username="archive.failure")

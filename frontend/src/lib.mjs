@@ -230,24 +230,94 @@ export function defaultsForInterface(contract) {
       values[input.id] = structuredClone(input.default);
     }
   }
-  return values;
+  return applyChoiceStrengthDefaults(contract, values);
 }
 
 export function defaultsForContract(contract) {
   return defaultsForInterface(contract);
 }
 
-export function reconcileInterfaceValues(contract, values = {}, previousContract = null) {
+export function choiceOptions(input) {
+  return Array.isArray(input?.choices)
+    ? input.choices.filter((option) => option && typeof option === "object")
+    : [];
+}
+
+export function choiceStrengthCompanion(contract, choice) {
+  const inputs = interfaceInputs(contract);
+  const choices = inputs.filter((input) => input.type === "choice");
+  const numbers = inputs.filter((input) => input.type === "number");
+  const exactByChoice = new Map();
+  for (const candidate of choices) {
+    const exact = numbers.find(
+      (input) =>
+        input.id === `${candidate.id}_strength` &&
+        input.semantic_role === candidate.semantic_role,
+    );
+    if (exact) exactByChoice.set(candidate.id, exact);
+  }
+  if (exactByChoice.has(choice?.id)) return exactByChoice.get(choice.id);
+  if (!choice?.semantic_role) return null;
+  const matchedNumbers = new Set([...exactByChoice.values()].map((input) => input.id));
+  const roleChoices = choices.filter(
+    (input) =>
+      !exactByChoice.has(input.id) && input.semantic_role === choice.semantic_role,
+  );
+  const roleNumbers = numbers.filter(
+    (input) =>
+      !matchedNumbers.has(input.id) && input.semantic_role === choice.semantic_role,
+  );
+  return roleChoices.length === 1 && roleChoices[0].id === choice.id && roleNumbers.length === 1
+    ? roleNumbers[0]
+    : null;
+}
+
+export function applyChoiceStrengthDefaults(
+  contract,
+  values = {},
+  explicitInputIds = [],
+  changedChoiceId = null,
+) {
+  const result = structuredClone(values || {});
+  const explicit = new Set(explicitInputIds || []);
+  for (const choice of interfaceInputs(contract)) {
+    if (choice.type !== "choice" || (changedChoiceId && choice.id !== changedChoiceId)) continue;
+    const companion = choiceStrengthCompanion(contract, choice);
+    if (!companion || explicit.has(companion.id)) continue;
+    const option = choiceOptions(choice).find((item) => item.value === result[choice.id]);
+    const hintedStrength = option?.default_strength;
+    if (typeof hintedStrength === "number" && Number.isFinite(hintedStrength)) {
+      result[companion.id] = hintedStrength;
+    } else if (Object.hasOwn(companion, "default")) {
+      result[companion.id] = structuredClone(companion.default);
+    } else {
+      delete result[companion.id];
+    }
+  }
+  return result;
+}
+
+export function reconcileInterfaceValues(
+  contract,
+  values = {},
+  previousContract = null,
+  explicitInputIds = [],
+) {
   const result = defaultsForInterface(contract);
   const previousInputs = new Map(interfaceInputs(previousContract).map((input) => [input.id, input]));
   for (const input of interfaceInputs(contract)) {
     if (!Object.hasOwn(values, input.id)) continue;
     const previous = previousInputs.get(input.id);
     if (previousContract && (!previous || previous.type !== input.type)) continue;
+    if (
+      input.type === "choice" &&
+      !choiceOptions(input).some((option) => option.value === values[input.id])
+    )
+      continue;
     result[input.id] =
       input.type === "seed" ? seedFormValue(input, values[input.id]) : structuredClone(values[input.id]);
   }
-  return result;
+  return applyChoiceStrengthDefaults(contract, result, explicitInputIds);
 }
 
 export function overwriteWithRecall(current, recall) {
@@ -404,6 +474,12 @@ export function clientValidate(contract, values) {
     const presentation = controlPresentation(control, values, capabilities);
     if (!presentation.visible || !presentation.enabled || presentation.forbidden) continue;
     const value = values[control.id];
+    if (control.type === "choice" && value === "") {
+      errors[control.id] = `Choose one of: ${choiceOptions(control)
+        .map((option) => option.value)
+        .join(", ")}.`;
+      continue;
+    }
     if (
       control.type !== "seed" &&
       presentation.required &&
@@ -413,6 +489,15 @@ export function clientValidate(contract, values) {
       continue;
     }
     if (value === undefined || value === null || value === "") continue;
+    if (
+      control.type === "choice" &&
+      !choiceOptions(control).some((option) => option.value === value)
+    ) {
+      errors[control.id] = `Choose one of: ${choiceOptions(control)
+        .map((option) => option.value)
+        .join(", ")}.`;
+      continue;
+    }
     const minimum = inputConstraint(control, "minimum");
     const maximum = inputConstraint(control, "maximum");
     const step = inputConstraint(control, "step");

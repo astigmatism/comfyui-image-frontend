@@ -132,9 +132,9 @@ A normal ComfyUI save is not discoverable. The workflow author must choose **Fil
 <name>.interface.json
 ```
 
-The interface manifest is the publication commit marker and authoritative public surface. The app recursively finds only `.interface.json` candidates through the ComfyUI userdata API, fetches all three artifacts, checks exact raw-byte hashes, safe paths/stems, schemas, node count, typed inputs, bindings, dependency coverage, and `/object_info`, then atomically accepts the revision. It never reads a ComfyUI filesystem mount, infers controls from graph topology, or mutates publication files.
+The interface manifest is the publication commit marker and authoritative public surface. The app recursively finds only `.interface.json` candidates through the ComfyUI userdata API, fetches all three artifacts, strictly verifies the frozen API graph's raw-byte hash, checks safe paths/stems, schemas, node count, typed inputs, bindings, dependency coverage, and `/object_info`, then atomically accepts the revision. The editable workflow is still parsed and bounded, but a save-only byte change is reported as a nonfatal warning because it is runtime metadata rather than the executable graph. The app never reads a ComfyUI filesystem mount, infers controls from graph topology, or mutates publication files.
 
-Current schemas are `comfyui-image-frontend.publication/v1` and `comfyui-image-frontend.interface/v1`. Supported public inputs are string, integer, number, boolean, and seed; exactly one is the positive prompt. Every compatible source declares one or more connected `CIFPublishImage` outputs with `cardinality: many`, including exactly one authored `final`. Previews, comparisons, and auxiliary publishers coexist with every nonpublisher native history result under `unmapped_outputs`; `interface.native_outputs` is diagnostic inventory, never a runtime allowlist.
+Current schemas are `comfyui-image-frontend.publication/v1` and `comfyui-image-frontend.interface/v1`. Supported public inputs are string, integer, number, boolean, seed, and finite choice; exactly one is the positive prompt. Choice controls expose only stable public values and labels—the trusted CIF declaration node keeps private model/file mappings inside the frozen graph. Every compatible source declares one or more connected `CIFPublishImage` outputs with `cardinality: many`, including exactly one authored `final`. Previews, comparisons, and auxiliary publishers coexist with every nonpublisher native history result under `unmapped_outputs`; `interface.native_outputs` is diagnostic inventory, never a runtime allowlist.
 
 See [`docs/published-workflows.md`](docs/published-workflows.md) for the manifest contract, discovery/refresh states, configuration and size limits, revision identity, compilation rules, result semantics, diagnostics, security boundary, and migration policy.
 
@@ -146,14 +146,15 @@ See [`docs/published-workflows.md`](docs/published-workflows.md) for the manifes
 - Password reset revokes existing sessions.
 - Administrators can see account records and workflow diagnostics, but not another user's prompts, parameters, uploads, images, artifacts, or history.
 - Every content lookup and media route is owner-scoped. Assets are never mounted as a public static directory.
+- Downloaded ComfyUI artifacts may retain native prompt/workflow metadata and should be treated as sensitive when shared. The application does not expose that metadata in its source, generation-detail, or gallery UI projections.
 
 The Docker/host administrator is outside this application privacy boundary because filesystem access bypasses application authorization.
 
 ## Queue, results, recovery, and cancellation
 
-Every valid request resolves defaults/seeds, clones and compiles its accepted frozen graph, and commits an immutable generation plus queue entry before the browser receives it. The worker preserves FIFO order per user and dispatches round-robin across users. `CIF_COMFYUI_CONCURRENCY` defaults to one.
+Every valid request resolves defaults, finite choices, companion-strength hints, and seeds; clones and compiles its accepted frozen graph; and commits an immutable generation plus queue entry before the browser receives it. Public choice IDs are patched only into their trusted declaration-node `value`; private mappings and downstream loader inputs are never caller-controlled. The worker preserves FIFO order per user and dispatches round-robin across users. `CIF_COMFYUI_CONCURRENCY` defaults to one.
 
-The submitted publication may attach its matching editable workflow as `extra_data.extra_pnginfo.workflow`. The native ComfyUI `prompt_id` is persisted. WebSocket events provide progress, while bounded `/history/{prompt_id}` reconciliation supplies terminal truth and recovery after cached or missed events.
+When requested by the publication, the accepted editable snapshot is attached as `extra_data.extra_pnginfo.workflow`; its separately recorded observed hash may differ from the publication-time hash without changing the frozen executable revision. The native ComfyUI `prompt_id` is persisted. WebSocket events provide progress, while bounded `/history/{prompt_id}` reconciliation supplies terminal truth and recovery after cached or missed events.
 
 The server retains complete bounded ComfyUI history. Generation detail removes only top-level submitted `prompt` and `extra_data` graph envelopes; actual outputs, arbitrary JSON-safe custom UI fields, publisher metadata, status/messages/errors, and execution metadata remain intact. It also returns requested/effective parameters, exact seed strings, immutable source revision, ordered publisher outputs with authoritative batch indices, untouched node-keyed unmapped outputs, and every archived image batch member. The gallery uses the authored final as its primary image, while detail groups previews, comparisons, auxiliary publishers, and additional native outputs without dropping any batch sibling.
 
@@ -217,11 +218,11 @@ Focused commands and live integration guidance are in [`docs/testing.md`](docs/t
 
 ### No generation sources appear
 
-Open **Administration → Workflow diagnostics** and refresh. Confirm that publication used Save & Publish, all three adjacent files exist under `workflows/`, `CIF_COMFYUI_INSTANCE_ID` is stable, the optional `CIF_COMFYUI_USER` is correct, artifact hashes match exact bytes, and every declared class exists in `/object_info`. Orphaned `.json` / `.api.json` files are intentionally ignored.
+Open **Administration → Workflow diagnostics** and refresh. Confirm that publication used Save & Publish, all three adjacent files exist under `workflows/`, `CIF_COMFYUI_INSTANCE_ID` is stable, the optional `CIF_COMFYUI_USER` is correct, the frozen API hash matches its exact bytes, and every declared class exists in `/object_info`. A changed editable-workflow hash is a warning and does not remove an otherwise valid source. Orphaned `.json` / `.api.json` files are intentionally ignored.
 
 ### A source is ready with warnings
 
-Warnings are nonfatal publication or runtime diagnostics, but an absent/disconnected publisher, missing native-output inventory, invalid cardinality, or zero/multiple final declarations rejects the source. Inspect accepted warnings before use; discovery never repairs a publication or promotes an arbitrary native image to authored final.
+Warnings are nonfatal publication or runtime diagnostics. They include an editable workflow whose current bytes differ from the hash recorded at publication; the manifest value remains revision metadata and the frozen API graph remains authoritative for execution. An absent/disconnected publisher, frozen API hash mismatch, missing native-output inventory, invalid cardinality, or zero/multiple final declarations still rejects the source. Inspect accepted warnings before use; discovery never repairs a publication or promotes an arbitrary native image to authored final.
 
 ### Sources are cached/offline or Generate is disabled
 

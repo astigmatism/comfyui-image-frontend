@@ -301,6 +301,17 @@ export function controlMarkup(control, values, contract, errors = {}) {
         )
         .join("")}</select>`;
       break;
+    case "choice": {
+      const options = optionValues(control);
+      const selected = options.some((option) => option.value === value) ? value : control.default;
+      input = `<select ${common}>${options
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.value)}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
+        )
+        .join("")}</select>`;
+      break;
+    }
     case "image_upload":
     case "mask_upload":
       input = uploadMarkup(control, value, common);
@@ -389,6 +400,12 @@ function resolutionPosition(value, minimum, maximum) {
 }
 
 function optionValues(control) {
+  if (control.type === "choice") {
+    return (control.choices || []).map((item) => ({
+      value: item.value,
+      label: item.label,
+    }));
+  }
   const values = control.options?.resolved_values || control.options?.values || [];
   return values.map((item) =>
     typeof item === "object" ? { value: item.value, label: item.label || item.value } : { value: item, label: item },
