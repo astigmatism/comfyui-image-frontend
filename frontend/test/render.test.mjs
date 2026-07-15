@@ -312,6 +312,38 @@ test("generation panel places the custom source picker before generated controls
   assert.doesNotMatch(html, /<details class="advanced-group" open/);
 });
 
+test("generation panel omits the Basic group heading while preserving its control metadata", () => {
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: { prompt: "hello" },
+    fieldErrors: {},
+    formError: null,
+  };
+  const basicInterface = {
+    inputs: [
+      {
+        id: "prompt",
+        label: "Prompt",
+        type: "string",
+        default: "",
+        group: "Basic",
+        advanced: false,
+      },
+    ],
+  };
+
+  const html = generationPanelMarkup(state, publishedSource, basicInterface);
+
+  assert.match(html, /<section class="control-group" data-interface-group="Basic">/);
+  assert.match(html, /data-control-group="Basic"/);
+  assert.doesNotMatch(html, /<h3 class="control-group-heading">Basic<\/h3>/);
+});
+
 test("source picker marks primary and shared sources and shows the selected queue count", () => {
   const state = {
     submitting: true,

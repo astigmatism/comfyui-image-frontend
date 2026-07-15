@@ -327,7 +327,11 @@ function groupedControlsMarkup(inputs, values, contract, errors) {
     const group = String(input.group || "");
     if (group !== currentGroup) {
       if (currentGroup !== null) markup += "</section>";
-      markup += `<section class="control-group" data-interface-group="${escapeHtml(group)}">${group ? `<h3 class="control-group-heading">${escapeHtml(group)}</h3>` : ""}`;
+      const groupHeading =
+        group && group.trim().toLowerCase() !== "basic"
+          ? `<h3 class="control-group-heading">${escapeHtml(group)}</h3>`
+          : "";
+      markup += `<section class="control-group" data-interface-group="${escapeHtml(group)}">${groupHeading}`;
       currentGroup = group;
     }
     markup +=
