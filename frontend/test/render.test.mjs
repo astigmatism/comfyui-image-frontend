@@ -164,8 +164,7 @@ test("published image input renders a required computer-and-gallery drop target"
   assert.match(empty, /From your computer or the gallery/);
   assert.match(empty, />Browse<input/);
   assert.match(empty, /accept="image\/png,image\/jpeg,image\/webp"/);
-  assert.match(empty, /20 MB/);
-  assert.match(empty, /8192 × 8192 px/);
+  assert.doesNotMatch(empty, /Guides the edit\.|20 MB|8192 × 8192 px|help-text|role="tooltip"/);
   assert.doesNotMatch(empty, /fixture\.png/);
 
   const selected = controlMarkup(
@@ -285,7 +284,7 @@ test("password change fields allow eight-character passwords", () => {
   assert.match(html, /name="confirm_password"[^>]*minlength="8"/);
 });
 
-test("prompt is contract-rendered and Prompt Assistant remains collapsed by default", () => {
+test("prompt is contract-rendered with helper text removed and Creative Direction exposed", () => {
   const describedPrompt = { ...promptControl, description: "Describe the image." };
   const html = controlMarkup(describedPrompt, { "prompt.text": "hello" }, contract);
   assert.match(html, />Prompt</);
@@ -296,15 +295,13 @@ test("prompt is contract-rendered and Prompt Assistant remains collapsed by defa
   assert.match(html, /aria-label="Start voice input for Prompt"/);
   assert.ok(html.indexOf('data-action="open-prompt-editor"') < html.indexOf('data-control-id="prompt.text"'));
   assert.match(html, /data-control-id="prompt.text"[^>]*rows="10"/);
-  assert.match(html, /class="control-block [^"]*has-contextual-help/);
-  assert.match(
-    html,
-    /class="help-text control-help-tooltip" id="control-prompt-text-description" role="tooltip">Describe the image\./,
-  );
-  assert.match(html, /<details class="prompt-assistant" id="prompt-assistant">/);
+  assert.doesNotMatch(html, /Describe the image\.|help-text|role="tooltip"|has-contextual-help/);
+  assert.match(html, /<section class="prompt-assistant" id="prompt-assistant"/);
   assert.match(html, /data-speech-target="creative-direction"/);
-  assert.doesNotMatch(html, /<details[^>]+open/);
-  assert.match(html, /Compose Prompt/);
+  assert.doesNotMatch(html, /<details|<summary|>Mode</);
+  assert.match(html, /Refine Current Prompt/);
+  assert.match(html, /New Prompt from Creative Direction/);
+  assert.match(html, /Apply Creative Direction/);
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {
@@ -322,21 +319,19 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, />15 characters<\/span>/);
   assert.match(html, /data-action="select-prompt-editor-text"/);
   assert.match(html, /data-action="clear-prompt-editor-text"/);
-  assert.match(html, /<h3 id="prompt-editor-assistant-title">Prompt Assistant<\/h3>/);
+  assert.doesNotMatch(html, /Prompt Assistant|>Mode</);
   assert.match(html, /id="prompt-editor-creative-direction"[^>]*>Moody &lt;light&gt;<\/textarea>/);
   assert.match(html, /data-speech-target="prompt-editor-creative-direction"/);
   assert.match(html, /name="prompt-editor-assistant-mode" value="create" checked/);
   assert.match(html, /class="prompt-editor-assistant-action-row"/);
-  assert.match(html, /class="help-text prompt-editor-assistant-message"[^>]*aria-live="polite"/);
-  assert.match(html, /Historical composition used model-one/);
+  assert.match(html, /Refine Current Prompt/);
+  assert.match(html, /New Prompt from Creative Direction/);
+  assert.doesNotMatch(html, /Historical composition used model-one|prompt-editor-assistant-message/);
   assert.match(html, /data-action="compose-prompt-editor"/);
+  assert.match(html, /Apply Creative Direction/);
   assert.ok(
     html.indexOf('id="prompt-editor-creative-direction"') <
       html.indexOf('class="prompt-editor-assistant-action-row"'),
-  );
-  assert.ok(
-    html.indexOf('class="prompt-editor-assistant-action-row"') <
-      html.indexOf('data-prompt-editor-assistant-message'),
   );
   assert.match(html, /data-action="cancel-prompt-editor">Cancel<\/button>/);
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
@@ -543,7 +538,7 @@ test("one generation renders one card while progressive media changes in place",
   assert.match(first, /data-action="open-detail"/);
 });
 
-test("photo viewer uses the current artifact, optional fullscreen, navigation controls, and active status", () => {
+test("photo viewer fills by default, omits sizing and unavailable navigation controls, and shows active status", () => {
   const html = photoViewerMarkup(
     {
       id: "g-live",
@@ -558,18 +553,26 @@ test("photo viewer uses the current artifact, optional fullscreen, navigation co
     { hasOlder: true, hasNewer: false },
   );
   assert.match(html, /src="\/api\/artifacts\/latest\/content"/);
-  assert.match(html, /data-photo-view-mode="fit"/);
-  assert.match(html, /data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="true"/);
-  assert.match(html, /data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="false"/);
+  assert.match(html, /data-photo-view-mode="fill"/);
+  assert.doesNotMatch(html, /Image sizing|set-photo-view|>Fit<|>Fill</);
   assert.match(html, /draggable="false"/);
   assert.match(html, /data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen/);
   assert.match(html, /aria-label="Close image viewer"/);
-  assert.match(html, /photo-viewer-newer[^>]*data-direction="newer"[^>]*>‹<\/button>/);
+  assert.doesNotMatch(html, /data-direction="newer"/);
   assert.match(html, /photo-viewer-older[^>]*data-direction="older"[^>]*>›<\/button>/);
-  assert.match(html, /data-direction="older"/);
-  assert.doesNotMatch(html.match(/data-direction="older"[^>]*>/)?.[0] || "", /disabled/);
-  assert.match(html.match(/data-direction="newer"[^>]*>/)?.[0] || "", /disabled/);
   assert.match(html, /<div class="photo-viewer-status" role="status">Refining details<\/div>/);
+
+  const middle = photoViewerMarkup(
+    {
+      id: "g-middle",
+      workflow_display_name: "Progressive source",
+      status: "succeeded",
+      display_artifact: { kind: "image", content_url: "/middle.png" },
+    },
+    { hasOlder: true, hasNewer: true },
+  );
+  assert.match(middle, /data-direction="newer"/);
+  assert.match(middle, /data-direction="older"/);
 });
 
 test("historical native-only image batches use complete artifact count on the gallery card", () => {
@@ -656,7 +659,7 @@ test("resolution markup includes the responsive three-handle grid and live capti
   );
 });
 
-test("unavailable and invalid semantic controls expose accessible state and explanations", () => {
+test("unavailable and invalid semantic controls retain validation without helper explanations", () => {
   const control = {
     id: "post.seedvr2.enabled",
     label: "SeedVR2",
@@ -675,8 +678,8 @@ test("unavailable and invalid semantic controls expose accessible state and expl
   );
   assert.match(html, /<input[^>]*disabled/);
   assert.match(html, /aria-invalid="true"/);
-  assert.match(html, /aria-describedby="control-post-seedvr2-enabled-description control-post-seedvr2-enabled-error"/);
-  assert.match(html, /Required model is not installed\./);
+  assert.match(html, /aria-describedby="control-post-seedvr2-enabled-error"/);
+  assert.doesNotMatch(html, /Required model is not installed\.|role="tooltip"|help-text/);
   assert.match(html, /role="alert">This option cannot be selected\./);
 });
 
@@ -695,7 +698,7 @@ test("composite resolution controls have distinct programmatic width and height 
     { "size.resolution": { width: 512, height: 768 } },
     { capability_states: {} },
   );
-  assert.match(html, /<fieldset[^>]*aria-describedby="control-size-resolution-description"/);
+  assert.doesNotMatch(html, /aria-describedby|Final image size\.|role="tooltip"|help-text/);
   assert.match(html, /<legend>Resolution/);
   assert.match(html, /<label for="control-size-resolution-width"><span>Width<\/span>/);
   assert.match(html, /id="control-size-resolution-width"/);
@@ -738,10 +741,7 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.ok(html.indexOf('data-control-block="width"') < html.indexOf('data-control-block="height"'));
   assert.ok(html.indexOf('data-control-block="height"') < html.indexOf('data-control-block="seed"'));
   assert.match(html, /data-control-id="seed"[^>]*type="text"[^>]*inputmode="numeric"/);
-  assert.match(
-    html,
-    /class="help-text control-help-tooltip" id="control-seed-description" role="tooltip">Use random or enter an exact seed\./,
-  );
+  assert.doesNotMatch(html, /Use random or enter an exact seed\.|role="tooltip"|help-text/);
   assert.match(html, /data-control-id="enable_seedvr2_upscale"[^>]*type="checkbox"/);
   assert.match(
     html,
@@ -777,7 +777,7 @@ test("choice inputs render one finite single-select with public values and label
   assert.match(html, /<select[^>]*data-control-id="lora"[^>]*>/);
   assert.match(html, /<option value="knp_v3_1" selected>KNP v3\.1<\/option>/);
   assert.match(html, /<option value="mysticxxx_krea2_v1" >MysticXXX Krea2 v1<\/option>/);
-  assert.match(html, /Selects the LoRA applied by the primary loader\./);
+  assert.doesNotMatch(html, /Selects the LoRA applied by the primary loader\.|help-text|role="tooltip"/);
   assert.doesNotMatch(html, /\bmultiple\b|type="text"|<textarea|safetensors|options_json/);
 
   const defaults = controlMarkup(loraChoice, {}, { inputs: [loraChoice] });
@@ -841,7 +841,7 @@ test("fixed-mode seed renders no random choice and exposes its exact default", (
   assert.match(html, /<input[^>]*value="1125899906842624"[^>]*aria-label="Seed value"/);
 });
 
-test("paired width and height descriptions are focus-triggered tooltips", () => {
+test("paired width and height omit source descriptions and tooltips", () => {
   const describedInterface = {
     ...publishedInterface,
     inputs: publishedInterface.inputs.map((input) => {
@@ -863,22 +863,9 @@ test("paired width and height descriptions are focus-triggered tooltips", () => 
     publishedSource,
     describedInterface,
   );
-  assert.match(
-    html,
-    /class="resolution-axis-field has-contextual-help" data-control-block="width"/,
-  );
-  assert.match(
-    html,
-    /id="control-width-description" role="tooltip">Image width in pixels\./,
-  );
-  assert.match(
-    html,
-    /class="resolution-axis-field has-contextual-help" data-control-block="height"/,
-  );
-  assert.match(
-    html,
-    /id="control-height-description" role="tooltip">Image height in pixels\./,
-  );
+  assert.match(html, /class="resolution-axis-field" data-control-block="width"/);
+  assert.match(html, /class="resolution-axis-field" data-control-block="height"/);
+  assert.doesNotMatch(html, /Image (?:width|height) in pixels\.|role="tooltip"|help-text/);
 });
 
 test("seed mode availability is independent of public input id text", () => {

@@ -272,16 +272,18 @@ test("gallery scale spans compact thumbnails through a full-width card", () => {
   assert.ok(scaleToLayout(75).cardWidth > scaleToLayout(25).cardWidth);
 });
 
-test("photo viewer fill is a reversible zoom over the fitted image", () => {
+test("photo viewer fill zoom anchors overflow at the top of the viewport", () => {
   assert.deepEqual(photoViewerImageLayout(1600, 900, 800, 800), {
     width: 800,
     height: 450,
     fillZoom: 800 / 450,
+    fillPanY: 0,
   });
   assert.deepEqual(photoViewerImageLayout(900, 1600, 800, 800), {
     width: 450,
     height: 800,
     fillZoom: 800 / 450,
+    fillPanY: (800 * (800 / 450) - 800) / 2,
   });
   assert.equal(photoViewerImageLayout(0, 1600, 800, 800), null);
 });

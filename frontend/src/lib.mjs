@@ -92,10 +92,12 @@ export function photoViewerImageLayout(imageWidth, imageHeight, viewportWidth, v
   const fitScale = Math.min(availableWidth / naturalWidth, availableHeight / naturalHeight);
   const width = naturalWidth * fitScale;
   const height = naturalHeight * fitScale;
+  const fillZoom = Math.max(availableWidth / width, availableHeight / height);
   return {
     width,
     height,
-    fillZoom: Math.max(availableWidth / width, availableHeight / height),
+    fillZoom,
+    fillPanY: Math.max(0, (height * fillZoom - availableHeight) / 2),
   };
 }
 

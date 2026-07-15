@@ -537,23 +537,10 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   const disabled = !presentation.enabled;
   const required = presentation.required;
   const error = errors[control.id];
-  const imageLimitHelp = control.type === "image" ? imageLimitText(control.media) : "";
-  const description = [presentation.reason || control.description, imageLimitHelp]
-    .filter(Boolean)
-    .join(" ");
   const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
   const isPrompt = control.semantic_role === "positive_prompt" || control.id === "prompt.text";
-  const hasContextualHelp = Boolean(
-    description &&
-      (isPrompt ||
-        control.type === "seed" ||
-        control.type === "resolution" ||
-        control.semantic_role === "width" ||
-        control.semantic_role === "height"),
-  );
-  const descriptionId = description ? `${id}-description` : null;
   const errorId = error ? `${id}-error` : null;
-  const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
+  const describedBy = errorId || "";
   const shared = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
   const common = `id="${id}" ${shared}${options.hideLabel && isPrompt ? ` aria-label="${escapeHtml(label)}"` : ""}`;
   const labelContent = `${escapeHtml(label)}${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}`;
@@ -655,9 +642,8 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
       : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
   }
   const assistant = isPrompt ? promptAssistantMarkup() : "";
-  return `<div class="control-block ${disabled ? "is-disabled" : ""} ${hasContextualHelp ? "has-contextual-help" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
+  return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
-    ${description ? `<p class="help-text${hasContextualHelp ? " control-help-tooltip" : ""}" id="${descriptionId}"${hasContextualHelp ? ' role="tooltip"' : ""}>${escapeHtml(description)}</p>` : ""}
     ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
     ${assistant}
   </div>`;
@@ -685,25 +671,6 @@ function uploadMarkup(control, value, common) {
     <input ${common} type="file" accept="image/*" data-upload-kind="${kind}" />
     ${value ? `<div class="upload-chip"><img src="/api/uploads/${escapeHtml(value)}/content" alt="Selected ${escapeHtml(control.label)}" /><span>Uploaded asset selected</span><button type="button" class="button low" data-clear-upload="${escapeHtml(control.id)}">Remove</button></div>` : ""}
   </div>`;
-}
-
-function imageLimitText(media = {}) {
-  const maxBytes = Number(media?.max_bytes);
-  const maxWidth = Number(media?.max_width);
-  const maxHeight = Number(media?.max_height);
-  const labels = { "image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WebP" };
-  const formats = Array.isArray(media?.accepted_mime_types)
-    ? media.accepted_mime_types.map((value) => labels[value]).filter(Boolean).join(", ")
-    : "";
-  const byteLimit = Number.isFinite(maxBytes)
-    ? maxBytes >= 1024 * 1024
-      ? `${Math.round((maxBytes / (1024 * 1024)) * 10) / 10} MB`
-      : `${Math.round(maxBytes / 1024)} KB`
-    : "";
-  const dimensionLimit =
-    Number.isFinite(maxWidth) && Number.isFinite(maxHeight) ? `${maxWidth} × ${maxHeight} px` : "";
-  const limits = [formats, byteLimit, dimensionLimit].filter(Boolean).join(" · ");
-  return limits ? `Accepted: ${limits}. Static images only.` : "Static image required.";
 }
 
 function imageInputMarkup(control, value, common, id, disabled) {
@@ -751,17 +718,11 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
   const required = widthPresentation.required || heightPresentation.required;
   const widthError = errors[widthControl.id];
   const heightError = errors[heightControl.id];
-  const widthDescription = widthPresentation.reason || widthControl.description;
-  const heightDescription = heightPresentation.reason || heightControl.description;
   const widthId = `control-${widthControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
   const heightId = `control-${heightControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
-  const widthDescriptionId = widthDescription ? `${widthId}-description` : null;
-  const heightDescriptionId = heightDescription ? `${heightId}-description` : null;
   const widthErrorId = widthError ? `${widthId}-error` : null;
   const heightErrorId = heightError ? `${heightId}-error` : null;
-  const describedBy = [widthDescriptionId, heightDescriptionId, widthErrorId, heightErrorId]
-    .filter(Boolean)
-    .join(" ");
+  const describedBy = [widthErrorId, heightErrorId].filter(Boolean).join(" ");
   const grid = resolutionGridConstraints({
     constraints: {
       maximum_width: controlConstraint(widthControl, "maximum"),
@@ -782,7 +743,6 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
     value.width,
     widthPresentation,
     widthError,
-    widthDescriptionId,
     widthErrorId,
     widthId,
   );
@@ -792,7 +752,6 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
     value.height,
     heightPresentation,
     heightError,
-    heightDescriptionId,
     heightErrorId,
     heightId,
   );
@@ -817,17 +776,14 @@ function pairedResolutionInputMarkup(
   value,
   presentation,
   error,
-  descriptionId,
   errorId,
   id,
 ) {
-  const description = presentation.reason || control.description;
-  const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
+  const describedBy = errorId || "";
   const required = presentation.required;
   const label = control.label || (axis === "width" ? "Width" : "Height");
-  return `<div class="resolution-axis-field${description ? " has-contextual-help" : ""}" data-control-block="${escapeHtml(control.id)}">
+  return `<div class="resolution-axis-field" data-control-block="${escapeHtml(control.id)}">
     <label for="${id}"><span>${escapeHtml(label)}</span><input id="${id}" data-control-id="${escapeHtml(control.id)}" data-resolution-axis="${axis}" type="number" value="${escapeHtml(value ?? "")}" min="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" max="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" step="${escapeHtml(controlConstraint(control, "step") ?? 1)}" ${presentation.enabled ? "" : "disabled"} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""} /></label>
-    ${description ? `<p class="help-text control-help-tooltip" id="${descriptionId}" role="tooltip">${escapeHtml(description)}</p>` : ""}
     ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
   </div>`;
 }
@@ -875,15 +831,13 @@ function optionValues(control) {
 }
 
 function promptAssistantMarkup() {
-  return `<details class="prompt-assistant" id="prompt-assistant">
-    <summary>Prompt Assistant</summary>
+  return `<section class="prompt-assistant" id="prompt-assistant" aria-label="Creative Direction">
     <div class="assistant-body">
-      ${speechTextareaMarkup("creative-direction", "Creative direction", "", 3)}
-      <fieldset class="compact-choice"><legend>Mode</legend><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine current prompt</label><label><input type="radio" name="assistant-mode" value="create" /> Create from creative direction</label></fieldset>
-      <div id="assistant-message" class="help-text"></div>
-      <button type="button" class="button secondary" data-action="compose-prompt">Compose Prompt</button>
+      ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
+      <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" /> New Prompt from Creative Direction</label></div>
+      <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
     </div>
-  </details>`;
+  </section>`;
 }
 
 export function promptEditorMarkup(controlId, label, value, promptAssistant = {}) {
@@ -892,11 +846,6 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
   const assistantMode = promptAssistant.mode === "create" ? "create" : "refine";
   const creativeDirection = String(promptAssistant.creativeDirection ?? "");
   const assistantAvailable = promptAssistant.available !== false;
-  const assistantMessage = !assistantAvailable
-    ? promptAssistant.message || "Prompt Assistant is unavailable."
-    : promptAssistant.historicalModel
-      ? `Historical composition used ${promptAssistant.historicalModel}; recall will not invoke it again.`
-      : "";
   return `<form class="dialog-frame prompt-editor-frame" method="dialog">
     <header class="dialog-header prompt-editor-header">
       <div><h2 id="prompt-editor-title">Focused prompt editor</h2><p>Review and refine ${escapeHtml(label || "your prompt")} in a dedicated workspace.</p></div>
@@ -912,15 +861,13 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
         </div>
       </div>
       <textarea id="prompt-editor-textarea" data-prompt-editor-input data-prompt-control-id="${escapeHtml(controlId)}" aria-label="Prompt editor" spellcheck="true" autocapitalize="sentences">${escapeHtml(text)}</textarea>
-      <section class="prompt-editor-assistant" aria-labelledby="prompt-editor-assistant-title">
-        <h3 id="prompt-editor-assistant-title">Prompt Assistant</h3>
+      <section class="prompt-editor-assistant" aria-label="Creative Direction">
         <div class="prompt-editor-assistant-controls">
-          ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative direction", creativeDirection, 3)}
+          ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative Direction", creativeDirection, 3)}
           <div class="prompt-editor-assistant-action-row">
-            <fieldset class="prompt-editor-assistant-modes"><legend>Mode</legend><div class="prompt-editor-assistant-mode-options"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine current prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> Create from creative direction</label></div></fieldset>
-            <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Compose Prompt</button>
+            <div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div>
+            <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button>
           </div>
-          <div class="help-text prompt-editor-assistant-message" data-prompt-editor-assistant-message role="status" aria-live="polite">${escapeHtml(assistantMessage)}</div>
         </div>
       </section>
       <p class="prompt-editor-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> applies the draft.</p>
@@ -1025,26 +972,21 @@ export function cardFooterMarkup(generation) {
   </button></div></footer>`;
 }
 
-export function photoViewerMarkup(generation, navigation = {}, requestedViewMode = "fit") {
+export function photoViewerMarkup(generation, navigation = {}) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
   const hasImage = artifact?.kind === "image";
-  const viewMode = requestedViewMode === "fill" ? "fill" : "fit";
   const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
   const status = generation?.current_stage_label || statusLabel(generation?.status);
   const media = hasImage
     ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="false" />`
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
-    <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
-    <div class="photo-viewer-mode-toggle photo-viewer-control" role="group" aria-label="Image sizing">
-      <button type="button" class="photo-viewer-mode-button" data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="${viewMode === "fit"}">Fit</button>
-      <button type="button" class="photo-viewer-mode-button" data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="${viewMode === "fill"}">Fill</button>
-    </div>
+    <div class="photo-viewer-media" data-photo-view-mode="fill">${media}</div>
     <button type="button" class="photo-viewer-fullscreen photo-viewer-control" data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen</button>
     <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close image viewer">×</button>
-    <button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" ${navigation.hasNewer ? "" : "disabled"} aria-label="View newer generation">‹</button>
-    <button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" ${navigation.hasOlder ? "" : "disabled"} aria-label="View older generation">›</button>
+    ${navigation.hasNewer ? '<button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" aria-label="View newer generation">‹</button>' : ""}
+    ${navigation.hasOlder ? '<button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" aria-label="View older generation">›</button>' : ""}
     ${active ? `<div class="photo-viewer-status" role="status">${escapeHtml(status)}</div>` : ""}
   </div>`;
 }

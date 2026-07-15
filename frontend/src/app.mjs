@@ -80,7 +80,6 @@ const state = {
   serverFieldErrors: {},
   formError: null,
   panelOpen: false,
-  assistantOpen: false,
   eventSource: null,
   liveUpdatesPaused: false,
   pendingLiveUpdates: [],
@@ -90,7 +89,6 @@ const state = {
   observer: null,
   photoViewerGenerationId: null,
   photoViewerTimer: null,
-  photoViewerMode: "fit",
   photoViewerZoom: 1,
   photoViewerPanX: 0,
   photoViewerPanY: 0,
@@ -197,13 +195,6 @@ function bindDelegatedEvents() {
   root.addEventListener("drop", handleDrop);
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
   window.addEventListener("resize", handlePhotoViewerResize);
-  root.addEventListener(
-    "toggle",
-    (event) => {
-      if (event.target.id === "prompt-assistant") state.assistantOpen = event.target.open;
-    },
-    true,
-  );
 }
 
 async function handleSubmit(event) {
@@ -280,7 +271,6 @@ async function handleClick(event) {
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
     else if (action === "toggle-photo-fullscreen") togglePhotoViewerFullscreen();
-    else if (action === "set-photo-view") setPhotoViewerMode(target.dataset.photoViewMode);
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -1621,7 +1611,6 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
   state.compositionId = null;
   state.serverFieldErrors = {};
   state.formError = null;
-  state.assistantOpen = false;
   renderPanel();
   if (!key) return;
   try {
@@ -1706,18 +1695,13 @@ function renderPanel() {
   panel.innerHTML = generationPanelMarkup(state, selected, contract);
   const assistant = panel.querySelector("#prompt-assistant");
   if (assistant) {
-    assistant.open = state.assistantOpen;
     const direction = assistant.querySelector("#creative-direction");
     direction.value = state.promptAssistant.creativeDirection || "";
     const mode = assistant.querySelector(`[name=assistant-mode][value=${state.promptAssistant.mode}]`);
     if (mode) mode.checked = true;
-    const message = assistant.querySelector("#assistant-message");
     const button = assistant.querySelector("[data-action=compose-prompt]");
     if (!state.promptAssistant.available) {
-      message.textContent = state.promptAssistant.message || "Prompt Assistant is unavailable.";
       button.disabled = true;
-    } else if (state.promptAssistant.historicalModel) {
-      message.textContent = `Historical composition used ${state.promptAssistant.historicalModel}; recall will not invoke it again.`;
     }
   }
   restorePanelFocus(panel, focus);
@@ -2044,7 +2028,7 @@ async function composePrompt(button) {
   const requestPrompt = state.parameters[promptInput.id] || "";
   const requestDirection = state.promptAssistant.creativeDirection || "";
   button.disabled = true;
-  button.textContent = "Composing…";
+  button.textContent = "Applying…";
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -2063,22 +2047,20 @@ async function composePrompt(button) {
     persistActiveParameterState();
     state.compositionId = result.composition_id;
     state.promptAssistant.historicalModel = result.model;
-    state.assistantOpen = true;
     renderPanel();
     const prompt = document.querySelector(`[data-control-id="${CSS.escape(promptInput.id)}"]`);
     prompt?.focus();
-    toast("Prompt composed and placed in the editable Prompt field.", "success");
+    toast("Creative direction applied to the editable Prompt field.", "success");
   } catch (error) {
     if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      const message = document.querySelector("#assistant-message");
-      if (message) message.textContent = error.message;
+      toast(error.message || "Creative direction could not be applied.", "error");
     } else {
       toast(`Prompt composition for the previous source failed: ${error.message}`, "error");
     }
   } finally {
     if (button.isConnected) {
       button.disabled = false;
-      button.textContent = "Compose Prompt";
+      button.textContent = "Apply Creative Direction";
     }
   }
 }
@@ -2089,7 +2071,6 @@ async function composePromptEditor(button) {
   const editor = dialog?.querySelector("[data-prompt-editor-input]");
   const direction = dialog?.querySelector("#prompt-editor-creative-direction");
   const checkedMode = dialog?.querySelector('[name="prompt-editor-assistant-mode"]:checked');
-  const message = dialog?.querySelector("[data-prompt-editor-assistant-message]");
   const controlId = dialog?.dataset.promptControlId;
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -2099,8 +2080,7 @@ async function composePromptEditor(button) {
   const requestPrompt = editor.value;
   const requestDirection = direction.value;
   button.disabled = true;
-  button.textContent = "Composing…";
-  if (message) message.textContent = "";
+  button.textContent = "Applying…";
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -2122,19 +2102,18 @@ async function composePromptEditor(button) {
     updatePromptEditorStats(result.prompt);
     dialog.dataset.promptAssistantCompositionId = result.composition_id;
     dialog.dataset.promptAssistantModel = result.model;
-    if (message) message.textContent = `Composed with ${result.model}.`;
     editor.focus();
-    toast("Prompt composed in the focused editor. Apply to keep it.", "success");
+    toast("Creative direction applied in the focused editor. Apply to keep it.", "success");
   } catch (error) {
     if (dialog.open && button.isConnected && sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      if (message) message.textContent = error.message;
+      toast(error.message || "Creative direction could not be applied.", "error");
     } else {
       toast(`Focused prompt composition failed: ${error.message}`, "error");
     }
   } finally {
     if (button.isConnected) {
       button.disabled = false;
-      button.textContent = "Compose Prompt";
+      button.textContent = "Apply Creative Direction";
     }
   }
 }
@@ -2385,6 +2364,11 @@ async function refreshGeneration(id, { insertIf = () => true } = {}) {
     const detail = await api(`/api/generations/${id}`);
     if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     const index = state.generations.findIndex((item) => item.id === id);
+    const inserted = index < 0;
+    const becameViewable =
+      index >= 0 &&
+      state.generations[index].display_artifact?.kind !== "image" &&
+      detail.display_artifact?.kind === "image";
     if (index >= 0) state.generations[index] = detail;
     else if (insertIf(detail)) state.generations.unshift(detail);
     else return;
@@ -2392,7 +2376,12 @@ async function refreshGeneration(id, { insertIf = () => true } = {}) {
     upsertGalleryCard(detail);
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);
-    if (state.photoViewerGenerationId === id) renderPhotoViewer();
+    if (
+      state.photoViewerGenerationId &&
+      (state.photoViewerGenerationId === id || inserted || becameViewable)
+    ) {
+      renderPhotoViewer();
+    }
   } catch (error) {
     if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     if (error.status === 404) removeGeneration(id);
@@ -2414,7 +2403,6 @@ async function recall(id) {
     state.serverFieldErrors = {};
     state.formError = null;
     state.selectedPreset = null;
-    state.assistantOpen = Boolean(recalled.prompt_assistant);
     persistActiveParameterState();
     renderPanel();
     closePanel(false);
@@ -2446,7 +2434,6 @@ async function recall(id) {
   state.serverFieldErrors = {};
   state.formError = null;
   state.selectedPreset = null;
-  state.assistantOpen = Boolean(recalled.prompt_assistant);
   persistActiveParameterState();
   renderPanel();
   closePanel(false);
@@ -2577,7 +2564,6 @@ function renderPhotoViewer() {
   host.innerHTML = photoViewerMarkup(
     generation,
     photoViewerNavigation(generation.id),
-    state.photoViewerMode,
   );
   preparePhotoViewerImage();
   updatePhotoViewerFullscreenControl();
@@ -2588,7 +2574,7 @@ function openPhotoViewer(id) {
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") return;
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog) return;
-  resetPhotoViewerView("fit");
+  resetPhotoViewerView();
   state.photoViewerGenerationId = id;
   if (!dialog.open) dialog.showModal();
   renderPhotoViewer();
@@ -2612,21 +2598,9 @@ async function navigatePhotoViewer(direction) {
     return;
   }
   state.photoViewerGenerationId = target.id;
-  resetPhotoViewerView(state.photoViewerMode);
+  resetPhotoViewerView();
   renderPhotoViewer();
   notePhotoViewerActivity();
-}
-
-function setPhotoViewerMode(mode) {
-  if (!["fit", "fill"].includes(mode)) return;
-  resetPhotoViewerView(mode);
-  const dialog = document.querySelector("#photo-viewer");
-  const media = dialog?.querySelector(".photo-viewer-media");
-  if (media) media.dataset.photoViewMode = mode;
-  for (const button of dialog?.querySelectorAll("[data-action=set-photo-view]") || []) {
-    button.setAttribute("aria-pressed", String(button.dataset.photoViewMode === mode));
-  }
-  layoutPhotoViewerImage();
 }
 
 function preparePhotoViewerImage() {
@@ -2650,9 +2624,9 @@ function layoutPhotoViewerImage() {
   photo.style.width = `${layout.width}px`;
   photo.style.height = `${layout.height}px`;
   if (state.photoViewerNeedsBaseZoom) {
-    state.photoViewerZoom = state.photoViewerMode === "fill" ? layout.fillZoom : 1;
+    state.photoViewerZoom = layout.fillZoom;
     state.photoViewerPanX = 0;
-    state.photoViewerPanY = 0;
+    state.photoViewerPanY = layout.fillPanY;
     state.photoViewerNeedsBaseZoom = false;
   }
   applyPhotoViewerTransform();
@@ -2667,8 +2641,7 @@ function applyPhotoViewerTransform() {
   photo.dataset.photoPanY = String(state.photoViewerPanY);
 }
 
-function resetPhotoViewerView(mode) {
-  state.photoViewerMode = mode === "fill" ? "fill" : "fit";
+function resetPhotoViewerView() {
   state.photoViewerZoom = 1;
   state.photoViewerPanX = 0;
   state.photoViewerPanY = 0;
@@ -2777,7 +2750,7 @@ function resetPhotoViewerState() {
   state.photoViewerFullscreenOwned = false;
   state.photoViewerFullscreenPending = false;
   state.photoViewerFullscreenRequestToken += 1;
-  resetPhotoViewerView("fit");
+  resetPhotoViewerView();
   document.querySelector("#photo-viewer")?.classList.remove("controls-visible");
 }
 
@@ -2836,12 +2809,14 @@ async function deleteGeneration(id) {
 
 function removeGeneration(id) {
   generationRefreshGate.invalidate(id);
-  if (state.photoViewerGenerationId === id) closePhotoViewer();
+  const closesPhotoViewer = state.photoViewerGenerationId === id;
+  if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
   state.favorites = state.favorites.filter((item) => item.generation.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
   if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
   if (!state.generations.length) renderGallery();
+  else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
 }
 
 function startLiveUpdates({ paused = false } = {}) {

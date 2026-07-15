@@ -65,19 +65,6 @@ async function generateAndExpectAccepted(page) {
   return response;
 }
 
-async function expectControlsNotToOverlap(control, tooltip) {
-  const controlBox = await control.boundingBox();
-  const tooltipBox = await tooltip.boundingBox();
-  expect(controlBox).not.toBeNull();
-  expect(tooltipBox).not.toBeNull();
-  const separated =
-    controlBox.x + controlBox.width <= tooltipBox.x ||
-    tooltipBox.x + tooltipBox.width <= controlBox.x ||
-    controlBox.y + controlBox.height <= tooltipBox.y ||
-    tooltipBox.y + tooltipBox.height <= controlBox.y;
-  expect(separated).toBe(true);
-}
-
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
@@ -118,14 +105,11 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
   const viewerMedia = photoViewer.locator(".photo-viewer-media");
   const viewerImage = viewerMedia.locator("img");
-  const sizingControls = photoViewer.getByRole("group", { name: "Image sizing" });
-  const fitButton = sizingControls.getByRole("button", { name: "Fit" });
-  const fillButton = sizingControls.getByRole("button", { name: "Fill" });
   const fullscreenButton = photoViewer.getByRole("button", { name: "Full screen", exact: true });
   await expect(viewerImage).toBeVisible();
-  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
   await expect(viewerImage).toHaveCSS("object-fit", "contain");
-  await expect(fitButton).toHaveAttribute("aria-pressed", "true");
+  await expect(photoViewer.getByRole("group", { name: "Image sizing" })).toHaveCount(0);
   await expect(fullscreenButton).toHaveAttribute("aria-pressed", "false");
   await fullscreenButton.click();
   await expect.poll(() => fullscreenHost.evaluate((host) => document.fullscreenElement === host)).toBe(true);
@@ -134,48 +118,29 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
     "true",
   );
 
-  await fillButton.click();
-  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
-  await expect(viewerImage).toHaveCSS("object-fit", "contain");
-  await expect(fillButton).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(1);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThanOrEqual(1);
   const filledBounds = await viewerImage.boundingBox();
   const filledMediaBounds = await viewerMedia.boundingBox();
   expect(filledBounds).toBeTruthy();
   expect(filledMediaBounds).toBeTruthy();
   expect(filledBounds.width).toBeGreaterThanOrEqual(filledMediaBounds.width - 1);
   expect(filledBounds.height).toBeGreaterThanOrEqual(filledMediaBounds.height - 1);
-  const filledCenter = {
-    x: filledBounds.x + filledBounds.width / 2,
-    y: filledBounds.y + filledBounds.height / 2,
+  expect(Math.abs(filledBounds.y - filledMediaBounds.y)).toBeLessThan(1);
+  const visibleCenter = {
+    x: filledMediaBounds.x + filledMediaBounds.width / 2,
+    y: filledMediaBounds.y + filledMediaBounds.height / 2,
   };
-  await page.mouse.move(filledCenter.x, filledCenter.y);
+  const basePanY = Number(await viewerImage.getAttribute("data-photo-pan-y"));
+  await page.mouse.move(visibleCenter.x, visibleCenter.y);
   await page.mouse.down();
-  await page.mouse.move(filledCenter.x, filledCenter.y + 24);
+  await page.mouse.move(visibleCenter.x, visibleCenter.y + 24);
   await page.mouse.up();
-  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(24, 4);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(basePanY + 24, 4);
 
-  await fitButton.click();
-  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
-  await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
-
-  const viewerBounds = await viewerImage.boundingBox();
-  const mediaBounds = await viewerMedia.boundingBox();
-  expect(viewerBounds).toBeTruthy();
-  expect(mediaBounds).toBeTruthy();
-  expect(viewerBounds.width).toBeLessThanOrEqual(mediaBounds.width + 1);
-  expect(viewerBounds.height).toBeLessThanOrEqual(mediaBounds.height + 1);
-  expect(
-    Math.abs(viewerBounds.width - mediaBounds.width) < 1 ||
-      Math.abs(viewerBounds.height - mediaBounds.height) < 1,
-  ).toBe(true);
-  const imageCenter = {
-    x: viewerBounds.x + viewerBounds.width / 2,
-    y: viewerBounds.y + viewerBounds.height / 2,
-  };
-  await page.mouse.move(imageCenter.x, imageCenter.y);
+  await page.mouse.move(visibleCenter.x, visibleCenter.y);
+  const baseZoom = Number(await viewerImage.getAttribute("data-photo-zoom"));
   await page.mouse.wheel(0, -100);
-  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(1);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(baseZoom);
   const zoomedIn = Number(await viewerImage.getAttribute("data-photo-zoom"));
   await page.mouse.wheel(0, 100);
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeLessThan(zoomedIn);
@@ -184,7 +149,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   const panXBefore = Number(await viewerImage.getAttribute("data-photo-pan-x"));
   const panYBefore = Number(await viewerImage.getAttribute("data-photo-pan-y"));
   await page.mouse.down();
-  await page.mouse.move(imageCenter.x + 36, imageCenter.y + 24);
+  await page.mouse.move(visibleCenter.x + 36, visibleCenter.y + 24);
   await page.mouse.up();
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-x"))).toBeCloseTo(panXBefore + 36, 4);
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(panYBefore + 24, 4);
@@ -255,10 +220,9 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(favoritesDialog).not.toHaveAttribute("open", "");
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
 
-  await page.locator("#prompt-assistant > summary").click();
   const cardCountBeforeCompose = await page.locator(".gallery-card").count();
-  await page.getByRole("textbox", { name: "Creative direction", exact: true }).fill("cinematic blue hour");
-  await page.getByRole("button", { name: "Compose Prompt" }).click();
+  await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("cinematic blue hour");
+  await page.getByRole("button", { name: "Apply Creative Direction" }).click();
   await expect(prompt).toHaveValue(/cinematic blue hour/);
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
 
@@ -351,7 +315,8 @@ test("progressive bootstrap renders while optional status is delayed and localiz
   await expect(generateButton).toBeDisabled();
 
   releaseServices();
-  await expect(page.locator("#assistant-message")).toHaveText("Prompt Assistant maintenance.");
+  await expect(page.locator("#assistant-message")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Apply Creative Direction" })).toBeDisabled();
   await expect(generateButton).toBeEnabled();
   await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
 });
@@ -657,13 +622,12 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   const dialog = page.locator("#prompt-editor-dialog");
   const openEditor = page.getByRole("button", { name: "Open focused prompt editor" });
   const columnAssistant = page.locator("#prompt-assistant");
-  await columnAssistant.locator("summary").click();
   const columnDirection = columnAssistant.getByRole("textbox", {
-    name: "Creative direction",
+    name: "Creative Direction",
     exact: true,
   });
   const columnCreateMode = columnAssistant.getByRole("radio", {
-    name: "Create from creative direction",
+    name: "New Prompt from Creative Direction",
   });
   await columnDirection.fill("column direction");
   await columnCreateMode.check();
@@ -673,12 +637,12 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
 
   const focusedPrompt = dialog.getByRole("textbox", { name: "Prompt editor" });
   const focusedDirection = dialog.getByRole("textbox", {
-    name: "Creative direction",
+    name: "Creative Direction",
     exact: true,
   });
-  const focusedRefineMode = dialog.getByRole("radio", { name: "Refine current prompt" });
+  const focusedRefineMode = dialog.getByRole("radio", { name: "Refine Current Prompt" });
   const focusedCreateMode = dialog.getByRole("radio", {
-    name: "Create from creative direction",
+    name: "New Prompt from Creative Direction",
   });
   await expect(focusedPrompt).toHaveValue("draft that should remain");
   await expect(focusedDirection).toHaveValue("column direction");
@@ -704,7 +668,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   );
   await focusedDirection.fill("focused assistant direction");
   await focusedRefineMode.check();
-  await dialog.getByRole("button", { name: "Compose Prompt" }).click();
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
   const composedPrompt = `${longPrompt}, focused assistant direction`;
   await expect(focusedPrompt).toHaveValue(composedPrompt);
   await expect(prompt).toHaveValue("draft that should remain");
@@ -713,7 +677,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(dialog).not.toHaveAttribute("open", "");
   await expect(prompt).toHaveValue(composedPrompt);
   await expect(columnDirection).toHaveValue("focused assistant direction");
-  await expect(columnAssistant.getByRole("radio", { name: "Refine current prompt" })).toBeChecked();
+  await expect(columnAssistant.getByRole("radio", { name: "Refine Current Prompt" })).toBeChecked();
   await expect(openEditor).toBeFocused();
 });
 
@@ -774,9 +738,8 @@ test("voice input records and inserts transcripts at the cursor in every prompt 
   await expect(prompt).toHaveValue("blue transcribed speech sky");
 
   const columnAssistant = page.locator("#prompt-assistant");
-  await columnAssistant.locator("summary").click();
   const columnDirection = columnAssistant.getByRole("textbox", {
-    name: "Creative direction",
+    name: "Creative Direction",
     exact: true,
   });
   const columnDirectionMic = columnAssistant.locator(
@@ -803,7 +766,7 @@ test("voice input records and inserts transcripts at the cursor in every prompt 
   );
 
   const focusedDirection = dialog.getByRole("textbox", {
-    name: "Creative direction",
+    name: "Creative Direction",
     exact: true,
   });
   const focusedDirectionMic = dialog.locator(
@@ -919,13 +882,12 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await seedSectionTrigger.click();
   await expect(seedSectionStatus).toBeVisible();
   await seedSectionTrigger.click();
-  const promptHelp = page.getByRole("tooltip").filter({ hasText: "The positive image prompt." });
-  await expect(promptHelp).toBeHidden();
+  const generationPanel = page.locator("#generation-panel");
+  await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
+  await expect(generationPanel.locator(".help-text")).toHaveCount(0);
   await prompt.focus();
-  await expect(promptHelp).toBeVisible();
-  await expectControlsNotToOverlap(prompt, promptHelp);
+  await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
   await prompt.blur();
-  await expect(promptHelp).toBeHidden();
   await expect(page.locator('[data-control-id*="negative" i]')).toHaveCount(0);
 
   const width = page.getByRole("spinbutton", { name: "Width", exact: true });
@@ -956,22 +918,11 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   expect(Math.abs(widthBox.x - heightBox.x)).toBeLessThan(2);
   expect(heightBox.y).toBeGreaterThan(widthBox.y + widthBox.height);
 
-  const widthHelp = page.getByRole("tooltip").filter({ hasText: "Base latent width" });
-  const heightHelp = page.getByRole("tooltip").filter({ hasText: "Base latent height" });
-  await expect(widthHelp).toBeHidden();
-  await expect(heightHelp).toBeHidden();
   await width.focus();
-  await expect(widthHelp).toBeVisible();
-  await expectControlsNotToOverlap(width, widthHelp);
-  await expectControlsNotToOverlap(height, widthHelp);
-  await expect(heightHelp).toBeHidden();
+  await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
   await height.focus();
-  await expect(widthHelp).toBeHidden();
-  await expect(heightHelp).toBeVisible();
-  await expectControlsNotToOverlap(height, heightHelp);
-  await expectControlsNotToOverlap(width, heightHelp);
+  await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
   await height.blur();
-  await expect(heightHelp).toBeHidden();
   await expect(page.locator("[data-resolution-summary]")).toHaveText(
     "1080 × 1920 · 2.07 MP · 9:16",
   );
@@ -1039,15 +990,9 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   const seedMode = page.getByLabel("Seed mode", { exact: true });
   const seedValue = page.getByLabel("Seed value", { exact: true });
-  const seedHelp = page
-    .getByRole("tooltip")
-    .filter({ hasText: "Leave random or provide a fixed reproducible seed." });
-  await expect(seedHelp).toBeHidden();
   await seedMode.focus();
-  await expect(seedHelp).toBeVisible();
-  await expectControlsNotToOverlap(seedMode, seedHelp);
+  await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
   await seedMode.blur();
-  await expect(seedHelp).toBeHidden();
   await expect(seedMode).toHaveValue("random");
   await expect(seedValue).toBeDisabled();
   await seedMode.selectOption("fixed");
@@ -1237,8 +1182,7 @@ test("backend field errors disclose Advanced controls and stale compositions do 
   const promptBeforeComposition = await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .inputValue();
-  await page.locator("#prompt-assistant > summary").click();
-  await page.getByRole("textbox", { name: "Creative direction", exact: true }).fill("stale request");
+  await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("stale request");
   let releaseComposition;
   const compositionGate = new Promise((resolve) => {
     releaseComposition = resolve;
@@ -1255,8 +1199,8 @@ test("backend field errors disclose Advanced controls and stale compositions do 
       }),
     });
   });
-  await page.getByRole("button", { name: "Compose Prompt" }).click();
-  await expect(page.getByRole("button", { name: "Composing…" })).toBeDisabled();
+  await page.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(page.getByRole("button", { name: "Applying…" })).toBeDisabled();
   await selectPublishedSource(page, "Krea 2 NSFW V4");
   releaseComposition();
   await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
@@ -1341,11 +1285,20 @@ test("working card reserves final aspect ratio and cancels in place", async ({ p
   await expect(photoViewer.locator(".photo-viewer-status")).toBeVisible();
   await expect(photoViewer.locator(".photo-viewer-status")).toContainText(/Running|Preparing|image/i);
   const viewedGenerationId = await photoViewer.locator(".photo-viewer-frame").getAttribute("data-photo-generation-id");
+  await expect(photoViewer.getByRole("button", { name: "View newer generation" })).toHaveCount(0);
+  await expect(photoViewer.getByRole("button", { name: "View older generation" })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(photoViewer.locator(".photo-viewer-frame")).not.toHaveAttribute(
     "data-photo-generation-id",
     viewedGenerationId,
   );
+  await expect(photoViewer.getByRole("button", { name: "View newer generation" })).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(photoViewer.locator(".photo-viewer-frame")).toHaveAttribute(
+    "data-photo-generation-id",
+    viewedGenerationId,
+  );
+  await expect(photoViewer.getByRole("button", { name: "View newer generation" })).toHaveCount(0);
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 
   await card.getByRole("button", { name: "Cancel", exact: true }).click();

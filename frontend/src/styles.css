@@ -986,34 +986,6 @@ code {
   border-bottom: 1px solid rgb(40 54 71 / 62%);
 }
 
-.control-help-tooltip {
-  position: absolute;
-  left: 0;
-  max-width: 100%;
-  padding: 7px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: #182333;
-  box-shadow: var(--shadow-sm);
-  color: var(--text-soft);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-3px);
-  visibility: hidden;
-  transition:
-    opacity var(--motion-fast) ease,
-    transform var(--motion-fast) ease,
-    visibility 0s linear var(--motion-fast);
-  z-index: 12;
-}
-
-.has-contextual-help:focus-within > .control-help-tooltip {
-  opacity: 1;
-  transform: translateY(0);
-  visibility: visible;
-  transition-delay: 0s;
-}
-
 .control-block:last-child {
   border-bottom: 0;
 }
@@ -1530,12 +1502,6 @@ code {
   font-weight: 500;
 }
 
-.resolution-axis-field > .control-help-tooltip {
-  top: calc(100% - var(--space-4) + 4px);
-  left: calc(50% + 5px);
-  max-width: calc(50% - 5px);
-}
-
 .resolution-canvas {
   position: relative;
   width: 100%;
@@ -1759,14 +1725,12 @@ code {
   opacity: 0.58;
 }
 
-.prompt-assistant,
 .provenance {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: rgb(20 30 42 / 60%);
 }
 
-.prompt-assistant > summary,
 .provenance > summary {
   padding: 10px 12px;
   color: var(--text-soft);
@@ -1775,7 +1739,8 @@ code {
 }
 
 .assistant-body {
-  padding: 2px 12px 12px;
+  display: grid;
+  gap: 10px;
 }
 
 .advanced-controls {
@@ -1786,22 +1751,13 @@ code {
   margin-top: 10px;
 }
 
-.compact-choice {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0;
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.prompt-assistant-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
 }
 
-.compact-choice legend {
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.compact-choice label {
+.prompt-assistant-mode-options label {
   color: var(--text-soft);
   font-size: 0.78rem;
 }
@@ -2039,8 +1995,7 @@ dialog::backdrop {
   -webkit-user-drag: none;
 }
 
-.photo-viewer-media[data-photo-view-mode="fit"] img,
-.photo-viewer-media[data-photo-view-mode="fill"] img {
+.photo-viewer-media img {
   object-fit: contain;
 }
 
@@ -2112,15 +2067,6 @@ dialog::backdrop {
   line-height: 1;
 }
 
-.photo-viewer-mode-toggle {
-  top: 18px;
-  right: 190px;
-  display: flex;
-  height: 42px;
-  padding: 3px;
-  border-radius: 999px;
-}
-
 .photo-viewer-fullscreen {
   top: 18px;
   right: 72px;
@@ -2132,28 +2078,6 @@ dialog::backdrop {
   font-weight: 700;
 }
 
-.photo-viewer-mode-button {
-  min-width: 52px;
-  padding: 0 13px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: rgb(244 247 251 / 68%);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition:
-    background var(--motion-fast) ease,
-    color var(--motion-fast) ease;
-}
-
-.photo-viewer-mode-button:hover,
-.photo-viewer-mode-button[aria-pressed="true"] {
-  background: rgb(255 255 255 / 16%);
-  color: #fff;
-}
-
 .photo-viewer-nav {
   top: 50%;
   width: 48px;
@@ -2162,10 +2086,6 @@ dialog::backdrop {
   font-size: 2.4rem;
   line-height: 1;
   transform: translateY(-50%);
-}
-
-.photo-viewer-nav:disabled {
-  opacity: 0.2;
 }
 
 .photo-viewer-newer {
@@ -2333,20 +2253,6 @@ dialog::backdrop {
   gap: 16px;
 }
 
-.prompt-editor-assistant-modes {
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.prompt-editor-assistant-modes legend {
-  margin-bottom: 5px;
-  padding: 0;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
 .prompt-editor-assistant-mode-options {
   display: flex;
   flex-wrap: wrap;
@@ -2360,16 +2266,6 @@ dialog::backdrop {
 
 .prompt-editor-assistant-action-row .button {
   flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.prompt-editor-assistant-message {
-  min-width: 0;
-  min-height: 1.2em;
-  margin: 0;
-  overflow: hidden;
-  line-height: 1.2;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -3011,11 +2907,6 @@ tr:last-child td {
   .photo-viewer-close {
     top: 12px;
     right: 12px;
-  }
-
-  .photo-viewer-mode-toggle {
-    top: 12px;
-    right: 184px;
   }
 
   .photo-viewer-fullscreen {
