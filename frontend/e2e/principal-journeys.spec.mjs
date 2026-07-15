@@ -138,14 +138,30 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(basePanY + 24, 4);
 
   await page.mouse.move(visibleCenter.x, visibleCenter.y);
+  const verticalPanBefore = Number(await viewerImage.getAttribute("data-photo-pan-y"));
+  const zoomBeforeVerticalScroll = Number(await viewerImage.getAttribute("data-photo-zoom"));
+  await page.mouse.wheel(0, 100);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(verticalPanBefore - 100, 4);
+  await expect(viewerImage).toHaveAttribute("data-photo-zoom", String(zoomBeforeVerticalScroll));
+
+  const horizontalPanBefore = Number(await viewerImage.getAttribute("data-photo-pan-x"));
+  await page.mouse.wheel(80, 0);
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-x"))).toBeCloseTo(horizontalPanBefore - 80, 4);
+
   const baseZoom = Number(await viewerImage.getAttribute("data-photo-zoom"));
+  await page.keyboard.down("Control");
   await page.mouse.wheel(0, -100);
+  await page.keyboard.up("Control");
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(baseZoom);
   const zoomedIn = Number(await viewerImage.getAttribute("data-photo-zoom"));
+  await page.keyboard.down("Control");
   await page.mouse.wheel(0, 100);
+  await page.keyboard.up("Control");
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeLessThan(zoomedIn);
 
+  await page.keyboard.down("Control");
   await page.mouse.wheel(0, -200);
+  await page.keyboard.up("Control");
   const panXBefore = Number(await viewerImage.getAttribute("data-photo-pan-x"));
   const panYBefore = Number(await viewerImage.getAttribute("data-photo-pan-y"));
   await page.mouse.down();

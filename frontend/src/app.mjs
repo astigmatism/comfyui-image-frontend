@@ -842,14 +842,26 @@ function handlePointerEnd(event) {
 
 function handlePhotoViewerWheel(event) {
   const photo = event.target.closest("#photo-viewer[open] .photo-viewer-media img");
-  if (!photo || !event.deltaY) return;
+  if (!photo || (!event.deltaX && !event.deltaY)) return;
   event.preventDefault();
   notePhotoViewerActivity();
 
+  const deltaX =
+    event.deltaX *
+    (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerWidth : 1);
+  const deltaY =
+    event.deltaY *
+    (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1);
+  if (!event.ctrlKey || !deltaY) {
+    state.photoViewerPanX -= deltaX;
+    state.photoViewerPanY -= deltaY;
+    applyPhotoViewerTransform();
+    return;
+  }
+
   const media = photo.closest(".photo-viewer-media");
   const rect = media.getBoundingClientRect();
-  const deltaScale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
-  const zoomFactor = Math.exp((-event.deltaY * deltaScale * Math.log(1.12)) / 100);
+  const zoomFactor = Math.exp((-deltaY * Math.log(1.12)) / 100);
   const pointerX = event.clientX - (rect.left + rect.width / 2);
   const pointerY = event.clientY - (rect.top + rect.height / 2);
 
