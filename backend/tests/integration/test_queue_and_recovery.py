@@ -266,10 +266,10 @@ def test_unknown_restart_outcome_becomes_interrupted(settings_factory, fake_stat
     settings.enable_background_worker = True
     with TestClient(create_app(settings)) as second:
         restore_cookie(second, cookie, name=settings.session_cookie_name)
-        detail = second.get(f"/api/generations/{generation['id']}")
-        assert detail.status_code == 200
-        assert detail.json()["status"] == "interrupted"
-        assert detail.json()["error_code"] == "execution_interrupted"
+        # Startup recovery is managed in the background so local HTTP readiness is immediate.
+        # The durable running row remains visible while reconciliation reaches its terminal state.
+        detail = wait_for_status(second, generation["id"], "interrupted", timeout=10)
+        assert detail["error_code"] == "execution_interrupted"
         assert second.get(f"/api/generations/{generation['id']}/recall").json()["available"] is True
 
 
@@ -278,6 +278,7 @@ def test_comfyui_outage_preserves_history_and_pauses_dispatch(settings_factory, 
     with TestClient(create_app(settings)) as first:
         _, cookie = provision_user(first, username="outage.user")
         queued = create_generation(first, "resume after outage", seed=14)
+        blocked_payload = generation_payload(first, "blocked while down", seed=15)
 
     fake_state.service_available = False
     settings.enable_background_worker = True
@@ -289,7 +290,7 @@ def test_comfyui_outage_preserves_history_and_pauses_dispatch(settings_factory, 
         rejected = second.post(
             "/api/generations",
             headers={"X-CSRF-Token": second.get("/api/auth/session").json()["csrf_token"]},
-            json=generation_payload(second, "blocked while down", seed=15),
+            json=blocked_payload,
         )
         assert rejected.status_code == 503
 

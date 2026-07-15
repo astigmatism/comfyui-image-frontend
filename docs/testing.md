@@ -70,6 +70,13 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - exact recall and unavailable/republished source behavior;
 - migration up/down/up with old rows/default result fields;
 - authentication, CSRF, IDOR/admin content denial, uploads, favorites/preferences, deletion, and Ollama provenance regressions.
+- progressive browser bootstrap with optional-service delay/failure, named safe-method deadlines, and mutation single-send behavior;
+- cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, and authoritative composition failure;
+- constant-query gallery/favorites pages, forbidden detail-JSON SQL assertions, summary parity, artifact precedence, and owner isolation;
+- event-loop responsiveness while artifact/upload filesystem or metadata operations are deliberately blocked;
+- more live SSE subscriptions than the former pool capacity with zero retained pool checkouts;
+- slow ComfyUI startup discovery and restart reconciliation while local session, health, and retained-history requests remain responsive;
+- safe request-duration logs and timing headers without query/body/private content.
 
 The fake ComfyUI service implements both userdata listings/retrieval, object info, prompt accept/reject, queue/interrupt, WebSocket progress/terminal events, history timing/status, `/view`, retrieval failure, and outage modes. Production code never silently uses the fake service.
 
@@ -94,6 +101,9 @@ PYTHONPATH=backend pytest -q backend/tests/unit/test_results.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_workflows_and_prompt_assistant.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_generation_lifecycle.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_queue_and_recovery.py
+PYTHONPATH=backend pytest -q backend/tests/integration/test_gallery_query_performance.py
+PYTHONPATH=backend pytest -q backend/tests/integration/test_storage_and_sse_responsiveness.py
+PYTHONPATH=backend pytest -q backend/tests/integration/test_shutdown_observability.py
 cd frontend && node --test test/*.test.mjs
 cd frontend && node scripts/build.mjs
 python3 scripts/generate_traceability.py --check

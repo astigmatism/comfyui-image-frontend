@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING
 from app.main import create_app
+from app.models import ServiceHealth
 from fastapi.testclient import TestClient
 from tests.conftest import csrf
 from tests.helpers import (
@@ -14,6 +16,25 @@ from tests.helpers import (
     restore_cookie,
 )
 from tests.publication_fixtures import build_publication_bundle
+
+
+def _cache_ollama_health(
+    client: TestClient,
+    *,
+    available: bool,
+    message: str | None = None,
+    checked_at: datetime | None = None,
+) -> None:
+    container = client.app.state.container
+    with container.db.session_factory() as session:
+        health = session.get(ServiceHealth, "ollama")
+        if health is None:
+            health = ServiceHealth(service="ollama")
+            session.add(health)
+        health.available = available
+        health.message = message
+        health.checked_at = checked_at or datetime.now(UTC)
+        session.commit()
 
 
 def _contains_private_graph_key(value: Any) -> bool:
@@ -247,6 +268,7 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client)
+    _cache_ollama_health(app_client, available=True)
     assert app_client.get("/api/prompt-assistant/status").json()["available"] is True
     fake_state.ollama_effective_model = "router-active:latest"
     before = app_client.get("/api/generations").json()["items"]
@@ -310,6 +332,11 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:
     provision_user(app_client)
     fake_state.ollama_available = False
+    _cache_ollama_health(
+        app_client,
+        available=False,
+        message="Prompt Assistant could not reach the Ollama router.",
+    )
     status = app_client.get("/api/prompt-assistant/status")
     assert status.status_code == 200
     assert status.json()["available"] is False
@@ -334,6 +361,11 @@ def test_empty_router_model_listing_only_disables_assistant(
 ) -> None:
     provision_user(app_client, username="empty.router")
     fake_state.models = []
+    _cache_ollama_health(
+        app_client,
+        available=False,
+        message="Prompt Assistant is unavailable because the Ollama router has no reachable model.",
+    )
 
     status = app_client.get("/api/prompt-assistant/status")
     assert status.status_code == 200
@@ -354,6 +386,50 @@ def test_empty_router_model_listing_only_disables_assistant(
     )
     assert validation.status_code == 200, validation.text
     assert validation.json()["valid"] is True
+
+
+def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_ollama(
+    app_client: TestClient, monkeypatch
+) -> None:
+    provision_user(app_client, username="cached.assistant.status")
+    _cache_ollama_health(app_client, available=True)
+
+    async def unexpected_live_probe() -> list[str]:
+        raise AssertionError("status endpoint contacted Ollama")
+
+    monkeypatch.setattr(
+        app_client.app.state.container.ollama, "available_models", unexpected_live_probe
+    )
+    response = app_client.get("/api/prompt-assistant/status")
+    assert response.status_code == 200
+    assert response.json() == {"available": True, "message": None}
+
+    _cache_ollama_health(
+        app_client,
+        available=True,
+        checked_at=datetime.now(UTC) - timedelta(seconds=31),
+    )
+    stale = app_client.get("/api/prompt-assistant/status")
+    assert stale.status_code == 200
+    assert stale.json()["available"] is False
+    assert "stale" in stale.json()["message"]
+
+
+def test_cached_prompt_assistant_success_does_not_mask_runtime_compose_failure(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="assistant.runtime.failure")
+    _cache_ollama_health(app_client, available=True)
+    assert app_client.get("/api/prompt-assistant/status").json()["available"] is True
+
+    fake_state.ollama_available = False
+    compose = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={"mode": "create", "prompt": "", "creative_direction": "storm over a city"},
+    )
+    assert compose.status_code == 503
+    assert compose.json()["error"]["code"] == "ollama_unavailable"
 
 
 def test_private_bindings_unpublished_parameters_and_stale_revisions_are_rejected(

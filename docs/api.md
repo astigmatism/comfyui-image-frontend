@@ -28,6 +28,8 @@ Errors use a safe machine-readable envelope:
 
 Application-internal traces, secrets, cookies, private manifest bindings, and executable graphs are not returned. Raw ComfyUI history/status is treated as authored result data and may itself contain custom diagnostics or paths; operators must trust the local workflow/custom nodes they publish.
 
+Every response carries a sanitized `X-Request-ID` that matches the structured `http_request_completed` log record. A safe `Server-Timing` metric reports application time to response headers. Logs use normalized route templates rather than query strings or caller-provided content.
+
 ## Published generation sources
 
 | Method | Route | Purpose |
@@ -197,6 +199,8 @@ Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_ou
 
 A summary contains lifecycle status, source display name, acceptance/stage state, total artifact count, image count, final-image count, one optional `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native `prompt_id`, `source_key`, and `publication_id`. The display artifact is a gallery convenience selected from the workflow-authored final when available.
 
+List and favorites pages are bounded summary projections. They do not fetch generation compiled/submitted graphs, raw history, full result diagnostics, or full workflow-profile JSON. Related artifact, image-count, favorite, exact-revision, dependency-health data is resolved in a low constant number of batched statements while preserving owner and cursor ordering.
+
 Generation detail adds:
 
 ```json
@@ -292,6 +296,8 @@ ComfyUI file references are never accepted from callers. The worker extracts onl
 
 Composition returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation. Prompt Assistant is never invoked implicitly by generation or recall.
 
+The status route reads the background health monitor's cached row and never contacts Ollama. A missing or stale check reports unavailable; an old success is not trusted indefinitely. Compose remains authoritative and can return a safe 503 if Ollama fails after a recent successful health check.
+
 ## Speech to text
 
 | Method | Route | Purpose |
@@ -329,6 +335,8 @@ Administrator routes never return another user's prompts, parameters, uploads, r
 ## Server-Sent Events
 
 `GET /api/events` is an authenticated `text/event-stream`. Reconnection passes `Last-Event-ID` or `?last_event_id=N`. The route replays durable owner events and then subscribes to owner-only live fan-out.
+
+Authentication and replay are materialized in a short-lived database session before streaming begins. The long-lived iterator retains no ORM objects or checked-out database connection; keep-alive session validation uses fresh short-lived sessions.
 
 ```text
 id: 123

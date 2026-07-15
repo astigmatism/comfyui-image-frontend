@@ -12,6 +12,7 @@ from app.services.comfyui import ComfyCapabilities
 from app.services.workflow_registry import WorkflowRegistry
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from tests.publication_fixtures import (
     GENERIC_PUBLICATION_ID,
     KREA_PUBLICATION_ID,
@@ -77,7 +78,13 @@ class FixturePublicationAdapter:
 def make_registry(
     adapter: FixturePublicationAdapter,
 ) -> tuple[WorkflowRegistry, sessionmaker[Session], Any]:
-    engine = create_engine("sqlite://")
+    # Registry validation/commit work intentionally crosses onto a worker thread. Keep this
+    # in-memory fixture on one thread-safe connection so every Session sees the same schema.
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(engine, expire_on_commit=False, class_=Session)
     return WorkflowRegistry(session_factory, adapter), session_factory, engine  # type: ignore[arg-type]

@@ -126,13 +126,27 @@ Generation detail returns source revision, prompt ID, requested/effective parame
 
 ## Restart, refresh, and outage behavior
 
-Startup migrations and bootstrap precede workers. Durable current source rows load before network discovery completes. Source readiness progresses through loading/online or cached-offline/unavailable state.
+Startup migrations and local administrator bootstrap remain authoritative and complete before HTTP service begins. ComfyUI publication discovery is then retained as a managed background task: durable current source rows are immediately visible in a non-dispatchable loading/cached state, while login, account routes, retained gallery history, and local health remain serviceable. The task is coordinated with health-recovery refresh through the registry lock, observed for failures, and cancelled/joined during shutdown. Source readiness progresses through loading/online or cached-offline/unavailable state.
 
 Queued rows resume after restart. For dispatching/running/cancel-requested rows, recovery checks prompt ID, history, and queue state. Known active prompts resume monitoring; terminal history finalizes them; an irreconcilable outcome after the configured grace interval becomes explicit interrupted history. Existing artifacts, raw results, source identity, and recall data remain.
 
 ComfyUI failure before submission returns a claimed item to queued; health polling later resumes dispatch. Browser disconnects never alter queue state. A selected revision that was republished fails with `source_republished` so the user reviews the new interface.
 
 When health monitoring sees ComfyUI move from offline to online, it reruns full source discovery before normal operation continues. This recovers both a cached catalog and an empty catalog from an offline startup without requiring administrator action. A continuously online instance changes its catalog only at startup or explicit refresh, avoiding periodic refetch/race churn.
+
+## Responsiveness and diagnostic boundaries
+
+The authenticated browser renders the gallery shell immediately after the authoritative session request. Preferences, cached service health, retained history, Prompt Assistant status, speech-to-text status, and source catalog/detail requests settle independently. Safe-method startup requests have explicit named deadlines covering both response headers and body consumption; mutation requests are never automatically retried or given a generic deadline because an ambiguous response could duplicate work. Generation stays disabled until cached ComfyUI health and the selected source revision are both authoritative.
+
+Normal bootstrap performs no live ComfyUI or Ollama probe. External probing belongs to the bounded background health/discovery loops. Prompt Assistant status reads a recent `service_health` row and treats an old success as stale; composition still performs authoritative runtime checks.
+
+Gallery pages use an explicit scalar projection rather than materializing `Generation` entities. Image counts, display-artifact precedence, favorites, exact-current revision availability, and dependency health are resolved in bounded batch queries. Compiled/submitted graphs, raw history, result diagnostics, and full workflow-profile documents are not selected or JSON-deserialized for cards. Both ordinary and favorite pages use a low constant number of SQL statements independent of page size.
+
+Pillow decode/verification, decompressed pixel loading, thumbnail encoding, hashing, and durable filesystem writes run outside the asyncio event loop. Their database ownership transactions use fresh short-lived sessions and clean unowned files on failure or cancellation. Publication validation and catalog commits likewise run off the event loop; SQLite sessions are never passed into those worker threads.
+
+The SSE route authenticates inside a short local database scope before constructing `StreamingResponse`. Its iterator subscribes to the owner broker before materializing replay in a second short scope, then deduplicates queued durable events through the replay high-water mark. It retains only primitive owner/token/event data. Periodic session validation opens a fresh short-lived session, so an idle browser tab does not retain a pool checkout.
+
+Every HTTP request emits one `http_request_completed` structured log with request ID, method, normalized route, status, monotonic total duration, and disconnect state. Query strings, cookies, CSRF values, request bodies, prompts, filenames, and other content are excluded. `X-Request-ID` correlates a response with its record, while `Server-Timing` exposes only a safe time-to-first-byte measurement. SSE produces one completion record per connection, not one record per event.
 
 ## Frontend architecture
 

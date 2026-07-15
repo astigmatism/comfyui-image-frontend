@@ -5,13 +5,16 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 from app.main import create_app
+from app.models import Generation, GenerationEvent, GenerationStatus
 from app.services import queue_worker as queue_worker_module
 from fastapi.testclient import TestClient
+from sqlalchemy import event, select
 from tests.helpers import create_generation, provision_user, wait_for_status
 
 
@@ -42,6 +45,184 @@ def _start_worker(client: TestClient) -> Any:
     assert client.portal is not None
     client.portal.call(worker.start)
     return worker
+
+
+async def test_retryable_reconciliation_retains_one_live_generation_monitor() -> None:
+    worker = object.__new__(queue_worker_module.QueueWorker)
+    worker._active = {}
+    release = asyncio.Event()
+
+    async def monitor() -> None:
+        await release.wait()
+
+    first_coroutine = monitor()
+    worker._start_generation_task(
+        "generation-a",
+        first_coroutine,
+        name="generation-recovered-generation-a",
+    )
+    first_task = worker._active["generation-a"]
+    await asyncio.sleep(0)
+
+    duplicate_coroutine = monitor()
+    worker._start_generation_task(
+        "generation-a",
+        duplicate_coroutine,
+        name="generation-recovered-generation-a-duplicate",
+    )
+
+    assert worker._active == {"generation-a": first_task}
+    assert duplicate_coroutine.cr_frame is None
+
+    release.set()
+    await first_task
+    await asyncio.sleep(0)
+    assert worker._active == {}
+
+
+async def test_startup_recovery_database_phase_does_not_block_the_event_loop(
+    monkeypatch,
+) -> None:
+    worker = object.__new__(queue_worker_module.QueueWorker)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_recovery_plan():
+        started.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("test did not release startup recovery planning")
+        return (), ()
+
+    monkeypatch.setattr(worker, "_prepare_startup_recovery", blocking_recovery_plan)
+    started_at = time.monotonic()
+    reconciliation = asyncio.create_task(worker._reconcile_startup())
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1)
+        loop_tick = asyncio.Event()
+        asyncio.get_running_loop().call_soon(loop_tick.set)
+        await asyncio.wait_for(loop_tick.wait(), timeout=0.2)
+        assert time.monotonic() - started_at < 0.5
+    finally:
+        release.set()
+    await reconciliation
+
+
+def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_state) -> None:
+    del fake_state
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="recovery.projection")
+        requeued = create_generation(client, "projection requeue", seed=811)
+        cancelled = create_generation(client, "projection cancellation", seed=812)
+        monitored = create_generation(client, "projection monitor", seed=813)
+        container = client.app.state.container
+        with container.db.session_factory() as session:
+            requeued_row = session.get(Generation, requeued["id"])
+            cancelled_row = session.get(Generation, cancelled["id"])
+            monitored_row = session.get(Generation, monitored["id"])
+            assert requeued_row is not None
+            assert cancelled_row is not None
+            assert monitored_row is not None
+            requeued_row.status = GenerationStatus.DISPATCHING
+            requeued_row.submitted_graph_json = {"large": "x" * 8192}
+            requeued_row.submitted_graph_sha256 = "a" * 64
+            requeued_row.raw_history_json = {"large": "y" * 8192}
+            cancelled_row.status = GenerationStatus.CANCEL_REQUESTED
+            monitored_row.status = GenerationStatus.RUNNING
+            monitored_row.comfyui_prompt_id = "native-recovery-prompt"
+            session.commit()
+
+        statements: list[str] = []
+
+        def capture_sql(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+            if "FROM generations" in statement and "generations.status IN" in statement:
+                statements.append(statement)
+
+        event.listen(container.db.engine, "before_cursor_execute", capture_sql)
+        try:
+            notifications, prompt_jobs = container.worker._prepare_startup_recovery()
+        finally:
+            event.remove(container.db.engine, "before_cursor_execute", capture_sql)
+
+        assert prompt_jobs == ((monitored["id"], "native-recovery-prompt"),)
+        assert len(notifications) == 1
+        owner_id, payload = notifications[0]
+        assert owner_id
+        assert payload["type"] == "generation.requeued"
+        assert payload["generation_id"] == requeued["id"]
+
+        assert len(statements) == 1
+        recovery_select = statements[0]
+        for selected_column in (
+            "generations.id",
+            "generations.owner_id",
+            "generations.status",
+            "generations.comfyui_prompt_id",
+        ):
+            assert selected_column in recovery_select
+        for excluded_column in (
+            "resolved_contract_json",
+            "compiled_graph_json",
+            "submitted_graph_json",
+            "raw_history_json",
+            "internal_diagnostics_json",
+        ):
+            assert excluded_column not in recovery_select
+
+        with container.db.session_factory() as session:
+            assert session.get(Generation, requeued["id"]).status == GenerationStatus.QUEUED
+            assert session.get(Generation, requeued["id"]).submitted_graph_json is None
+            cancelled_row = session.get(Generation, cancelled["id"])
+            assert cancelled_row is not None
+            assert cancelled_row.status == GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
+            assert cancelled_row.completed_at is not None
+            assert (
+                session.scalar(
+                    select(GenerationEvent).where(
+                        GenerationEvent.generation_id == requeued["id"],
+                        GenerationEvent.event_type == "generation.requeued",
+                    )
+                )
+                is not None
+            )
+
+
+async def test_ollama_health_is_persisted_before_slow_catalog_recovery(monkeypatch) -> None:
+    worker = object.__new__(queue_worker_module.QueueWorker)
+    worker._stop = asyncio.Event()
+    worker.settings = SimpleNamespace(external_health_interval_seconds=60.0)
+    persisted: list[tuple[str, bool, str | None]] = []
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    class ComfyProbe:
+        async def health(self):
+            return True, None
+
+    class OllamaProbe:
+        async def status(self):
+            return True, None
+
+    class SlowRegistry:
+        async def refresh(self):
+            refresh_started.set()
+            await release_refresh.wait()
+            worker._stop.set()
+
+    def persist_health(service: str, available: bool, message: str | None) -> None:
+        persisted.append((service, available, message))
+
+    worker.comfyui = ComfyProbe()
+    worker.ollama = OllamaProbe()
+    worker.generations = SimpleNamespace(registry=SlowRegistry())
+    monkeypatch.setattr(worker, "_persist_service_health", persist_health)
+    monkeypatch.setattr(worker, "_comfy_recovery_state", lambda _available: (False, True))
+
+    health_loop = asyncio.create_task(worker._health_loop())
+    await asyncio.wait_for(refresh_started.wait(), timeout=1)
+    assert persisted == [("ollama", True, None)]
+    release_refresh.set()
+    await asyncio.wait_for(health_loop, timeout=1)
 
 
 def test_transient_claim_failure_is_logged_and_later_generations_succeed(
@@ -265,6 +446,12 @@ def test_unexpected_dispatcher_completion_is_observed_restarted_and_recovers_wor
     with TestClient(create_app(settings)) as client:
         provision_user(client, username="dispatcher.restart")
         worker = _start_worker(client)
+        assert client.portal is not None
+
+        async def wait_for_initial_dispatcher() -> None:
+            await asyncio.wait_for(worker._dispatcher_started.wait(), timeout=3)
+
+        client.portal.call(wait_for_initial_dispatcher)
         original_run = worker._run_dispatcher
         replacement_calls = 0
 
@@ -278,11 +465,11 @@ def test_unexpected_dispatcher_completion_is_observed_restarted_and_recovers_wor
         monkeypatch.setattr(worker, "_run_dispatcher", return_once_then_run)
 
         async def cancel_current_dispatcher() -> None:
+            await asyncio.wait_for(worker._dispatcher_started.wait(), timeout=3)
             assert worker._dispatcher_task is not None
             worker._dispatcher_task.cancel()
             await asyncio.sleep(0)
 
-        assert client.portal is not None
         client.portal.call(cancel_current_dispatcher)
         failed, status_code = _wait_for_worker_health(
             client,

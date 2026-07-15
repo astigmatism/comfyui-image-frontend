@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -47,6 +49,7 @@ class AssetStore:
         image.save(buffer, format="PNG", optimize=True)
         normalized = buffer.getvalue()
         relative = f"uploads/{uuid.uuid4()}.png"
+        sha256 = hashlib.sha256(normalized).hexdigest()
         self._atomic_write(relative, normalized)
         return StoredImage(
             relative_path=relative,
@@ -55,8 +58,13 @@ class AssetStore:
             byte_size=len(normalized),
             width=image.width,
             height=image.height,
-            sha256=hashlib.sha256(normalized).hexdigest(),
+            sha256=sha256,
         )
+
+    async def store_upload_async(self, source: BinaryIO, *, kind: str) -> StoredImage:
+        """Normalize and durably write an upload without occupying the event loop."""
+
+        return await self._store_async(lambda: self.store_upload(source, kind=kind))
 
     def store_artifact(
         self, content: bytes, *, generation_id: str, kind: str = "image"
@@ -67,6 +75,7 @@ class AssetStore:
             )
         if kind != "image":
             relative = f"assets/{generation_id}/{uuid.uuid4()}.bin"
+            sha256 = hashlib.sha256(content).hexdigest()
             self._atomic_write(relative, content)
             return StoredImage(
                 relative_path=relative,
@@ -75,7 +84,7 @@ class AssetStore:
                 byte_size=len(content),
                 width=0,
                 height=0,
-                sha256=hashlib.sha256(content).hexdigest(),
+                sha256=sha256,
             )
         image = self._decode_image(content, max_pixels=max(self.settings.upload_max_pixels * 4, 1))
         detected_format = image.format or "PNG"
@@ -84,8 +93,16 @@ class AssetStore:
             mime, ".img"
         )
         relative = f"assets/{generation_id}/{uuid.uuid4()}{extension}"
-        self._atomic_write(relative, content)
-        thumbnail = self._thumbnail(image, generation_id)
+        sha256 = hashlib.sha256(content).hexdigest()
+        created_paths: list[str] = []
+        try:
+            self._atomic_write(relative, content)
+            created_paths.append(relative)
+            thumbnail = self._thumbnail(image, generation_id)
+        except BaseException:
+            # A thumbnail encoding/write failure must not strand an unowned original.
+            self.delete_paths(created_paths)
+            raise
         return StoredImage(
             relative_path=relative,
             thumbnail_path=thumbnail,
@@ -93,8 +110,40 @@ class AssetStore:
             byte_size=len(content),
             width=image.width,
             height=image.height,
-            sha256=hashlib.sha256(content).hexdigest(),
+            sha256=sha256,
         )
+
+    async def store_artifact_async(
+        self, content: bytes, *, generation_id: str, kind: str = "image"
+    ) -> StoredImage:
+        """Decode, hash, thumbnail, and durably write an artifact off the event loop."""
+
+        return await self._store_async(
+            lambda: self.store_artifact(content, generation_id=generation_id, kind=kind)
+        )
+
+    async def delete_stored_async(self, stored: StoredImage) -> None:
+        await asyncio.to_thread(
+            self.delete_paths,
+            [path for path in (stored.relative_path, stored.thumbnail_path) if path],
+        )
+
+    async def _store_async(self, operation: Callable[[], StoredImage]) -> StoredImage:
+        # Shield the thread future so request/worker cancellation cannot close an UploadFile or
+        # abandon a durable write midway through the operation. If cancellation wins, wait for
+        # the thread and remove any completed, as-yet-unowned files before propagating it.
+        task = asyncio.create_task(asyncio.to_thread(operation))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            stored: StoredImage | None = None
+            try:
+                stored = await task
+            except Exception:
+                stored = None
+            if stored is not None:
+                await asyncio.shield(self.delete_stored_async(stored))
+            raise
 
     def _decode_image(self, content: bytes, *, max_pixels: int | None = None) -> Image.Image:
         limit = max_pixels or self.settings.upload_max_pixels
@@ -157,11 +206,14 @@ class AssetStore:
             raise AppError("unsafe_path", "Storage path escaped the application data directory.")
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.{uuid.uuid4()}.tmp")
-        with temporary.open("wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(target)
+        try:
+            with temporary.open("wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _read_limited(source: BinaryIO, maximum: int) -> bytes:

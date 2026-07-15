@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -15,7 +17,9 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .api import (
     admin,
@@ -35,6 +39,7 @@ from .db import run_migrations
 from .errors import AppError
 
 logger = logging.getLogger(__name__)
+_SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z")
 
 
 class JsonFormatter(logging.Formatter):
@@ -61,6 +66,11 @@ class JsonFormatter(logging.Formatter):
             "exception_class",
             "event_type",
             "restart_count",
+            "method",
+            "route",
+            "status_code",
+            "duration_ms",
+            "client_disconnected",
         ):
             value = getattr(record, key, None)
             if value is not None:
@@ -95,6 +105,91 @@ def configure_logging(level: str) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def _normalized_request_route(scope: Scope) -> str:
+    """Return a route template without query strings or caller-provided path content."""
+
+    route = scope.get("route")
+    route_path = getattr(route, "path", None)
+    if isinstance(route_path, str) and route_path:
+        return route_path
+    if str(scope.get("path", "")).startswith("/api"):
+        return "/api/<unmatched>"
+    return "/<static>"
+
+
+def _safe_request_id(raw_request_id: str | None) -> str:
+    if raw_request_id is not None and _SAFE_REQUEST_ID.fullmatch(raw_request_id):
+        return raw_request_id
+    return str(uuid.uuid4())
+
+
+class RequestContextMiddleware:
+    """Attach safe request diagnostics and log through the final response body."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = _safe_request_id(Headers(scope=scope).get("x-request-id"))
+        scope.setdefault("state", {})["request_id"] = request_id
+        started_at = time.monotonic()
+        status_code = 500
+        client_disconnected = False
+
+        async def receive_with_disconnect() -> Message:
+            nonlocal client_disconnected
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                client_disconnected = True
+            return message
+
+        async def send_with_headers(message: Message) -> None:
+            nonlocal client_disconnected, status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                duration_ms = (time.monotonic() - started_at) * 1000
+                headers = MutableHeaders(scope=message)
+                headers["X-Request-ID"] = request_id
+                headers["Server-Timing"] = f"app_ttfb;dur={duration_ms:.1f}"
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["Referrer-Policy"] = "same-origin"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
+                headers["Content-Security-Policy"] = (
+                    "default-src 'self'; img-src 'self' blob: data:; "
+                    "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+                    "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+                )
+            try:
+                await send(message)
+            except OSError:
+                client_disconnected = True
+                raise
+
+        try:
+            await self.app(scope, receive_with_disconnect, send_with_headers)
+        except asyncio.CancelledError:
+            status_code = 499
+            client_disconnected = True
+            raise
+        finally:
+            logger.info(
+                "http_request_completed",
+                extra={
+                    "request_id": request_id,
+                    "method": str(scope.get("method", "")),
+                    "route": _normalized_request_route(scope),
+                    "status_code": status_code,
+                    "duration_ms": round((time.monotonic() - started_at) * 1000, 3),
+                    "client_disconnected": client_disconnected,
+                },
+            )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -119,7 +214,7 @@ def create_app(
         configure_logging(settings.log_level)
         with container.db.session_factory() as session:
             container.auth.ensure_bootstrap_admin(session)
-        await container.registry.refresh()
+        container.start_workflow_discovery()
         if settings.enable_background_worker:
             await container.worker.start()
         try:
@@ -135,23 +230,8 @@ def create_app(
         openapi_url="/api/openapi.json",
         redoc_url=None,
     )
+    app.add_middleware(RequestContextMiddleware)
     app.state.container = container
-
-    @app.middleware("http")
-    async def request_context(request: Request, call_next):  # type: ignore[no-untyped-def]
-        request_id = request.headers.get("x-request-id", str(uuid.uuid4()))[:128]
-        request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "same-origin"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
-        )
-        return response
 
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:

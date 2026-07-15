@@ -1509,11 +1509,13 @@ code {
 }
 
 .empty-copy,
-.empty-gallery {
+.empty-gallery,
+.gallery-status {
   color: var(--muted);
 }
 
-.empty-gallery {
+.empty-gallery,
+.gallery-status:only-child {
   grid-column: 1 / -1;
   display: grid;
   place-items: center;
@@ -1522,7 +1524,14 @@ code {
   text-align: center;
 }
 
-.empty-gallery h2 {
+.gallery-status {
+  grid-column: 1 / -1;
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.empty-gallery h2,
+.gallery-status h2 {
   margin-bottom: 5px;
   color: var(--text-soft);
 }

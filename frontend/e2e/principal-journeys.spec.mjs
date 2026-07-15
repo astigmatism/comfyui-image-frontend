@@ -293,6 +293,257 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
 });
 
+test("progressive bootstrap renders while optional status is delayed and localizes failures", async ({
+  page,
+}) => {
+  let releaseServices;
+  let noteServiceRequest;
+  const servicesReleased = new Promise((resolve) => {
+    releaseServices = resolve;
+  });
+  const serviceRequested = new Promise((resolve) => {
+    noteServiceRequest = resolve;
+  });
+  await page.route("**/api/services", async (route) => {
+    noteServiceRequest();
+    await servicesReleased;
+    await route.continue();
+  });
+  await page.route("**/api/prompt-assistant/status", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "assistant_unavailable",
+          message: "Prompt Assistant maintenance.",
+          fields: {},
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await serviceRequested;
+
+  await expect(page.locator(".gallery-viewport")).toBeVisible({ timeout: 2_000 });
+  await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
+  await expect(page.locator("#service-banner")).toContainText("Checking generation service");
+  const generateButton = page.getByRole("button", { name: "Generate" });
+  await expect(generateButton).toBeDisabled();
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("service status is still pending");
+  await expect(generateButton).toBeDisabled();
+
+  releaseServices();
+  await expect(page.locator("#assistant-message")).toHaveText("Prompt Assistant maintenance.");
+  await expect(generateButton).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
+});
+
+test("workflow catalog failure stays local and can be retried", async ({ page }) => {
+  let catalogRequests = 0;
+  await page.route("**/api/workflows", async (route) => {
+    catalogRequests += 1;
+    if (catalogRequests === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "workflow_catalog_unavailable",
+            message: "Published source catalog maintenance.",
+            fields: {},
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+
+  await expect(page.locator(".gallery-viewport")).toBeVisible();
+  await expect(page.locator("#gallery")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
+  await expect(page.locator("#generation-panel .source-notice.warning")).toHaveText(
+    "Published source catalog maintenance.",
+  );
+  await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
+  await page.getByRole("button", { name: "Retry generation sources" }).click();
+  await expect(page.locator("#workflow-source")).not.toHaveAttribute("data-source-key", "");
+  await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
+});
+
+test("speech status failure disables voice controls with the service message", async ({ page }) => {
+  await page.route("**/api/speech-to-text/status", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "speech_to_text_unavailable",
+          message: "Voice input maintenance.",
+          fields: {},
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  await expect(page.locator(".gallery-viewport")).toBeVisible();
+  await expect(page.locator("#gallery")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
+  const voiceButtons = page.locator('[data-action="toggle-speech-recording"]');
+  await expect(voiceButtons.first()).toBeVisible();
+  await expect
+    .poll(() =>
+      voiceButtons.evaluateAll(
+        (buttons) =>
+          buttons.length > 0 &&
+          buttons.every(
+            (button) => button.disabled && button.title === "Voice input maintenance.",
+          ),
+      ),
+    )
+    .toBe(true);
+});
+
+test("initial gallery snapshot commits before buffered live updates", async ({ page, context }) => {
+  test.setTimeout(45_000);
+  let releaseGallery;
+  let markSnapshotCaptured;
+  const galleryReleased = new Promise((resolve) => {
+    releaseGallery = resolve;
+  });
+  const snapshotCaptured = new Promise((resolve) => {
+    markSnapshotCaptured = resolve;
+  });
+  await page.route("**/api/generations?limit=24", async (route) => {
+    const snapshot = await route.fetch();
+    markSnapshotCaptured();
+    await galleryReleased;
+    await route.fulfill({ response: snapshot });
+  });
+
+  const eventsConnected = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/events",
+  );
+  let producer = null;
+  try {
+    await page.goto("/");
+    await signInAdminWithCurrentFixturePassword(page);
+    await Promise.all([snapshotCaptured, eventsConnected]);
+    await expect(page.getByRole("heading", { name: "Loading gallery…" })).toBeVisible();
+
+    producer = await context.newPage();
+    await producer.goto("/");
+    await selectPublishedSource(producer, "Generic Landscape");
+    await producer
+      .getByRole("textbox", { name: "Prompt", exact: true })
+      .fill("buffered live update after gallery snapshot");
+    await expect(producer.getByRole("button", { name: "Generate" })).toBeEnabled();
+    const accepted = await generateAndExpectAccepted(producer);
+    const generation = await accepted.json();
+
+    const refreshed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/api/generations/${generation.id}` &&
+        response.request().method() === "GET",
+    );
+    releaseGallery();
+    await refreshed;
+    const card = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
+    await expect(card).toBeVisible();
+
+    await expect(card).toHaveClass(/status-succeeded/, { timeout: 15_000 });
+    page.once("dialog", (dialog) => dialog.accept());
+    await card.getByRole("button", { name: "Delete generation" }).click();
+    await expect(card).toHaveCount(0);
+  } finally {
+    releaseGallery();
+    await producer?.close();
+  }
+});
+
+test("failed initial gallery snapshot preserves buffered live generations", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(45_000);
+  let releaseGallery;
+  let noteGalleryRequest;
+  const galleryReleased = new Promise((resolve) => {
+    releaseGallery = resolve;
+  });
+  const galleryRequested = new Promise((resolve) => {
+    noteGalleryRequest = resolve;
+  });
+  await page.route("**/api/generations?limit=24", async (route) => {
+    noteGalleryRequest();
+    await galleryReleased;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "gallery_unavailable",
+          message: "Gallery snapshot maintenance.",
+          fields: {},
+        },
+      }),
+    });
+  });
+
+  const eventsConnected = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/events",
+  );
+  let producer = null;
+  try {
+    await page.goto("/");
+    await signInAdminWithCurrentFixturePassword(page);
+    await Promise.all([galleryRequested, eventsConnected]);
+
+    producer = await context.newPage();
+    await producer.goto("/");
+    await selectPublishedSource(producer, "Generic Landscape");
+    await producer
+      .getByRole("textbox", { name: "Prompt", exact: true })
+      .fill("buffered update survives unavailable gallery snapshot");
+    await expect(producer.getByRole("button", { name: "Generate" })).toBeEnabled();
+    const accepted = await generateAndExpectAccepted(producer);
+    const generation = await accepted.json();
+
+    const refreshed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/api/generations/${generation.id}` &&
+        response.request().method() === "GET",
+    );
+    releaseGallery();
+    await refreshed;
+
+    await expect(page.getByText("Gallery snapshot maintenance.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry gallery" })).toBeVisible();
+    const card = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
+    await expect(card).toBeVisible();
+    await expect(card).toHaveClass(/status-succeeded/, { timeout: 15_000 });
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await card.getByRole("button", { name: "Delete generation" }).click();
+    await expect(card).toHaveCount(0);
+  } finally {
+    releaseGallery();
+    await producer?.close();
+  }
+});
+
 test("checked generation sources share comparison settings and report incompatible selections", async ({
   page,
 }) => {
@@ -344,6 +595,7 @@ test("checked generation sources share comparison settings and report incompatib
 test("gallery defaults to request initiation order when the page arrives unsorted", async ({
   page,
 }) => {
+  await page.route("**/api/events?**", (route) => route.abort());
   await page.route("**/api/generations?limit=24", async (route) => {
     const generation = (id, acceptedAt, status) => ({
       id,

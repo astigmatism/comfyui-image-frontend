@@ -93,7 +93,6 @@ export function shellMarkup(state) {
 }
 
 export function generationPanelMarkup(state, profile, contract) {
-  const comfy = state.services.find((item) => item.service === "comfyui");
   const clientErrors = state.fieldErrors || {};
   const sources = state.sources || state.workflows || [];
   const activeKey = state.activeSourceKey || state.activeProfileId;
@@ -109,17 +108,7 @@ export function generationPanelMarkup(state, profile, contract) {
   const basic = inputs.filter((item) => !isAdvancedInput(item));
   const advanced = inputs.filter((item) => isAdvancedInput(item));
   const advancedHasError = advanced.some((item) => clientErrors[item.id]);
-  const sourceUnavailable = Boolean(profile && profile.available === false);
-  const sourceUnresolved =
-    !activeKey || !profile || !contract || state.sourceDetailLoading || state.sourceDetailError;
-  const disabled =
-    state.submitting ||
-    state.sourceCatalogStatus === "loading" ||
-    sourceUnresolved ||
-    sourceUnavailable ||
-    comfy?.available === false ||
-    (sharedSourceCount > 0 && !comparisonReady) ||
-    Object.keys(clientErrors).length > 0;
+  const disabled = generationSubmissionDisabled(state, profile, contract, clientErrors);
   const presets = contract?.presets || [];
   const sourceSelectorDisabled = !sources.length || state.submitting;
   return `
@@ -137,6 +126,37 @@ export function generationPanelMarkup(state, profile, contract) {
         ${controlEmptyStateMarkup(state, profile, contract)}
       </div>
     </div>`;
+}
+
+export function generationSubmissionDisabled(state, profile, contract, clientErrors = {}) {
+  const services = state.services || [];
+  const comfy = services.find((item) => item.service === "comfyui");
+  const serviceStateBlocksGeneration =
+    state.servicesStatus === undefined
+      ? comfy?.available === false
+      : state.servicesStatus !== "ready" || comfy?.available !== true;
+  const sourceCatalogBlocksGeneration =
+    state.sourceCatalogStatus !== undefined && state.sourceCatalogStatus !== "ready";
+  const activeKey = state.activeSourceKey || state.activeProfileId;
+  const sharedSourceKeys = new Set(state.comparisonSourceKeys || []);
+  sharedSourceKeys.delete(activeKey);
+  const sources = state.sources || state.workflows || [];
+  const sharedSourceCount = sources.filter(
+    (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
+  ).length;
+  return Boolean(
+    state.submitting ||
+      sourceCatalogBlocksGeneration ||
+      !activeKey ||
+      !profile ||
+      !contract ||
+      state.sourceDetailLoading ||
+      state.sourceDetailError ||
+      profile.available === false ||
+      serviceStateBlocksGeneration ||
+      (sharedSourceCount > 0 && missingComparisonRoles(contract).length > 0) ||
+      Object.keys(clientErrors).length > 0,
+  );
 }
 
 function sourceKey(source) {
@@ -232,6 +252,16 @@ function warningText(warning) {
 
 function sourceStateMarkup(state, source) {
   const notices = [];
+  if (state.servicesStatus === "loading") {
+    notices.push(
+      '<div class="source-notice" role="status">Checking generation service availability…</div>',
+    );
+  }
+  if (state.servicesStatus === "error") {
+    notices.push(
+      `<div class="source-notice warning" role="status">${escapeHtml(state.servicesMessage || "Service status is temporarily unavailable; generation remains paused.")}</div>`,
+    );
+  }
   if (state.sourceCatalogStatus === "loading") {
     notices.push(
       `<div class="source-notice" role="status">${source ? "Refreshing published generation sources…" : "Discovering published generation sources…"}</div>`,
@@ -247,6 +277,11 @@ function sourceStateMarkup(state, source) {
   }
   if (state.sourceDetailError) {
     notices.push(`<div class="source-notice error" role="alert">${escapeHtml(state.sourceDetailError)}</div>`);
+  }
+  if (state.sourceCatalogStatus === "error" || state.sourceDetailError) {
+    notices.push(
+      '<div class="source-notice"><button type="button" class="button secondary low" data-action="retry-generation-sources">Retry generation sources</button></div>',
+    );
   }
   if (source?.available === false) {
     notices.push(
@@ -673,11 +708,18 @@ function speechButtonMarkup(targetId, label, controlDisabled = false) {
   return `<button type="button" class="icon-button speech-button" data-action="toggle-speech-recording" data-speech-target="${escapeHtml(targetId)}" data-speech-label="${escapeHtml(label)}" data-speech-control-disabled="${controlDisabled}" aria-label="Start voice input for ${escapeHtml(label)}" aria-pressed="false" title="Start voice input for ${escapeHtml(label)}" ${controlDisabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7" /></svg></button>`;
 }
 
-export function galleryMarkup(generations) {
+export function galleryMarkup(generations, { status = "ready", message = null } = {}) {
+  const cards = sortGenerationsNewestFirst(generations).map(galleryCardMarkup).join("");
+  if (status === "loading") {
+    return `<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
+  }
+  if (status === "error") {
+    return `<section class="gallery-status gallery-error" role="alert"><h2>Gallery temporarily unavailable</h2><p>${escapeHtml(message || "Retained history could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry gallery</button></section>${cards}`;
+  }
   if (!generations.length) {
     return `<section class="empty-gallery"><h2>No generations yet</h2><p>Choose a source, set a prompt, and queue the first image.</p></section>`;
   }
-  return sortGenerationsNewestFirst(generations).map(galleryCardMarkup).join("");
+  return cards;
 }
 
 export function galleryCardMarkup(generation) {
@@ -1089,7 +1131,13 @@ function roleLabel(role) {
   }[role] || "Generated image";
 }
 
-export function serviceBannerMarkup(services) {
+export function serviceBannerMarkup(services, status = "ready", message = null) {
+  if (status === "loading") {
+    return '<div class="service-banner" role="status"><strong>Checking generation service.</strong><span>Gallery history remains available while generation status loads.</span></div>';
+  }
+  if (status === "error") {
+    return `<div class="service-banner" role="status"><strong>Service status unavailable.</strong><span>${escapeHtml(message || "Generation remains paused; history is still available.")}</span></div>`;
+  }
   const comfy = services.find((item) => item.service === "comfyui");
   if (!comfy || comfy.available) return "";
   return `<div class="service-banner" role="status"><strong>ComfyUI unavailable.</strong><span>${escapeHtml(comfy.message || "Generation is paused; history remains available.")}</span></div>`;

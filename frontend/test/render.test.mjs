@@ -12,6 +12,7 @@ import {
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
+  serviceBannerMarkup,
 } from "../src/render.mjs";
 
 const promptControl = {
@@ -187,6 +188,37 @@ test("gallery defaults to newest request first regardless of input order", () =>
   );
 
   assert.deepEqual(cardIds, ["newest", "previous", "oldest"]);
+});
+
+test("gallery and service regions render independent progressive startup states", () => {
+  assert.match(galleryMarkup([], { status: "loading" }), /Loading gallery/);
+  const failedGallery = galleryMarkup([], {
+    status: "error",
+    message: "Gallery history timed out after 15 seconds. <private>",
+  });
+  assert.match(failedGallery, /Gallery temporarily unavailable/);
+  assert.match(failedGallery, /Gallery history timed out after 15 seconds/);
+  assert.match(failedGallery, /&lt;private&gt;/);
+  assert.match(failedGallery, /data-action="retry-gallery"/);
+  const failedGalleryWithLiveCard = galleryMarkup(
+    [
+      {
+        id: "live-generation",
+        accepted_at: "2026-07-14T12:02:00Z",
+        status: "running",
+        workflow_display_name: "Live generation",
+      },
+    ],
+    { status: "error", message: "Snapshot failed." },
+  );
+  assert.match(failedGalleryWithLiveCard, /data-action="retry-gallery"/);
+  assert.match(failedGalleryWithLiveCard, /data-generation-id="live-generation"/);
+
+  assert.match(serviceBannerMarkup([], "loading"), /Checking generation service/);
+  assert.match(
+    serviceBannerMarkup([], "error", "Service status timed out after 8 seconds."),
+    /Service status timed out after 8 seconds/,
+  );
 });
 
 test("password change fields allow eight-character passwords", () => {
@@ -720,6 +752,69 @@ test("source loading, empty catalog, and unavailable source states disable submi
   );
   assert.match(loading, /Discovering published generation sources/);
   assert.match(loading.match(/<button id="generate-button"[^>]*>/)?.[0] || "", /disabled/);
+
+  const servicePending = generationPanelMarkup(
+    {
+      submitting: false,
+      services: [],
+      servicesStatus: "loading",
+      sources: [publishedSource],
+      activeSourceKey: publishedSource.source_key,
+      sourceCatalogStatus: "ready",
+      parameters: {},
+      fieldErrors: {},
+    },
+    publishedSource,
+    publishedInterface,
+  );
+  assert.match(servicePending, /Checking generation service availability/);
+  assert.match(
+    servicePending.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
+    /disabled/,
+  );
+
+  const serviceFailed = generationPanelMarkup(
+    {
+      submitting: false,
+      services: [],
+      servicesStatus: "error",
+      servicesMessage: "Service status timed out after 8 seconds.",
+      sources: [publishedSource],
+      activeSourceKey: publishedSource.source_key,
+      sourceCatalogStatus: "ready",
+      parameters: {},
+      fieldErrors: {},
+    },
+    publishedSource,
+    publishedInterface,
+  );
+  assert.match(serviceFailed, /Service status timed out after 8 seconds/);
+  assert.match(
+    serviceFailed.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
+    /disabled/,
+  );
+
+  const sourceFailed = generationPanelMarkup(
+    {
+      submitting: false,
+      services: [{ service: "comfyui", available: true }],
+      servicesStatus: "ready",
+      sources: [publishedSource],
+      activeSourceKey: publishedSource.source_key,
+      sourceCatalogStatus: "error",
+      sourceCatalogMessage: "Source catalog timed out after 15 seconds.",
+      parameters: {},
+      fieldErrors: {},
+    },
+    publishedSource,
+    publishedInterface,
+  );
+  assert.match(sourceFailed, /Source catalog timed out after 15 seconds/);
+  assert.match(sourceFailed, /data-action="retry-generation-sources"/);
+  assert.match(
+    sourceFailed.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
+    /disabled/,
+  );
 
   const empty = generationPanelMarkup(
     {

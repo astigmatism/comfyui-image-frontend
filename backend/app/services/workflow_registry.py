@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain.publication import (
@@ -26,6 +27,17 @@ logger = logging.getLogger(__name__)
 PUBLIC_DEPENDENCY_MESSAGE = "Required ComfyUI node classes are unavailable for this source."
 
 
+async def _run_blocking[T](operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
+    """Finish a started thread operation before propagating task cancellation."""
+
+    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
 class WorkflowRegistry:
     """Durable, atomic catalog of deliberately published ComfyUI sources."""
 
@@ -33,6 +45,45 @@ class WorkflowRegistry:
         self.session_factory = session_factory
         self.adapter = adapter
         self._refresh_lock = asyncio.Lock()
+
+    def mark_startup_loading(self) -> None:
+        """Make cached sources visible but non-dispatchable before network discovery."""
+
+        with self.session_factory() as session:
+            cached_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowProfile)
+                    .where(WorkflowProfile.is_current.is_(True))
+                )
+                or 0
+            )
+            health = session.get(ServiceHealth, "comfyui")
+            if health is None:
+                health = ServiceHealth(service="comfyui")
+                session.add(health)
+            prior_capabilities = (
+                dict(health.capabilities_json) if isinstance(health.capabilities_json, dict) else {}
+            )
+            prior_capabilities.update(
+                {
+                    "instance_id": self.adapter.settings.comfyui_instance_id,
+                    "catalog_state": "loading",
+                    "cached_sources": cached_count,
+                }
+            )
+            health.available = False
+            health.message = "ComfyUI source discovery is still loading."
+            health.capabilities_json = prior_capabilities
+            health.checked_at = datetime.now(UTC)
+            session.commit()
+
+    def record_background_refresh_failure(self) -> None:
+        self._record_transport_failure(
+            datetime.now(UTC),
+            code="startup_refresh_failed",
+            message="ComfyUI source discovery failed during application startup.",
+        )
 
     async def refresh(self) -> list[WorkflowDiagnostic]:
         async with self._refresh_lock:
@@ -43,7 +94,8 @@ class WorkflowRegistry:
         try:
             capabilities = await self.adapter.probe()
         except (AppError, httpx.HTTPError, OSError) as exc:
-            return self._record_transport_failure(
+            return await _run_blocking(
+                self._record_transport_failure,
                 now,
                 code="server_unreachable",
                 message=(exc.message if isinstance(exc, AppError) else "ComfyUI is unreachable."),
@@ -51,7 +103,8 @@ class WorkflowRegistry:
         try:
             listed_files = await self.adapter.list_workflow_files()
         except (AppError, httpx.HTTPError, OSError) as exc:
-            return self._record_transport_failure(
+            return await _run_blocking(
+                self._record_transport_failure,
                 now,
                 code="listing_failed",
                 message=(
@@ -100,7 +153,8 @@ class WorkflowRegistry:
             if manifest_bytes is None:
                 continue
             try:
-                manifest_envelope = validate_publication_manifest(
+                manifest_envelope = await _run_blocking(
+                    validate_publication_manifest,
                     manifest_path=manifest_path,
                     manifest_bytes=manifest_bytes,
                     manifest_max_bytes=self.adapter.settings.comfyui_manifest_max_bytes,
@@ -140,7 +194,8 @@ class WorkflowRegistry:
             if api_bytes is None:
                 continue
             try:
-                publication = validate_publication(
+                publication = await _run_blocking(
+                    validate_publication,
                     instance_id=self.adapter.settings.comfyui_instance_id,
                     manifest_path=manifest_path,
                     manifest_bytes=manifest_bytes,
@@ -208,6 +263,24 @@ class WorkflowRegistry:
                 )
             )
 
+        return await _run_blocking(
+            self._commit_refresh,
+            now=now,
+            candidate_keys=candidate_keys,
+            validated=validated,
+            diagnostics=diagnostics,
+            object_info=capabilities.object_info,
+        )
+
+    def _commit_refresh(
+        self,
+        *,
+        now: datetime,
+        candidate_keys: set[str],
+        validated: list[ValidatedPublication],
+        diagnostics: list[WorkflowDiagnostic],
+        object_info: dict[str, Any],
+    ) -> list[WorkflowDiagnostic]:
         with self.session_factory() as session:
             session.execute(delete(WorkflowDiagnostic))
             session.add_all(diagnostics)
@@ -237,11 +310,21 @@ class WorkflowRegistry:
             for publication in validated:
                 self._publish_revision(session, publication, now)
             dependency_unavailable_source_keys = self._current_dependency_failures(
-                session, capabilities.object_info
+                session, object_info
             )
-            ready_sources = len(self.list_current(session)) - len(
-                dependency_unavailable_source_keys
+            current_source_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowProfile)
+                    .where(
+                        WorkflowProfile.is_current.is_(True),
+                        WorkflowProfile.state == WorkflowState.VALID,
+                        WorkflowProfile.source_key.is_not(None),
+                    )
+                )
+                or 0
             )
+            ready_sources = current_source_count - len(dependency_unavailable_source_keys)
             self._set_health(
                 session,
                 available=True,
@@ -299,7 +382,14 @@ class WorkflowRegistry:
         self, now: datetime, *, code: str, message: str
     ) -> list[WorkflowDiagnostic]:
         with self.session_factory() as session:
-            cached_count = len(self.list_current(session))
+            cached_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowProfile)
+                    .where(WorkflowProfile.is_current.is_(True))
+                )
+                or 0
+            )
             session.execute(delete(WorkflowDiagnostic))
             diagnostic = self._diagnostic(
                 now=now,

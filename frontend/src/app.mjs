@@ -30,6 +30,7 @@ import {
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
+  generationSubmissionDisabled,
   loginMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
@@ -69,12 +70,18 @@ const state = {
   loadingMoreFavorites: false,
   galleryScale: 45,
   services: [],
+  servicesStatus: "idle",
+  servicesMessage: null,
+  galleryStatus: "idle",
+  galleryMessage: null,
   submitting: false,
   serverFieldErrors: {},
   formError: null,
   panelOpen: false,
   assistantOpen: false,
   eventSource: null,
+  liveUpdatesPaused: false,
+  pendingLiveUpdates: [],
   lastEventId: 0,
   serviceTimer: null,
   scaleTimer: null,
@@ -98,11 +105,38 @@ let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
+let applicationStartupController = null;
+let servicePollingController = null;
+let startupGalleryBoundary = null;
+
+const SERVICE_POLL_INTERVAL_MS = 10_000;
+const TERMINAL_GENERATION_STATUSES = new Set([
+  "succeeded",
+  "cancelled_with_artifacts",
+  "cancelled_without_artifacts",
+  "failed_with_artifacts",
+  "failed_without_artifacts",
+  "interrupted",
+]);
+
+const STARTUP_DEADLINES = {
+  session: 10_000,
+  preferences: 5_000,
+  services: 8_000,
+  gallery: 15_000,
+  promptAssistant: 8_000,
+  speechToText: 8_000,
+  sources: 15_000,
+  sourceDetail: 15_000,
+};
 
 async function initialize() {
   bindDelegatedEvents();
   try {
-    const session = await api("/api/auth/session");
+    const session = await startupGet("/api/auth/session", {
+      operation: "Session request",
+      deadlineMs: STARTUP_DEADLINES.session,
+    });
     state.session = session;
     setCsrfToken(session.csrf_token);
     if (!session.authenticated) {
@@ -114,6 +148,28 @@ async function initialize() {
     }
   } catch (error) {
     renderFatal(error);
+  }
+}
+
+async function startupGet(path, { operation, deadlineMs, signal } = {}) {
+  const startedAt = performance.now();
+  let outcome = "completed";
+  try {
+    return await api(path, { operation, deadlineMs, signal });
+  } catch (error) {
+    outcome =
+      error?.code === "request_timeout"
+        ? "timed_out"
+        : error?.name === "AbortError"
+          ? "aborted"
+          : "failed";
+    throw error;
+  } finally {
+    console.debug("[startup] request timing", {
+      operation,
+      outcome,
+      duration_ms: Math.round(performance.now() - startedAt),
+    });
   }
 }
 
@@ -219,6 +275,8 @@ async function handleClick(event) {
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
     else if (action === "load-more") await loadMore();
+    else if (action === "retry-gallery") await loadStartupGallery();
+    else if (action === "retry-generation-sources") await loadSources();
     else if (action === "open-admin") await openAdmin();
     else if (action === "refresh-workflows") await refreshWorkflows();
     else if (action === "reset-user-password") await resetUserPassword(target.dataset.userId);
@@ -1066,18 +1124,14 @@ function syncParameterValidation(controlId) {
 
   const generateButton = document.querySelector("#generate-button");
   if (generateButton) {
-    const comfy = state.services.find((item) => item.service === "comfyui");
-    generateButton.disabled = Boolean(
-      state.submitting ||
-        state.sourceCatalogStatus === "loading" ||
-        !state.activeSourceKey ||
-        !state.activeSource ||
-        !contract ||
-        state.sourceDetailLoading ||
-        state.sourceDetailError ||
-        state.activeSource.available === false ||
-        comfy?.available === false ||
-        Object.keys(errors).length,
+    const selected =
+      state.activeSource ||
+      state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+    generateButton.disabled = generationSubmissionDisabled(
+      state,
+      selected,
+      contract,
+      errors,
     );
   }
 }
@@ -1150,7 +1204,10 @@ async function submitPassword(form) {
         new_password: password,
       }),
     });
-    const session = await api("/api/auth/session");
+    const session = await api("/api/auth/session", {
+      operation: "Session request",
+      deadlineMs: STARTUP_DEADLINES.session,
+    });
     state.session = session;
     setCsrfToken(session.csrf_token);
     state.changingPasswordFromApp = false;
@@ -1166,6 +1223,7 @@ async function submitPassword(form) {
 async function logout() {
   await api("/api/auth/logout", { method: "POST" });
   stopLiveUpdates();
+  stopApplicationStartup();
   state.sources = [];
   state.activeSourceKey = null;
   state.activeSource = null;
@@ -1178,7 +1236,18 @@ async function logout() {
   state.sourceCatalogStatus = "idle";
   state.sourceCatalogToken += 1;
   state.sourceLoadToken += 1;
-  const session = await api("/api/auth/session");
+  state.services = [];
+  state.servicesStatus = "idle";
+  state.servicesMessage = null;
+  state.generations = [];
+  state.nextCursor = null;
+  startupGalleryBoundary = null;
+  state.galleryStatus = "idle";
+  state.galleryMessage = null;
+  const session = await api("/api/auth/session", {
+    operation: "Session request",
+    deadlineMs: STARTUP_DEADLINES.session,
+  });
   state.session = session;
   setCsrfToken(session.csrf_token);
   renderLogin();
@@ -1186,39 +1255,43 @@ async function logout() {
 
 function renderLogin() {
   stopLiveUpdates();
+  stopApplicationStartup();
   root.innerHTML = loginMarkup(state.session?.app_title || "ComfyUI Gallery");
   queueMicrotask(() => root.querySelector("input")?.focus());
 }
 
 function renderPasswordChange(forced) {
   stopLiveUpdates();
+  stopApplicationStartup();
   root.innerHTML = passwordChangeMarkup(state.session?.app_title || "ComfyUI Gallery", forced);
   queueMicrotask(() => root.querySelector("input")?.focus());
 }
 
 async function enterApplication() {
   stopLiveUpdates();
+  stopApplicationStartup();
+  const controller = new AbortController();
+  applicationStartupController = controller;
   state.sourceCatalogStatus = "loading";
   state.sourceCatalogMessage = null;
-  const [preferences, services, page, assistant, speechToText] = await Promise.all([
-    api("/api/preferences"),
-    api("/api/services"),
-    api("/api/generations?limit=24"),
-    api("/api/prompt-assistant/status"),
-    api("/api/speech-to-text/status"),
-  ]);
-  state.galleryScale = preferences.gallery_scale;
-  state.services = services;
-  state.generations = sortGenerationsNewestFirst(page.items);
-  state.nextCursor = page.next_cursor;
+  state.services = [];
+  state.servicesStatus = "loading";
+  state.servicesMessage = null;
+  state.generations = [];
+  state.nextCursor = null;
+  state.galleryStatus = "loading";
+  state.galleryMessage = null;
   state.favorites = [];
   state.favoritesNextCursor = null;
   state.promptAssistant = {
     ...state.promptAssistant,
-    available: assistant.available,
-    message: assistant.message,
+    available: false,
+    message: "Checking Prompt Assistant availability…",
   };
-  state.speechToText = speechToText;
+  state.speechToText = {
+    available: false,
+    message: "Checking voice input availability…",
+  };
   root.innerHTML = shellMarkup(state);
   document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
   document.querySelector("#prompt-editor-dialog")?.addEventListener("close", handlePromptEditorClose);
@@ -1227,8 +1300,148 @@ async function enterApplication() {
   renderServiceBanner();
   applyGalleryScale();
   setupPaginationObserver();
-  startLiveUpdates();
-  await loadSources();
+  startLiveUpdates({ paused: true });
+  const servicesRequest = loadStartupServices(controller.signal).finally(() => {
+    if (!controller.signal.aborted && applicationStartupController === controller) {
+      startServicePolling();
+    }
+  });
+  const galleryRequest = loadStartupGallery(controller.signal).finally(() => {
+    if (!controller.signal.aborted && applicationStartupController === controller) {
+      resumeLiveUpdates();
+    }
+  });
+  const requests = [
+    loadStartupPreferences(controller.signal),
+    servicesRequest,
+    galleryRequest,
+    loadStartupPromptAssistant(controller.signal),
+    loadStartupSpeechToText(controller.signal),
+    loadSources({ signal: controller.signal, diagnostic: true }),
+  ];
+  void Promise.allSettled(requests);
+}
+
+function stopApplicationStartup() {
+  applicationStartupController?.abort();
+  applicationStartupController = null;
+}
+
+function requestWasAborted(error, signal) {
+  return Boolean(signal?.aborted || error?.name === "AbortError");
+}
+
+async function loadStartupPreferences(signal = applicationStartupController?.signal) {
+  try {
+    const preferences = await startupGet("/api/preferences", {
+      operation: "Display preferences",
+      deadlineMs: STARTUP_DEADLINES.preferences,
+      signal,
+    });
+    if (signal?.aborted) return;
+    state.galleryScale = preferences.gallery_scale;
+    applyGalleryScale();
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    toast(`Display preferences unavailable: ${error.message}`, "error");
+  }
+}
+
+async function loadStartupServices(signal = applicationStartupController?.signal) {
+  try {
+    const services = await startupGet("/api/services", {
+      operation: "Service status",
+      deadlineMs: STARTUP_DEADLINES.services,
+      signal,
+    });
+    if (signal?.aborted) return;
+    state.services = Array.isArray(services) ? services : [];
+    state.servicesStatus = "ready";
+    state.servicesMessage = null;
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    state.services = [];
+    state.servicesStatus = "error";
+    state.servicesMessage = error.message || "Service status is temporarily unavailable.";
+  }
+  renderServiceBanner();
+  renderPanel();
+}
+
+async function loadStartupGallery(signal = applicationStartupController?.signal) {
+  state.galleryStatus = "loading";
+  state.galleryMessage = null;
+  renderGallery();
+  try {
+    const page = await startupGet("/api/generations?limit=24", {
+      operation: "Gallery history",
+      deadlineMs: STARTUP_DEADLINES.gallery,
+      signal,
+    });
+    if (signal?.aborted) return;
+    const currentById = new Map(state.generations.map((item) => [item.id, item]));
+    const incoming = sortGenerationsNewestFirst(Array.isArray(page.items) ? page.items : []);
+    startupGalleryBoundary = {
+      oldest: incoming.length ? incoming[incoming.length - 1] : null,
+    };
+    state.generations = sortGenerationsNewestFirst([
+      ...state.generations,
+      ...incoming.filter((item) => !currentById.has(item.id)),
+    ]);
+    state.nextCursor = page.next_cursor;
+    state.galleryStatus = "ready";
+    state.galleryMessage = null;
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    startupGalleryBoundary = null;
+    state.galleryStatus = "error";
+    state.galleryMessage = error.message || "Gallery history is temporarily unavailable.";
+  }
+  renderGallery();
+  setupPaginationObserver();
+}
+
+async function loadStartupPromptAssistant(signal = applicationStartupController?.signal) {
+  try {
+    const assistant = await startupGet("/api/prompt-assistant/status", {
+      operation: "Prompt Assistant status",
+      deadlineMs: STARTUP_DEADLINES.promptAssistant,
+      signal,
+    });
+    if (signal?.aborted) return;
+    state.promptAssistant = {
+      ...state.promptAssistant,
+      available: Boolean(assistant.available),
+      message: assistant.message,
+    };
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    state.promptAssistant = {
+      ...state.promptAssistant,
+      available: false,
+      message: error.message || "Prompt Assistant is temporarily unavailable.",
+    };
+  }
+  renderPanel();
+}
+
+async function loadStartupSpeechToText(signal = applicationStartupController?.signal) {
+  try {
+    const speechToText = await startupGet("/api/speech-to-text/status", {
+      operation: "Voice input status",
+      deadlineMs: STARTUP_DEADLINES.speechToText,
+      signal,
+    });
+    if (signal?.aborted) return;
+    state.speechToText = speechToText;
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    state.speechToText = {
+      available: false,
+      message: error.message || "Voice input is temporarily unavailable.",
+    };
+  }
+  renderPanel();
 }
 
 function sourceKey(source) {
@@ -1287,14 +1500,24 @@ function persistActiveParameterState() {
   };
 }
 
-async function loadSources() {
+async function loadSources({ signal, diagnostic = false } = {}) {
   const catalogToken = ++state.sourceCatalogToken;
   state.sourceCatalogStatus = "loading";
   state.sourceCatalogMessage = null;
   renderPanel();
   try {
-    const sources = await api("/api/workflows");
-    if (catalogToken !== state.sourceCatalogToken) return;
+    const sources = diagnostic
+      ? await startupGet("/api/workflows", {
+          operation: "Generation source catalog",
+          deadlineMs: STARTUP_DEADLINES.sources,
+          signal,
+        })
+      : await api("/api/workflows", {
+          operation: "Generation source catalog",
+          deadlineMs: STARTUP_DEADLINES.sources,
+          signal,
+        });
+    if (signal?.aborted || catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
     const availableKeys = new Set(
       state.sources
@@ -1331,16 +1554,16 @@ async function loadSources() {
       renderPanel();
       return;
     }
-    await selectSource(sourceKey(next), { summary: next });
+    await selectSource(sourceKey(next), { summary: next, signal, diagnostic });
   } catch (error) {
-    if (catalogToken !== state.sourceCatalogToken) return;
+    if (requestWasAborted(error, signal) || catalogToken !== state.sourceCatalogToken) return;
     state.sourceCatalogStatus = "error";
     state.sourceCatalogMessage = error.message || "Published sources could not be loaded.";
     renderPanel();
   }
 }
 
-async function selectSource(key, { summary = null } = {}) {
+async function selectSource(key, { summary = null, signal, diagnostic = false } = {}) {
   const activeMigration = sourceInterface(state.activeSource)
     ? {
         sourceKey: state.activeSourceKey,
@@ -1370,8 +1593,19 @@ async function selectSource(key, { summary = null } = {}) {
   renderPanel();
   if (!key) return;
   try {
-    const detail = await api(`/api/workflows/${encodeURIComponent(key)}`);
-    if (token !== state.sourceLoadToken) return;
+    const path = `/api/workflows/${encodeURIComponent(key)}`;
+    const detail = diagnostic
+      ? await startupGet(path, {
+          operation: "Generation source details",
+          deadlineMs: STARTUP_DEADLINES.sourceDetail,
+          signal,
+        })
+      : await api(path, {
+          operation: "Generation source details",
+          deadlineMs: STARTUP_DEADLINES.sourceDetail,
+          signal,
+        });
+    if (signal?.aborted || token !== state.sourceLoadToken) return;
     const contract = sourceInterface(detail);
     if (!contract) throw new Error("The selected source has no public interface.");
     state.activeSource = { ...(resolvedSummary || {}), ...detail, interface: contract };
@@ -1395,7 +1629,7 @@ async function selectSource(key, { summary = null } = {}) {
     state.sourceDetailError = null;
     persistActiveParameterState();
   } catch (error) {
-    if (token !== state.sourceLoadToken) return;
+    if (requestWasAborted(error, signal) || token !== state.sourceLoadToken) return;
     state.sourceDetailError = error.message || "The selected source could not be described.";
   } finally {
     if (token === state.sourceLoadToken) {
@@ -1889,7 +2123,10 @@ function renderGallery() {
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
   state.generations = sortGenerationsNewestFirst(state.generations);
-  gallery.innerHTML = galleryMarkup(state.generations);
+  gallery.innerHTML = galleryMarkup(state.generations, {
+    status: state.galleryStatus,
+    message: state.galleryMessage,
+  });
   const sentinel = document.querySelector("#gallery-sentinel");
   if (sentinel) sentinel.hidden = !state.nextCursor;
 }
@@ -1944,14 +2181,15 @@ function setupPaginationObserver() {
   state.observer.observe(sentinel);
 }
 
-async function refreshGeneration(id) {
+async function refreshGeneration(id, { insertIf = () => true } = {}) {
   const refreshToken = generationRefreshGate.issue(id);
   try {
     const detail = await api(`/api/generations/${id}`);
     if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     const index = state.generations.findIndex((item) => item.id === id);
     if (index >= 0) state.generations[index] = detail;
-    else state.generations.unshift(detail);
+    else if (insertIf(detail)) state.generations.unshift(detail);
+    else return;
     state.generations = sortGenerationsNewestFirst(state.generations);
     upsertGalleryCard(detail);
     const dialog = document.querySelector("#detail-dialog");
@@ -2392,8 +2630,10 @@ function removeGeneration(id) {
   if (!state.generations.length) renderGallery();
 }
 
-function startLiveUpdates() {
-  stopLiveUpdates();
+function startLiveUpdates({ paused = false } = {}) {
+  state.eventSource?.close();
+  state.liveUpdatesPaused = paused;
+  state.pendingLiveUpdates = [];
   const source = new EventSource(`/api/events?last_event_id=${state.lastEventId}`);
   const eventTypes = [
     "generation.queued",
@@ -2412,50 +2652,142 @@ function startLiveUpdates() {
   ];
   for (const type of eventTypes) {
     source.addEventListener(type, (event) => {
+      if (state.eventSource !== source) return;
       const payload = JSON.parse(event.data);
       if (event.lastEventId) state.lastEventId = Math.max(state.lastEventId, Number(event.lastEventId));
-      if (type === "generation.deleted") removeGeneration(payload.generation_id);
-      else if (payload.generation_id) refreshGeneration(payload.generation_id).catch(() => {});
+      const update = { type, payload };
+      if (state.liveUpdatesPaused) state.pendingLiveUpdates.push(update);
+      else applyLiveUpdate(update);
     });
   }
   source.onerror = () => {};
   state.eventSource = source;
-  state.serviceTimer = window.setInterval(refreshServices, 10000);
+}
+
+function applyLiveUpdate({ type, payload }) {
+  if (type === "generation.deleted") removeGeneration(payload.generation_id);
+  else if (payload.generation_id) refreshGeneration(payload.generation_id).catch(() => {});
+}
+
+function resumeLiveUpdates() {
+  if (!state.liveUpdatesPaused) return;
+  const pending = state.pendingLiveUpdates;
+  state.pendingLiveUpdates = [];
+  state.liveUpdatesPaused = false;
+  const boundary = startupGalleryBoundary;
+  startupGalleryBoundary = null;
+  const snapshotFailed = state.galleryStatus === "error";
+  if (!boundary && !snapshotFailed) return;
+  const visibleGenerations = new Map(state.generations.map((item) => [item.id, item]));
+  const latestByGeneration = new Map();
+  for (const update of pending) {
+    const generationId = update.payload.generation_id;
+    if (!generationId) continue;
+    latestByGeneration.delete(generationId);
+    latestByGeneration.set(generationId, update);
+  }
+  for (const update of latestByGeneration.values()) {
+    const generationId = update.payload.generation_id;
+    if (update.type === "generation.deleted") {
+      if (visibleGenerations.has(generationId)) applyLiveUpdate(update);
+      continue;
+    }
+    const visible = visibleGenerations.get(generationId);
+    if (visible) {
+      const alreadyTerminal = TERMINAL_GENERATION_STATUSES.has(visible.status);
+      if (!alreadyTerminal || update.type !== "generation.terminal") applyLiveUpdate(update);
+      continue;
+    }
+    refreshGeneration(generationId, {
+      insertIf: boundary
+        ? (detail) => generationPrecedesBoundary(detail, boundary.oldest)
+        : () => true,
+    }).catch(() => {});
+  }
+}
+
+function generationPrecedesBoundary(generation, boundary) {
+  if (!boundary) return true;
+  return sortGenerationsNewestFirst([generation, boundary])[0]?.id === generation.id;
+}
+
+function startServicePolling() {
+  stopServicePolling();
+  const controller = new AbortController();
+  servicePollingController = controller;
+  scheduleServicePoll(controller);
+}
+
+function scheduleServicePoll(controller) {
+  if (servicePollingController !== controller || controller.signal.aborted) return;
+  state.serviceTimer = window.setTimeout(async () => {
+    state.serviceTimer = null;
+    try {
+      await refreshServices(controller.signal);
+    } finally {
+      scheduleServicePoll(controller);
+    }
+  }, SERVICE_POLL_INTERVAL_MS);
+}
+
+function stopServicePolling() {
+  servicePollingController?.abort();
+  servicePollingController = null;
+  if (state.serviceTimer !== null) window.clearTimeout(state.serviceTimer);
+  state.serviceTimer = null;
 }
 
 function stopLiveUpdates() {
   discardSpeechSession();
   state.eventSource?.close();
   state.eventSource = null;
+  state.liveUpdatesPaused = false;
+  state.pendingLiveUpdates = [];
+  startupGalleryBoundary = null;
   generationRefreshGate.clear();
-  if (state.serviceTimer) window.clearInterval(state.serviceTimer);
-  state.serviceTimer = null;
+  stopServicePolling();
   state.observer?.disconnect();
   closePhotoViewer();
 }
 
-async function refreshServices() {
+async function refreshServices(signal) {
   try {
     const previousComfy = state.services.find((item) => item.service === "comfyui")?.available;
-    state.services = await api("/api/services");
+    state.services = await api("/api/services", {
+      operation: "Service status",
+      deadlineMs: STARTUP_DEADLINES.services,
+      signal,
+    });
+    state.servicesStatus = "ready";
+    state.servicesMessage = null;
     const currentComfy = state.services.find((item) => item.service === "comfyui")?.available;
     renderServiceBanner();
-    if (previousComfy !== currentComfy) await loadSources();
-  } catch {
+    renderPanel();
+    if (previousComfy !== currentComfy) await loadSources({ signal });
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    state.servicesStatus = "error";
+    state.servicesMessage = error.message || "Service status is temporarily unavailable.";
+    renderServiceBanner();
+    renderPanel();
     // Session expiry is handled by normal API interaction; avoid disruptive polling errors.
   }
 }
 
 function renderServiceBanner() {
   const banner = document.querySelector("#service-banner");
-  if (banner) banner.innerHTML = serviceBannerMarkup(state.services);
+  if (banner) {
+    banner.innerHTML = serviceBannerMarkup(
+      state.services,
+      state.servicesStatus,
+      state.servicesMessage,
+    );
+  }
 }
 
 function updateGalleryScale(value, persist) {
   state.galleryScale = Number(value);
   applyGalleryScale();
-  const input = document.querySelector("#gallery-scale");
-  input?.setAttribute("aria-valuetext", `${state.galleryScale}%`);
   if (persist) {
     window.clearTimeout(state.scaleTimer);
     state.scaleTimer = window.setTimeout(async () => {
@@ -2477,6 +2809,11 @@ function applyGalleryScale() {
   const layout = scaleToLayout(state.galleryScale);
   gallery.style.setProperty("--gallery-card-min", `${layout.cardWidth}px`);
   gallery.classList.toggle("gallery-full", layout.full);
+  const input = document.querySelector("#gallery-scale");
+  if (input) {
+    input.value = String(state.galleryScale);
+    input.setAttribute("aria-valuetext", `${state.galleryScale}%`);
+  }
 }
 
 async function openAdmin() {

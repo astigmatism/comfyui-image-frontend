@@ -262,6 +262,12 @@ Refresh to obtain the current session CSRF token. Password reset or session revo
 
 Store `/data` on a reliable local filesystem and run only one application instance against the database. The app enables WAL, foreign keys, and a busy timeout.
 
+### A refresh or API request is unexpectedly slow
+
+Search the structured application logs for `http_request_completed`. Each record contains a safe request ID, method, normalized route template, status, monotonic duration, and disconnect flag; it does not contain query strings, cookies, request bodies, prompts, filenames, or credentials. Match the browser response's `X-Request-ID` header to the log record, then compare route durations to identify whether session resolution, gallery history, source state, or another endpoint was delayed. Responses also include a safe `Server-Timing` time-to-first-byte measurement for browser diagnostics.
+
+Authenticated startup is progressive. Only `/api/auth/session` is an essential full-screen boundary; preferences, retained gallery history, cached service health, Prompt Assistant, speech-to-text, and source discovery have named browser deadlines and fail in their own UI regions. Browser developer-console messages prefixed with `[startup]` report only the logical operation, outcome, and duration. A message such as `Gallery history timed out after 15 seconds.` therefore identifies the affected operation without exposing an internal URL.
+
 ## Documentation
 
 - [`docs/published-workflows.md`](docs/published-workflows.md) — publication, discovery, validation, compilation, result, security, and migration contract

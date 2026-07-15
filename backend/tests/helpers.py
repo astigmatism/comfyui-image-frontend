@@ -51,12 +51,25 @@ def restore_cookie(client: TestClient, cookie: str, *, name: str = "cif_session"
     client.cookies.set(name, cookie)
 
 
-def first_profile(client: TestClient) -> dict[str, Any]:
-    response = client.get("/api/workflows")
-    assert response.status_code == 200, response.text
-    profiles = response.json()
-    assert profiles
-    return next(item for item in profiles if item["display_name"] == "Krea 2 NSFW V4")
+def first_profile(client: TestClient, *, timeout: float = 3.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    profiles: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        response = client.get("/api/workflows")
+        assert response.status_code == 200, response.text
+        profiles = response.json()
+        match = next(
+            (
+                item
+                for item in profiles
+                if item["display_name"] == "Krea 2 NSFW V4" and item["available"] is True
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+        time.sleep(0.01)
+    raise AssertionError(f"published source did not become ready; profiles={profiles}")
 
 
 def generation_payload(

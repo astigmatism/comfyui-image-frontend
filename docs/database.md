@@ -81,4 +81,8 @@ Removing a favorite deletes only its bookmark. Generation deletion removes exclu
 
 UTC timestamps are returned as timezone-aware ISO values. Indexes cover owner/newest pagination, queue status/order, native prompt ID recovery, artifact timelines, events, sessions, and publication instance/source/revision lookup.
 
+Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation.
+
+Long-lived SSE iterators never own a SQLAlchemy session. Authentication finishes in one short scope, then the iterator subscribes before loading replay in another short scope so connection setup cannot lose a durable event; queued events through the replay high-water mark are deduplicated. Periodic authorization checks likewise create and close a fresh session. CPU-heavy image work and durable filesystem writes run in worker threads; their short metadata transactions open thread-confined sessions only after the file operation completes.
+
 Run one application instance against one SQLite file. Keep database and files on a reliable local persistent volume. Back up the entire data directory while the service is stopped; restoring only `app.db` or only media can create dangling metadata. ComfyUI publication bundles are external and require a separate server backup policy.

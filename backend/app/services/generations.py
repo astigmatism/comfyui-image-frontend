@@ -5,10 +5,11 @@ import copy
 import json
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -20,6 +21,7 @@ from ..models import (
     TERMINAL_STATUSES,
     AppLock,
     Artifact,
+    ArtifactState,
     AuditLog,
     Favorite,
     Generation,
@@ -32,6 +34,7 @@ from ..models import (
     UploadKind,
     User,
     WorkflowProfile,
+    WorkflowState,
 )
 from ..schemas import (
     ArtifactSummary,
@@ -51,6 +54,57 @@ from .comfyui import ComfyUIAdapter
 from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
 from .workflow_registry import WorkflowRegistry
+
+
+@dataclass(frozen=True)
+class _GenerationSummaryRow:
+    id: str
+    status: GenerationStatus
+    workflow_display_name: str
+    accepted_at: datetime
+    current_stage_id: str | None
+    current_stage_label: str | None
+    artifact_count: int
+    final_artifact_count: int
+    best_available_artifact_id: str | None
+    canonical_artifact_id: str | None
+    error_message: str | None
+    comfyui_prompt_id: str | None
+    workflow_id: str
+    workflow_version: str
+    ui_graph_sha256: str
+    api_graph_sha256: str
+    contract_sha256: str
+    source_key: str | None
+    publication_id: str | None
+    expected_width: int | None
+    expected_height: int | None
+
+    @property
+    def identity(self) -> tuple[str, str, str, str, str]:
+        return (
+            self.workflow_id,
+            self.workflow_version,
+            self.ui_graph_sha256,
+            self.api_graph_sha256,
+            self.contract_sha256,
+        )
+
+
+@dataclass(frozen=True)
+class _FavoriteSummaryRow:
+    id: str
+    created_at: datetime
+    final_prompt: str
+    generation: _GenerationSummaryRow
+
+
+@dataclass(frozen=True)
+class _SummaryContext:
+    image_counts: Mapping[str, int]
+    display_artifacts: Mapping[str, ArtifactSummary]
+    favorite_generation_ids: frozenset[str]
+    recallable_identities: frozenset[tuple[str, str, str, str, str]]
 
 
 class GenerationService:
@@ -305,7 +359,7 @@ class GenerationService:
         limit: int,
     ) -> GenerationPage:
         limit = max(1, min(limit, 60))
-        statement = select(Generation).where(Generation.owner_id == owner_id)
+        statement = select(*_summary_projection()).where(Generation.owner_id == owner_id)
         if cursor:
             cursor_time, cursor_id = _decode_cursor(cursor)
             statement = statement.where(
@@ -314,20 +368,21 @@ class GenerationService:
                     and_(Generation.accepted_at == cursor_time, Generation.id < cursor_id),
                 )
             )
-        rows = list(
-            session.scalars(
+        result_rows = list(
+            session.execute(
                 statement.order_by(Generation.accepted_at.desc(), Generation.id.desc()).limit(
                     limit + 1
                 )
             )
         )
-        has_more = len(rows) > limit
-        rows = rows[:limit]
+        has_more = len(result_rows) > limit
+        rows = [_summary_row(row) for row in result_rows[:limit]]
         next_cursor = (
             _encode_cursor(rows[-1].accepted_at, rows[-1].id) if has_more and rows else None
         )
+        context = self._summary_context(session, owner_id=owner_id, rows=rows)
         return GenerationPage(
-            items=[self.summary(session, generation) for generation in rows],
+            items=[self._project_summary(row, context) for row in rows],
             next_cursor=next_cursor,
         )
 
@@ -341,7 +396,12 @@ class GenerationService:
     ) -> FavoritePage:
         limit = max(1, min(limit, 60))
         statement = (
-            select(Favorite, Generation)
+            select(
+                Favorite.id.label("favorite_id"),
+                Favorite.created_at.label("favorite_created_at"),
+                Generation.final_prompt.label("final_prompt"),
+                *_summary_projection(),
+            )
             .join(Generation, Favorite.generation_id == Generation.id)
             .where(Favorite.owner_id == owner_id, Generation.owner_id == owner_id)
         )
@@ -353,22 +413,233 @@ class GenerationService:
                     and_(Favorite.created_at == cursor_time, Favorite.id < cursor_id),
                 )
             )
-        rows = list(
+        result_rows = list(
             session.execute(
                 statement.order_by(Favorite.created_at.desc(), Favorite.id.desc()).limit(limit + 1)
             )
         )
-        has_more = len(rows) > limit
-        rows = rows[:limit]
+        has_more = len(result_rows) > limit
+        rows = [_favorite_summary_row(row) for row in result_rows[:limit]]
         next_cursor = (
-            _encode_cursor(rows[-1][0].created_at, rows[-1][0].id) if has_more and rows else None
+            _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+        )
+        context = self._summary_context(
+            session,
+            owner_id=owner_id,
+            rows=[row.generation for row in rows],
+            known_favorite_generation_ids=frozenset(row.generation.id for row in rows),
         )
         return FavoritePage(
             items=[
-                self.favorite_summary(session, favorite, generation)
-                for favorite, generation in rows
+                FavoriteSummary(
+                    id=row.id,
+                    created_at=row.created_at,
+                    final_prompt=row.final_prompt,
+                    generation=self._project_summary(row.generation, context),
+                )
+                for row in rows
             ],
             next_cursor=next_cursor,
+        )
+
+    def _summary_context(
+        self,
+        session: Session,
+        *,
+        owner_id: str,
+        rows: list[_GenerationSummaryRow],
+        known_favorite_generation_ids: frozenset[str] | None = None,
+    ) -> _SummaryContext:
+        generation_ids = [row.id for row in rows]
+        if not generation_ids:
+            return _SummaryContext({}, {}, frozenset(), frozenset())
+
+        image_counts = {
+            str(generation_id): int(count)
+            for generation_id, count in session.execute(
+                select(Artifact.generation_id, func.count())
+                .where(
+                    Artifact.generation_id.in_(generation_ids),
+                    Artifact.owner_id == owner_id,
+                    Artifact.kind == "image",
+                )
+                .group_by(Artifact.generation_id)
+            )
+        }
+        display_artifacts = self._page_display_artifacts(
+            session,
+            owner_id=owner_id,
+            generation_ids=generation_ids,
+        )
+        favorite_generation_ids = known_favorite_generation_ids
+        if favorite_generation_ids is None:
+            favorite_generation_ids = frozenset(
+                str(value)
+                for value in session.scalars(
+                    select(Favorite.generation_id).where(
+                        Favorite.owner_id == owner_id,
+                        Favorite.generation_id.in_(generation_ids),
+                    )
+                )
+            )
+
+        capabilities = session.scalar(
+            select(ServiceHealth.capabilities_json).where(ServiceHealth.service == "comfyui")
+        )
+        unavailable_source_keys = {
+            value
+            for value in (
+                capabilities.get("dependency_unavailable_source_keys", [])
+                if isinstance(capabilities, dict)
+                else []
+            )
+            if isinstance(value, str)
+        }
+        workflow_ids = {row.workflow_id for row in rows}
+        recallable_identities = frozenset(
+            (
+                str(workflow_id),
+                str(workflow_version),
+                str(ui_hash),
+                str(api_hash),
+                str(contract_hash),
+            )
+            for (
+                workflow_id,
+                workflow_version,
+                ui_hash,
+                api_hash,
+                contract_hash,
+                source_key,
+            ) in session.execute(
+                select(
+                    WorkflowProfile.workflow_id,
+                    WorkflowProfile.workflow_version,
+                    WorkflowProfile.ui_graph_sha256,
+                    WorkflowProfile.api_graph_sha256,
+                    WorkflowProfile.contract_sha256,
+                    WorkflowProfile.source_key,
+                ).where(
+                    WorkflowProfile.workflow_id.in_(workflow_ids),
+                    WorkflowProfile.is_current.is_(True),
+                    WorkflowProfile.state == WorkflowState.VALID,
+                )
+            )
+            if source_key is None or source_key not in unavailable_source_keys
+        )
+        return _SummaryContext(
+            image_counts=image_counts,
+            display_artifacts=display_artifacts,
+            favorite_generation_ids=favorite_generation_ids,
+            recallable_identities=recallable_identities,
+        )
+
+    @staticmethod
+    def _page_display_artifacts(
+        session: Session,
+        *,
+        owner_id: str,
+        generation_ids: list[str],
+    ) -> dict[str, ArtifactSummary]:
+        target_id = func.coalesce(
+            Generation.canonical_artifact_id,
+            Generation.best_available_artifact_id,
+        )
+        ranked = (
+            select(
+                Artifact.generation_id.label("generation_id"),
+                Artifact.id.label("id"),
+                Artifact.output_id.label("output_id"),
+                Artifact.role.label("role"),
+                Artifact.kind.label("kind"),
+                Artifact.state.label("state"),
+                Artifact.sequence.label("sequence"),
+                Artifact.batch_index.label("batch_index"),
+                Artifact.width.label("width"),
+                Artifact.height.label("height"),
+                Artifact.canonical.label("canonical"),
+                Artifact.best_available.label("best_available"),
+                Artifact.thumbnail_path.label("thumbnail_path"),
+                Artifact.available_at.label("available_at"),
+                func.row_number()
+                .over(
+                    partition_by=Artifact.generation_id,
+                    order_by=(
+                        case((Artifact.id == target_id, 0), else_=1),
+                        Artifact.sequence.desc(),
+                        Artifact.batch_index,
+                        Artifact.available_at.desc(),
+                    ),
+                )
+                .label("summary_rank"),
+            )
+            .join(Generation, Generation.id == Artifact.generation_id)
+            .where(
+                Artifact.generation_id.in_(generation_ids),
+                Artifact.owner_id == owner_id,
+                Generation.owner_id == owner_id,
+                or_(Artifact.id == target_id, Artifact.kind == "image"),
+            )
+            .subquery()
+        )
+        result: dict[str, ArtifactSummary] = {}
+        for row in session.execute(select(ranked).where(ranked.c.summary_rank == 1)):
+            state = row.state.value if isinstance(row.state, ArtifactState) else str(row.state)
+            artifact = ArtifactSummary(
+                id=str(row.id),
+                output_id=str(row.output_id),
+                role=str(row.role),
+                kind=str(row.kind),
+                state=state,
+                sequence=int(row.sequence),
+                batch_index=int(row.batch_index),
+                width=row.width,
+                height=row.height,
+                canonical=bool(row.canonical),
+                best_available=bool(row.best_available),
+                content_url=f"/api/artifacts/{row.id}/content",
+                thumbnail_url=(
+                    f"/api/artifacts/{row.id}/thumbnail" if row.thumbnail_path else None
+                ),
+                available_at=row.available_at,
+            )
+            result[str(row.generation_id)] = artifact
+        return result
+
+    @staticmethod
+    def _project_summary(
+        row: _GenerationSummaryRow,
+        context: _SummaryContext,
+    ) -> GenerationSummary:
+        exact = row.identity in context.recallable_identities
+        status = row.status.value if isinstance(row.status, GenerationStatus) else str(row.status)
+        return GenerationSummary(
+            id=row.id,
+            status=status,
+            workflow_display_name=row.workflow_display_name,
+            accepted_at=row.accepted_at,
+            current_stage_id=row.current_stage_id,
+            current_stage_label=row.current_stage_label,
+            artifact_count=row.artifact_count,
+            image_count=context.image_counts.get(row.id, 0),
+            final_artifact_count=row.final_artifact_count,
+            best_available_artifact_id=row.best_available_artifact_id,
+            canonical_artifact_id=row.canonical_artifact_id,
+            display_artifact=context.display_artifacts.get(row.id),
+            expected_width=_positive_int(row.expected_width),
+            expected_height=_positive_int(row.expected_height),
+            error_message=row.error_message,
+            recall_available=exact,
+            recall_unavailable_reason=(
+                None if exact else "Original workflow version is not currently available."
+            ),
+            is_favorite=row.id in context.favorite_generation_ids,
+            cancel_allowed=(
+                row.status in ACTIVE_STATUSES and row.status != GenerationStatus.CANCEL_REQUESTED
+            ),
+            prompt_id=row.comfyui_prompt_id,
+            source_key=row.source_key,
+            publication_id=row.publication_id,
         )
 
     def add_favorite(
@@ -813,6 +1084,129 @@ class GenerationService:
         )
         session.commit()
         self.assets.delete_paths(artifact_paths + upload_paths)
+
+
+def _summary_projection() -> tuple[Any, ...]:
+    inputs = (
+        func.json_each(Generation.resolved_contract_json, "$.inputs")
+        .table_valued("value")
+        .alias("summary_inputs")
+    )
+    controls = (
+        func.json_each(Generation.resolved_contract_json, "$.controls")
+        .table_valued("value")
+        .alias("summary_controls")
+    )
+
+    def current_dimension(role: str) -> Any:
+        input_id = func.json_extract(inputs.c.value, "$.id")
+        path = _json_key_path(input_id)
+        value = func.json_extract(Generation.effective_controls_json, path)
+        return (
+            select(value)
+            .select_from(inputs)
+            .where(
+                func.json_extract(inputs.c.value, "$.semantic_role") == role,
+                func.json_type(Generation.effective_controls_json, path) == "integer",
+                value > 0,
+            )
+            .limit(1)
+            .correlate(Generation)
+            .scalar_subquery()
+        )
+
+    def historical_dimension(axis: str) -> Any:
+        control_id = func.json_extract(controls.c.value, "$.id")
+        path = _json_key_path(control_id).op("||")(literal(f".{axis}"))
+        value = func.json_extract(Generation.effective_controls_json, path)
+        return (
+            select(value)
+            .select_from(controls)
+            .where(
+                func.json_extract(controls.c.value, "$.type") == "resolution",
+                func.json_type(Generation.effective_controls_json, path) == "integer",
+                value > 0,
+            )
+            .limit(1)
+            .correlate(Generation)
+            .scalar_subquery()
+        )
+
+    return (
+        Generation.id.label("id"),
+        Generation.status.label("status"),
+        Generation.workflow_display_name.label("workflow_display_name"),
+        Generation.accepted_at.label("accepted_at"),
+        Generation.current_stage_id.label("current_stage_id"),
+        Generation.current_stage_label.label("current_stage_label"),
+        Generation.artifact_count.label("artifact_count"),
+        Generation.final_artifact_count.label("final_artifact_count"),
+        Generation.best_available_artifact_id.label("best_available_artifact_id"),
+        Generation.canonical_artifact_id.label("canonical_artifact_id"),
+        Generation.error_message.label("error_message"),
+        Generation.comfyui_prompt_id.label("comfyui_prompt_id"),
+        Generation.workflow_id.label("workflow_id"),
+        Generation.workflow_version.label("workflow_version"),
+        Generation.ui_graph_sha256.label("ui_graph_sha256"),
+        Generation.api_graph_sha256.label("api_graph_sha256"),
+        Generation.contract_sha256.label("contract_sha256"),
+        func.json_extract(Generation.generation_source_json, "$.source_key").label("source_key"),
+        func.json_extract(Generation.generation_source_json, "$.publication_id").label(
+            "publication_id"
+        ),
+        func.coalesce(current_dimension("width"), historical_dimension("width")).label(
+            "expected_width"
+        ),
+        func.coalesce(current_dimension("height"), historical_dimension("height")).label(
+            "expected_height"
+        ),
+    )
+
+
+def _json_key_path(key: Any) -> Any:
+    escaped = func.replace(key, literal('"'), literal('\\"'))
+    return literal('$."').op("||")(escaped).op("||")(literal('"'))
+
+
+def _summary_row(row: Any) -> _GenerationSummaryRow:
+    values = row._mapping
+    return _GenerationSummaryRow(
+        id=str(values["id"]),
+        status=values["status"],
+        workflow_display_name=str(values["workflow_display_name"]),
+        accepted_at=values["accepted_at"],
+        current_stage_id=values["current_stage_id"],
+        current_stage_label=values["current_stage_label"],
+        artifact_count=int(values["artifact_count"]),
+        final_artifact_count=int(values["final_artifact_count"]),
+        best_available_artifact_id=values["best_available_artifact_id"],
+        canonical_artifact_id=values["canonical_artifact_id"],
+        error_message=values["error_message"],
+        comfyui_prompt_id=values["comfyui_prompt_id"],
+        workflow_id=str(values["workflow_id"]),
+        workflow_version=str(values["workflow_version"]),
+        ui_graph_sha256=str(values["ui_graph_sha256"]),
+        api_graph_sha256=str(values["api_graph_sha256"]),
+        contract_sha256=str(values["contract_sha256"]),
+        source_key=values["source_key"],
+        publication_id=values["publication_id"],
+        expected_width=values["expected_width"],
+        expected_height=values["expected_height"],
+    )
+
+
+def _favorite_summary_row(row: Any) -> _FavoriteSummaryRow:
+    values = row._mapping
+    return _FavoriteSummaryRow(
+        id=str(values["favorite_id"]),
+        created_at=values["favorite_created_at"],
+        final_prompt=str(values["final_prompt"]),
+        generation=_summary_row(row),
+    )
+
+
+def _positive_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def _encode_cursor(accepted_at: datetime, generation_id: str) -> str:

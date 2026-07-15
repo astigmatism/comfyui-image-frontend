@@ -90,12 +90,17 @@ def service_status(
 def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
     online = bool(health and health.available)
     cached = not online
+    catalog_state = (
+        health.capabilities_json.get("catalog_state")
+        if health and isinstance(health.capabilities_json, dict)
+        else None
+    )
     dependency_unavailable = bool(
         health
         and profile.source_key
         in health.capabilities_json.get("dependency_unavailable_source_keys", [])
     )
-    if health is None:
+    if health is None or catalog_state == "loading":
         readiness = "loading"
     elif dependency_unavailable:
         readiness = "dependency_missing"
