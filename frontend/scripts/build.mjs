@@ -14,6 +14,10 @@ for (const name of modules) {
   execFileSync(process.execPath, ["--check", source], { stdio: "inherit" });
   await cp(source, join(dist, "assets", name));
 }
+const assets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
+for (const name of assets) {
+  await cp(join(root, "src", "assets", name), join(dist, "assets", name));
+}
 await cp(join(root, "src", "styles.css"), join(dist, "assets", "styles.css"));
 await cp(join(root, "index.html"), join(dist, "index.html"));
 await writeFile(

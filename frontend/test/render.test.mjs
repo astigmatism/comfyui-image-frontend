@@ -222,7 +222,7 @@ test("gallery and service regions render independent progressive startup states"
 });
 
 test("password change fields allow eight-character passwords", () => {
-  const html = passwordChangeMarkup("ComfyUI Gallery", true);
+  const html = passwordChangeMarkup("ImageGen V2", true);
   assert.match(html, /name="new_password"[^>]*minlength="8"/);
   assert.match(html, /name="confirm_password"[^>]*minlength="8"/);
 });

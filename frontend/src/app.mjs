@@ -1256,14 +1256,14 @@ async function logout() {
 function renderLogin() {
   stopLiveUpdates();
   stopApplicationStartup();
-  root.innerHTML = loginMarkup(state.session?.app_title || "ComfyUI Gallery");
+  root.innerHTML = loginMarkup(state.session?.app_title || "ImageGen V2");
   queueMicrotask(() => root.querySelector("input")?.focus());
 }
 
 function renderPasswordChange(forced) {
   stopLiveUpdates();
   stopApplicationStartup();
-  root.innerHTML = passwordChangeMarkup(state.session?.app_title || "ComfyUI Gallery", forced);
+  root.innerHTML = passwordChangeMarkup(state.session?.app_title || "ImageGen V2", forced);
   queueMicrotask(() => root.querySelector("input")?.focus());
 }
 

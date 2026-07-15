@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    app_title: str = "ComfyUI Gallery"
+    app_title: str = "ImageGen V2"
     listen_host: str = "0.0.0.0"  # noqa: S104 - configurable application listener default
     listen_port: int = 8000
     graceful_shutdown_timeout_seconds: int = Field(default=10, gt=0)
