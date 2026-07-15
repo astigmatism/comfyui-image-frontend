@@ -864,6 +864,61 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(page.locator('[data-control-group="Basic"]')).toHaveCount(4);
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   await expect(prompt).toHaveValue(carriedPrompt);
+  const promptSection = page.locator('[data-control-section="prompt"]');
+  const promptSectionTrigger = promptSection.getByRole("button", { name: "Prompt", exact: true });
+  await expect(promptSectionTrigger).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    promptSection.getByRole("button", { name: "Start voice input for Prompt" }),
+  ).toBeVisible();
+  await expect(
+    promptSection.getByRole("button", { name: "Open focused prompt editor" }),
+  ).toBeVisible();
+  await promptSectionTrigger.click();
+  await expect(promptSectionTrigger).toHaveAttribute("aria-expanded", "false");
+  await expect(prompt).toBeHidden();
+  await expect(
+    promptSection.getByRole("button", { name: "Start voice input for Prompt" }),
+  ).toBeVisible();
+  await expect(
+    promptSection.getByRole("button", { name: "Open focused prompt editor" }),
+  ).toBeVisible();
+  await promptSectionTrigger.click();
+  await expect(prompt).toBeVisible();
+  for (const [key, title] of [
+    ["resolution", "Resolution"],
+    ["seed", "Seed"],
+    ["upscaling", "Upscaling"],
+  ]) {
+    await expect(
+      page.locator(`[data-control-section="${key}"]`).getByRole("button", {
+        name: title,
+        exact: true,
+      }),
+    ).toHaveAttribute("aria-expanded", "true");
+  }
+  await expect(
+    page.locator('[data-control-section="advanced"] .control-section-trigger'),
+  ).toHaveAttribute("aria-expanded", "false");
+  const resolutionSection = page.locator('[data-control-section="resolution"]');
+  const resolutionSectionStatus = resolutionSection.locator(
+    '[data-control-section-status="resolution"]',
+  );
+  const resolutionSectionTrigger = resolutionSection.getByRole("button", {
+    name: "Resolution",
+    exact: true,
+  });
+  await expect(resolutionSectionStatus).toHaveText("1080 × 1920");
+  await resolutionSectionTrigger.click();
+  await expect(resolutionSectionStatus).toBeVisible();
+  await resolutionSectionTrigger.click();
+
+  const seedSection = page.locator('[data-control-section="seed"]');
+  const seedSectionStatus = seedSection.locator('[data-control-section-status="seed"]');
+  const seedSectionTrigger = seedSection.getByRole("button", { name: "Seed", exact: true });
+  await expect(seedSectionStatus).toHaveText("Random");
+  await seedSectionTrigger.click();
+  await expect(seedSectionStatus).toBeVisible();
+  await seedSectionTrigger.click();
   const promptHelp = page.getByRole("tooltip").filter({ hasText: "The positive image prompt." });
   await expect(promptHelp).toBeHidden();
   await prompt.focus();
@@ -996,6 +1051,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(seedMode).toHaveValue("random");
   await expect(seedValue).toBeDisabled();
   await seedMode.selectOption("fixed");
+  await expect(seedSectionStatus).toHaveText("Fixed");
   await expect(seedValue).toBeEnabled();
   await expect(seedValue).toHaveAttribute("data-maximum", "1125899906842624");
   await seedValue.fill("1125899906842624");
@@ -1008,13 +1064,16 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   await width.fill("1024");
   await height.fill("1600");
+  await expect(resolutionSectionStatus).toHaveText("1024 × 1600");
   await expect(page.locator("[data-resolution-summary]")).toHaveText(
     "1024 × 1600 · 1.64 MP · 16:25",
   );
   await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
   const advanced = page.locator(".advanced-group");
-  await expect(advanced).not.toHaveAttribute("open", "");
-  await advanced.locator("summary").click();
+  const advancedTrigger = advanced.getByRole("button", { name: "Advanced", exact: true });
+  await expect(advancedTrigger).toHaveAttribute("aria-expanded", "false");
+  await advancedTrigger.click();
+  await expect(advancedTrigger).toHaveAttribute("aria-expanded", "true");
   const lora = page.getByRole("combobox", { name: "LoRA", exact: true });
   await expect(lora).toHaveValue("knp_v4_1");
   await expect(lora.locator("option")).toHaveCount(4);
@@ -1166,7 +1225,9 @@ test("backend field errors disclose Advanced controls and stale compositions do 
   await expect(page.locator("#workflow-source")).toBeDisabled();
   releaseGeneration();
   const advanced = page.locator(".advanced-group");
-  await expect(advanced).toHaveAttribute("open", "");
+  await expect(
+    advanced.getByRole("button", { name: "Advanced", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
   const strength = page.getByRole("spinbutton", { name: "LoRA Strength", exact: true });
   await expect(strength).toHaveAttribute("aria-invalid", "true");
   await expect(strength).toBeFocused();

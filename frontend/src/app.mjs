@@ -54,6 +54,7 @@ const state = {
   activeSource: null,
   comparisonSourceKeys: new Set(),
   sourceMenuOpen: false,
+  controlSectionOpen: {},
   parameters: {},
   explicitParameterIds: new Set(),
   parameterStateBySource: {},
@@ -250,7 +251,8 @@ async function handleClick(event) {
       state.panelOpen = !state.panelOpen;
       document.querySelector(".app-shell")?.classList.toggle("panel-open", state.panelOpen);
       target.setAttribute("aria-expanded", String(state.panelOpen));
-    } else if (action === "close-panel") closePanel();
+    } else if (action === "toggle-control-section") toggleControlSection(target);
+    else if (action === "close-panel") closePanel();
     else if (action === "open-prompt-editor") openPromptEditor(target);
     else if (action === "toggle-speech-recording") await toggleSpeechRecording(target);
     else if (action === "cancel-prompt-editor") closePromptEditor("cancel");
@@ -346,6 +348,24 @@ function setSourceMenuOpen(open, { restoreFocus = false } = {}) {
   if (state.sourceMenuOpen) menu?.removeAttribute("inert");
   else menu?.setAttribute("inert", "");
   if (restoreFocus) trigger?.focus({ preventScroll: true });
+}
+
+function toggleControlSection(trigger) {
+  const section = trigger.closest("[data-control-section]");
+  if (!section) return;
+  const open = trigger.getAttribute("aria-expanded") !== "true";
+  state.controlSectionOpen[section.dataset.controlSection] = open;
+  setControlSectionElementOpen(section, open);
+}
+
+function setControlSectionElementOpen(section, open) {
+  const trigger = section.querySelector(".control-section-trigger");
+  const body = section.querySelector(".control-section-body");
+  section.classList.toggle("is-expanded", open);
+  trigger?.setAttribute("aria-expanded", String(open));
+  body?.setAttribute("aria-hidden", String(!open));
+  if (open) body?.removeAttribute("inert");
+  else body?.setAttribute("inert", "");
 }
 
 function handleInput(event) {
@@ -983,9 +1003,13 @@ function updateResolutionUi(grid, value) {
   const widthInput = block?.querySelector('[data-resolution-axis="width"], [data-resolution-part="width"]');
   const heightInput = block?.querySelector('[data-resolution-axis="height"], [data-resolution-part="height"]');
   const caption = block?.querySelector("[data-resolution-summary]");
+  const sectionStatus = grid
+    .closest('[data-control-section="resolution"]')
+    ?.querySelector('[data-control-section-status="resolution"]');
   if (widthInput) widthInput.value = value?.width ?? "";
   if (heightInput) heightInput.value = value?.height ?? "";
   if (caption) caption.textContent = summary.text;
+  if (sectionStatus) sectionStatus.textContent = `${summary.width} × ${summary.height}`;
   grid
     .querySelector('[data-resolution-handle="both"]')
     ?.setAttribute("aria-label", `Adjust width and height. ${summary.width} by ${summary.height} pixels. Use the arrow keys.`);
@@ -1719,14 +1743,20 @@ function capturePanelFocus(panel) {
   return {
     selector,
     selection,
-    advancedOpen: Boolean(element.closest(".advanced-group[open]")),
+    sectionKey: element.closest("[data-control-section]")?.dataset.controlSection || null,
+    sectionOpen: Boolean(element.closest(".control-section.is-expanded")),
     scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
   };
 }
 
 function restorePanelFocus(panel, focus) {
   if (!focus) return;
-  if (focus.advancedOpen) panel.querySelector(".advanced-group")?.setAttribute("open", "");
+  if (focus.sectionKey && focus.sectionOpen) {
+    const section = panel.querySelector(
+      `[data-control-section="${CSS.escape(focus.sectionKey)}"]`,
+    );
+    if (section) setControlSectionElementOpen(section, true);
+  }
   const scroller = panel.querySelector("#panel-scroll");
   if (scroller) scroller.scrollTop = focus.scrollTop;
   const element = panel.querySelector(focus.selector);

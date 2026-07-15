@@ -308,11 +308,14 @@ test("generation panel places the custom source picker before generated controls
     html.match(/<input[^>]*data-shared-source-key="p1"[^>]*>/)?.[0] || "",
     /checked[^>]*disabled/,
   );
-  assert.match(html, /<details class="advanced-group"><summary>Advanced<\/summary>/);
-  assert.doesNotMatch(html, /<details class="advanced-group" open/);
+  assert.match(
+    html,
+    /data-control-section="advanced"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
+  );
+  assert.doesNotMatch(html, /<details class="advanced-group"/);
 });
 
-test("generation panel omits the Basic group heading while preserving its control metadata", () => {
+test("generation panel turns a Basic group into a divider section while preserving control metadata", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -339,7 +342,8 @@ test("generation panel omits the Basic group heading while preserving its contro
 
   const html = generationPanelMarkup(state, publishedSource, basicInterface);
 
-  assert.match(html, /<section class="control-group" data-interface-group="Basic">/);
+  assert.match(html, /data-control-section="group-prompt"/);
+  assert.match(html, /class="control-section-title">Prompt/);
   assert.match(html, /data-control-group="Basic"/);
   assert.doesNotMatch(html, /<h3 class="control-group-heading">Basic<\/h3>/);
 });
@@ -659,6 +663,8 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.match(html, /data-control-id="width"[^>]*data-resolution-axis="width"[^>]*type="number"[^>]*step="8"/);
   assert.match(html, /data-control-id="height"[^>]*data-resolution-axis="height"[^>]*type="number"[^>]*step="8"/);
   assert.match(html, /data-resolution-summary[^>]*>1080 × 1920 · 2.07 MP · 9:16/);
+  assert.match(html, /data-control-section-status="resolution">1080 × 1920<\/span>/);
+  assert.match(html, /data-control-section-status="seed">Random<\/span>/);
   assert.match(html, /<div class="resolution-preview">/);
   assert.doesNotMatch(html, /<span aria-hidden="true">×<\/span>/);
   assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf("data-resolution-pair-block"));
@@ -678,7 +684,19 @@ test("published source pairs scalar dimensions in the resolution picker and rend
     html,
     /data-control-id="knpv4_1_strength"[^>]*data-number-entry[^>]*type="number"[^>]*step="0.05"/,
   );
-  assert.match(html, /<details class="advanced-group"><summary>Advanced<\/summary>/);
+  for (const section of ["prompt", "resolution", "seed", "upscaling"]) {
+    assert.match(
+      html,
+      new RegExp(
+        `data-control-section="${section}"[\\s\\S]*?data-action="toggle-control-section"[^>]*aria-expanded="true"`,
+      ),
+    );
+  }
+  assert.match(
+    html,
+    /data-control-section="advanced"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
+  );
+  assert.doesNotMatch(html, /<details class="advanced-group"/);
   assert.doesNotMatch(html, /Source warning/);
   assert.doesNotMatch(html, /negative.prompt|Negative prompt/i);
   const button = html.match(/<button id="generate-button"[^>]*>/)?.[0] || "";
@@ -726,7 +744,10 @@ test("choice controls honor advanced grouping and order before their strength co
     formError: null,
   };
   const html = generationPanelMarkup(state, publishedSource, choiceContract);
-  assert.match(html, /<details class="advanced-group"><summary>Advanced<\/summary>/);
+  assert.match(
+    html,
+    /data-control-section="advanced"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
+  );
   assert.match(html, /<section class="control-group" data-interface-group="Advanced">/);
   assert.ok(html.indexOf('data-control-block="lora"') < html.indexOf('data-control-block="lora_strength"'));
   assert.doesNotMatch(html, /Krea2\/KNPV4\.1_pre\.safetensors/);
@@ -821,7 +842,10 @@ test("advanced controls open when they contain a field error", () => {
     formError: "Review the highlighted controls.",
   };
   const html = generationPanelMarkup(state, state.workflows[0], contract);
-  assert.match(html, /<details class="advanced-group" open>/);
+  assert.match(
+    html,
+    /data-control-section="advanced"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="true"/,
+  );
   assert.match(html, /aria-invalid="true"/);
 });
 

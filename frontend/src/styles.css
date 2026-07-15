@@ -164,6 +164,7 @@ code {
 
 .app-title {
   font-family: "Syncopate", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 20px;
   font-weight: 400;
   letter-spacing: 0;
   white-space: nowrap;
@@ -294,6 +295,140 @@ code {
   padding: var(--space-4);
   scrollbar-color: #3a4d63 transparent;
   scrollbar-width: thin;
+}
+
+.control-section {
+  margin-right: calc(-1 * var(--space-4));
+  margin-left: calc(-1 * var(--space-4));
+}
+
+.control-section-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 0 var(--space-4);
+}
+
+.control-section-header::before {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  border-top: 1px solid rgb(53 70 91 / 82%);
+  content: "";
+}
+
+.control-section-trigger,
+.control-section-actions,
+.control-section-status {
+  position: relative;
+  background: var(--surface-0);
+  z-index: 1;
+}
+
+.control-section-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px 0 0;
+  border: 0;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--motion-fast) ease;
+}
+
+.control-section-trigger:hover {
+  color: var(--text);
+}
+
+.control-section-trigger:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.control-section-indicator {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.control-section-indicator-vertical {
+  transform-origin: center;
+  transition:
+    opacity var(--motion-fast) ease,
+    transform var(--motion) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.control-section.is-expanded .control-section-indicator-vertical {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.45);
+}
+
+.control-section-actions {
+  padding-left: 10px;
+}
+
+.control-section-status {
+  padding-left: 10px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+  white-space: nowrap;
+}
+
+.control-section-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity var(--motion-fast) ease;
+}
+
+.control-section.is-expanded .control-section-body {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.control-section-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.control-section-content {
+  padding: 6px var(--space-4) 18px;
+  transform: translateY(-14px);
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.control-section.is-expanded .control-section-content {
+  transform: translateY(0);
+}
+
+.control-section-content > .control-block:last-child,
+.control-section-content > .advanced-controls > .control-group:last-child > .control-block:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+
+.control-section-advanced .control-section-content,
+.advanced-group .control-section-content {
+  padding-bottom: var(--space-4);
 }
 
 .gallery-viewport {
@@ -766,6 +901,18 @@ code {
   color: var(--text-soft);
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .field.compact {
@@ -1512,7 +1659,6 @@ code {
   background: #080c11;
 }
 
-.advanced-group,
 .prompt-assistant,
 .provenance {
   border: 1px solid var(--border);
@@ -1520,7 +1666,6 @@ code {
   background: rgb(20 30 42 / 60%);
 }
 
-.advanced-group > summary,
 .prompt-assistant > summary,
 .provenance > summary {
   padding: 10px 12px;
@@ -1529,9 +1674,12 @@ code {
   cursor: pointer;
 }
 
-.advanced-controls,
 .assistant-body {
   padding: 2px 12px 12px;
+}
+
+.advanced-controls {
+  min-width: 0;
 }
 
 .prompt-assistant {

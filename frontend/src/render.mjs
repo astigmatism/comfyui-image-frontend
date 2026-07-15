@@ -121,8 +121,18 @@ export function generationPanelMarkup(state, profile, contract) {
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
-        ${groupedControlsMarkup(basic, values, contract, clientErrors)}
-        ${advanced.length ? `<details class="advanced-group"${advancedHasError ? " open" : ""}><summary>Advanced</summary><div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors)}</div></details>` : ""}
+        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen)}
+        ${
+          advanced.length
+            ? controlSectionMarkup({
+                key: "advanced",
+                title: "Advanced",
+                content: `<div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors, { omitGroupHeadings: true })}</div>`,
+                open: advancedHasError || controlSectionIsOpen(state.controlSectionOpen, "advanced", false),
+                className: "advanced-group",
+              })
+            : ""
+        }
         ${controlEmptyStateMarkup(state, profile, contract)}
       </div>
     </div>`;
@@ -313,7 +323,162 @@ function controlEmptyStateMarkup(state, source, contract) {
   return '<p class="empty-copy">Choose an available generation source to load its controls.</p>';
 }
 
-function groupedControlsMarkup(inputs, values, contract, errors) {
+function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}) {
+  const resolutionPair = pairedResolutionInputs(inputs, values, contract);
+  const firstResolutionInput = resolutionPair
+    ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
+    : null;
+  const sections = [];
+  for (const input of inputs) {
+    if (resolutionPair && (input === resolutionPair.width || input === resolutionPair.height)) {
+      if (input !== firstResolutionInput) continue;
+      sections.push({
+        key: "resolution",
+        kind: "resolution",
+        title: "Resolution",
+        controls: [resolutionPair.width, resolutionPair.height],
+        resolutionPair,
+      });
+      continue;
+    }
+    const descriptor = controlSectionDescriptor(input);
+    const previous = sections.at(-1);
+    if (previous && previous.key === descriptor.key && !previous.resolutionPair) {
+      previous.controls.push(input);
+    } else {
+      sections.push({ ...descriptor, controls: [input] });
+    }
+  }
+  return sections
+    .map((section) => {
+      const first = section.controls[0];
+      const content = section.resolutionPair
+        ? pairedResolutionMarkup(
+            section.resolutionPair.width,
+            section.resolutionPair.height,
+            values,
+            contract,
+            errors,
+            { hideLegend: true },
+          )
+        : section.controls
+            .map((input) =>
+              controlMarkup(input, values, contract, errors, {
+                hideLabel: section.kind === "prompt" || section.kind === "seed" || input.type === "resolution",
+              }),
+            )
+            .join("");
+      return controlSectionMarkup({
+        key: section.key,
+        title: section.title,
+        required: section.controls.some((input) => input.required),
+        content,
+        status: controlSectionStatus(section, values),
+        open: controlSectionIsOpen(openState, section.key, true),
+        className: `control-section-${section.kind}`,
+        actions:
+          section.kind === "prompt"
+            ? promptSectionActionsMarkup(first, values, contract)
+            : "",
+      });
+    })
+    .join("");
+}
+
+function controlSectionDescriptor(input) {
+  const label = input.id === "prompt.text" && !input.semantic_role ? "Prompt" : input.label || input.id;
+  if (input.semantic_role === "positive_prompt" || input.id === "prompt.text") {
+    return { key: "prompt", kind: "prompt", title: "Prompt" };
+  }
+  if (input.type === "seed" || input.semantic_role === "seed") {
+    return { key: "seed", kind: "seed", title: "Seed" };
+  }
+  if (input.type === "resolution") {
+    return { key: "resolution", kind: "resolution", title: "Resolution" };
+  }
+  if (/upscal/i.test(`${input.id} ${label} ${input.semantic_role || ""}`)) {
+    return { key: "upscaling", kind: "upscaling", title: "Upscaling" };
+  }
+  const group = String(input.group || "").trim();
+  const title = group && group.toLowerCase() !== "basic" ? group : label;
+  const identity = group && group.toLowerCase() !== "basic" ? group : input.id;
+  return {
+    key: `group-${sectionSlug(identity)}`,
+    kind: "group",
+    title,
+  };
+}
+
+function sectionSlug(value) {
+  return String(value || "controls")
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-|-$/g, "") || "controls";
+}
+
+function controlSectionIsOpen(openState, key, defaultOpen) {
+  return Object.prototype.hasOwnProperty.call(openState || {}, key)
+    ? Boolean(openState[key])
+    : defaultOpen;
+}
+
+function controlSectionStatus(section, values) {
+  if (section.kind === "resolution") {
+    const value = section.resolutionPair
+      ? {
+          width: values[section.resolutionPair.width.id],
+          height: values[section.resolutionPair.height.id],
+        }
+      : values[section.controls[0]?.id] || {};
+    const summary = resolutionSummary(value?.width, value?.height);
+    return `${summary.width} × ${summary.height}`;
+  }
+  if (section.kind === "seed") {
+    const control = section.controls[0];
+    return seedFormValue(control, values[control.id]).mode === "random" ? "Random" : "Fixed";
+  }
+  return "";
+}
+
+function controlSectionMarkup({
+  key,
+  title,
+  content,
+  open,
+  required = false,
+  status = "",
+  actions = "",
+  className = "",
+}) {
+  const slug = sectionSlug(key);
+  const triggerId = `control-section-${slug}-trigger`;
+  const bodyId = `control-section-${slug}-body`;
+  return `<section class="control-section ${className} ${open ? "is-expanded" : ""}" data-control-section="${escapeHtml(key)}">
+    <div class="control-section-header">
+      <button type="button" class="control-section-trigger" id="${triggerId}" data-action="toggle-control-section" aria-controls="${bodyId}" aria-expanded="${open}">
+        <span class="control-section-title">${escapeHtml(title)}${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</span>
+        <svg class="control-section-indicator" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path class="control-section-indicator-vertical" d="M12 5v14"/></svg>
+      </button>
+      ${status ? `<span class="control-section-status" data-control-section-status="${escapeHtml(key)}">${escapeHtml(status)}</span>` : ""}
+      ${actions}
+    </div>
+    <div class="control-section-body" id="${bodyId}" aria-labelledby="${triggerId}" aria-hidden="${!open}" ${open ? "" : "inert"}>
+      <div class="control-section-clip"><div class="control-section-content">${content}</div></div>
+    </div>
+  </section>`;
+}
+
+function promptSectionActionsMarkup(control, values, contract) {
+  if (!control) return "";
+  const presentation = controlPresentation(control, values, contract?.capability_states || {});
+  const disabled = !presentation.enabled;
+  const id = `control-${control.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
+  return `<div class="prompt-field-actions control-section-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`;
+}
+
+function groupedControlsMarkup(inputs, values, contract, errors, options = {}) {
   const resolutionPair = pairedResolutionInputs(inputs, values, contract);
   const firstResolutionInput = resolutionPair
     ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
@@ -328,7 +493,7 @@ function groupedControlsMarkup(inputs, values, contract, errors) {
     if (group !== currentGroup) {
       if (currentGroup !== null) markup += "</section>";
       const groupHeading =
-        group && group.trim().toLowerCase() !== "basic"
+        !options.omitGroupHeadings && group && group.trim().toLowerCase() !== "basic"
           ? `<h3 class="control-group-heading">${escapeHtml(group)}</h3>`
           : "";
       markup += `<section class="control-group" data-interface-group="${escapeHtml(group)}">${groupHeading}`;
@@ -359,7 +524,7 @@ function presetMarkup(presets, selected) {
     .join("")}</select></label>`;
 }
 
-export function controlMarkup(control, values, contract, errors = {}) {
+export function controlMarkup(control, values, contract, errors = {}, options = {}) {
   const presentation = controlPresentation(
     control,
     values,
@@ -386,7 +551,7 @@ export function controlMarkup(control, values, contract, errors = {}) {
   const errorId = error ? `${id}-error` : null;
   const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
   const shared = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
-  const common = `id="${id}" ${shared}`;
+  const common = `id="${id}" ${shared}${options.hideLabel && isPrompt ? ` aria-label="${escapeHtml(label)}"` : ""}`;
   const labelContent = `${escapeHtml(label)}${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}`;
   let input = "";
   let field = "";
@@ -428,7 +593,7 @@ export function controlMarkup(control, values, contract, errors = {}) {
     }
     case "seed":
       input = seedMarkup(control, value, common, disabled);
-      field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend>${labelContent}</legend>${input}</fieldset>`;
+      field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "boolean":
       input = `<label class="switch"><input ${common} aria-labelledby="${id}-label" type="checkbox" ${value ? "checked" : ""} /><span aria-hidden="true"></span><em>${value ? "On" : "Off"}</em></label>`;
@@ -461,7 +626,7 @@ export function controlMarkup(control, values, contract, errors = {}) {
       break;
     case "resolution":
       input = resolutionMarkup(control, value, disabled, required, error, describedBy, id);
-      field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend>${labelContent}</legend>${input}</fieldset>`;
+      field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "array":
     case "output_role_set":
@@ -476,7 +641,9 @@ export function controlMarkup(control, values, contract, errors = {}) {
   }
   if (!field) {
     field = isPrompt
-      ? `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><div class="prompt-field-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div>${input}</div>`
+      ? options.hideLabel
+        ? `<div class="field prompt-field prompt-field-section-content">${input}</div>`
+        : `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><div class="prompt-field-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div>${input}</div>`
       : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
   }
   const assistant = isPrompt ? promptAssistantMarkup() : "";
@@ -527,7 +694,7 @@ function resolutionMarkup(control, value, disabled, required, error, describedBy
   </div>`;
 }
 
-function pairedResolutionMarkup(widthControl, heightControl, values, contract, errors) {
+function pairedResolutionMarkup(widthControl, heightControl, values, contract, errors, options = {}) {
   const capabilityStates = contract?.capability_states || {};
   const widthPresentation = controlPresentation(widthControl, values, capabilityStates);
   const heightPresentation = controlPresentation(heightControl, values, capabilityStates);
@@ -582,7 +749,7 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
   );
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-resolution-pair-block="${escapeHtml(`${widthControl.id}:${heightControl.id}`)}" data-control-group="${escapeHtml(widthControl.group || heightControl.group || "")}">
     <fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}>
-      <legend>Resolution${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</legend>
+      <legend${options.hideLegend ? ' class="visually-hidden"' : ""}>Resolution${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</legend>
       <div class="resolution-editor">
         <div class="resolution-preview">${canvas}</div>
         <div class="resolution-control">
