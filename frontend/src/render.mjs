@@ -519,6 +519,7 @@ function resolutionMarkup(control, value, disabled, required, error, describedBy
       <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
       <label for="${id}-height"><span>Height</span><input id="${id}-height" ${base} data-resolution-part="height" type="number" value="${value?.height ?? ""}" min="${limits.minimumHeight ?? ""}" max="${limits.maximumHeight ?? ""}" step="${limits.heightStep}" /></label>
     </div>
+    ${resolutionSummaryMarkup(value)}
   </div>`;
 }
 
@@ -584,6 +585,7 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
           ${widthInput}
           ${heightInput}
         </div>
+        ${resolutionSummaryMarkup(value)}
       </div>
     </fieldset>
   </div>`;
@@ -625,8 +627,12 @@ function resolutionCanvasMarkup({ controlId = null, widthId = null, heightId = n
       <button type="button" class="resolution-handle resolution-handle-both" data-resolution-handle="both" ${disabledAttribute} aria-label="Adjust width and height. ${summary.width} by ${summary.height} pixels. Use the arrow keys."></button>
       <button type="button" class="resolution-handle resolution-handle-width" data-resolution-handle="width" ${disabledAttribute} aria-label="Adjust width. ${summary.width} pixels. Use the left and right arrow keys."></button>
       <button type="button" class="resolution-handle resolution-handle-height" data-resolution-handle="height" ${disabledAttribute} aria-label="Adjust height. ${summary.height} pixels. Use the up and down arrow keys."></button>
-    </div>
-    <p class="resolution-summary" data-resolution-summary aria-live="polite">${summary.text}</p>`;
+    </div>`;
+}
+
+function resolutionSummaryMarkup(value) {
+  const summary = resolutionSummary(value?.width, value?.height);
+  return `<p class="resolution-summary" data-resolution-summary aria-live="polite">${summary.text}</p>`;
 }
 
 function resolutionPosition(value, minimum, maximum) {

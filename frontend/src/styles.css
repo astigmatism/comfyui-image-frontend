@@ -1344,7 +1344,7 @@ code {
 
 .resolution-control {
   grid-template-columns: minmax(0, 1fr);
-  align-content: center;
+  align-content: start;
 }
 
 .resolution-control > label,
@@ -1362,13 +1362,11 @@ code {
 .resolution-editor {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
+  align-items: start;
+  gap: 8px 10px;
 }
 
 .resolution-preview {
-  display: grid;
-  gap: 8px;
   min-width: 0;
 }
 
@@ -1476,12 +1474,14 @@ code {
 }
 
 .resolution-summary {
+  grid-column: 1 / -1;
   min-height: 1.2em;
   margin: 0;
   color: var(--muted);
   font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
   text-align: center;
+  white-space: nowrap;
 }
 
 .upload-control input[type="file"] {

@@ -547,6 +547,10 @@ test("resolution markup includes the responsive three-handle grid and live capti
   assert.match(html, /data-resolution-handle="width"/);
   assert.match(html, /data-resolution-handle="height"/);
   assert.match(html, /data-resolution-summary[^>]*aria-live="polite">1024 × 1600 · 1.64 MP · 16:25/);
+  assert.match(
+    html,
+    /<div class="resolution-preview">[\s\S]*?<\/div>\s*<div class="resolution-control">[\s\S]*?<\/div>\s*<p class="resolution-summary"/,
+  );
 });
 
 test("unavailable and invalid semantic controls expose accessible state and explanations", () => {
