@@ -370,6 +370,14 @@ export function controlMarkup(control, values, contract, errors = {}) {
   const description = presentation.reason || control.description;
   const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
   const isPrompt = control.semantic_role === "positive_prompt" || control.id === "prompt.text";
+  const hasContextualHelp = Boolean(
+    description &&
+      (isPrompt ||
+        control.type === "seed" ||
+        control.type === "resolution" ||
+        control.semantic_role === "width" ||
+        control.semantic_role === "height"),
+  );
   const descriptionId = description ? `${id}-description` : null;
   const errorId = error ? `${id}-error` : null;
   const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
@@ -468,9 +476,9 @@ export function controlMarkup(control, values, contract, errors = {}) {
       : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
   }
   const assistant = isPrompt ? promptAssistantMarkup() : "";
-  return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
+  return `<div class="control-block ${disabled ? "is-disabled" : ""} ${hasContextualHelp ? "has-contextual-help" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
-    ${description ? `<p class="help-text" id="${descriptionId}">${escapeHtml(description)}</p>` : ""}
+    ${description ? `<p class="help-text${hasContextualHelp ? " control-help-tooltip" : ""}" id="${descriptionId}"${hasContextualHelp ? ' role="tooltip"' : ""}>${escapeHtml(description)}</p>` : ""}
     ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
     ${assistant}
   </div>`;
@@ -506,10 +514,9 @@ function resolutionMarkup(control, value, disabled, required, error, describedBy
   const grid = resolutionGridConstraints(control);
   const canvas = resolutionCanvasMarkup({ controlId: control.id, value, grid, disabled });
   return `<div class="resolution-editor">
-    ${canvas}
+    <div class="resolution-preview">${canvas}</div>
     <div class="resolution-control">
       <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
-      <span aria-hidden="true">×</span>
       <label for="${id}-height"><span>Height</span><input id="${id}-height" ${base} data-resolution-part="height" type="number" value="${value?.height ?? ""}" min="${limits.minimumHeight ?? ""}" max="${limits.maximumHeight ?? ""}" step="${limits.heightStep}" /></label>
     </div>
   </div>`;
@@ -572,10 +579,9 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
     <fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}>
       <legend>Resolution${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</legend>
       <div class="resolution-editor">
-        ${canvas}
+        <div class="resolution-preview">${canvas}</div>
         <div class="resolution-control">
           ${widthInput}
-          <span aria-hidden="true">×</span>
           ${heightInput}
         </div>
       </div>
@@ -597,9 +603,9 @@ function pairedResolutionInputMarkup(
   const describedBy = [descriptionId, errorId].filter(Boolean).join(" ");
   const required = presentation.required;
   const label = control.label || (axis === "width" ? "Width" : "Height");
-  return `<div class="resolution-axis-field" data-control-block="${escapeHtml(control.id)}">
+  return `<div class="resolution-axis-field${description ? " has-contextual-help" : ""}" data-control-block="${escapeHtml(control.id)}">
     <label for="${id}"><span>${escapeHtml(label)}</span><input id="${id}" data-control-id="${escapeHtml(control.id)}" data-resolution-axis="${axis}" type="number" value="${escapeHtml(value ?? "")}" min="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" max="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" step="${escapeHtml(controlConstraint(control, "step") ?? 1)}" ${presentation.enabled ? "" : "disabled"} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""} /></label>
-    ${description ? `<p class="help-text" id="${descriptionId}">${escapeHtml(description)}</p>` : ""}
+    ${description ? `<p class="help-text control-help-tooltip" id="${descriptionId}" role="tooltip">${escapeHtml(description)}</p>` : ""}
     ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
   </div>`;
 }

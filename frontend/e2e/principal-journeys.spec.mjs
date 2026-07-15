@@ -65,6 +65,19 @@ async function generateAndExpectAccepted(page) {
   return response;
 }
 
+async function expectControlsNotToOverlap(control, tooltip) {
+  const controlBox = await control.boundingBox();
+  const tooltipBox = await tooltip.boundingBox();
+  expect(controlBox).not.toBeNull();
+  expect(tooltipBox).not.toBeNull();
+  const separated =
+    controlBox.x + controlBox.width <= tooltipBox.x ||
+    tooltipBox.x + tooltipBox.width <= controlBox.x ||
+    controlBox.y + controlBox.height <= tooltipBox.y ||
+    tooltipBox.y + tooltipBox.height <= controlBox.y;
+  expect(separated).toBe(true);
+}
+
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
@@ -849,7 +862,15 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await selectPublishedSource(page, "Krea 2 NSFW V4");
 
   await expect(page.locator('[data-control-group="Basic"]')).toHaveCount(4);
-  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(carriedPrompt);
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await expect(prompt).toHaveValue(carriedPrompt);
+  const promptHelp = page.getByRole("tooltip").filter({ hasText: "The positive image prompt." });
+  await expect(promptHelp).toBeHidden();
+  await prompt.focus();
+  await expect(promptHelp).toBeVisible();
+  await expectControlsNotToOverlap(prompt, promptHelp);
+  await prompt.blur();
+  await expect(promptHelp).toBeHidden();
   await expect(page.locator('[data-control-id*="negative" i]')).toHaveCount(0);
 
   const width = page.getByRole("spinbutton", { name: "Width", exact: true });
@@ -865,6 +886,37 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   const grid = page.locator("[data-resolution-grid]");
   await expect(grid).toHaveCount(1);
+  const resolutionEditor = page.locator(".resolution-editor");
+  const editorBox = await resolutionEditor.boundingBox();
+  const gridBox = await grid.boundingBox();
+  const widthBox = await width.boundingBox();
+  const heightBox = await height.boundingBox();
+  expect(editorBox).not.toBeNull();
+  expect(gridBox).not.toBeNull();
+  expect(widthBox).not.toBeNull();
+  expect(heightBox).not.toBeNull();
+  expect(gridBox.width / editorBox.width).toBeGreaterThan(0.4);
+  expect(gridBox.width / editorBox.width).toBeLessThan(0.55);
+  expect(widthBox.x).toBeGreaterThan(gridBox.x + gridBox.width);
+  expect(Math.abs(widthBox.x - heightBox.x)).toBeLessThan(2);
+  expect(heightBox.y).toBeGreaterThan(widthBox.y + widthBox.height);
+
+  const widthHelp = page.getByRole("tooltip").filter({ hasText: "Base latent width" });
+  const heightHelp = page.getByRole("tooltip").filter({ hasText: "Base latent height" });
+  await expect(widthHelp).toBeHidden();
+  await expect(heightHelp).toBeHidden();
+  await width.focus();
+  await expect(widthHelp).toBeVisible();
+  await expectControlsNotToOverlap(width, widthHelp);
+  await expectControlsNotToOverlap(height, widthHelp);
+  await expect(heightHelp).toBeHidden();
+  await height.focus();
+  await expect(widthHelp).toBeHidden();
+  await expect(heightHelp).toBeVisible();
+  await expectControlsNotToOverlap(height, heightHelp);
+  await expectControlsNotToOverlap(width, heightHelp);
+  await height.blur();
+  await expect(heightHelp).toBeHidden();
   await expect(page.locator("[data-resolution-summary]")).toHaveText(
     "1080 × 1920 · 2.07 MP · 9:16",
   );
@@ -932,6 +984,15 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   const seedMode = page.getByLabel("Seed mode", { exact: true });
   const seedValue = page.getByLabel("Seed value", { exact: true });
+  const seedHelp = page
+    .getByRole("tooltip")
+    .filter({ hasText: "Leave random or provide a fixed reproducible seed." });
+  await expect(seedHelp).toBeHidden();
+  await seedMode.focus();
+  await expect(seedHelp).toBeVisible();
+  await expectControlsNotToOverlap(seedMode, seedHelp);
+  await seedMode.blur();
+  await expect(seedHelp).toBeHidden();
   await expect(seedMode).toHaveValue("random");
   await expect(seedValue).toBeDisabled();
   await seedMode.selectOption("fixed");

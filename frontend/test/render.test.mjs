@@ -228,7 +228,8 @@ test("password change fields allow eight-character passwords", () => {
 });
 
 test("prompt is contract-rendered and Prompt Assistant remains collapsed by default", () => {
-  const html = controlMarkup(promptControl, { "prompt.text": "hello" }, contract);
+  const describedPrompt = { ...promptControl, description: "Describe the image." };
+  const html = controlMarkup(describedPrompt, { "prompt.text": "hello" }, contract);
   assert.match(html, />Prompt</);
   assert.doesNotMatch(html, /Positive prompt/);
   assert.match(html, /data-action="open-prompt-editor"/);
@@ -237,6 +238,11 @@ test("prompt is contract-rendered and Prompt Assistant remains collapsed by defa
   assert.match(html, /aria-label="Start voice input for Prompt"/);
   assert.ok(html.indexOf('data-action="open-prompt-editor"') < html.indexOf('data-control-id="prompt.text"'));
   assert.match(html, /data-control-id="prompt.text"[^>]*rows="10"/);
+  assert.match(html, /class="control-block [^"]*has-contextual-help/);
+  assert.match(
+    html,
+    /class="help-text control-help-tooltip" id="control-prompt-text-description" role="tooltip">Describe the image\./,
+  );
   assert.match(html, /<details class="prompt-assistant" id="prompt-assistant">/);
   assert.match(html, /data-speech-target="creative-direction"/);
   assert.doesNotMatch(html, /<details[^>]+open/);
@@ -617,10 +623,16 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.match(html, /data-control-id="width"[^>]*data-resolution-axis="width"[^>]*type="number"[^>]*step="8"/);
   assert.match(html, /data-control-id="height"[^>]*data-resolution-axis="height"[^>]*type="number"[^>]*step="8"/);
   assert.match(html, /data-resolution-summary[^>]*>1080 × 1920 · 2.07 MP · 9:16/);
+  assert.match(html, /<div class="resolution-preview">/);
+  assert.doesNotMatch(html, /<span aria-hidden="true">×<\/span>/);
   assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf("data-resolution-pair-block"));
   assert.ok(html.indexOf('data-control-block="width"') < html.indexOf('data-control-block="height"'));
   assert.ok(html.indexOf('data-control-block="height"') < html.indexOf('data-control-block="seed"'));
   assert.match(html, /data-control-id="seed"[^>]*type="text"[^>]*inputmode="numeric"/);
+  assert.match(
+    html,
+    /class="help-text control-help-tooltip" id="control-seed-description" role="tooltip">Use random or enter an exact seed\./,
+  );
   assert.match(html, /data-control-id="enable_seedvr2_upscale"[^>]*type="checkbox"/);
   assert.match(
     html,
@@ -703,6 +715,46 @@ test("fixed-mode seed renders no random choice and exposes its exact default", (
   assert.match(html, /aria-label="Seed mode"><option value="fixed" selected>Fixed<\/option>/);
   assert.doesNotMatch(html, /option value="random"/);
   assert.match(html, /<input[^>]*value="1125899906842624"[^>]*aria-label="Seed value"/);
+});
+
+test("paired width and height descriptions are focus-triggered tooltips", () => {
+  const describedInterface = {
+    ...publishedInterface,
+    inputs: publishedInterface.inputs.map((input) => {
+      if (input.id === "width") return { ...input, description: "Image width in pixels." };
+      if (input.id === "height") return { ...input, description: "Image height in pixels." };
+      return input;
+    }),
+  };
+  const html = generationPanelMarkup(
+    {
+      submitting: false,
+      services: [{ service: "comfyui", available: true }],
+      sources: [publishedSource],
+      activeSourceKey: publishedSource.source_key,
+      sourceCatalogStatus: "ready",
+      parameters: { width: 1080, height: 1920 },
+      fieldErrors: {},
+    },
+    publishedSource,
+    describedInterface,
+  );
+  assert.match(
+    html,
+    /class="resolution-axis-field has-contextual-help" data-control-block="width"/,
+  );
+  assert.match(
+    html,
+    /id="control-width-description" role="tooltip">Image width in pixels\./,
+  );
+  assert.match(
+    html,
+    /class="resolution-axis-field has-contextual-help" data-control-block="height"/,
+  );
+  assert.match(
+    html,
+    /id="control-height-description" role="tooltip">Image height in pixels\./,
+  );
 });
 
 test("seed mode availability is independent of public input id text", () => {
