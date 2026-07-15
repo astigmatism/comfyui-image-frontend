@@ -342,11 +342,21 @@ class ComfyUIAdapter:
             )
         return prompt_id
 
-    async def upload_image(self, content: bytes, filename: str, *, kind: str) -> str:
+    async def upload_image(
+        self,
+        content: bytes,
+        filename: str,
+        *,
+        kind: str,
+        mime_type: str = "image/png",
+        subfolder: str | None = None,
+    ) -> str:
         safe_name = PurePosixPath(filename).name
-        files = {"image": (safe_name, content, "image/png")}
+        files = {"image": (safe_name, content, mime_type)}
         data = {"type": "input", "overwrite": "false"}
-        if kind == "mask":
+        if subfolder:
+            data["subfolder"] = subfolder
+        elif kind == "mask":
             data["subfolder"] = "frontend-masks"
         response = await self._request_limited(
             "POST",
@@ -360,11 +370,28 @@ class ComfyUIAdapter:
         payload = _response_json_object(
             response, maximum_bytes=1024 * 1024, context="ComfyUI upload response"
         )
-        if not isinstance(payload.get("name"), str):
+        raw_name = payload.get("name")
+        raw_subfolder = payload.get("subfolder", "")
+        if (
+            not isinstance(raw_name, str)
+            or not raw_name
+            or raw_name != PurePosixPath(raw_name).name
+            or "\\" in raw_name
+            or raw_name in {".", ".."}
+            or not isinstance(raw_subfolder, str)
+            or "\\" in raw_subfolder
+            or raw_subfolder.startswith("/")
+            or (
+                any(part in {"", ".", ".."} for part in raw_subfolder.split("/"))
+                and raw_subfolder != ""
+            )
+            or payload.get("type") != "input"
+        ):
             raise AppError("upload_failed", "ComfyUI returned an invalid upload reference.")
-        subfolder = str(payload.get("subfolder", "")).strip("/")
-        name = PurePosixPath(payload["name"]).name
-        return f"{subfolder}/{name}" if subfolder else name
+        returned_subfolder = raw_subfolder.strip("/")
+        if subfolder is not None and returned_subfolder != subfolder:
+            raise AppError("upload_failed", "ComfyUI returned an unexpected upload namespace.")
+        return f"{returned_subfolder}/{raw_name}" if returned_subfolder else raw_name
 
     async def events(self, client_id: str) -> AsyncIterator[dict[str, Any]]:
         ws_url = self.settings.comfyui_ws_url or _derive_ws_url(self.base_url)

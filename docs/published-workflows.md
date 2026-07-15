@@ -106,7 +106,9 @@ Bindings, node IDs, artifact paths, and executable graphs are private compiler d
 
 ### Inputs
 
-Publication v1 supports `string`, `integer`, `number`, `boolean`, `seed`, and `choice`. Every input has a valid public `id`, label, description, semantic role, required/advanced flags, group, order, default, and one or more trusted bindings. Numeric inputs also have `minimum`, `maximum`, and `step`. A seed additionally declares `default_mode` as `fixed` or `random`.
+Publication v1 supports `string`, `integer`, `number`, `boolean`, `seed`, `choice`, and `image`. Every input has a valid public `id`, label, description, semantic role, required/advanced flags, group, order, and one or more trusted bindings. Scalar and choice inputs have defaults; an image input is required and deliberately has no default. Numeric inputs also have `minimum`, `maximum`, and `step`. A seed additionally declares `default_mode` as `fixed` or `random`.
+
+An `image` input has semantic role `reference_image`, binds only to `CIFImageParameter.image`, and declares trusted media metadata: `/upload/image`, storage type `input`, a nonempty subset of PNG/JPEG/WebP MIME types, positive byte/width/height limits, `animated: false`, and a Boolean `returns_mask`. Its limits must match the frozen CIF node. The public request carries only an application-owned opaque asset ID.
 
 A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. The frontend renders a single select and sends only the public value. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
 
@@ -229,7 +231,7 @@ The current public request is a source reference plus public parameters:
 }
 ```
 
-The backend rejects unknown IDs and private graph/binding/path fields, applies manifest and choice-specific defaults, resolves seeds, deep-clones the accepted frozen graph, and patches only the manifest-trusted CIF parameter `inputs.value` bindings. A choice binding receives its stable public ID; the frozen `CIFChoiceParameter` resolves the private destination while `options_json` and downstream loader inputs remain unchanged. The compiler verifies that the cached graph was not mutated. When the publication runtime flag requires it, submission includes the accepted editable snapshot at `extra_data.extra_pnginfo.workflow`; this metadata never replaces or patches the verified frozen API graph. ComfyUI receives a request-specific client ID and returns the native `prompt_id`.
+The backend rejects unknown IDs and private graph/binding/path fields, applies manifest and choice-specific defaults, resolves seeds and authorized image assets, deep-clones the accepted frozen graph, and patches only manifest-trusted bindings. A choice binding receives its stable public ID; the frozen `CIFChoiceParameter` resolves the private destination while `options_json` and downstream loader inputs remain unchanged. An image asset is decoded and validated, uploaded to an adapter-owned per-job ComfyUI input namespace, and patched only into `CIFImageParameter.image`. The compiler verifies that the cached graph was not mutated. When the publication runtime flag requires it, submission includes the accepted editable snapshot at `extra_data.extra_pnginfo.workflow`; this metadata never replaces or patches the verified frozen API graph. ComfyUI receives a request-specific client ID and returns the native `prompt_id`.
 
 `POST /api/generations/validate` performs the same compilation checks without queuing. `POST /api/generations` commits the immutable source revision, requested/effective parameters, resolved seeds, and compiled graph before the durable queue accepts the job.
 

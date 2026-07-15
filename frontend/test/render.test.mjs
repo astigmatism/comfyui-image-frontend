@@ -143,6 +143,64 @@ const publishedSource = {
   },
 };
 
+test("published image input renders a required computer-and-gallery drop target", () => {
+  const image = {
+    id: "reference_image",
+    type: "image",
+    label: "Reference Image",
+    description: "Guides the edit.",
+    required: true,
+    media: {
+      accepted_mime_types: ["image/png", "image/jpeg", "image/webp"],
+      max_bytes: 20 * 1024 * 1024,
+      max_width: 8192,
+      max_height: 8192,
+      animated: false,
+    },
+  };
+  const empty = controlMarkup(image, {}, { inputs: [image] });
+  assert.match(empty, /data-image-drop-control="reference_image"/);
+  assert.match(empty, /Drop an image here/);
+  assert.match(empty, /From your computer or the gallery/);
+  assert.match(empty, />Browse<input/);
+  assert.match(empty, /accept="image\/png,image\/jpeg,image\/webp"/);
+  assert.match(empty, /20 MB/);
+  assert.match(empty, /8192 × 8192 px/);
+  assert.doesNotMatch(empty, /fixture\.png/);
+
+  const selected = controlMarkup(
+    image,
+    {
+      reference_image: {
+        asset_id: "owned-asset",
+        preview_url: "/api/uploads/owned-asset/content",
+        width: 384,
+        height: 640,
+        name: "portrait.png",
+      },
+    },
+    { inputs: [image] },
+  );
+  assert.match(selected, /portrait\.png/);
+  assert.match(selected, /384 × 640/);
+  assert.match(selected, /data-clear-upload="reference_image"/);
+});
+
+test("gallery cards expose only the opaque artifact id as drag data metadata", () => {
+  const html = galleryCardMarkup({
+    id: "generation-1",
+    status: "succeeded",
+    display_artifact: {
+      id: "artifact-opaque-id",
+      kind: "image",
+      content_url: "/api/artifacts/artifact-opaque-id/content",
+    },
+  });
+  assert.match(html, /draggable="true"/);
+  assert.match(html, /data-gallery-artifact-id="artifact-opaque-id"/);
+  assert.doesNotMatch(html, /data-gallery-artifact-url/);
+});
+
 const loraChoice = {
   id: "lora",
   label: "LoRA",
@@ -405,6 +463,15 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   assert.match(html, /data-action="delete-generation"[^>]+aria-label="Delete generation"/);
   assert.ok(html.indexOf('data-action="recall"') < html.indexOf('data-action="delete-generation"'));
   assert.doesNotMatch(html, /Failed|private prompt|99|Cancel/);
+
+  const historical = cardFooterMarkup({
+    ...generation,
+    recall_source_available: false,
+    recall_warning: "The original generation source is unavailable; the current source will stay selected.",
+  });
+  assert.match(historical, /data-action="recall"[^>]+aria-label="Recall settings"/);
+  assert.doesNotMatch(historical, /data-action="recall"[^>]+disabled/);
+  assert.match(historical, /title="The original generation source is unavailable; the current source will stay selected\."/);
 
   const active = cardFooterMarkup({ ...generation, is_favorite: true });
   assert.match(active, /aria-label="Remove from Favorites" aria-pressed="true"/);

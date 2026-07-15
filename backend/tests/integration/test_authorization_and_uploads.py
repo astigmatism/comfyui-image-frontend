@@ -70,6 +70,13 @@ def test_cross_user_and_administrator_content_access_is_denied(
             assert client.get(upload["preview_url"]).status_code == 404
             assert (
                 client.post(
+                    f"/api/uploads/reference-images/from-artifact/{artifact['id']}",
+                    headers={"X-CSRF-Token": csrf(client)},
+                ).status_code
+                == 404
+            )
+            assert (
+                client.post(
                     f"/api/generations/{generation['id']}/cancel",
                     headers={"X-CSRF-Token": csrf(client)},
                 ).status_code

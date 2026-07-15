@@ -156,6 +156,7 @@ export function generationSubmissionDisabled(state, profile, contract, clientErr
   ).length;
   return Boolean(
     state.submitting ||
+      state.imageUploadsPending > 0 ||
       sourceCatalogBlocksGeneration ||
       !activeKey ||
       !profile ||
@@ -536,7 +537,10 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   const disabled = !presentation.enabled;
   const required = presentation.required;
   const error = errors[control.id];
-  const description = presentation.reason || control.description;
+  const imageLimitHelp = control.type === "image" ? imageLimitText(control.media) : "";
+  const description = [presentation.reason || control.description, imageLimitHelp]
+    .filter(Boolean)
+    .join(" ");
   const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
   const isPrompt = control.semantic_role === "positive_prompt" || control.id === "prompt.text";
   const hasContextualHelp = Boolean(
@@ -624,6 +628,10 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
       input = uploadMarkup(control, value, common);
       field = `<div class="field"><label for="${id}">${labelContent}</label>${input}</div>`;
       break;
+    case "image":
+      input = imageInputMarkup(control, value, common, id, disabled);
+      field = `<div class="field"><span>${labelContent}</span>${input}</div>`;
+      break;
     case "resolution":
       input = resolutionMarkup(control, value, disabled, required, error, describedBy, id);
       field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
@@ -676,6 +684,47 @@ function uploadMarkup(control, value, common) {
   return `<div class="upload-control">
     <input ${common} type="file" accept="image/*" data-upload-kind="${kind}" />
     ${value ? `<div class="upload-chip"><img src="/api/uploads/${escapeHtml(value)}/content" alt="Selected ${escapeHtml(control.label)}" /><span>Uploaded asset selected</span><button type="button" class="button low" data-clear-upload="${escapeHtml(control.id)}">Remove</button></div>` : ""}
+  </div>`;
+}
+
+function imageLimitText(media = {}) {
+  const maxBytes = Number(media?.max_bytes);
+  const maxWidth = Number(media?.max_width);
+  const maxHeight = Number(media?.max_height);
+  const labels = { "image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WebP" };
+  const formats = Array.isArray(media?.accepted_mime_types)
+    ? media.accepted_mime_types.map((value) => labels[value]).filter(Boolean).join(", ")
+    : "";
+  const byteLimit = Number.isFinite(maxBytes)
+    ? maxBytes >= 1024 * 1024
+      ? `${Math.round((maxBytes / (1024 * 1024)) * 10) / 10} MB`
+      : `${Math.round(maxBytes / 1024)} KB`
+    : "";
+  const dimensionLimit =
+    Number.isFinite(maxWidth) && Number.isFinite(maxHeight) ? `${maxWidth} × ${maxHeight} px` : "";
+  const limits = [formats, byteLimit, dimensionLimit].filter(Boolean).join(" · ");
+  return limits ? `Accepted: ${limits}. Static images only.` : "Static image required.";
+}
+
+function imageInputMarkup(control, value, common, id, disabled) {
+  const selection = value && typeof value === "object" ? value : value ? { asset_id: value } : null;
+  const assetId = selection?.asset_id || "";
+  const previewUrl =
+    selection?.preview_url ||
+    (assetId ? `/api/uploads/${encodeURIComponent(assetId)}/content` : "");
+  const accept = Array.isArray(control.media?.accepted_mime_types)
+    ? control.media.accepted_mime_types.join(",")
+    : "image/png,image/jpeg,image/webp";
+  const dimensions =
+    selection?.width && selection?.height
+      ? `${selection.width} × ${selection.height}`
+      : "Ready to generate";
+  const selected = assetId
+    ? `<div class="image-input-selection"><img src="${escapeHtml(previewUrl)}" alt="Selected ${escapeHtml(control.label || control.id)}" /><div><strong>${escapeHtml(selection.name || "Image selected")}</strong><span>${escapeHtml(dimensions)}</span></div><button type="button" class="button low" data-clear-upload="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""}>Remove</button></div>`
+    : `<div class="image-input-empty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15v4h14v-4" /></svg><strong>Drop an image here</strong><span>From your computer or the gallery</span></div>`;
+  return `<div class="image-input-dropzone ${assetId ? "has-selection" : ""}" data-image-drop-control="${escapeHtml(control.id)}" data-max-bytes="${escapeHtml(control.media?.max_bytes || "")}" data-max-width="${escapeHtml(control.media?.max_width || "")}" data-max-height="${escapeHtml(control.media?.max_height || "")}" data-accepted-mime-types="${escapeHtml(accept)}" ${disabled ? 'aria-disabled="true"' : ""}>
+    ${selected}
+    <label class="button secondary image-input-browse" for="${id}">Browse<input ${common} class="visually-hidden" type="file" accept="${escapeHtml(accept)}" data-upload-kind="reference-images" data-image-input="true" /></label>
   </div>`;
 }
 
@@ -911,7 +960,7 @@ export function galleryCardMarkup(generation) {
   const sourceName = generationSourceName(generation);
   const stateClass = String(generation.status || "unknown").replaceAll("_", "-");
   const media = hasImage
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" />`
+    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
     : statusPlaceholderMarkup(generation);
   const statusOverlay = generation.status === "succeeded" ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
   const finalCount = Number(generation.final_artifact_count) || 0;
@@ -966,7 +1015,10 @@ export function cardFooterMarkup(generation) {
     : `<button type="button" class="download-button" disabled aria-label="Download unavailable" title="No image is available to download">
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>
     </button>`;
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}">${escapeHtml(sourceName)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">
+  const recallTitle = generation.recall_warning
+    || generation.recall_unavailable_reason
+    || "Load this request into the generation panel";
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}">${escapeHtml(sourceName)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button><button type="button" class="delete-generation-button" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}" ${deletePending ? "disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
@@ -1023,13 +1075,16 @@ function favoriteItemMarkup(favorite) {
   const media = artifact?.kind === "image"
     ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${sourceName}`)}" />`
     : `<div class="favorite-placeholder"><span aria-hidden="true">◇</span><strong>No retained image</strong></div>`;
+  const recallTitle = generation.recall_warning
+    || generation.recall_unavailable_reason
+    || "Load this request into the generation panel";
   return `<article class="favorite-item" data-favorite-id="${escapeHtml(favorite.id)}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="favorite-thumbnail">${media}</div>
     <div class="favorite-details">
       <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
       <p class="favorite-prompt">${escapeHtml(favorite.final_prompt || "No prompt was retained.")}</p>
       <div class="favorite-actions">
-        <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(generation.recall_unavailable_reason || "Load this exact request into the generation panel")}">Recall</button>
+        <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(recallTitle)}">Recall</button>
         <button type="button" class="button destructive" data-action="delete-favorite" data-generation-id="${escapeHtml(generation.id)}">Delete</button>
       </div>
     </div>

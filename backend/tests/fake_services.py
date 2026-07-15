@@ -610,15 +610,23 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         return Response(status_code=204)
 
     @app.post("/upload/image")
-    async def upload_image(image: UploadFile = File(...)) -> dict[str, str]:
+    async def upload_image(
+        image: UploadFile = File(...),
+        type: str = Form("input"),
+        subfolder: str = Form(""),
+        overwrite: str = Form("false"),
+    ) -> dict[str, str]:
         require_comfy()
+        if type != "input" or overwrite != "false":
+            raise HTTPException(status_code=400)
         content = await image.read()
         if not content:
             raise HTTPException(status_code=400)
         name = image.filename or f"upload-{uuid.uuid4()}.png"
-        state.uploaded.append(name)
-        state.output_files[(name, "", "input")] = content
-        return {"name": name, "subfolder": "", "type": "input"}
+        locator = f"{subfolder}/{name}" if subfolder else name
+        state.uploaded.append(locator)
+        state.output_files[(name, subfolder, "input")] = content
+        return {"name": name, "subfolder": subfolder, "type": "input"}
 
     @app.get("/view")
     async def view(filename: str, subfolder: str = "", type: str = "output") -> Response:

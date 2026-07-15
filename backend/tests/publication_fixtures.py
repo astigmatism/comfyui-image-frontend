@@ -14,8 +14,10 @@ ManifestMutator = Callable[[JsonObject], None]
 
 KREA_STEM = "workflows/comfyui-image-frontend/Krea 2 NSFW V4"
 GENERIC_STEM = "workflows/comfyui-image-frontend/Generic Landscape"
+IMAGE_STEM = "workflows/comfyui-image-frontend/Moody Desire Image Input"
 KREA_PUBLICATION_ID = "11111111-1111-4111-8111-111111111111"
 GENERIC_PUBLICATION_ID = "22222222-2222-4222-8222-222222222222"
+IMAGE_PUBLICATION_ID = "33333333-3333-4333-8333-333333333333"
 NO_PUBLISHER_WARNING = (
     "No CIF publisher output is declared; complete native history outputs are collected "
     "as unmapped outputs."
@@ -86,6 +88,17 @@ def object_info_fixture() -> JsonObject:
                 }
             }
         },
+        "CIFImageParameter": {
+            "input": {
+                "required": {
+                    "image": [["fixture.png"], {"image_upload": True}],
+                    "max_bytes": ["INT"],
+                    "max_width": ["INT"],
+                    "max_height": ["INT"],
+                }
+            },
+            "output": ["IMAGE", "MASK"],
+        },
         "CIFPublishImage": {"input": {"required": {"images": ["IMAGE"]}}},
         "FakeImageOutput": {
             "input": {
@@ -123,6 +136,42 @@ def _publisher_inputs(
         "cardinality": "many",
         "description": description,
     }
+
+
+def add_image_input(manifest: JsonObject, workflow: JsonObject, api: JsonObject) -> None:
+    limits = {"max_bytes": 20 * 1024 * 1024, "max_width": 8192, "max_height": 8192}
+    api["18"] = {
+        "class_type": "CIFImageParameter",
+        "inputs": {"image": "fixture.png", **limits},
+    }
+    workflow.setdefault("nodes", []).append(
+        {"id": 18, "type": "CIFImageParameter", "widgets_values": ["fixture.png"]}
+    )
+    manifest["interface"]["inputs"].insert(
+        0,
+        {
+            "id": "reference_image",
+            "type": "image",
+            "instance_uuid": "93cb0d2e-3d0f-4c3f-9ac6-f9a1ff289d61",
+            "label": "Reference Image",
+            "description": "Required source image whose content and dimensions guide the edit.",
+            "semantic_role": "reference_image",
+            "required": True,
+            "advanced": False,
+            "group": "Basic",
+            "order": 5,
+            "bindings": [{"node_id": "18", "input": "image", "class_type": "CIFImageParameter"}],
+            "media": {
+                "upload_route": "/upload/image",
+                "storage_type": "input",
+                "accepted_mime_types": ["image/png", "image/jpeg", "image/webp"],
+                **limits,
+                "animated": False,
+                "returns_mask": True,
+            },
+        },
+    )
+    manifest["dependencies"]["class_types"] = sorted({node["class_type"] for node in api.values()})
 
 
 def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
@@ -532,6 +581,19 @@ def _generic_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject
     return stem, workflow, api, manifest
 
 
+def _image_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
+    _, workflow, api, manifest = _generic_documents(publication_id)
+    stem = IMAGE_STEM
+    workflow["id"] = "fixture-image-input-editable"
+    manifest["source_id"] = f"{stem}.json"
+    manifest["workflow"]["path"] = f"{stem}.json"
+    manifest["api"]["path"] = f"{stem}.api.json"
+    manifest["manifest"]["path"] = f"{stem}.interface.json"
+    manifest["published_at"] = "2026-07-15T20:03:03Z"
+    add_image_input(manifest, workflow, api)
+    return stem, workflow, api, manifest
+
+
 def build_publication_bundle(
     kind: str = "krea",
     *,
@@ -551,6 +613,8 @@ def build_publication_bundle(
         stem, workflow, api, manifest = _krea_documents(publication_id or KREA_PUBLICATION_ID)
     elif kind == "generic":
         stem, workflow, api, manifest = _generic_documents(publication_id or GENERIC_PUBLICATION_ID)
+    elif kind == "image":
+        stem, workflow, api, manifest = _image_documents(publication_id or IMAGE_PUBLICATION_ID)
     else:
         raise ValueError(f"unknown fixture publication kind: {kind}")
     workflow = copy.deepcopy(workflow)

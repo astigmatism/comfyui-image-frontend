@@ -689,10 +689,17 @@ class QueueWorker:
                     raise RuntimeError("referenced upload is unavailable")
                 if upload_id not in cache:
                     content = await asyncio.to_thread(self.assets.read, upload.storage_path)
+                    extension = {
+                        "image/png": ".png",
+                        "image/jpeg": ".jpg",
+                        "image/webp": ".webp",
+                    }.get(upload.mime_type, ".png")
                     cache[upload_id] = await self.comfyui.upload_image(
                         content,
-                        f"{upload.id}.png",
+                        f"{upload.id}{extension}",
                         kind=upload.kind.value,
+                        mime_type=upload.mime_type,
+                        subfolder=f"comfyui-image-frontend/{generation_id}",
                     )
                 return cache[upload_id]
             if isinstance(value, dict):

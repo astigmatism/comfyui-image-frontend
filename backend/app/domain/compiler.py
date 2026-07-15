@@ -159,11 +159,22 @@ class WorkflowCompiler:
 
         graph = copy.deepcopy(dict(api_document))
         before = canonical_json_bytes(api_document)
+        selected_uploads: dict[str, str] = {}
         for input_id, declaration in inputs.items():
             if input_id not in effective:
                 continue
             value = effective[input_id]
-            graph_value: Any = int(value) if declaration.get("type") == "seed" else value
+            input_type = declaration.get("type")
+            if input_type == "image":
+                asset_id = value.get("asset_id") if isinstance(value, Mapping) else None
+                if not isinstance(asset_id, str):
+                    raise ContractError(
+                        "manifest_invalid", f"Image parameter {input_id!r} is internally invalid."
+                    )
+                selected_uploads[input_id] = asset_id
+                graph_value: Any = {"__app_upload_id__": asset_id}
+            else:
+                graph_value = int(value) if input_type == "seed" else value
             bindings = declaration.get("bindings")
             if not isinstance(bindings, list) or not bindings:
                 raise ContractError(
@@ -186,6 +197,13 @@ class WorkflowCompiler:
                     raise ContractError(
                         "manifest_invalid",
                         f"Choice parameter {input_id!r} does not target its declaration value.",
+                    )
+                if declaration.get("type") == "image" and (
+                    input_name != "image" or node.get("class_type") != "CIFImageParameter"
+                ):
+                    raise ContractError(
+                        "manifest_invalid",
+                        f"Image parameter {input_id!r} no longer targets CIFImageParameter.image.",
                     )
                 node_inputs = node.get("inputs")
                 if not isinstance(node_inputs, dict) or input_name not in node_inputs:
@@ -214,7 +232,7 @@ class WorkflowCompiler:
             resolved_seeds=resolved_seeds,
             compiled_graph=graph,
             compiled_graph_hash=sha256_json(graph),
-            selected_uploads={},
+            selected_uploads=selected_uploads,
             requested_outputs=[],
             final_prompt=str(effective[positive]),
             selected_preset=None,
@@ -305,6 +323,13 @@ def _validate_value(declaration: Mapping[str, Any], value: Any) -> Any:
         if not isinstance(value, str) or value not in options:
             raise ValueError(f"Choose one of: {', '.join(options)}.")
         return value
+    if input_type == "image":
+        if not isinstance(value, Mapping) or set(value) != {"asset_id"}:
+            raise ValueError("Choose or upload an image.")
+        asset_id = value.get("asset_id")
+        if not isinstance(asset_id, str) or not asset_id or len(asset_id) > 255:
+            raise ValueError("Choose or upload an image.")
+        return {"asset_id": asset_id}
     raise ContractError("manifest_invalid", f"Unsupported accepted input type {input_type!r}.")
 
 

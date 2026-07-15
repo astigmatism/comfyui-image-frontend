@@ -122,6 +122,30 @@ const publishedInterface = {
   ],
 };
 
+test("image controls require an opaque asset and serialize no preview metadata", () => {
+  const imageInterface = {
+    inputs: [{ id: "reference_image", type: "image", required: true }],
+  };
+  assert.match(clientValidate(imageInterface, {}).reference_image, /Required/);
+  assert.match(
+    clientValidate(imageInterface, { reference_image: { preview_url: "/private" } })
+      .reference_image,
+    /valid image/,
+  );
+  assert.deepEqual(
+    parametersForRequest(imageInterface, {
+      reference_image: {
+        asset_id: "opaque-asset",
+        preview_url: "/api/uploads/opaque-asset/content",
+        width: 384,
+        height: 640,
+        sha256: "diagnostic-only",
+      },
+    }),
+    { reference_image: { asset_id: "opaque-asset" } },
+  );
+});
+
 test("generations sort by request acceptance time newest first with the API tie-breaker", () => {
   const generations = [
     { id: "older", accepted_at: "2026-07-14T12:00:00.100000Z" },
@@ -286,6 +310,62 @@ test("recall immediately replaces source, controls, seed, and submitted prompt s
   assert.deepEqual(recalled.fieldErrors, {});
   assert.equal(recalled.promptAssistant.available, true);
   assert.equal(recalled.promptAssistant.historicalModel, "m1");
+});
+
+test("recall preserves the current source and migrates compatible historical metadata when its source is gone", () => {
+  const currentContract = {
+    inputs: [
+      { id: "current_prompt", type: "text", semantic_role: "positive_prompt", default: "" },
+      { id: "current_width", type: "integer", semantic_role: "width", default: 512 },
+      { id: "current_seed", type: "seed", semantic_role: "seed" },
+      { id: "current_style", type: "text", default: "cinematic" },
+    ],
+  };
+  const state = {
+    activeSourceKey: "current-source",
+    activeProfileId: "current-source",
+    parameters: {
+      current_prompt: "unsaved",
+      current_width: 512,
+      current_seed: { mode: "random", value: "" },
+      current_style: "watercolor",
+    },
+    explicitParameterIds: new Set(["current_style"]),
+    selectedRevision: { publication_id: "current-revision" },
+    promptAssistant: { available: true, message: null },
+  };
+  const recalled = overwriteWithRecall(
+    state,
+    {
+      source_available: false,
+      source_key: "missing-source",
+      revision: { publication_id: "historical-revision" },
+      parameters: {
+        old_prompt: "historical prompt",
+        old_width: 1024,
+        old_seed: "424242",
+      },
+      input_definitions: [
+        { id: "old_prompt", type: "text", semantic_role: "positive_prompt" },
+        { id: "old_width", type: "integer", semantic_role: "width" },
+        { id: "old_seed", type: "seed", semantic_role: "seed" },
+      ],
+    },
+    currentContract,
+  );
+  assert.equal(recalled.activeSourceKey, "current-source");
+  assert.equal(recalled.activeProfileId, "current-source");
+  assert.deepEqual(recalled.selectedRevision, { publication_id: "current-revision" });
+  assert.deepEqual(recalled.parameters, {
+    current_prompt: "historical prompt",
+    current_width: 1024,
+    current_seed: { mode: "fixed", value: "424242" },
+    current_style: "watercolor",
+  });
+  assert.deepEqual(
+    new Set(recalled.explicitParameterIds),
+    new Set(["current_prompt", "current_width", "current_seed", "current_style"]),
+  );
 });
 
 test("contract defaults are cloned and capabilities disable rather than hide controls", () => {

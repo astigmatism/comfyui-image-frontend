@@ -9,9 +9,55 @@ from app.domain.publication import canonical_json_bytes, validate_publication
 from app.errors import AppError, ContractError
 from tests.publication_fixtures import (
     PublicationBundle,
+    add_image_input,
     build_publication_bundle,
     object_info_fixture,
 )
+
+
+def test_compile_patches_only_trusted_image_binding_with_owned_asset_placeholder() -> None:
+    source = publication(build_publication_bundle(mutate_artifacts=add_image_input))
+    original = canonical_json_bytes(source.api_document)
+    requested = {
+        **required(),
+        "reference_image": {"asset_id": "11111111-2222-4333-8444-555555555555"},
+    }
+
+    result = WorkflowCompiler(seed_resolver=lambda minimum, maximum: 7).compile(
+        contract=source.private_contract,
+        api_document=source.api_document,
+        requested_controls=requested,
+    )
+
+    assert result.selected_uploads == {"reference_image": "11111111-2222-4333-8444-555555555555"}
+    assert result.effective_controls["reference_image"] == requested["reference_image"]
+    assert result.compiled_graph["18"]["inputs"]["image"] == {
+        "__app_upload_id__": "11111111-2222-4333-8444-555555555555"
+    }
+    assert result.compiled_graph["18"]["inputs"]["max_width"] == 8192
+    assert canonical_json_bytes(source.api_document) == original
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "input/example.png",
+        {"url": "https://example.invalid/image.png"},
+        {"asset_id": "owned", "subfolder": "private"},
+    ],
+)
+def test_compile_rejects_missing_paths_urls_and_extra_image_locator_fields(value) -> None:  # type: ignore[no-untyped-def]
+    source = publication(build_publication_bundle(mutate_artifacts=add_image_input))
+    with pytest.raises(AppError) as exc:
+        WorkflowCompiler().compile(
+            contract=source.private_contract,
+            api_document=source.api_document,
+            requested_controls={**required(), "reference_image": value},
+        )
+
+    assert exc.value.code == "parameter_validation_failed"
+    assert "reference_image" in exc.value.fields
 
 
 def publication(bundle: PublicationBundle | None = None):  # type: ignore[no-untyped-def]

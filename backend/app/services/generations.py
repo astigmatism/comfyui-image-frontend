@@ -55,6 +55,11 @@ from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
 from .workflow_registry import WorkflowRegistry
 
+RECALL_SOURCE_WARNING = (
+    "The original generation source isn't currently available. Your currently selected source "
+    "will stay selected, and compatible historical settings will be recalled."
+)
+
 
 @dataclass(frozen=True)
 class _GenerationSummaryRow:
@@ -268,7 +273,25 @@ class GenerationService:
             preset_id=request.preset_id,
             requested_outputs=request.requested_outputs,
         )
-        self._verify_uploads(session, user, profile, result)
+        uploads = self._verify_uploads(session, user, profile, result)
+        inputs = {
+            str(item.get("id")): item
+            for item in profile.resolved_contract_json.get("inputs", [])
+            if isinstance(item, dict)
+        }
+        for control_id, upload in uploads.items():
+            if inputs.get(control_id, {}).get("type") != "image":
+                continue
+            requested = result.effective_controls.get(control_id)
+            asset_id = requested.get("asset_id") if isinstance(requested, dict) else upload.id
+            result.effective_controls[control_id] = {
+                "asset_id": asset_id,
+                "mime_type": upload.mime_type,
+                "bytes": upload.byte_size,
+                "width": upload.width,
+                "height": upload.height,
+                "sha256": upload.sha256,
+            }
         return result
 
     def _verify_uploads(
@@ -280,7 +303,7 @@ class GenerationService:
     ) -> dict[str, Upload]:
         controls = {
             str(item.get("id")): item
-            for item in profile.resolved_contract_json.get("controls", [])
+            for item in profile.resolved_contract_json.get("inputs", [])
             if isinstance(item, dict)
         }
         result: dict[str, Upload] = {}
@@ -304,6 +327,45 @@ class GenerationService:
                     status_code=422,
                     fields={control_id: "Wrong upload type."},
                 )
+            if expected == "image":
+                media = controls[control_id].get("media")
+                if not isinstance(media, dict):
+                    raise AppError(
+                        "source_unavailable",
+                        "The accepted image input contract is unavailable.",
+                        status_code=409,
+                    )
+                accepted_mime_types = media.get("accepted_mime_types", [])
+                if upload.mime_type not in accepted_mime_types:
+                    raise AppError(
+                        "parameter_validation_failed",
+                        "One or more published parameters are invalid.",
+                        status_code=422,
+                        fields={
+                            control_id: "Choose a PNG, JPEG, or WebP image accepted by this source."
+                        },
+                    )
+                if upload.byte_size > media.get("max_bytes", 0):
+                    raise AppError(
+                        "parameter_validation_failed",
+                        "One or more published parameters are invalid.",
+                        status_code=422,
+                        fields={control_id: "Image exceeds this source's byte limit."},
+                    )
+                if upload.width > media.get("max_width", 0):
+                    raise AppError(
+                        "parameter_validation_failed",
+                        "One or more published parameters are invalid.",
+                        status_code=422,
+                        fields={control_id: "Image exceeds this source's maximum width."},
+                    )
+                if upload.height > media.get("max_height", 0):
+                    raise AppError(
+                        "parameter_validation_failed",
+                        "One or more published parameters are invalid.",
+                        status_code=422,
+                        fields={control_id: "Image exceeds this source's maximum height."},
+                    )
             result[control_id] = upload
         return result
 
@@ -629,10 +691,10 @@ class GenerationService:
             expected_width=_positive_int(row.expected_width),
             expected_height=_positive_int(row.expected_height),
             error_message=row.error_message,
-            recall_available=exact,
-            recall_unavailable_reason=(
-                None if exact else "Original workflow version is not currently available."
-            ),
+            recall_available=True,
+            recall_source_available=exact,
+            recall_warning=None if exact else RECALL_SOURCE_WARNING,
+            recall_unavailable_reason=None,
             is_favorite=row.id in context.favorite_generation_ids,
             cancel_allowed=(
                 row.status in ACTIVE_STATUSES and row.status != GenerationStatus.CANCEL_REQUESTED
@@ -717,10 +779,10 @@ class GenerationService:
             expected_width=expected_width,
             expected_height=expected_height,
             error_message=generation.error_message,
-            recall_available=exact is not None,
-            recall_unavailable_reason=(
-                None if exact else "Original workflow version is not currently available."
-            ),
+            recall_available=True,
+            recall_source_available=exact is not None,
+            recall_warning=None if exact is not None else RECALL_SOURCE_WARNING,
+            recall_unavailable_reason=None,
             is_favorite=session.scalar(
                 select(Favorite.id).where(
                     Favorite.owner_id == generation.owner_id,
@@ -899,11 +961,67 @@ class GenerationService:
         )
 
     def recall(self, session: Session, generation: Generation) -> RecallResponse:
+        candidate = copy.deepcopy(generation.effective_controls_json)
+        image_input_ids = {
+            str(item.get("id"))
+            for item in generation.resolved_contract_json.get("inputs", [])
+            if isinstance(item, Mapping) and item.get("type") == "image"
+        }
+        for input_id in image_input_ids:
+            value = candidate.get(input_id)
+            asset_id = value.get("asset_id") if isinstance(value, Mapping) else None
+            if isinstance(asset_id, str) and asset_id:
+                candidate[input_id] = {"asset_id": asset_id}
+        candidate.update({key: str(value) for key, value in generation.resolved_seeds_json.items()})
+        identity = WorkflowIdentity(
+            workflow_id=generation.workflow_id,
+            workflow_version=generation.workflow_version,
+            ui_graph_sha256=generation.ui_graph_sha256,
+            api_graph_sha256=generation.api_graph_sha256,
+            contract_sha256=generation.contract_sha256,
+        )
+        source_data = generation.generation_source_json or {}
+        source_key = source_data.get("source_key")
+        if not isinstance(source_key, str):
+            source_key = None
+        revision_values = {
+            "publication_id": source_data.get("publication_id"),
+            "workflow_sha256": source_data.get("workflow_sha256"),
+            "api_sha256": source_data.get("api_sha256"),
+            "manifest_sha256": source_data.get("manifest_sha256"),
+        }
+        historical_revision = (
+            SourceRevision(**revision_values)
+            if all(isinstance(value, str) and value for value in revision_values.values())
+            else None
+        )
+        prompt_run = session.scalar(
+            select(PromptAssistantRun).where(PromptAssistantRun.generation_id == generation.id)
+        )
+        assistant = None
+        if prompt_run:
+            assistant = {
+                "mode": prompt_run.mode,
+                "creative_direction": prompt_run.creative_direction,
+                "ollama_output": prompt_run.ollama_output,
+                "model": prompt_run.model_name,
+            }
+        historical = {
+            "identity": identity,
+            "controls": candidate,
+            "source_key": source_key,
+            "revision": historical_revision,
+            "parameters": candidate,
+            "input_definitions": self._input_definitions(generation),
+            "prompt_assistant": assistant,
+        }
         profile = self._exact_profile(session, generation)
         if profile is None or not profile.source_key or not profile.publication_id:
             return RecallResponse(
-                available=False,
-                reason="Original published source revision is not currently available.",
+                available=True,
+                source_available=False,
+                reason=RECALL_SOURCE_WARNING,
+                **historical,
             )
         owner = session.get(User, generation.owner_id)
         if owner is None:
@@ -911,8 +1029,6 @@ class GenerationService:
                 available=False,
                 reason="The generation owner is no longer available.",
             )
-        candidate = copy.deepcopy(generation.effective_controls_json)
-        candidate.update({key: str(value) for key, value in generation.resolved_seeds_json.items()})
         revision = SourceRevision(
             publication_id=profile.publication_id,
             workflow_sha256=profile.ui_graph_sha256,
@@ -939,34 +1055,21 @@ class GenerationService:
             exact = False
         if not exact:
             return RecallResponse(
-                available=False,
-                reason="Historical controls no longer compile to the exact original request.",
+                available=True,
+                source_available=False,
+                reason=RECALL_SOURCE_WARNING,
+                **historical,
             )
-        prompt_run = session.scalar(
-            select(PromptAssistantRun).where(PromptAssistantRun.generation_id == generation.id)
-        )
-        assistant = None
-        if prompt_run:
-            assistant = {
-                "mode": prompt_run.mode,
-                "creative_direction": prompt_run.creative_direction,
-                "ollama_output": prompt_run.ollama_output,
-                "model": prompt_run.model_name,
-            }
         return RecallResponse(
             available=True,
+            source_available=True,
             profile_id=profile.id,
-            identity=WorkflowIdentity(
-                workflow_id=profile.workflow_id,
-                workflow_version=profile.workflow_version,
-                ui_graph_sha256=profile.ui_graph_sha256,
-                api_graph_sha256=profile.api_graph_sha256,
-                contract_sha256=profile.contract_sha256,
-            ),
+            identity=identity,
             controls=candidate,
             source_key=profile.source_key,
             revision=revision,
             parameters=candidate,
+            input_definitions=self._input_definitions(generation),
             prompt_assistant=assistant,
         )
 

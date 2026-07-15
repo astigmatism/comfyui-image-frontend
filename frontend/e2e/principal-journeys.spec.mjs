@@ -1357,3 +1357,137 @@ test("working card reserves final aspect ratio and cancels in place", async ({ p
   expect(frame).not.toBeNull();
   expect(Math.abs(frame.width / frame.height - 384 / 512)).toBeLessThan(0.02);
 });
+
+test("required image input accepts Browse and a retained gallery image drag", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+
+  await selectPublishedSource(page, "Generic Landscape");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("gallery source for image input");
+  const sourceResponse = await generateAndExpectAccepted(page);
+  const sourceGeneration = await sourceResponse.json();
+  const sourceCard = page.locator(
+    `.gallery-card[data-generation-id="${sourceGeneration.id}"]`,
+  );
+  const sourceImage = sourceCard.locator("[data-gallery-artifact-id]");
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`/api/generations/${sourceGeneration.id}`);
+        const generation = await response.json();
+        return {
+          status: generation.status,
+          error_code: generation.error_code || null,
+          error_message: generation.error_message || null,
+        };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({ status: "succeeded", error_code: null, error_message: null });
+  await expect(sourceImage).toBeVisible({ timeout: 30_000 });
+
+  await selectPublishedSource(page, "Moody Desire Image Input");
+  const dropzone = page.locator('[data-image-drop-control="reference_image"]');
+  const browseInput = page.locator('input[type="file"][data-image-input="true"]');
+  await expect(dropzone).toContainText("Drop an image here");
+  await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
+
+  const browseUpload = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/uploads/reference-images" &&
+      response.request().method() === "POST",
+  );
+  await browseInput.setInputFiles({
+    name: "browse-reference.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  expect((await browseUpload).status()).toBe(200);
+  await expect(dropzone).toContainText("browse-reference.png");
+  await expect(dropzone.locator(".image-input-selection img")).toBeVisible();
+
+  await dropzone.getByRole("button", { name: "Remove" }).click();
+  await expect(dropzone).toContainText("Drop an image here");
+  const galleryUpload = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.startsWith(
+        "/api/uploads/reference-images/from-artifact/",
+      ) && response.request().method() === "POST",
+  );
+  await sourceImage.dragTo(dropzone);
+  expect((await galleryUpload).status()).toBe(200);
+  await expect(dropzone).toContainText("Gallery image");
+  await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
+
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("edit using the retained gallery image");
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  const editedResponse = await generateAndExpectAccepted(page);
+  const editedGeneration = await editedResponse.json();
+  const request = await requestPromise;
+  const parameters = request.postDataJSON().parameters;
+  expect(parameters.reference_image).toEqual({ asset_id: expect.any(String) });
+  expect(Object.keys(parameters.reference_image)).toEqual(["asset_id"]);
+  const retainedAssetId = parameters.reference_image.asset_id;
+
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`/api/generations/${editedGeneration.id}`);
+        return (await response.json()).status;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe("succeeded");
+
+  await selectPublishedSource(page, "Generic Landscape");
+  await expect(dropzone).toHaveCount(0);
+  const editedCard = page.locator(
+    `.gallery-card[data-generation-id="${editedGeneration.id}"]`,
+  );
+  const recallResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+        `/api/generations/${editedGeneration.id}/recall` &&
+      response.request().method() === "GET",
+  );
+  await editedCard.getByRole("button", { name: "Recall settings" }).click();
+  const recallResponse = await recallResponsePromise;
+  expect(recallResponse.status()).toBe(200);
+  const recalled = await recallResponse.json();
+  expect(recalled.source_available).toBe(true);
+  expect(recalled.parameters.reference_image).toEqual({ asset_id: retainedAssetId });
+
+  await expect(dropzone).toBeVisible();
+  await expect(dropzone).toContainText("Image selected");
+  const recalledPreview = dropzone.locator(".image-input-selection img");
+  await expect(recalledPreview).toBeVisible();
+  await expect
+    .poll(() => recalledPreview.evaluate((image) => image.complete && image.naturalWidth > 0))
+    .toBe(true);
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
+    "edit using the retained gallery image",
+  );
+
+  const regenerationRequestPromise = page.waitForRequest(
+    (regenerationRequest) =>
+      new URL(regenerationRequest.url()).pathname === "/api/generations" &&
+      regenerationRequest.method() === "POST",
+  );
+  await generateAndExpectAccepted(page);
+  const regenerationRequest = await regenerationRequestPromise;
+  expect(regenerationRequest.postDataJSON().parameters.reference_image).toEqual({
+    asset_id: retainedAssetId,
+  });
+});

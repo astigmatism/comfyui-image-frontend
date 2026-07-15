@@ -17,7 +17,7 @@ from ..dependencies import (
     require_ready_user,
 )
 from ..errors import AppError
-from ..models import Upload, UploadKind
+from ..models import Artifact, Upload, UploadKind
 from ..schemas import UploadResponse
 from ..services.assets import AssetStore, StoredImage
 
@@ -52,6 +52,7 @@ def _insert_upload_metadata(
             id=upload.id,
             kind=upload.kind.value,
             mime_type=upload.mime_type,
+            byte_size=upload.byte_size,
             width=upload.width,
             height=upload.height,
             sha256=upload.sha256,
@@ -130,6 +131,30 @@ async def _store_upload(
     )
 
 
+async def _store_reference_upload(
+    *,
+    file: UploadFile,
+    request: Request,
+    session: Session,
+    context: AuthContext,
+) -> UploadResponse:
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise AppError("upload_invalid", "Only image uploads are accepted.", status_code=415)
+    container = get_container(request)
+    owner_id = context.user.id
+    original_name = PurePath(file.filename or "reference-image").name[:255]
+    session.close()
+    stored = await container.assets.store_reference_upload_async(file.file)
+    return await _store_upload_metadata(
+        session_factory=container.db.session_factory,
+        assets=container.assets,
+        owner_id=owner_id,
+        kind=UploadKind.IMAGE,
+        original_name=original_name,
+        stored=stored,
+    )
+
+
 @router.post("/images", response_model=UploadResponse)
 async def upload_image(
     request: Request,
@@ -151,6 +176,56 @@ async def upload_mask(
 ) -> UploadResponse:
     return await _store_upload(
         kind="mask", file=file, request=request, session=session, context=context
+    )
+
+
+@router.post("/reference-images", response_model=UploadResponse)
+async def upload_reference_image(
+    request: Request,
+    file: Annotated[UploadFile, File()],
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> UploadResponse:
+    return await _store_reference_upload(
+        file=file, request=request, session=session, context=context
+    )
+
+
+@router.post("/reference-images/from-artifact/{artifact_id}", response_model=UploadResponse)
+async def reference_image_from_artifact(
+    artifact_id: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> UploadResponse:
+    artifact = session.scalar(
+        select(Artifact).where(
+            Artifact.id == artifact_id,
+            Artifact.owner_id == context.user.id,
+            Artifact.kind == "image",
+        )
+    )
+    if artifact is None:
+        raise AppError("not_found", "Gallery image was not found.", status_code=404)
+    container = get_container(request)
+    if artifact.byte_size > container.settings.upload_max_bytes:
+        raise AppError(
+            "upload_too_large",
+            f"Gallery image exceeds the {container.settings.upload_max_bytes:,}-byte upload limit.",
+        )
+    owner_id = context.user.id
+    storage_path = artifact.storage_path
+    original_name = PurePath(artifact.source_filename or f"gallery-{artifact.id}").name[:255]
+    session.close()
+    content = await asyncio.to_thread(container.assets.read, storage_path)
+    stored = await container.assets.store_reference_content_async(content)
+    return await _store_upload_metadata(
+        session_factory=container.db.session_factory,
+        assets=container.assets,
+        owner_id=owner_id,
+        kind=UploadKind.IMAGE,
+        original_name=original_name,
+        stored=stored,
     )
 
 

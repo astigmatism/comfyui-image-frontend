@@ -66,6 +66,47 @@ class AssetStore:
 
         return await self._store_async(lambda: self.store_upload(source, kind=kind))
 
+    def store_reference_upload(self, source: BinaryIO) -> StoredImage:
+        return self.store_reference_content(_read_limited(source, self.settings.upload_max_bytes))
+
+    def store_reference_content(self, content: bytes) -> StoredImage:
+        if not content:
+            raise AppError("upload_invalid", "Upload is empty.")
+        if len(content) > self.settings.upload_max_bytes:
+            raise AppError(
+                "upload_too_large",
+                f"Upload exceeds the {self.settings.upload_max_bytes:,}-byte limit.",
+            )
+        image = self._decode_image(content, require_static=True)
+        detected_format = str(image.format or "").upper()
+        mime_and_extension = {
+            "PNG": ("image/png", ".png"),
+            "JPEG": ("image/jpeg", ".jpg"),
+            "WEBP": ("image/webp", ".webp"),
+        }.get(detected_format)
+        if mime_and_extension is None:
+            raise AppError(
+                "upload_invalid", "Reference images must be static PNG, JPEG, or WebP files."
+            )
+        mime_type, extension = mime_and_extension
+        relative = f"uploads/{uuid.uuid4()}{extension}"
+        self._atomic_write(relative, content)
+        return StoredImage(
+            relative_path=relative,
+            thumbnail_path=None,
+            mime_type=mime_type,
+            byte_size=len(content),
+            width=image.width,
+            height=image.height,
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+    async def store_reference_upload_async(self, source: BinaryIO) -> StoredImage:
+        return await self._store_async(lambda: self.store_reference_upload(source))
+
+    async def store_reference_content_async(self, content: bytes) -> StoredImage:
+        return await self._store_async(lambda: self.store_reference_content(content))
+
     def store_artifact(
         self, content: bytes, *, generation_id: str, kind: str = "image"
     ) -> StoredImage:
@@ -145,7 +186,13 @@ class AssetStore:
                 await asyncio.shield(self.delete_stored_async(stored))
             raise
 
-    def _decode_image(self, content: bytes, *, max_pixels: int | None = None) -> Image.Image:
+    def _decode_image(
+        self,
+        content: bytes,
+        *,
+        max_pixels: int | None = None,
+        require_static: bool = False,
+    ) -> Image.Image:
         limit = max_pixels or self.settings.upload_max_pixels
         try:
             with Image.open(io.BytesIO(content)) as probe:
@@ -155,13 +202,22 @@ class AssetStore:
                         "upload_invalid",
                         f"Image exceeds the decompressed pixel limit of {limit:,} pixels.",
                     )
+                if require_static and getattr(probe, "n_frames", 1) != 1:
+                    raise AppError(
+                        "upload_invalid",
+                        "Animated or multi-frame reference images are not supported.",
+                    )
                 probe.verify()
             image = Image.open(io.BytesIO(content))
+            if require_static and getattr(image, "n_frames", 1) != 1:
+                raise AppError(
+                    "upload_invalid", "Animated or multi-frame reference images are not supported."
+                )
             image.load()
             return image
         except AppError:
             raise
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
             raise AppError("upload_invalid", "File is not a safely decodable image.") from exc
 
     def _thumbnail(self, image: Image.Image, generation_id: str) -> str:

@@ -94,7 +94,7 @@ Canonical generation input is `{source_key, revision?, parameters, prompt_assist
 - verification that the cached graph remained byte-for-byte/logically unchanged;
 - positive-prompt extraction and compiled graph SHA-256.
 
-Seed values remain decimal strings in public/effective state so values beyond JavaScript's safe integer range round-trip exactly; the cloned graph receives the validated integer. Choice values remain stable public IDs throughout application state. Only the trusted choice declaration's prompt-local `value` is patched; private `options_json` mappings and downstream model/file inputs remain frozen and server-side.
+Seed values remain decimal strings in public/effective state so values beyond JavaScript's safe integer range round-trip exactly; the cloned graph receives the validated integer. Choice values remain stable public IDs throughout application state. Only the trusted choice declaration's prompt-local `value` is patched; private `options_json` mappings and downstream model/file inputs remain frozen and server-side. Required image inputs remain owner-scoped application assets until dispatch. The worker uploads their validated bytes under a collision-resistant per-job ComfyUI input subfolder and replaces only the cloned graph's trusted `CIFImageParameter.image` placeholder.
 
 One transaction inserts the generation, queue sequence, source revision snapshot, requested/effective parameters, resolved seeds, compiled graph/hash, Prompt Assistant linkage, and initial durable event. Only then does the API return a card.
 

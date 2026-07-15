@@ -161,7 +161,7 @@ Canonical request:
 
 `revision` is optional for a fresh caller but recommended for a UI selection. If the selected source was republished, a mismatch returns HTTP 409 with `source_republished`; the backend never compiles against a silently changed graph.
 
-`parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Optional choices treat omission or `null` as default selection, but reject empty strings, labels, private filenames, and values absent from the current publication. If a companion strength is omitted, the selected option's `default_strength` wins before the numeric input's ordinary default; an explicit non-null numeric value always wins. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings.
+`parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Optional choices treat omission or `null` as default selection, but reject empty strings, labels, private filenames, and values absent from the current publication. If a companion strength is omitted, the selected option's `default_strength` wins before the numeric input's ordinary default; an explicit non-null numeric value always wins. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings. A required image parameter is `{ "asset_id": "opaque-owner-scoped-id" }`; missing assets, unauthorized assets, paths, URLs, and ComfyUI locators fail validation.
 
 Successful validation:
 
@@ -278,6 +278,8 @@ Recall returns `available`, an unavailable reason when relevant, and—when exac
 | Method | Route | Purpose |
 |---|---|---|
 | `POST` | `/api/uploads/images` | Decode/store owner-scoped source image |
+| `POST` | `/api/uploads/reference-images` | Validate and preserve a static PNG/JPEG/WebP reference image |
+| `POST` | `/api/uploads/reference-images/from-artifact/{artifact_id}` | Copy an authorized retained gallery image into an owner-scoped reference asset |
 | `POST` | `/api/uploads/masks` | Decode/store owner-scoped mask |
 | `GET` | `/api/uploads/{upload_id}/content` | Authorized source preview/original |
 | `GET` | `/api/artifacts/{artifact_id}/content` | Authorized retained output |

@@ -11,6 +11,7 @@ from app.errors import AppError
 from app.models import GenerationStatus
 from app.services.assets import AssetStore
 from app.services.queue_worker import QueueWorker
+from PIL import Image
 from tests.fake_services import make_png
 
 
@@ -38,6 +39,43 @@ def test_asset_store_checks_images_pixels_and_path_traversal(settings_factory) -
     with pytest.raises(AppError) as traversal:
         store.open("../outside.txt")
     assert traversal.value.code == "unsafe_path"
+
+
+def test_reference_image_store_preserves_static_png_jpeg_and_webp_and_rejects_animation(
+    settings_factory,
+) -> None:
+    settings = settings_factory(upload_max_pixels=10_000, upload_max_bytes=100_000)
+    store = AssetStore(settings)
+
+    for format_name, expected_mime in (
+        ("PNG", "image/png"),
+        ("JPEG", "image/jpeg"),
+        ("WEBP", "image/webp"),
+    ):
+        buffer = BytesIO()
+        Image.new("RGB", (80, 60), (20, 40, 60)).save(buffer, format=format_name)
+        content = buffer.getvalue()
+        saved = store.store_reference_upload(BytesIO(content))
+        assert saved.mime_type == expected_mime
+        assert saved.width == 80 and saved.height == 60
+        assert store.read(saved.relative_path) == content
+
+    animated = BytesIO()
+    frames = [
+        Image.new("RGB", (32, 32), (255, 0, 0)),
+        Image.new("RGB", (32, 32), (0, 0, 255)),
+    ]
+    frames[0].save(
+        animated,
+        format="WEBP",
+        save_all=True,
+        append_images=frames[1:],
+        duration=100,
+        loop=0,
+    )
+    with pytest.raises(AppError, match="multi-frame") as rejected:
+        store.store_reference_upload(BytesIO(animated.getvalue()))
+    assert rejected.value.code == "upload_invalid"
 
 
 async def test_cancelled_asset_storage_finishes_and_removes_unowned_files(

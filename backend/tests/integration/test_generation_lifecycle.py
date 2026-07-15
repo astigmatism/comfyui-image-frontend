@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
 from app.main import create_app
 from fastapi.testclient import TestClient
 from tests.conftest import csrf
+from tests.fake_services import make_png
 from tests.helpers import (
     create_generation,
     generation_payload,
@@ -13,7 +15,11 @@ from tests.helpers import (
     wait_for_generation,
     wait_for_status,
 )
-from tests.publication_fixtures import NO_PUBLISHER_WARNING, build_publication_bundle
+from tests.publication_fixtures import (
+    NO_PUBLISHER_WARNING,
+    add_image_input,
+    build_publication_bundle,
+)
 
 TERMINAL = {
     "succeeded",
@@ -23,6 +29,157 @@ TERMINAL = {
     "failed_without_artifacts",
     "interrupted",
 }
+
+
+def test_required_image_upload_and_gallery_artifact_run_through_owned_asset_binding(
+    settings_factory, fake_state
+) -> None:
+    publication = build_publication_bundle("krea", mutate_artifacts=add_image_input)
+    fake_state.workflow_files.update(publication.files)
+    settings = settings_factory(enable_background_worker=True)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="image.inputs")
+        source = next(
+            item
+            for item in client.get("/api/workflows").json()
+            if item["display_name"] == "Krea 2 NSFW V4"
+        )
+        source_detail = client.get(f"/api/workflows/{source['source_key']}")
+        assert source_detail.status_code == 200, source_detail.text
+        image_input = next(
+            item for item in source_detail.json()["interface"]["inputs"] if item["type"] == "image"
+        )
+        assert image_input["id"] == "reference_image"
+        assert "default" not in image_input
+        assert "bindings" not in image_input
+
+        missing = generation_payload(client, "missing image must fail", seed=41)
+        response = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json=missing,
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["fields"]["reference_image"]
+
+        upload_response = client.post(
+            "/api/uploads/reference-images",
+            headers={"X-CSRF-Token": csrf(client)},
+            files={"file": ("reference.png", make_png("reference"), "image/png")},
+        )
+        assert upload_response.status_code == 200, upload_response.text
+        upload = upload_response.json()
+        payload = generation_payload(client, "image-backed generation", seed=42)
+        payload["parameters"]["reference_image"] = {"asset_id": upload["id"]}
+        queued = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json=payload,
+        )
+        assert queued.status_code == 201, queued.text
+        complete = wait_for_status(client, queued.json()["id"], "succeeded", timeout=10)
+
+        effective = complete["effective_parameters"]["reference_image"]
+        assert effective == {
+            "asset_id": upload["id"],
+            "mime_type": "image/png",
+            "bytes": upload["byte_size"],
+            "width": 96,
+            "height": 72,
+            "sha256": upload["sha256"],
+        }
+        expected_prefix = f"comfyui-image-frontend/{complete['id']}/"
+        submitted_image = fake_state.submitted[-1]["graph"]["18"]["inputs"]["image"]
+        assert submitted_image.startswith(expected_prefix)
+        assert submitted_image.endswith(".png")
+        assert submitted_image in fake_state.uploaded
+        assert fake_state.output_files[
+            (submitted_image.rsplit("/", 1)[1], expected_prefix.rstrip("/"), "input")
+        ] == make_png("reference")
+
+        final_artifact = next(item for item in complete["artifacts"] if item["role"] == "final")
+        gallery_upload_response = client.post(
+            f"/api/uploads/reference-images/from-artifact/{final_artifact['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert gallery_upload_response.status_code == 200, gallery_upload_response.text
+        gallery_upload = gallery_upload_response.json()
+        final_content = client.get(final_artifact["content_url"]).content
+        gallery_preview = client.get(gallery_upload["preview_url"])
+        assert gallery_preview.status_code == 200
+        assert gallery_preview.content == final_content
+        assert gallery_upload["sha256"] == hashlib.sha256(final_content).hexdigest()
+
+        gallery_payload = generation_payload(client, "shared retained gallery input", seed=43)
+        gallery_payload["parameters"]["reference_image"] = {"asset_id": gallery_upload["id"]}
+        response = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json=gallery_payload,
+        )
+        assert response.status_code == 201, response.text
+        gallery_source_generations = [
+            wait_for_status(client, response.json()["id"], "succeeded", timeout=10)
+        ]
+
+        recalled = client.get(f"/api/generations/{gallery_source_generations[0]['id']}/recall")
+        assert recalled.status_code == 200, recalled.text
+        recalled_body = recalled.json()
+        assert recalled_body["source_available"] is True
+        assert recalled_body["parameters"]["reference_image"] == {"asset_id": gallery_upload["id"]}
+        regenerated = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={
+                "source_key": recalled_body["source_key"],
+                "revision": recalled_body["revision"],
+                "parameters": recalled_body["parameters"],
+            },
+        )
+        assert regenerated.status_code == 201, regenerated.text
+        gallery_source_generations.append(
+            wait_for_status(client, regenerated.json()["id"], "succeeded", timeout=10)
+        )
+
+        container = client.app.state.container
+        with container.db.session_factory() as session:
+            from app.models import Upload
+
+            stored_gallery_upload = session.get(Upload, gallery_upload["id"])
+            assert stored_gallery_upload is not None
+            gallery_upload_path = settings.data_dir / stored_gallery_upload.storage_path
+        assert gallery_upload_path.is_file()
+
+        deleted_original = client.delete(
+            f"/api/generations/{complete['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert deleted_original.status_code == 204
+        assert client.get(final_artifact["content_url"]).status_code == 404
+        retained_preview = client.get(gallery_upload["preview_url"])
+        assert retained_preview.status_code == 200
+        assert retained_preview.content == final_content
+
+        deleted_first_reference = client.delete(
+            f"/api/generations/{gallery_source_generations[0]['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert deleted_first_reference.status_code == 204
+        assert client.get(gallery_upload["preview_url"]).status_code == 200
+        assert gallery_upload_path.is_file()
+        remaining_recall = client.get(
+            f"/api/generations/{gallery_source_generations[1]['id']}/recall"
+        )
+        assert remaining_recall.status_code == 200
+        assert remaining_recall.json()["source_available"] is True
+
+        deleted_last_reference = client.delete(
+            f"/api/generations/{gallery_source_generations[1]['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+        )
+        assert deleted_last_reference.status_code == 204
+        assert client.get(gallery_upload["preview_url"]).status_code == 404
+        assert not gallery_upload_path.exists()
 
 
 def _multi_publisher_bundle():  # type: ignore[no-untyped-def]

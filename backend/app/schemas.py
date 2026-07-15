@@ -196,6 +196,8 @@ class GenerationSummary(APIModel):
     expected_height: int | None = None
     error_message: str | None = None
     recall_available: bool = False
+    recall_source_available: bool = False
+    recall_warning: str | None = None
     recall_unavailable_reason: str | None = None
     is_favorite: bool = False
     cancel_allowed: bool = False
@@ -233,6 +235,7 @@ class GenerationDetail(GenerationSummary):
 
 class RecallResponse(APIModel):
     available: bool
+    source_available: bool = False
     reason: str | None = None
     profile_id: str | None = None
     identity: WorkflowIdentity | None = None
@@ -240,6 +243,7 @@ class RecallResponse(APIModel):
     source_key: str | None = None
     revision: SourceRevision | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
+    input_definitions: list[dict[str, Any]] = Field(default_factory=list)
     prompt_assistant: dict[str, Any] | None = None
 
 
@@ -286,6 +290,7 @@ class UploadResponse(APIModel):
     id: str
     kind: str
     mime_type: str
+    byte_size: int
     width: int
     height: int
     sha256: str

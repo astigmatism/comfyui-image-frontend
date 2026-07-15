@@ -1659,6 +1659,106 @@ code {
   background: #080c11;
 }
 
+.image-input-dropzone {
+  display: grid;
+  gap: 9px;
+  min-height: 190px;
+  padding: 10px;
+  border: 1px dashed #536b86;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(41 62 86 / 24%), rgb(12 18 26 / 42%)),
+    var(--surface-1);
+  transition:
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+
+.image-input-dropzone.is-drag-over {
+  border-color: var(--accent);
+  background: rgb(34 78 124 / 34%);
+  box-shadow: inset 0 0 0 1px rgb(91 156 245 / 35%);
+}
+
+.image-input-dropzone[aria-disabled="true"] {
+  opacity: 0.66;
+}
+
+.image-input-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 5px;
+  min-height: 130px;
+  color: var(--text-soft);
+  text-align: center;
+}
+
+.image-input-empty svg {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 3px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.image-input-empty span,
+.image-input-selection span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.image-input-selection {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.image-input-selection img {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 150px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: #06090d;
+}
+
+.image-input-selection div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.image-input-selection strong {
+  overflow: hidden;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-input-browse {
+  justify-self: stretch;
+  cursor: pointer;
+}
+
+.image-input-dropzone.has-selection .image-input-browse {
+  justify-self: start;
+}
+
+[data-gallery-artifact-id] {
+  cursor: grab;
+}
+
+[data-gallery-artifact-id].is-dragging {
+  cursor: grabbing;
+  opacity: 0.58;
+}
+
 .prompt-assistant,
 .provenance {
   border: 1px solid var(--border);
@@ -1849,6 +1949,12 @@ code {
 
 .toast.success {
   border-color: #39785d;
+}
+
+.toast.warning {
+  border-color: #8b6a35;
+  background: #2a241a;
+  color: #e7d1aa;
 }
 
 .toast.error {

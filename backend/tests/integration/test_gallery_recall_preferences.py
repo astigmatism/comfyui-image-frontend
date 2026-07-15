@@ -59,7 +59,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         assert second.get("/api/preferences").json()["gallery_scale"] == 93
 
 
-def test_recall_is_disabled_when_exact_workflow_disappears_but_history_remains(
+def test_recall_keeps_historical_settings_when_exact_workflow_disappears(
     settings_factory, fake_state
 ) -> None:
     settings = settings_factory(enable_background_worker=True)
@@ -90,11 +90,24 @@ def test_recall_is_disabled_when_exact_workflow_disappears_but_history_remains(
         restore_cookie(client, user_cookie, name=settings.session_cookie_name)
         gallery = client.get("/api/generations").json()["items"]
         item = next(value for value in gallery if value["id"] == generation["id"])
-        assert item["recall_available"] is False
-        assert "Original workflow version" in item["recall_unavailable_reason"]
+        assert item["recall_available"] is True
+        assert item["recall_source_available"] is False
+        assert "currently selected source will stay selected" in item["recall_warning"]
+        assert item["recall_unavailable_reason"] is None
         recall = client.get(f"/api/generations/{generation['id']}/recall")
         assert recall.status_code == 200
-        assert recall.json()["available"] is False
+        recalled = recall.json()
+        assert recalled["available"] is True
+        assert recalled["source_available"] is False
+        assert recalled["parameters"]["prompt"] == "historical exact request"
+        assert recalled["parameters"]["seed"] == "551"
+        assert {item["semantic_role"] for item in recalled["input_definitions"]} >= {
+            "positive_prompt",
+            "seed",
+            "width",
+            "height",
+        }
+        assert "currently selected source will stay selected" in recalled["reason"]
         assert client.get(f"/api/generations/{generation['id']}").status_code == 200
         assert client.get(complete["artifacts"][-1]["content_url"]).status_code == 200
     fake_state.workflow_files = original_files

@@ -469,17 +469,34 @@ export function migrateInterfaceState(
   };
 }
 
-export function overwriteWithRecall(current, recall) {
+export function overwriteWithRecall(current, recall, currentContract = null) {
   const sourceKey = recall.source_key ?? recall.profile_id;
-  const parameters = structuredClone(recall.parameters || recall.controls || {});
+  const sourceAvailable = recall.source_available !== false;
+  const historicalParameters = structuredClone(recall.parameters || recall.controls || {});
+  const historicalExplicitInputIds = Object.entries(historicalParameters)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([id]) => id);
+  const migrated = !sourceAvailable && currentContract
+    ? migrateInterfaceState(
+        currentContract,
+        { inputs: recall.input_definitions || [] },
+        historicalParameters,
+        historicalExplicitInputIds,
+        current.parameters || current.controls || {},
+        current.explicitParameterIds || [],
+      )
+    : { values: historicalParameters, explicitInputIds: historicalExplicitInputIds };
+  const parameters = migrated.values;
+  const historicalRevision = structuredClone(recall.revision || recall.identity || null);
   return {
     ...current,
-    activeSourceKey: sourceKey,
-    activeProfileId: sourceKey,
+    activeSourceKey: sourceAvailable ? sourceKey : current.activeSourceKey,
+    activeProfileId: sourceAvailable ? sourceKey : current.activeProfileId,
     parameters,
     controls: structuredClone(parameters),
-    selectedRevision: structuredClone(recall.revision || recall.identity || null),
-    recallIdentity: structuredClone(recall.revision || recall.identity || null),
+    explicitParameterIds: new Set(migrated.explicitInputIds),
+    selectedRevision: sourceAvailable ? historicalRevision : current.selectedRevision,
+    recallIdentity: historicalRevision,
     compositionId: null,
     promptAssistant: {
       ...(current.promptAssistant || {}),
@@ -537,6 +554,9 @@ export function parametersForRequest(contract, values) {
       if (!seed.value) continue;
       const parsed = decimalInteger(seed.value);
       parameters[input.id] = parsed ? parsed.number.toString() : seed.value;
+    } else if (input.type === "image" && value !== undefined && value !== null) {
+      const assetId = typeof value === "string" ? value : value?.asset_id;
+      if (assetId) parameters[input.id] = { asset_id: assetId };
     } else if (value !== undefined && value !== null) {
       parameters[input.id] = structuredClone(value);
     }
@@ -665,6 +685,13 @@ export function clientValidate(contract, values) {
       continue;
     }
     if (value === undefined || value === null || value === "") continue;
+    if (
+      control.type === "image" &&
+      (typeof value !== "object" || typeof value.asset_id !== "string" || !value.asset_id)
+    ) {
+      errors[control.id] = "Choose or drop a valid image.";
+      continue;
+    }
     if (
       control.type === "choice" &&
       !choiceOptions(control).some((option) => option.value === value)

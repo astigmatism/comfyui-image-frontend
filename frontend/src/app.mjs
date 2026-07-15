@@ -76,6 +76,7 @@ const state = {
   galleryStatus: "idle",
   galleryMessage: null,
   submitting: false,
+  imageUploadsPending: 0,
   serverFieldErrors: {},
   formError: null,
   panelOpen: false,
@@ -119,6 +120,7 @@ const TERMINAL_GENERATION_STATUSES = new Set([
   "failed_without_artifacts",
   "interrupted",
 ]);
+const GALLERY_ARTIFACT_DRAG_TYPE = "application/x-comfyui-image-frontend-artifact";
 
 const STARTUP_DEADLINES = {
   session: 10_000,
@@ -187,6 +189,12 @@ function bindDelegatedEvents() {
   root.addEventListener("pointerup", handlePointerEnd);
   root.addEventListener("pointercancel", handlePointerEnd);
   root.addEventListener("wheel", handlePhotoViewerWheel, { passive: false });
+  root.addEventListener("dragstart", handleDragStart);
+  root.addEventListener("dragend", handleDragEnd);
+  root.addEventListener("dragenter", handleDragEnter);
+  root.addEventListener("dragover", handleDragOver);
+  root.addEventListener("dragleave", handleDragLeave);
+  root.addEventListener("drop", handleDrop);
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
   window.addEventListener("resize", handlePhotoViewerResize);
   root.addEventListener(
@@ -2135,6 +2143,8 @@ async function handleUpload(input) {
   const file = input.files?.[0];
   if (!file) return;
   const id = input.dataset.controlId;
+  const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id);
+  if (control?.type === "image") return selectComputerImage(id, file, control);
   input.disabled = true;
   try {
     const result = await upload(`/api/uploads/${input.dataset.uploadKind}`, file);
@@ -2146,6 +2156,164 @@ async function handleUpload(input) {
   } catch (error) {
     state.serverFieldErrors[id] = error.message;
     renderPanel();
+  }
+}
+
+function handleDragStart(event) {
+  const image = event.target.closest("[data-gallery-artifact-id]");
+  if (!image || !event.dataTransfer) return;
+  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.setData(GALLERY_ARTIFACT_DRAG_TYPE, image.dataset.galleryArtifactId);
+  image.classList.add("is-dragging");
+}
+
+function handleDragEnd(event) {
+  event.target.closest("[data-gallery-artifact-id]")?.classList.remove("is-dragging");
+  document
+    .querySelectorAll(".image-input-dropzone.is-drag-over")
+    .forEach((element) => element.classList.remove("is-drag-over"));
+}
+
+function imageDropzoneForEvent(event) {
+  const zone = event.target.closest("[data-image-drop-control]");
+  if (!zone || zone.getAttribute("aria-disabled") === "true") return null;
+  return zone;
+}
+
+function transferHasImageCandidate(dataTransfer) {
+  const types = Array.from(dataTransfer?.types || []);
+  return types.includes("Files") || types.includes(GALLERY_ARTIFACT_DRAG_TYPE);
+}
+
+function handleDragEnter(event) {
+  const zone = imageDropzoneForEvent(event);
+  if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
+  event.preventDefault();
+  zone.classList.add("is-drag-over");
+}
+
+function handleDragOver(event) {
+  const zone = imageDropzoneForEvent(event);
+  if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  zone.classList.add("is-drag-over");
+}
+
+function handleDragLeave(event) {
+  const zone = imageDropzoneForEvent(event);
+  if (!zone || zone.contains(event.relatedTarget)) return;
+  zone.classList.remove("is-drag-over");
+}
+
+async function handleDrop(event) {
+  const zone = imageDropzoneForEvent(event);
+  if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
+  event.preventDefault();
+  zone.classList.remove("is-drag-over");
+  const controlId = zone.dataset.imageDropControl;
+  const control = interfaceInputs(sourceInterface(state.activeSource)).find(
+    (item) => item.id === controlId && item.type === "image",
+  );
+  if (!control) return;
+  const file = event.dataTransfer.files?.[0];
+  if (file) {
+    await selectComputerImage(controlId, file, control);
+    return;
+  }
+  const artifactId = event.dataTransfer.getData(GALLERY_ARTIFACT_DRAG_TYPE);
+  if (artifactId) await selectGalleryImage(controlId, artifactId, control);
+}
+
+async function selectComputerImage(controlId, file, control) {
+  state.imageUploadsPending += 1;
+  delete state.serverFieldErrors[controlId];
+  renderPanel();
+  try {
+    await validateBrowserImage(file, control.media || {});
+    const result = await upload("/api/uploads/reference-images", file);
+    setImageSelection(controlId, result, file.name || "Uploaded image");
+  } catch (error) {
+    state.serverFieldErrors[controlId] = error.message || "Image upload failed.";
+  } finally {
+    state.imageUploadsPending = Math.max(0, state.imageUploadsPending - 1);
+    renderPanel();
+  }
+}
+
+async function selectGalleryImage(controlId, artifactId, control) {
+  state.imageUploadsPending += 1;
+  delete state.serverFieldErrors[controlId];
+  renderPanel();
+  try {
+    const result = await api(
+      `/api/uploads/reference-images/from-artifact/${encodeURIComponent(artifactId)}`,
+      { method: "POST" },
+    );
+    validateImageMetadata(result, control.media || {});
+    setImageSelection(controlId, result, "Gallery image");
+  } catch (error) {
+    state.serverFieldErrors[controlId] = error.message || "Gallery image could not be selected.";
+  } finally {
+    state.imageUploadsPending = Math.max(0, state.imageUploadsPending - 1);
+    renderPanel();
+  }
+}
+
+function setImageSelection(controlId, result, name) {
+  state.parameters[controlId] = {
+    asset_id: result.id,
+    preview_url: result.preview_url,
+    mime_type: result.mime_type,
+    bytes: result.byte_size,
+    width: result.width,
+    height: result.height,
+    sha256: result.sha256,
+    name,
+  };
+  state.explicitParameterIds.add(controlId);
+  delete state.serverFieldErrors[controlId];
+  persistActiveParameterState();
+}
+
+async function validateBrowserImage(file, media) {
+  const accepted = Array.isArray(media.accepted_mime_types) ? media.accepted_mime_types : [];
+  if (file.type && accepted.length && !accepted.includes(file.type)) {
+    throw new Error("Choose a PNG, JPEG, or WebP image accepted by this source.");
+  }
+  if (Number.isFinite(Number(media.max_bytes)) && file.size > Number(media.max_bytes)) {
+    throw new Error("Image exceeds this source's byte limit.");
+  }
+  if (typeof createImageBitmap !== "function") return;
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("The selected file is not a decodable image.");
+  }
+  try {
+    validateImageMetadata({ width: bitmap.width, height: bitmap.height }, media);
+  } finally {
+    bitmap.close();
+  }
+}
+
+function validateImageMetadata(image, media) {
+  if (Number.isFinite(Number(media.max_width)) && image.width > Number(media.max_width)) {
+    throw new Error("Image exceeds this source's maximum width.");
+  }
+  if (Number.isFinite(Number(media.max_height)) && image.height > Number(media.max_height)) {
+    throw new Error("Image exceeds this source's maximum height.");
+  }
+  if (
+    image.mime_type &&
+    Array.isArray(media.accepted_mime_types) &&
+    !media.accepted_mime_types.includes(image.mime_type)
+  ) {
+    throw new Error("Choose a PNG, JPEG, or WebP image accepted by this source.");
+  }
+  if (image.byte_size && Number.isFinite(Number(media.max_bytes)) && image.byte_size > media.max_bytes) {
+    throw new Error("Image exceeds this source's byte limit.");
   }
 }
 
@@ -2237,7 +2405,23 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
-  const recalledState = overwriteWithRecall(state, recalled);
+  const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
+  if (recalled.source_available === false) {
+    state.parameters = recalledState.parameters;
+    state.explicitParameterIds = recalledState.explicitParameterIds;
+    state.promptAssistant = recalledState.promptAssistant;
+    state.compositionId = null;
+    state.serverFieldErrors = {};
+    state.formError = null;
+    state.selectedPreset = null;
+    state.assistantOpen = Boolean(recalled.prompt_assistant);
+    persistActiveParameterState();
+    renderPanel();
+    closePanel(false);
+    document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });
+    toast(recalled.reason || "Historical settings loaded into the current source.", "warning");
+    return;
+  }
   const key = recalled.source_key || recalled.profile_id;
   const source = await api(`/api/workflows/${encodeURIComponent(key)}`);
   const contract = sourceInterface(source);

@@ -22,7 +22,8 @@ EDITABLE_WORKFLOW_DRIFT_WARNING = (
     "Editable workflow bytes do not match the publication's recorded SHA-256; "
     "generation remains pinned to the verified frozen API graph."
 )
-SUPPORTED_INPUT_TYPES = {"string", "integer", "number", "boolean", "seed", "choice"}
+SUPPORTED_INPUT_TYPES = {"string", "integer", "number", "boolean", "seed", "choice", "image"}
+SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 OUTPUT_ROLES = {"final", "preview", "comparison", "auxiliary"}
 OUTPUT_KINDS = {"image"}
 PUBLIC_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -50,6 +51,7 @@ EXPECTED_PARAMETER_CLASSES: dict[str, set[str]] = {
     "boolean": {"CIFBooleanParameter", "CIFImageFrontendInterface"},
     "seed": {"CIFSeedParameter", "CIFImageFrontendInterface"},
     "choice": {"CIFChoiceParameter"},
+    "image": {"CIFImageParameter"},
 }
 EXPECTED_RUNTIME_INPUT_TYPES = {
     "string": "STRING",
@@ -631,6 +633,10 @@ def _validate_input(
         default, choices = _choice_contract(raw_input, context)
         private_input.update(default=default, choices=copy.deepcopy(choices))
         public_input.update(default=default, choices=choices)
+    elif input_type == "image":
+        media = _image_contract(raw_input, context, bindings, api_document)
+        private_input["media"] = copy.deepcopy(media)
+        public_input["media"] = media
     else:
         minimum, maximum, step = _numeric_contract(raw_input, input_type, context)
         private_input.update(minimum=minimum, maximum=maximum, step=step)
@@ -661,6 +667,85 @@ def _validate_input(
             private_input["default"] = numeric_default
             public_input["default"] = numeric_default
     return private_input, public_input
+
+
+def _image_contract(
+    raw_input: Mapping[str, Any],
+    context: str,
+    bindings: Sequence[Mapping[str, str]],
+    api_document: Mapping[str, Any],
+) -> dict[str, Any]:
+    if raw_input.get("semantic_role") != "reference_image":
+        raise ContractError(
+            "manifest_invalid", f"{context}.semantic_role must be 'reference_image'."
+        )
+    if raw_input.get("required") is not True:
+        raise ContractError(
+            "manifest_invalid", f"{context}.required must be true for image inputs."
+        )
+    if "default" in raw_input:
+        raise ContractError(
+            "manifest_invalid", f"{context}.default must be absent for image inputs."
+        )
+    raw_media = raw_input.get("media")
+    if not isinstance(raw_media, Mapping):
+        raise ContractError("manifest_invalid", f"{context}.media must be an object.")
+    if raw_media.get("upload_route") != "/upload/image":
+        raise ContractError(
+            "manifest_invalid", f"{context}.media.upload_route must be '/upload/image'."
+        )
+    if raw_media.get("storage_type") != "input":
+        raise ContractError("manifest_invalid", f"{context}.media.storage_type must be 'input'.")
+    raw_mime_types = raw_media.get("accepted_mime_types")
+    if (
+        not isinstance(raw_mime_types, list)
+        or not raw_mime_types
+        or any(not isinstance(value, str) for value in raw_mime_types)
+        or len(set(raw_mime_types)) != len(raw_mime_types)
+        or not set(raw_mime_types) <= SUPPORTED_IMAGE_MIME_TYPES
+    ):
+        raise ContractError(
+            "manifest_invalid",
+            f"{context}.media.accepted_mime_types must be a nonempty unique subset "
+            "of PNG, JPEG, and WebP.",
+        )
+    max_bytes = _bounded_integer(
+        raw_media.get("max_bytes"), f"{context}.media.max_bytes", 1, MAX_BROWSER_SAFE_INTEGER
+    )
+    max_width = _bounded_integer(
+        raw_media.get("max_width"), f"{context}.media.max_width", 1, MAX_BROWSER_SAFE_INTEGER
+    )
+    max_height = _bounded_integer(
+        raw_media.get("max_height"), f"{context}.media.max_height", 1, MAX_BROWSER_SAFE_INTEGER
+    )
+    if raw_media.get("animated") is not False:
+        raise ContractError("manifest_invalid", f"{context}.media.animated must be false.")
+    returns_mask = _boolean(raw_media.get("returns_mask"), f"{context}.media.returns_mask")
+    for binding in bindings:
+        node = api_document.get(binding["node_id"])
+        node_inputs = node.get("inputs") if isinstance(node, Mapping) else None
+        if not isinstance(node_inputs, Mapping):
+            raise ContractError("manifest_invalid", f"{context} image binding is unavailable.")
+        for field, expected in (
+            ("max_bytes", max_bytes),
+            ("max_width", max_width),
+            ("max_height", max_height),
+        ):
+            if node_inputs.get(field) != expected:
+                raise ContractError(
+                    "manifest_invalid",
+                    f"{context}.media.{field} does not match its frozen CIF image parameter.",
+                )
+    return {
+        "upload_route": "/upload/image",
+        "storage_type": "input",
+        "accepted_mime_types": list(raw_mime_types),
+        "max_bytes": max_bytes,
+        "max_width": max_width,
+        "max_height": max_height,
+        "animated": False,
+        "returns_mask": returns_mask,
+    }
 
 
 def _choice_contract(
@@ -786,13 +871,18 @@ def _validate_bindings(
                 "manifest_invalid",
                 f"{binding_context} does not target the declared CIF parameter type.",
             )
+        if input_type == "image" and input_name != "image":
+            raise ContractError(
+                "manifest_invalid",
+                f"{binding_context} must target the CIF image parameter image input.",
+            )
         if class_type in TYPED_PARAMETER_CLASSES and input_name != "value":
             raise ContractError(
                 "manifest_invalid",
                 f"{binding_context} must target the typed CIF parameter value input.",
             )
         runtime_node = object_info.get(str(class_type))
-        if runtime_node is not None:
+        if runtime_node is not None and input_type != "image":
             runtime_type = _runtime_input_type(runtime_node, input_name)
             if runtime_type != EXPECTED_RUNTIME_INPUT_TYPES[input_type]:
                 raise ContractError(

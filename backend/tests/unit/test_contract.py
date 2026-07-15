@@ -12,9 +12,66 @@ from app.errors import ContractError
 from tests.publication_fixtures import (
     KREA_PUBLICATION_ID,
     PublicationBundle,
+    add_image_input,
     build_publication_bundle,
     object_info_fixture,
 )
+
+
+def test_required_image_input_is_additive_v1_and_keeps_bindings_private() -> None:
+    publication = validate(build_publication_bundle(mutate_artifacts=add_image_input))
+
+    image = publication.public_interface["inputs"][0]
+    assert image == {
+        "id": "reference_image",
+        "type": "image",
+        "label": "Reference Image",
+        "description": "Required source image whose content and dimensions guide the edit.",
+        "semantic_role": "reference_image",
+        "required": True,
+        "advanced": False,
+        "group": "Basic",
+        "order": 5,
+        "media": {
+            "upload_route": "/upload/image",
+            "storage_type": "input",
+            "accepted_mime_types": ["image/png", "image/jpeg", "image/webp"],
+            "max_bytes": 20 * 1024 * 1024,
+            "max_width": 8192,
+            "max_height": 8192,
+            "animated": False,
+            "returns_mask": True,
+        },
+    }
+    private = publication.private_contract["inputs"][0]
+    assert private["bindings"] == [
+        {"node_id": "18", "input": "image", "class_type": "CIFImageParameter"}
+    ]
+    assert "default" not in private
+
+
+@pytest.mark.parametrize(
+    "break_contract",
+    [
+        lambda image, api: image.__setitem__("required", False),
+        lambda image, api: image.__setitem__("default", "fixture.png"),
+        lambda image, api: image.__setitem__("semantic_role", "init_image"),
+        lambda image, api: image["media"].__setitem__("upload_route", "/view"),
+        lambda image, api: image["media"].__setitem__("accepted_mime_types", ["image/*"]),
+        lambda image, api: image["media"].__setitem__("animated", True),
+        lambda image, api: api["18"]["inputs"].__setitem__("max_width", 4096),
+        lambda image, api: image["bindings"][0].__setitem__("input", "max_width"),
+    ],
+)
+def test_image_input_rejects_malformed_or_untrusted_contracts(break_contract) -> None:  # type: ignore[no-untyped-def]
+    def mutate(manifest, workflow, api) -> None:  # type: ignore[no-untyped-def]
+        add_image_input(manifest, workflow, api)
+        break_contract(manifest["interface"]["inputs"][0], api)
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_artifacts=mutate))
+
+    assert exc.value.code == "manifest_invalid"
 
 
 def validate(bundle: PublicationBundle, *, object_info=None, **limits):  # type: ignore[no-untyped-def]
