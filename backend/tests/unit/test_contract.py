@@ -5,9 +5,11 @@ import hashlib
 import pytest
 from app.domain.publication import (
     EDITABLE_WORKFLOW_DRIFT_WARNING,
+    FROZEN_API_DRIFT_WARNING,
     parse_json_object,
     validate_publication,
 )
+from app.domain.source_metadata import TECHNICAL_INVENTORY_COUNT_WARNING
 from app.errors import ContractError
 from tests.publication_fixtures import (
     KREA_PUBLICATION_ID,
@@ -674,25 +676,173 @@ def test_editable_workflow_drift_is_appended_to_valid_publisher_warnings() -> No
     )
 
 
-def test_api_hash_mismatch_remains_a_hard_rejection() -> None:
+def test_api_hash_mismatch_is_nonfatal_and_execution_uses_the_observed_hash() -> None:
     bundle = build_publication_bundle(corrupt="api")
 
-    with pytest.raises(ContractError) as exc:
-        validate(bundle)
+    publication = validate(bundle)
 
-    assert exc.value.code == "api_hash_mismatch"
+    assert publication.readiness == "ready_with_warnings"
+    assert publication.warnings == (FROZEN_API_DRIFT_WARNING,)
+    assert publication.recorded_api_sha256 == bundle.manifest()["api"]["sha256"]
+    assert publication.api_sha256 == hashlib.sha256(bundle.api_bytes).hexdigest()
+    assert publication.api_sha256 != publication.recorded_api_sha256
+    assert publication.api_drifted is True
+    assert publication.api_document == bundle.api()
 
 
-def test_api_hash_mismatch_remains_fatal_when_editable_workflow_also_drifted() -> None:
+def test_workflow_and_api_hash_mismatches_are_both_nonfatal_and_diagnostic() -> None:
     workflow_drifted = build_publication_bundle(corrupt="workflow")
     both_drifted = PublicationBundle(
         **{**workflow_drifted.__dict__, "api_bytes": workflow_drifted.api_bytes + b"\n"}
     )
 
-    with pytest.raises(ContractError) as exc:
-        validate(both_drifted)
+    publication = validate(both_drifted)
 
-    assert exc.value.code == "api_hash_mismatch"
+    assert publication.warnings == (
+        EDITABLE_WORKFLOW_DRIFT_WARNING,
+        FROZEN_API_DRIFT_WARNING,
+    )
+    assert publication.editable_workflow_drifted is True
+    assert publication.api_drifted is True
+
+
+def test_v1_generation_source_and_inventory_are_recognized_losslessly() -> None:
+    def add_fixed_lora(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["technical_inventory"]["loras"].insert(
+            0,
+            {
+                "artifact": "detail-style.safetensors",
+                "strength": 0.75,
+                "usage": "fixed_active",
+            },
+        )
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=add_fixed_lora))
+
+    assert publication.metadata_diagnostics == ()
+    assert publication.generation_source is not None
+    assert publication.generation_source["generation_type"] == "text_to_image"
+    assert publication.generation_source["base_model"]["architecture"] == "krea2"
+    assert publication.technical_inventory is not None
+    counts = publication.technical_inventory["node_counts"]
+    assert list(counts) == [
+        "compiled_api",
+        "compiled_orphans",
+        "editable_root",
+        "editable_subgraph_nodes",
+        "output_reachable",
+        "subgraph_definitions",
+    ]
+    assert counts["output_reachable"] + counts["compiled_orphans"] == counts["compiled_api"]
+    fixed, public_choice = publication.technical_inventory["loras"]
+    assert fixed == {
+        "artifact": "detail-style.safetensors",
+        "strength": 0.75,
+        "usage": "fixed_active",
+    }
+    assert public_choice["usage"] == "public_choice"
+    assert public_choice["parameter_id"] == "lora"
+    assert "artifact" not in public_choice
+    assert "binding" not in str(public_choice)
+
+
+def test_older_publication_without_metadata_remains_discoverable() -> None:
+    def remove_metadata(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest.pop("generation_source")
+        manifest.pop("technical_inventory")
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=remove_metadata))
+
+    assert publication.readiness == "ready"
+    assert publication.generation_source is None
+    assert publication.technical_inventory is None
+    assert publication.metadata_diagnostics == ()
+
+
+def test_unknown_metadata_values_entries_warnings_and_fields_are_preserved() -> None:
+    def add_future_metadata(manifest) -> None:  # type: ignore[no-untyped-def]
+        source = manifest["generation_source"]
+        source["generation_type"] = "spatial_remix"
+        source["future_profile"] = {"rank": 7}
+        source["technologies"].append(
+            {"id": "future_tech", "label": "Future Tech", "category": "future"}
+        )
+        inventory = manifest["technical_inventory"]
+        inventory["loras"].append(
+            {"usage": "future_dynamic", "future_binding_id": "safe-public-id"}
+        )
+        inventory["technologies"].append(
+            {
+                "id": "future_tech",
+                "label": "Future Tech",
+                "category": "future",
+                "future_hint": True,
+            }
+        )
+        inventory["warnings"].append("future_inventory_warning")
+        inventory["unclassified_loaders"].append(
+            {"class_type": "SomeCustomModelProvider", "future_hint": True}
+        )
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=add_future_metadata))
+
+    assert publication.metadata_diagnostics == ()
+    assert publication.generation_source is not None
+    assert publication.generation_source["generation_type"] == "spatial_remix"
+    assert publication.generation_source["future_profile"] == {"rank": 7}
+    assert publication.generation_source["technologies"][-1]["id"] == "future_tech"
+    assert publication.technical_inventory is not None
+    assert publication.technical_inventory["loras"][-1] == {
+        "usage": "future_dynamic",
+        "future_binding_id": "safe-public-id",
+    }
+    assert publication.technical_inventory["technologies"][-1]["future_hint"] is True
+    assert publication.technical_inventory["warnings"] == ["future_inventory_warning"]
+    assert publication.technical_inventory["unclassified_loaders"][-1] == {
+        "class_type": "SomeCustomModelProvider",
+        "future_hint": True,
+    }
+
+
+def test_inventory_node_count_inconsistency_is_nonfatal_and_diagnostic() -> None:
+    def break_arithmetic(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["technical_inventory"]["node_counts"]["compiled_orphans"] = 1
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=break_arithmetic))
+
+    assert publication.technical_inventory is not None
+    assert publication.metadata_diagnostics == (
+        "technical_inventory_node_count_arithmetic_mismatch",
+    )
+    assert publication.warnings == (TECHNICAL_INVENTORY_COUNT_WARNING,)
+    assert publication.readiness == "ready_with_warnings"
+
+
+def test_public_choice_inventory_cannot_expose_private_filename_bindings() -> None:
+    def add_private_binding(manifest) -> None:  # type: ignore[no-untyped-def]
+        public_choice = manifest["technical_inventory"]["loras"][0]
+        public_choice["artifact"] = "private-choice-binding.safetensors"
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=add_private_binding))
+
+    assert publication.generation_source is not None
+    assert publication.technical_inventory is None
+    assert publication.metadata_diagnostics == ("technical_inventory_invalid",)
+    assert publication.readiness == "ready_with_warnings"
+    assert "private-choice-binding" not in str(publication.public_interface)
+
+
+def test_malformed_known_metadata_is_omitted_without_rejecting_the_source() -> None:
+    def break_known_field_type(manifest) -> None:  # type: ignore[no-untyped-def]
+        option = manifest["technical_inventory"]["loras"][0]["options"][0]
+        option["default_strength"] = "maximum"
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=break_known_field_type))
+
+    assert publication.technical_inventory is None
+    assert publication.metadata_diagnostics == ("technical_inventory_invalid",)
+    assert publication.readiness == "ready_with_warnings"
+    assert publication.api_document
 
 
 @pytest.mark.parametrize(

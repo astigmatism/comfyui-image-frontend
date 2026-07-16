@@ -256,9 +256,12 @@ class WorkflowRegistry:
                         "workflow_sha256": publication.workflow_sha256,
                         "observed_workflow_sha256": publication.observed_workflow_sha256,
                         "editable_workflow_drifted": publication.editable_workflow_drifted,
+                        "recorded_api_sha256": publication.recorded_api_sha256,
                         "api_sha256": publication.api_sha256,
+                        "api_drifted": publication.api_drifted,
                         "manifest_sha256": publication.manifest_sha256,
                         "warnings": list(publication.warnings),
+                        "metadata_diagnostics": list(publication.metadata_diagnostics),
                     },
                 )
             )
@@ -434,6 +437,16 @@ class WorkflowRegistry:
                 "api_sha256": publication.api_sha256,
                 "manifest_sha256": publication.manifest_sha256,
             },
+            "generation_source": (
+                copy_dict(publication.generation_source)
+                if publication.generation_source is not None
+                else None
+            ),
+            "technical_inventory": (
+                copy_dict(publication.technical_inventory)
+                if publication.technical_inventory is not None
+                else None
+            ),
             "interface": publication.public_interface,
         }
 
@@ -476,6 +489,10 @@ class WorkflowRegistry:
                     "stored_editable_workflow_matches_publication": (
                         not publication.editable_workflow_drifted
                     ),
+                    "recorded_api_sha256": publication.recorded_api_sha256,
+                    "stored_api_sha256": publication.api_sha256,
+                    "stored_api_matches_publication": not publication.api_drifted,
+                    "metadata_diagnostics": list(publication.metadata_diagnostics),
                 },
                 instance_id=publication.instance_id,
                 source_key=publication.source_key,

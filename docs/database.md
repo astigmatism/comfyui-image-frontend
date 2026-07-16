@@ -39,13 +39,13 @@ A successful authoritative publication refresh marks embedded-contract profiles 
 For publication-based rows, `workflow_profiles` stores:
 
 - logical identity: `instance_id`, opaque `source_key`, private `source_id`;
-- revision identity: `publication_id`, the manifest-recorded editable-workflow SHA-256, exact verified API/manifest SHA-256 values, schema and publication time;
-- immutable parsed snapshots: the accepted editable document plus its separately observed hash, frozen API graph, full manifest, and private resolved interface/runtime data;
+- revision identity: `publication_id`, the manifest-recorded editable-workflow SHA-256, exact observed API/manifest SHA-256 values, schema and publication time;
+- immutable parsed snapshots: the accepted editable document plus its separately observed hash, observed validated API graph, full manifest (including lossless optional source metadata), and private resolved interface/runtime data;
 - readiness, warning list, state/current flag, validation/last-seen times.
 
-`identity_key` distinguishes immutable published revisions. Republishing the same logical source creates or reactivates the exact matching revision and marks a different prior current revision stale only after complete validation. Current editable-byte drift does not change that identity: it refreshes readiness/warning metadata while the stored frozen API and manifest snapshot remain immutable. A rejected replacement does not partially update the accepted row.
+`identity_key` distinguishes immutable published revisions. Republishing the same logical source creates or reactivates the exact matching revision and marks a different prior current revision stale only after complete validation. Current editable-byte drift does not change that identity: it refreshes readiness/warning metadata while the stored API and manifest snapshot remain immutable. Observed API-byte drift does change identity because execution uses that exact graph. A rejected replacement does not partially update the accepted row.
 
-Private `source_id`, manifest, graph, bindings, and dependencies never appear in the ordinary public source API. Keeping them in the trusted database allows compilation without refetching a mutable server artifact for each request.
+Private `source_id`, the raw manifest, graph, bindings, and runtime dependency state never appear wholesale in the ordinary public source API. Only recognized safe generation-source/technical-inventory sections are projected from the retained manifest. Keeping the snapshots in the trusted database allows compilation without refetching a mutable server artifact for each request.
 
 ## Generation snapshots and rich results
 

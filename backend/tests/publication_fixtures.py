@@ -172,6 +172,16 @@ def add_image_input(manifest: JsonObject, workflow: JsonObject, api: JsonObject)
         },
     )
     manifest["dependencies"]["class_types"] = sorted({node["class_type"] for node in api.values()})
+    inventory = manifest.get("technical_inventory")
+    if isinstance(inventory, dict):
+        inventory["node_counts"].update(
+            {
+                "editable_root": len(workflow["nodes"]),
+                "compiled_api": len(api),
+                "output_reachable": len(api),
+            }
+        )
+        inventory["reachable_class_types"] = sorted({node["class_type"] for node in api.values()})
 
 
 def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
@@ -470,6 +480,72 @@ def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, J
             ],
         },
         "dependencies": {"class_types": sorted({node["class_type"] for node in api.values()})},
+        "generation_source": {
+            "schema_version": "comfyui-image-frontend.generation-source/v1",
+            "inference_method": "deterministic_graph_analysis",
+            "generation_type": "text_to_image",
+            "prompt_guided": True,
+            "input_media": ["text"],
+            "output_media": ["image"],
+            "dimension_policy": "explicit",
+            "summary": "Prompt-guided image generation with optional output processing.",
+            "base_model": {
+                "family": "krea2",
+                "family_label": "Krea 2",
+                "architecture": "krea2",
+                "architecture_label": "Krea 2",
+                "primary_artifacts": ["krea2-model.safetensors"],
+            },
+            "technologies": [{"id": "seedvr2", "label": "SeedVR2", "category": "upscaling"}],
+            "tags": ["text-to-image", "prompt-guided", "explicit-dimensions"],
+        },
+        "technical_inventory": {
+            "schema_version": "comfyui-image-frontend.technical-inventory/v1",
+            "node_counts": {
+                "editable_root": len(workflow["nodes"]),
+                "subgraph_definitions": 0,
+                "editable_subgraph_nodes": 0,
+                "compiled_api": len(api),
+                "output_reachable": len(api),
+                "compiled_orphans": 0,
+            },
+            "models": [
+                {
+                    "kind": "diffusion_model",
+                    "artifact": "krea2-model.safetensors",
+                    "usage": "primary",
+                }
+            ],
+            "loras": [
+                {
+                    "usage": "public_choice",
+                    "parameter_id": "lora",
+                    "default": "knp_v4_1",
+                    "options": [
+                        {
+                            "value": "knp_v4_1",
+                            "label": "KNP v4.1",
+                            "default_strength": 1.0,
+                        },
+                        {
+                            "value": "knp_v3_1",
+                            "label": "KNP v3.1",
+                            "default_strength": 0.5,
+                        },
+                    ],
+                },
+            ],
+            "text_encoders": [{"artifact": "text-encoder.safetensors", "usage": "conditioning"}],
+            "vaes": [{"artifact": "krea2-vae.safetensors", "usage": "conditioning"}],
+            "upscalers": [],
+            "detectors": [],
+            "samplers": [{"class_type": "FakeImageOutput", "settings": {}}],
+            "technologies": [{"id": "seedvr2", "label": "SeedVR2", "category": "upscaling"}],
+            "reachable_class_types": sorted({node["class_type"] for node in api.values()}),
+            "orphan_class_types": [],
+            "unclassified_loaders": [],
+            "warnings": [],
+        },
         "warnings": [],
         "runtime": {"attach_workflow_as_extra_pnginfo": True},
     }

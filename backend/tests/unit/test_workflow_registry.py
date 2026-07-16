@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING, source_key_for
+from app.domain.publication import (
+    EDITABLE_WORKFLOW_DRIFT_WARNING,
+    FROZEN_API_DRIFT_WARNING,
+    source_key_for,
+)
 from app.errors import AppError
 from app.models import Base, ServiceHealth, WorkflowProfile, WorkflowState
 from app.services.comfyui import ComfyCapabilities
@@ -21,6 +25,7 @@ from tests.publication_fixtures import (
     build_publication_files,
     exact_json_bytes,
     object_info_fixture,
+    sha256_bytes,
 )
 
 
@@ -336,7 +341,8 @@ def test_missing_publisher_dependency_marks_all_output_aware_sources_unavailable
             item["message"] == "Required ComfyUI node classes are unavailable for this source."
             for item in unavailable
         )
-        assert "CIFPublishImage" not in str(unavailable)
+        assert "missing_class_types" not in str(unavailable)
+        assert "source_id" not in str(unavailable)
         dependency_diagnostics = [
             item for item in registry.diagnostics(session) if item.code == "dependency_missing"
         ]
@@ -389,11 +395,11 @@ def test_bad_republication_retains_prior_revision_then_valid_revision_switches_a
     rejected = build_publication_bundle(
         "krea",
         publication_id="33333333-3333-4333-8333-333333333333",
-        corrupt="api",
+        mutate_manifest=lambda manifest: manifest["api"].__setitem__("node_count", 999),
     )
     adapter.files = dict(rejected.files)
     diagnostics = asyncio.run(registry.refresh())
-    assert [item.code for item in diagnostics] == ["api_hash_mismatch"]
+    assert [item.code for item in diagnostics] == ["api_node_count_mismatch"]
     with session_factory() as session:
         retained = registry.get_current(session, source_key)
         assert retained.id == previous_id
@@ -420,6 +426,40 @@ def test_bad_republication_retains_prior_revision_then_valid_revision_switches_a
             (KREA_PUBLICATION_ID, False, WorkflowState.STALE),
             ("44444444-4444-4444-8444-444444444444", True, WorkflowState.VALID),
         ]
+    engine.dispose()
+
+
+def test_api_hash_drift_publishes_an_observed_graph_revision_with_a_warning() -> None:
+    original = build_publication_bundle("krea")
+    adapter = FixturePublicationAdapter(dict(original.files))
+    registry, session_factory, engine = make_registry(adapter)
+    asyncio.run(registry.refresh())
+    source_key = source_key_for("test-instance", original.manifest()["source_id"])
+
+    with session_factory() as session:
+        original_id = registry.get_current(session, source_key).id
+
+    drifted = PublicationBundle(**{**original.__dict__, "api_bytes": original.api_bytes + b"\n"})
+    adapter.files = dict(drifted.files)
+    diagnostics = asyncio.run(registry.refresh())
+
+    assert [item.code for item in diagnostics] == ["ready_with_warnings"]
+    details = diagnostics[0].details_json
+    assert details["warnings"] == [FROZEN_API_DRIFT_WARNING]
+    assert details["api_drifted"] is True
+    assert details["recorded_api_sha256"] == original.manifest()["api"]["sha256"]
+    assert details["api_sha256"] == sha256_bytes(drifted.api_bytes)
+    with session_factory() as session:
+        current = registry.get_current(session, source_key)
+        assert current.id != original_id
+        assert current.api_graph_sha256 == sha256_bytes(drifted.api_bytes)
+        assert current.source_api_json == original.api()
+        assert current.warnings_json == [FROZEN_API_DRIFT_WARNING]
+        assert (
+            current.runtime_snapshot_json["recorded_api_sha256"]
+            == (original.manifest()["api"]["sha256"])
+        )
+        assert current.runtime_snapshot_json["stored_api_matches_publication"] is False
     engine.dispose()
 
 

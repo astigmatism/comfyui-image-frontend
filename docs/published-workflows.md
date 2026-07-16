@@ -97,12 +97,31 @@ The publisher is responsible for producing the exact manifest. This abbreviated 
     ]
   },
   "dependencies": {"class_types": ["CIFPublishImage", "CIFTextParameter", "SaveImage"]},
+  "generation_source": {"schema_version": "comfyui-image-frontend.generation-source/v1"},
+  "technical_inventory": {"schema_version": "comfyui-image-frontend.technical-inventory/v1"},
   "warnings": [],
   "runtime": {"attach_workflow_as_extra_pnginfo": true}
 }
 ```
 
-Bindings, node IDs, artifact paths, and executable graphs are private compiler data. `GET /api/workflows/{source_key}` is built by allowlist and returns only safe input/output fields.
+Bindings, node IDs, artifact filesystem paths, and executable graphs are private compiler data. `GET /api/workflows/{source_key}` is built by allowlist and returns only safe input/output fields plus recognized descriptive metadata.
+
+### Generation-source metadata
+
+`generation_source` and `technical_inventory` are optional additive publication sections compiled by **Save & Publish for Image Frontend**. An older publication with neither section remains valid and exposes `null` metadata. A section is publicly recognized only when it is a well-typed v1 object; an unrecognized/malformed section is retained in the private manifest snapshot, diagnosed nonfatally, and omitted from the public source response. Unknown fields within a recognized v1 object are retained for forward compatibility.
+
+`generation_source` uses schema `comfyui-image-frontend.generation-source/v1`. It preserves `inference_method`, the open-ended `generation_type`, `prompt_guided`, input/output media arrays, `dimension_policy`, deterministic `summary`, `base_model` family/architecture labels and artifact basenames, open-ended technology objects, and stable structural tags. These are publisher classifications; the application does not recompute them from graph topology or prompt defaults.
+
+`technical_inventory` uses schema `comfyui-image-frontend.technical-inventory/v1`. It preserves six distinct node counts (`editable_root`, `subgraph_definitions`, `editable_subgraph_nodes`, `compiled_api`, `output_reachable`, and `compiled_orphans`), models, LoRAs, encoders, VAEs, upscalers, detectors, samplers, technologies, reachable/orphan class types, unclassified loaders, and warning strings. The application checks these relationships diagnostically:
+
+```text
+output_reachable + compiled_orphans = compiled_api
+compiled_api = accepted API graph node count
+```
+
+A count inconsistency cannot hide or disable an otherwise valid source. Inventory arrays remain lossless and open-ended. A fixed LoRA may expose an artifact basename and optional strength. A public-choice LoRA exposes only the public `parameter_id`, default ID, option values/labels, and optional default strengths; private filename bindings, paths, `options_json`, and node bindings are not a public inventory shape.
+
+Artifact values are inert basenames for display/diagnostics. Neither artifact names, class types, node counts, technologies, tags, nor metadata warnings are accepted in generation requests or converted into filesystem paths/selectors. Metadata does not alter parameter patching, upload, queueing, history reconciliation, output collection, or preservation of native runtime data.
 
 ### Inputs
 
@@ -170,11 +189,11 @@ Discovery runs at startup, through `POST /api/admin/workflows/refresh`, and once
 
 When configured, `CIF_COMFYUI_USER` is forwarded as `Comfy-User` on the relevant HTTP and WebSocket operations.
 
-Validation rejects absolute paths, backslashes, dot segments, traversal, encoded separators in manifest paths, mismatched stems, source/path disagreement, duplicate JSON keys, non-finite values, unsupported schemas, a frozen API raw-byte hash mismatch, wrong API node counts, invalid API graph structure, invalid input/output declarations, absent or duplicate publishers, disconnected publishers, zero or multiple final outputs, invalid cardinality, unsafe or missing binding targets, binding/class mismatches, uncovered or missing node dependencies, missing native-output inventory, and over-limit responses. `dependencies.class_types` must cover the frozen graph and each class must exist in `/object_info`.
+Validation rejects absolute paths, backslashes, dot segments, traversal, encoded separators in manifest paths, mismatched stems, source/path disagreement, duplicate JSON keys, non-finite values, unsupported publication/interface schemas, wrong API node counts, invalid API graph structure, invalid input/output declarations, absent or duplicate publishers, disconnected publishers, zero or multiple final outputs, invalid cardinality, unsafe or missing binding targets, binding/class mismatches, uncovered or missing node dependencies, missing native-output inventory, and over-limit responses. `dependencies.class_types` must cover the observed API graph and each class must exist in `/object_info`.
 
-The editable workflow is still required, path-checked, size-bounded, and parsed as strict JSON. If its current raw bytes differ from `workflow.sha256`, discovery adds a nonfatal editable-workflow drift warning and continues validating the frozen API and interface. This commonly follows a normal ComfyUI save, layout change, or unpublished authoring edit. Discovery does not rewrite either artifact, and the frozen `.api.json` hash comparison remains fail-closed.
+Both adjacent artifacts remain required, path-checked, size-bounded, and parsed as strict JSON. If current raw bytes differ from the manifest's recorded workflow or API hash, discovery adds a nonfatal drift warning and continues validating the observed API graph and interface. This commonly follows a normal ComfyUI save, layout change, or mixed publication files. Discovery never rewrites either artifact.
 
-Candidates are independent: one failure does not hide other valid sources. Warnings are preserved but do not become errors. An accepted source with editable drift is diagnosed as `ready_with_warnings`; administrator details contain both the manifest-recorded and currently observed editable hashes, while an API hash mismatch remains a rejected `api_hash_mismatch`. Other administrative diagnostic codes include `server_unreachable`, `listing_failed`, `manifest_fetch_failed`, `workflow_fetch_failed`, `api_fetch_failed`, `manifest_invalid`, `dependency_missing`, and `ready`.
+Candidates are independent: one failure does not hide other valid sources. Warnings are preserved but do not become errors. An accepted source with workflow/API drift is diagnosed as `ready_with_warnings`; administrator details contain both recorded and observed hashes plus metadata diagnostic codes. Other administrative diagnostic codes include `server_unreachable`, `listing_failed`, `manifest_fetch_failed`, `workflow_fetch_failed`, `api_fetch_failed`, `manifest_invalid`, `dependency_missing`, and `ready`.
 
 ## Source identity, revisions, and refresh behavior
 
@@ -191,14 +210,14 @@ Candidates are independent: one failure does not hide other valid sources. Warni
 
 The current `display_name` is derived from the editable workflow filename stem; it is presentation metadata and not identity.
 
-The manifest hash is calculated from the exact downloaded manifest bytes. `workflow_sha256` is the editable hash recorded by the deliberate publication and remains revision metadata even if a later ordinary save changes the current editable bytes. Execution and compilation use the exact accepted frozen API snapshot and its verified `api_sha256`. A generation optionally sends the selected revision; if the source was republished after selection, the backend returns `source_republished` instead of silently compiling against new controls.
+The manifest hash is calculated from the exact downloaded manifest bytes. `workflow_sha256` is the editable hash recorded by the deliberate publication and remains revision metadata even if a later ordinary save changes the current editable bytes. `api_sha256` is the hash of the exact observed, validated API snapshot used for execution; the separately retained manifest value remains a publication diagnostic when the two differ. This prevents a hash-mismatched graph from aliasing an older immutable executable revision. A generation optionally sends the selected revision; if the source was republished after selection, the backend returns `source_republished` instead of silently compiling against new controls.
 
 Refresh behavior is deliberately conservative:
 
 - A transport/listing failure leaves the last valid catalog intact. Entries are reported as `cached_offline`, `cached: true`, `available: false`; retained history is still usable, but new submission is disabled while ComfyUI is offline.
 - Offline-to-online recovery triggers a full atomic discovery automatically; an operator refresh is not required to recover an empty startup catalog.
 - A listed candidate whose replacement bundle is invalid keeps its previous accepted revision active.
-- Editable-workflow byte drift alone does not make a candidate invalid: the source remains current and refresh updates its warning/readiness metadata.
+- Workflow/API byte drift alone does not make a candidate invalid: the source remains current and refresh updates its warning/readiness metadata; observed API changes receive a distinct immutable revision.
 - A successful authoritative listing retires sources whose manifests disappeared.
 - A missing dependency creates an unavailable catalog entry rather than an executable source.
 - Startup before health is known reports `loading`.
@@ -287,7 +306,7 @@ See [`.env.example`](../.env.example) for the complete application configuration
 - Complete native history is persisted server-side. Public history removes top-level submitted graph envelopes while preserving actual result/status/error/execution data; private manifest bindings, discovery paths, ComfyUI URLs, and credentials are never injected into those results.
 - The browser can submit only a known `source_key`, optional exact revision, and manifest-declared public parameter map.
 - Every candidate path is untrusted until normalized and constrained beneath `workflows/`.
-- Exact frozen-API and manifest raw-byte hashes, together with the manifest-recorded editable hash, make the accepted revision identity immutable; current editable drift remains warning metadata.
+- Exact observed API and manifest raw-byte hashes, together with the publication UUID and manifest-recorded editable hash, make the accepted revision identity immutable; recorded/observed drift remains warning metadata.
 - Compilation is request-local; cached source graphs are never patched in place.
 - History and output responses have independent byte caps; file references use a narrow allowlist.
 - Application asset routes are authenticated and owner-scoped.

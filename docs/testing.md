@@ -34,7 +34,7 @@ make validate-available
 
 - the seven-input Krea-compatible shape with five Basic fields, an Advanced finite LoRA choice plus companion strength, a large random seed range, workflow metadata attachment, and three connected publishers (`base`, `second_pass`, `final`);
 - a different generic source with independently bound publisher declarations;
-- exact manifest/workflow/API paths and recorded hashes, strict frozen API integrity, editable-drift warnings, node count, dependencies, bindings, public metadata, warnings, and runtime policy;
+- exact manifest/workflow/API paths and recorded/observed hashes, warning-only artifact drift, node count, dependencies, bindings, public metadata, warnings, and runtime policy;
 - mutation hooks for invalid paths/schemas/IDs/bindings/hashes/count/dependencies and republish behavior.
 
 Tests must remain general: they may prove the Krea compatibility target but cannot make its publication ID, hashes, node IDs, dependency count, or control set the catalog implementation.
@@ -43,7 +43,8 @@ Tests must remain general: they may prove the Krea compatibility target but cann
 
 The publication/registry/adapter/compiler/result tests cover:
 
-- strict JSON, schemas, size limits, safe `workflows/` paths, adjacent stems/source agreement, warning-only editable byte drift, fail-closed frozen API raw-byte hashes, and API graph node count;
+- strict JSON, schemas, size limits, safe `workflows/` paths, adjacent stems/source agreement, warning-only workflow/API byte drift, observed API revision identity, and fail-closed API graph node count/structure;
+- typed/lossless generation-source and technical-inventory recognition, legacy absence, open-ended values/entries/warnings/fields, six distinct node counts and diagnostic arithmetic, fixed/public-choice LoRAs, and non-executable artifact basenames;
 - recursive preferred/fallback userdata listing, `Comfy-User`, whole-path single-segment encoding, and bounded listing/object-info/artifact/history/output responses;
 - empty and multiple-source catalogs, independent candidate failures, safe diagnostics, warning readiness, missing dependencies, last-valid cache, bad republish retention, and revision retirement;
 - all six v1 input types, finite choice membership/labels/default-strength hints, public IDs, defaults/ranges/steps, required/optional rules, one positive prompt, and trusted CIF binding/class matching;
@@ -114,7 +115,7 @@ python3 scripts/generate_traceability.py --check
 
 Automated tests never require household services. For a live check, configure `.env`, start the app, and use only ComfyUI network APIs—not the server filesystem:
 
-1. Refresh **Administration → Workflow diagnostics** and record the accepted publication ID/hashes and warnings. If editable bytes changed after publication, confirm the source remains accepted as `ready_with_warnings`; an API hash mismatch must still be rejected.
+1. Refresh **Administration → Workflow diagnostics** and record the accepted publication ID, recorded/observed hashes, metadata diagnostics, and warnings. If workflow or API bytes changed after publication, confirm an otherwise valid source remains accepted as `ready_with_warnings` and its revision API hash matches the observed graph.
 2. Confirm the source's public interface contains only manifest inputs and no bindings/node data.
 3. Queue a low-cost/base-path request with expensive optional branches disabled.
 4. Record the native `prompt_id`; wait for bounded history reconciliation.

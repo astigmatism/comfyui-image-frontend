@@ -58,11 +58,57 @@ The historical route name `workflows` is retained, but objects now represent del
     "workflow_sha256": "...",
     "api_sha256": "...",
     "manifest_sha256": "..."
+  },
+  "generation_source": {
+    "schema_version": "comfyui-image-frontend.generation-source/v1",
+    "inference_method": "deterministic_graph_analysis",
+    "generation_type": "text_to_image",
+    "prompt_guided": true,
+    "input_media": ["text"],
+    "output_media": ["image"],
+    "dimension_policy": "explicit",
+    "summary": "Prompt-guided image generation.",
+    "base_model": {
+      "family": "krea2",
+      "family_label": "Krea 2",
+      "architecture": "krea2",
+      "architecture_label": "Krea 2",
+      "primary_artifacts": ["model.safetensors"]
+    },
+    "technologies": [],
+    "tags": ["text-to-image"]
+  },
+  "technical_inventory": {
+    "schema_version": "comfyui-image-frontend.technical-inventory/v1",
+    "node_counts": {
+      "editable_root": 120,
+      "subgraph_definitions": 5,
+      "editable_subgraph_nodes": 43,
+      "compiled_api": 71,
+      "output_reachable": 63,
+      "compiled_orphans": 8
+    },
+    "models": [],
+    "loras": [],
+    "text_encoders": [],
+    "vaes": [],
+    "upscalers": [],
+    "detectors": [],
+    "samplers": [],
+    "technologies": [],
+    "reachable_class_types": [],
+    "orphan_class_types": [],
+    "unclassified_loaders": [],
+    "warnings": []
   }
 }
 ```
 
-`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. A source whose mutable editable workflow changed after publication remains available as `ready_with_warnings`; its frozen API hash and contract are still verified strictly. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled. Ordinary source responses describe missing dependencies generically; exact class names remain restricted to administrator diagnostics.
+`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled.
+
+Recognized v1 `generation_source` and `technical_inventory` objects are typed, additive, and returned on both summary and detail responses so clients can plan later catalog/dropdown behavior without refetching every source. Older manifests and unrecognized/malformed section schemas return `null` for that section while the raw manifest remains retained server-side. Unknown v1 values, array entries, warning strings, and extra fields are preserved. Artifact basenames, class types, and counts are descriptive only and are never accepted as request selectors. `output_reachable + compiled_orphans = compiled_api` and the accepted API count are checked diagnostically, not as queue gates.
+
+Ordinary source responses describe missing dependencies generically. `technical_inventory.reachable_class_types` and `orphan_class_types` are publisher-declared public inventory; current runtime dependency failures and exact missing classes remain restricted to administrator diagnostics.
 
 During client migration, summaries also carry legacy `profile_id`, workflow/version/hash, contract-schema, and adapter fields. They are compatibility metadata, not the logical source/revision API; new clients use `source_key` and `revision`.
 
@@ -127,7 +173,7 @@ A source detail adds only this public projection:
 
 Numeric fields additionally include `minimum`, `maximum`, and `step`; seeds include `default_mode` and use a decimal-string default when fixed (or `null` when random). A choice contains only its stable public values, labels, and optional finite `default_strength` hints. Private option mappings, `options_json`, filenames, bindings, and destination nodes are never projected. Published manifests declare output `type: "image"`, but this public interface intentionally exposes the normalized field `kind: "image"`. Output descriptions contain public `id`, `role`, `kind`, `cardinality`, `label`, and `description`. Bindings, instance UUIDs, class types, node IDs, dependencies, paths, and graphs are never copied into the public source projection.
 
-Administrator refresh returns diagnostic records with `basename`, `accepted`, optional source/revision hints, `code`, safe `message`, and `checked_at`. Important codes include transport failures (`server_unreachable`, `listing_failed`), candidate fetch failures, validation/hash failures, `dependency_missing`, `ready_with_warnings`, and `ready`.
+Administrator refresh returns diagnostic records with `basename`, `accepted`, optional source/revision hints, `code`, safe `message`, and `checked_at`. Important codes include transport failures (`server_unreachable`, `listing_failed`), candidate fetch/validation failures, `dependency_missing`, `ready_with_warnings`, and `ready`. Accepted warning details distinguish manifest-recorded and observed workflow/API hashes and include metadata diagnostic codes when optional sections cannot be recognized or their node counts are inconsistent.
 
 ## Validate and create a generation
 

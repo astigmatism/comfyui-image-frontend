@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
+
 
 class APIModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
@@ -89,6 +91,8 @@ class WorkflowSummary(APIModel):
     message: str | None = None
     warnings: list[str] = Field(default_factory=list)
     revision: SourceRevision
+    generation_source: GenerationSourceMetadata | None = None
+    technical_inventory: TechnicalInventoryMetadata | None = None
     profile_id: str | None = None
     workflow_id: str | None = None
     workflow_version: str | None = None

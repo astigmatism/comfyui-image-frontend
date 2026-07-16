@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, get_container, get_db, require_ready_user
+from ..domain.source_metadata import recognize_source_metadata
 from ..models import ServiceHealth
 from ..schemas import ServiceStatus, SourceRevision, WorkflowDetail, WorkflowSummary
 
@@ -47,6 +48,8 @@ def list_workflows(
                     api_sha256=str(revision.get("api_sha256", "")),
                     manifest_sha256=str(revision.get("manifest_sha256", "")),
                 ),
+                generation_source=raw.get("generation_source"),
+                technical_inventory=raw.get("technical_inventory"),
             )
         )
     return sorted(result, key=lambda item: (item.display_name.casefold(), item.source_key))
@@ -110,6 +113,12 @@ def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
         readiness = "cached_offline"
     publication_id = profile.publication_id or profile.workflow_version
     manifest_sha256 = profile.manifest_sha256 or profile.contract_sha256
+    source_metadata = recognize_source_metadata(
+        profile.manifest_json,
+        compiled_api_nodes=(
+            len(profile.source_api_json) if isinstance(profile.source_api_json, dict) else None
+        ),
+    )
     return WorkflowSummary(
         source_key=str(profile.source_key),
         display_name=profile.display_name,
@@ -129,6 +138,8 @@ def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
             api_sha256=profile.api_graph_sha256,
             manifest_sha256=manifest_sha256,
         ),
+        generation_source=source_metadata.generation_source,
+        technical_inventory=source_metadata.technical_inventory,
         profile_id=profile.id,
         workflow_id=profile.workflow_id,
         workflow_version=profile.workflow_version,

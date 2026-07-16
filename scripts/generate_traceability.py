@@ -94,7 +94,8 @@ PUBLICATION_ROWS = [
     ("27", "Publication behavior is documented operationally", "`.env.example`, `docs/published-workflows.md`, API/architecture/database/testing docs", "link checks, generated traceability check and documented live procedure"),
     ("28", "Finite choices expose only stable public values while private mappings remain frozen", "choice validation/projection/compiler paths in `domain/publication.py`, `api/workflows.py`, and `domain/compiler.py`", "choice manifest, API privacy, invalid request, and graph-isolation tests"),
     ("29", "Choice companion strengths resolve deterministically without weakening exhaustive outputs", "choice/default resolution in `domain/compiler.py` and selector state in frontend modules", "default-strength precedence, explicit override, concurrency, lifecycle, and output regression tests"),
-    ("30", "Mutable editable-workflow drift warns without hiding a valid frozen runtime", "warning-only editable hash comparison in `domain/publication.py` plus refresh metadata in `services/workflow_registry.py`", "contract and registry tests for initial discovery, repeated refresh, two-source availability, and strict API mismatch rejection"),
+    ("30", "Recorded/observed artifact drift warns without hiding an otherwise valid runtime", "warning-only workflow/API hash comparison and observed API identity in `domain/publication.py` plus refresh metadata in `services/workflow_registry.py`", "contract and registry tests for workflow/API drift, warning details, and immutable observed graph revisions"),
+    ("31", "Compiled generation-source metadata is recognized losslessly without becoming executable input", "open typed metadata models in `domain/source_metadata.py`, manifest retention, and source API projection", "contract/API tests for legacy absence, unknown values/fields/warnings/entries, six counts, both LoRA forms, and hash/history isolation"),
 ]
 
 

@@ -69,15 +69,16 @@ At startup, administrator refresh, and an offline-to-online health transition, `
 2. Recursively list the configured userdata namespace, preferring `/v2/userdata?path=workflows` and falling back to `/userdata?dir=workflows&recurse=true&full_info=true`.
 3. Filter safe normalized `.interface.json` paths.
 4. Retrieve each manifest and adjacent `<stem>.json` / `<stem>.api.json`; nested paths are encoded whole as one route segment.
-5. Parse strict UTF-8 JSON; strictly verify the frozen API raw-byte hash; compare editable bytes for warning-only drift; and validate publication/interface schemas, path/stem/source agreement, API graph node count/shape, public IDs/types/defaults/ranges/steps, finite choice values/labels/hints, one positive prompt, trusted bindings, dependencies, warnings, and runtime flags.
+5. Parse strict UTF-8 JSON; compare recorded and observed workflow/API hashes for warning-only drift; and validate publication/interface schemas, path/stem/source agreement, observed API graph node count/shape, public IDs/types/defaults/ranges/steps, finite choice values/labels/hints, one positive prompt, trusted bindings, dependencies, warnings, and runtime flags.
 6. Match all declared class types against `/object_info`.
-7. Atomically publish each complete accepted revision and safe diagnostic.
+7. Recognize additive generation-source/technical-inventory v1 metadata losslessly, checking inventory arithmetic diagnostically without converting metadata into executable selectors.
+8. Atomically publish each complete accepted revision and safe diagnostic.
 
 The optional `Comfy-User` header is applied consistently to the relevant HTTP and WebSocket traffic. Listing, manifest, workflow, API, object-info, history, and output responses have separate byte caps.
 
-`source_key` is stable for one configured `instance_id + source_id`. The immutable revision consists of the publication UUID and manifest-recorded workflow hash plus exact verified API and manifest hashes. Current editable-workflow drift is liveness metadata: it produces `ready_with_warnings`, not rejection, and does not alter the frozen executable snapshot or revision identity. A bad frozen republish cannot replace its last accepted revision. One rejected candidate cannot remove independent valid sources. A transport/listing failure retains the last valid catalog as cached/offline; a successful authoritative listing retires disappeared sources and old embedded-contract profiles. Missing dependencies produce an unavailable catalog record.
+`source_key` is stable for one configured `instance_id + source_id`. The immutable revision consists of the publication UUID, manifest-recorded workflow hash, exact observed/validated API hash, and exact manifest hash. Workflow/API hash drift produces `ready_with_warnings`, not rejection; an observed API change creates a distinct executable revision so it cannot alias an older frozen snapshot. A structurally invalid republish cannot replace its last accepted revision. One rejected candidate cannot remove independent valid sources. A transport/listing failure retains the last valid catalog as cached/offline; a successful authoritative listing retires disappeared sources and old embedded-contract profiles. Missing dependencies produce an unavailable catalog record.
 
-Ordinary source APIs contain display name, stable key, instance identity, readiness/cached/availability, warnings, revision, and public interface inputs/outputs. They omit source path, graph, bindings, node IDs, instance UUIDs, and dependencies.
+Ordinary source APIs contain display name, stable key, instance identity, readiness/cached/availability, warnings, revision, recognized generation-source/technical-inventory metadata, and public interface inputs/outputs. They omit source path, graph, bindings, node IDs, instance UUIDs, and current missing-dependency details. Metadata artifact values are inert basenames; published reachable/orphan class inventories are descriptive only.
 
 ## Request acceptance and compilation
 

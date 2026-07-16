@@ -15,12 +15,17 @@ from typing import Any, TypeGuard
 import orjson
 
 from ..errors import ContractError
+from .source_metadata import recognize_source_metadata
 
 PUBLICATION_SCHEMA = "comfyui-image-frontend.publication/v1"
 INTERFACE_SCHEMA = "comfyui-image-frontend.interface/v1"
 EDITABLE_WORKFLOW_DRIFT_WARNING = (
     "Editable workflow bytes do not match the publication's recorded SHA-256; "
     "generation remains pinned to the verified frozen API graph."
+)
+FROZEN_API_DRIFT_WARNING = (
+    "Frozen API graph bytes do not match the publication's recorded SHA-256; "
+    "generation remains pinned to the observed, validated API graph."
 )
 SUPPORTED_INPUT_TYPES = {"string", "integer", "number", "boolean", "seed", "choice", "image"}
 SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
@@ -89,7 +94,9 @@ class ValidatedPublication:
     workflow_sha256: str
     observed_workflow_sha256: str
     editable_workflow_drifted: bool
+    recorded_api_sha256: str
     api_sha256: str
+    api_drifted: bool
     manifest_sha256: str
     identity_key: str
     workflow_document: dict[str, Any]
@@ -100,6 +107,9 @@ class ValidatedPublication:
     dependencies: tuple[str, ...]
     missing_dependencies: tuple[str, ...]
     warnings: tuple[str, ...]
+    metadata_diagnostics: tuple[str, ...]
+    generation_source: dict[str, Any] | None
+    technical_inventory: dict[str, Any] | None
     runtime: dict[str, Any]
     node_count: int
 
@@ -370,13 +380,11 @@ def validate_publication(
     workflow_path = envelope.workflow_path
     api_path = envelope.api_path
     workflow_sha256 = envelope.workflow_sha256
-    api_sha256 = envelope.api_sha256
+    recorded_api_sha256 = envelope.api_sha256
     observed_workflow_sha256 = sha256_bytes(workflow_bytes)
     editable_workflow_drifted = observed_workflow_sha256 != workflow_sha256
-    if sha256_bytes(api_bytes) != api_sha256:
-        raise ContractError(
-            "api_hash_mismatch", "Frozen API graph bytes do not match the manifest."
-        )
+    api_sha256 = sha256_bytes(api_bytes)
+    api_drifted = api_sha256 != recorded_api_sha256
 
     node_count = envelope.node_count
     if len(api_document) != node_count:
@@ -396,6 +404,12 @@ def validate_publication(
     warnings = _validate_warnings(manifest.get("warnings", []))
     if editable_workflow_drifted and EDITABLE_WORKFLOW_DRIFT_WARNING not in warnings:
         warnings = (*warnings, EDITABLE_WORKFLOW_DRIFT_WARNING)
+    if api_drifted and FROZEN_API_DRIFT_WARNING not in warnings:
+        warnings = (*warnings, FROZEN_API_DRIFT_WARNING)
+    source_metadata = recognize_source_metadata(manifest, compiled_api_nodes=len(api_document))
+    for metadata_warning in source_metadata.warnings:
+        if metadata_warning not in warnings:
+            warnings = (*warnings, metadata_warning)
     runtime = _validate_runtime(manifest.get("runtime", {}))
 
     source_key = source_key_for(instance_id, source_id)
@@ -432,7 +446,9 @@ def validate_publication(
         workflow_sha256=workflow_sha256,
         observed_workflow_sha256=observed_workflow_sha256,
         editable_workflow_drifted=editable_workflow_drifted,
+        recorded_api_sha256=recorded_api_sha256,
         api_sha256=api_sha256,
+        api_drifted=api_drifted,
         manifest_sha256=manifest_sha256,
         identity_key=identity_key,
         workflow_document=workflow_document,
@@ -443,6 +459,9 @@ def validate_publication(
         dependencies=dependencies,
         missing_dependencies=missing_dependencies,
         warnings=warnings,
+        metadata_diagnostics=source_metadata.diagnostics,
+        generation_source=source_metadata.generation_source,
+        technical_inventory=source_metadata.technical_inventory,
         runtime=runtime,
         node_count=node_count,
     )

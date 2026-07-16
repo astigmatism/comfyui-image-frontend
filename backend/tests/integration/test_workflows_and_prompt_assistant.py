@@ -57,9 +57,38 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     assert profile["available"] is True
     assert len(profile["source_key"]) == 64
     assert "workflows/" not in str(profile)
+    assert profile["generation_source"]["schema_version"] == (
+        "comfyui-image-frontend.generation-source/v1"
+    )
+    assert profile["generation_source"]["generation_type"] == "text_to_image"
+    assert profile["generation_source"]["base_model"]["architecture"] == "krea2"
+    counts = profile["technical_inventory"]["node_counts"]
+    assert set(counts) == {
+        "editable_root",
+        "subgraph_definitions",
+        "editable_subgraph_nodes",
+        "compiled_api",
+        "output_reachable",
+        "compiled_orphans",
+    }
+    assert counts["output_reachable"] + counts["compiled_orphans"] == counts["compiled_api"]
+    public_lora = next(
+        item for item in profile["technical_inventory"]["loras"] if item["usage"] == "public_choice"
+    )
+    assert public_lora["parameter_id"] == "lora"
+    assert "artifact" not in public_lora
+    older_source = next(
+        item
+        for item in app_client.get("/api/workflows").json()
+        if item["display_name"] == "Generic Landscape"
+    )
+    assert older_source["generation_source"] is None
+    assert older_source["technical_inventory"] is None
 
     detail = app_client.get(f"/api/workflows/{profile['source_key']}")
     assert detail.status_code == 200
+    assert detail.json()["generation_source"] == profile["generation_source"]
+    assert detail.json()["technical_inventory"] == profile["technical_inventory"]
     interface = detail.json()["interface"]
     assert _contains_private_graph_key(interface) is False
     assert [parameter["id"] for parameter in interface["inputs"]] == [
@@ -145,6 +174,30 @@ def test_discovery_uses_recursive_fallback_with_headers_and_encoded_artifacts(
         assert any(path == "/userdata" for path, _ in fake_state.comfy_user_headers)
         assert fake_state.userdata_raw_paths
         assert all(b"%2F" in path for path in fake_state.userdata_raw_paths)
+
+
+def test_source_api_preserves_unknown_additive_metadata(fake_state, settings_factory) -> None:
+    def add_future_metadata(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["generation_source"]["generation_type"] = "spatial_remix"
+        manifest["generation_source"]["future_profile"] = {"rank": 7}
+        manifest["technical_inventory"]["warnings"].append("future_inventory_warning")
+        manifest["technical_inventory"]["unclassified_loaders"].append(
+            {"class_type": "FutureModelProvider", "future_hint": True}
+        )
+
+    bundle = build_publication_bundle("krea", mutate_manifest=add_future_metadata)
+    fake_state.workflow_files = dict(bundle.files)
+
+    with TestClient(create_app(settings_factory())) as client:
+        provision_user(client, username="future.metadata")
+        source = first_profile(client)
+        assert source["generation_source"]["generation_type"] == "spatial_remix"
+        assert source["generation_source"]["future_profile"] == {"rank": 7}
+        assert source["technical_inventory"]["warnings"] == ["future_inventory_warning"]
+        assert source["technical_inventory"]["unclassified_loaders"][-1] == {
+            "class_type": "FutureModelProvider",
+            "future_hint": True,
+        }
 
 
 def test_editable_workflow_drift_keeps_both_sources_visible_through_refresh(
