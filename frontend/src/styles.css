@@ -880,7 +880,8 @@ code {
 }
 
 .prompt-editor-launch svg,
-.prompt-editor-close svg {
+.prompt-editor-close svg,
+.source-picker-dialog-close svg {
   width: 17px;
   height: 17px;
   fill: none;
@@ -888,6 +889,11 @@ code {
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.source-picker-dialog-close {
+  flex: 0 0 auto;
+  color: var(--text-soft);
 }
 
 .panel-toggle {
@@ -2080,6 +2086,84 @@ dialog::backdrop {
   gap: var(--space-2);
 }
 
+.source-picker-dialog-controls,
+.source-type-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.source-picker-dialog-controls {
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.source-type-filters {
+  flex-wrap: wrap;
+}
+
+.source-type-filters > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.source-filter-chip {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.source-filter-chip input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.source-filter-chip span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 31px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 650;
+  white-space: nowrap;
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.source-filter-chip small {
+  color: inherit;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.74;
+}
+
+.source-filter-chip:hover span {
+  border-color: #4a607a;
+  color: var(--text-soft);
+}
+
+.source-filter-chip input:checked + span {
+  border-color: #426f9f;
+  background: rgb(37 78 120 / 48%);
+  color: #d9eaff;
+}
+
+.source-filter-chip input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .source-picker-table-wrap {
   min-width: 0;
   min-height: 0;
@@ -2196,35 +2280,32 @@ dialog::backdrop {
   cursor: pointer;
 }
 
+.source-column-heading {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 13px;
+  font-weight: 700;
+}
+
 .source-sort-button:hover {
   background: var(--surface-3);
   color: var(--text);
 }
 
-.source-sort-button svg {
+.source-sort-indicator {
   flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   fill: none;
-  stroke: currentcolor;
-  stroke-width: 1.3;
+  stroke: var(--accent-hover);
+  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: 0.36;
 }
 
 .source-picker-table thead th[aria-sort] .source-sort-button {
   color: #d8e9ff;
-}
-
-.source-picker-table thead th[aria-sort="ascending"] .source-sort-button svg path:last-child,
-.source-picker-table thead th[aria-sort="descending"] .source-sort-button svg path:first-child {
-  opacity: 0.18;
-}
-
-.source-picker-table thead th[aria-sort] .source-sort-button svg {
-  stroke: var(--accent-hover);
-  opacity: 1;
 }
 
 .source-dialog-choice,
@@ -3047,6 +3128,12 @@ tr:last-child td {
   .source-picker-dialog-toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .source-picker-dialog-controls {
+    align-items: flex-start;
+    flex-direction: column;
+    width: 100%;
   }
 
   .photo-viewer-close {

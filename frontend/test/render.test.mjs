@@ -433,6 +433,7 @@ test("source picker dialog supports transactional primary and additional source 
           architecture_label: "FLUX Dev",
           family: "flux",
           family_label: "FLUX",
+          introduced_at: "2023-08-01",
         },
         technologies: [{ id: "controlnet", label: "ControlNet" }],
       },
@@ -456,21 +457,28 @@ test("source picker dialog supports transactional primary and additional source 
   assert.match(unavailableCheckbox, /disabled/);
   assert.match(html, /data-source-primary-key="one"[^>]*checked/);
   assert.match(html, />Architecture</);
-  assert.match(html, />Model family</);
+  assert.match(html, />Introduced</);
   assert.match(html, />Generation type</);
   assert.match(html, />Technologies</);
   assert.match(html, /FLUX Dev/);
+  assert.match(html, />2023</);
   assert.match(html, /Text To Image/);
   assert.match(html, /ControlNet/);
+  assert.match(html, /data-source-generation-type-filter="text_to_image"[^>]*checked/);
+  assert.match(html, /data-source-generation-type-filter="__unknown__"[^>]*checked/);
+  assert.match(html, /Show Text To Image/);
+  assert.match(html, /Show Unknown/);
   assert.match(html, /2 of 2 available sources selected/);
   assert.match(html, /data-action="select-all-generation-sources"/);
   assert.match(html, /data-action="deselect-all-generation-sources"/);
   assert.match(html, /data-action="cancel-generation-source-dialog">Cancel/);
   assert.match(html, /data-action="apply-generation-source-dialog"[^>]*>Apply/);
+  assert.match(html, /source-picker-dialog-close[\s\S]*?<svg[^>]*>[\s\S]*?<path/);
+  assert.doesNotMatch(html, /data-source-sort-key="technologies"/);
   assert.match(html, /reuse compatible prompt, resolution, and seed settings when available/);
 });
 
-test("source picker dialog sorts metadata columns and preserves sources without metadata", () => {
+test("source picker dialog sorts model introduction metadata and filters generation types", () => {
   const sources = [
     {
       source_key: "zeta",
@@ -478,7 +486,7 @@ test("source picker dialog sorts metadata columns and preserves sources without 
       available: true,
       generation_source: {
         generation_type: "image_to_image",
-        base_model: { architecture: "sdxl", family: "stable_diffusion" },
+        base_model: { architecture: "sdxl", release_year: 2024 },
         technologies: [],
       },
     },
@@ -489,7 +497,7 @@ test("source picker dialog sorts metadata columns and preserves sources without 
       available: true,
       generation_source: {
         generation_type: "text_to_image",
-        base_model: { architecture: "auraflow", family: "aura_flow" },
+        base_model: { architecture: "auraflow", release_date: "2023-10-01" },
         technologies: [],
       },
     },
@@ -497,17 +505,31 @@ test("source picker dialog sorts metadata columns and preserves sources without 
   const html = sourcePickerDialogMarkup(sources, {
     primaryKey: "alpha",
     selectedKeys: ["alpha"],
-    sortKey: "architecture",
+    sortKey: "introduced",
     sortDirection: "ascending",
   });
 
-  assert.match(html, /data-source-sort-key="architecture"[^>]*data-source-sort-direction="descending"/);
+  assert.match(html, /data-source-sort-key="introduced"[^>]*data-source-sort-direction="descending"/);
   assert.match(html, /aria-sort="ascending"/);
-  assert.ok(html.indexOf('data-source-row-key="legacy"') < html.indexOf('data-source-row-key="alpha"'));
   assert.ok(html.indexOf('data-source-row-key="alpha"') < html.indexOf('data-source-row-key="zeta"'));
-  assert.match(html, /Aura Flow/);
+  assert.match(html, /data-sort-direction-indicator="ascending"/);
+  assert.match(html, />2023<\/td>/);
+  assert.match(html, />2024<\/td>/);
   assert.match(html, /Image To Image/);
   assert.match(html, /<td>—<\/td>/);
+
+  const filtered = sourcePickerDialogMarkup(sources, {
+    primaryKey: "alpha",
+    selectedKeys: ["alpha"],
+    generationTypeFilters: new Set(["text_to_image"]),
+  });
+  assert.match(filtered, /data-source-row-key="alpha"/);
+  assert.doesNotMatch(filtered, /data-source-row-key="zeta"|data-source-row-key="legacy"/);
+  assert.match(filtered, /data-source-generation-type-filter="text_to_image"[^>]*checked/);
+  assert.doesNotMatch(
+    filtered.match(/<input[^>]*data-source-generation-type-filter="image_to_image"[^>]*>/)?.[0] || "",
+    /checked/,
+  );
 });
 
 test("card footer groups generation actions and exposes permanent deletion", () => {

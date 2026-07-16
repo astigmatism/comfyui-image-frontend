@@ -304,6 +304,13 @@ async function handleChange(event) {
     updateSourcePickerDraftPrimary(element.dataset.sourcePrimaryKey);
     return;
   }
+  if (element.matches("[data-source-generation-type-filter]")) {
+    updateSourcePickerGenerationTypeFilter(
+      element.dataset.sourceGenerationTypeFilter,
+      element.checked,
+    );
+    return;
+  }
   if (element.id === "preset-select") {
     applyPreset(element.value || null);
     return;
@@ -358,6 +365,9 @@ function openSourcePickerDialog(button) {
   state.sourcePickerDraft = {
     primaryKey: state.activeSourceKey,
     selectedKeys: new Set([state.activeSourceKey, ...selectedComparisonSourceKeys()]),
+    generationTypeFilters: new Set(
+      state.sources.map((source) => sourceGenerationTypeKey(source)),
+    ),
   };
   state.sourcePickerDialogOpen = true;
   renderSourcePickerDialog();
@@ -378,12 +388,33 @@ function renderSourcePickerDialog() {
     selectedKeys: draft.selectedKeys,
     sortKey: state.sourcePickerSortKey,
     sortDirection: state.sourcePickerSortDirection,
+    generationTypeFilters: draft.generationTypeFilters,
   });
   const scroller = dialog.querySelector(".source-picker-table-wrap");
   if (scroller) {
     scroller.scrollLeft = scrollLeft;
     scroller.scrollTop = scrollTop;
   }
+}
+
+function sourceGenerationTypeKey(source) {
+  const value = String(source?.generation_source?.generation_type || "").trim().toLowerCase();
+  return value || "__unknown__";
+}
+
+function updateSourcePickerGenerationTypeFilter(key, checked) {
+  const draft = state.sourcePickerDraft;
+  if (!draft || !key) return;
+  if (checked) draft.generationTypeFilters.add(key);
+  else draft.generationTypeFilters.delete(key);
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector(
+        `#source-picker-dialog [data-source-generation-type-filter="${CSS.escape(key)}"]`,
+      )
+      ?.focus({ preventScroll: true });
+  });
 }
 
 function updateSourcePickerDraftSelection(key, checked) {
@@ -421,11 +452,14 @@ function updateSourcePickerDraftPrimary(key) {
 function selectAllSourcePickerDraft() {
   const draft = state.sourcePickerDraft;
   if (!draft) return;
-  draft.selectedKeys = new Set(
-    state.sources
-      .filter((source) => source.available !== false)
-      .map((source) => sourceKey(source)),
-  );
+  for (const source of state.sources) {
+    if (
+      source.available !== false &&
+      draft.generationTypeFilters.has(sourceGenerationTypeKey(source))
+    ) {
+      draft.selectedKeys.add(sourceKey(source));
+    }
+  }
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document
@@ -437,7 +471,15 @@ function selectAllSourcePickerDraft() {
 function deselectAllSourcePickerDraft() {
   const draft = state.sourcePickerDraft;
   if (!draft) return;
-  draft.selectedKeys = new Set(draft.primaryKey ? [draft.primaryKey] : []);
+  for (const source of state.sources) {
+    const key = sourceKey(source);
+    if (
+      key !== draft.primaryKey &&
+      draft.generationTypeFilters.has(sourceGenerationTypeKey(source))
+    ) {
+      draft.selectedKeys.delete(key);
+    }
+  }
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document

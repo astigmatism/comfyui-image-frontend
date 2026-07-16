@@ -717,6 +717,7 @@ test("checked generation sources reuse compatible settings without blocking part
 
   await page.locator("#workflow-source").click();
   const sourceDialog = page.locator("#source-picker-dialog");
+  await expect(sourceDialog.locator(".source-picker-dialog-close svg")).toBeVisible();
   let genericCheckbox = page.getByLabel(
     "Include Generic Landscape",
     { exact: true },
@@ -731,6 +732,14 @@ test("checked generation sources reuse compatible settings without blocking part
   const architectureHeading = sourceDialog.getByRole("columnheader", { name: "Architecture" });
   await architectureHeading.getByRole("button").click();
   await expect(architectureHeading).toHaveAttribute("aria-sort", "ascending");
+  await expect(
+    architectureHeading.locator('[data-sort-direction-indicator="ascending"]'),
+  ).toBeVisible();
+  await sourceDialog.getByLabel("Show Unknown", { exact: true }).uncheck();
+  await expect(genericCheckbox).toHaveCount(0);
+  await sourceDialog.getByLabel("Show Unknown", { exact: true }).check();
+  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
+  await expect(genericCheckbox).toBeVisible();
   await sourceDialog.getByRole("button", { name: "Select all", exact: true }).click();
   genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
   await expect(genericCheckbox).toBeChecked();
