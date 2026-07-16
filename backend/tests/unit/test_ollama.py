@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+import json
+
+from app.services.ollama import _extract_prompt, _instruction
+
+
+def test_refine_instruction_requires_lossless_minimal_editing() -> None:
+    current = (
+        "Two scarlet macaws on a rain-dark branch, one facing left, 85mm lens, "
+        "shallow depth of field, no flowers"
+    )
+    direction = "Change the rain to snow."
+
+    instruction = _instruction(mode="refine", prompt=current, direction=direction)
+
+    assert "Treat the Current prompt as the source of truth" in instruction
+    assert "Apply the smallest possible set of edits" in instruction
+    assert "Preserve every existing detail" in instruction
+    assert "does not explicitly change or necessarily imply changing" in instruction
+    assert "Do not add unsolicited visual details" in instruction
+    assert "return the Current prompt unchanged" in instruction
+    assert f"Current prompt:\n{current}" in instruction
+    assert f"Creative direction:\n{direction}" in instruction
+    assert "intentionally creative" not in instruction
+
+
+def test_create_instruction_requires_missing_action_setting_and_camera_details() -> None:
+    instruction = _instruction(
+        mode="create",
+        prompt="this existing prompt is deliberately irrelevant",
+        direction="a ceramic robot",
+    )
+
+    assert "expert prompt writer for Krea 2" in instruction
+    assert "This mode is intentionally creative" in instruction
+    assert "Creatively invent coherent, visually specific missing details" in instruction
+    assert "invent an action or pose" in instruction
+    assert "a rich setting" in instruction
+    assert "concrete camera details" in instruction
+    assert (
+        "subject and defining attributes; action or pose; setting and environment; composition "
+        "and camera details"
+    ) in instruction
+    assert "legacy keyword spam" in instruction
+    assert "this existing prompt is deliberately irrelevant" not in instruction
+    assert "Creative direction:\na ceramic robot" in instruction
+
+
+def test_both_instructions_require_one_prompt_only() -> None:
+    for mode in ("refine", "create"):
+        instruction = _instruction(mode=mode, prompt="portrait", direction="warmer light")
+        assert 'valid JSON with exactly one string field named "prompt"' in instruction
+        assert "no commentary, preface, markdown, or alternatives" in instruction
+
+
+def test_extract_prompt_supports_structured_and_plain_text_responses() -> None:
+    assert _extract_prompt(json.dumps({"prompt": "  a detailed scene  "})) == "a detailed scene"
+    assert _extract_prompt('```json\n{"prompt": "a fenced response"}\n```') == ("a fenced response")
+    assert _extract_prompt("  a plain response  ") == "a plain response"

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     reconciliation_grace_seconds: float = 5.0
 
     ollama_base_url: str | None = None
-    prompt_template_version: str = "v1"
+    prompt_template_version: str = "v2"
 
     speech_to_text_url: str | None = None
     speech_to_text_api_key: SecretStr | None = None

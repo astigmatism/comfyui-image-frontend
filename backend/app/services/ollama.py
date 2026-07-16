@@ -84,6 +84,11 @@ class OllamaAdapter:
                 status_code=503,
             )
         instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
+        options = (
+            {"temperature": 0.1, "seed": 0, "num_predict": 512}
+            if mode == "refine"
+            else {"temperature": 0.7, "seed": 0, "num_predict": 512}
+        )
         payload = {
             "prompt": instruction,
             "stream": False,
@@ -94,7 +99,7 @@ class OllamaAdapter:
                 "required": ["prompt"],
                 "additionalProperties": False,
             },
-            "options": {"temperature": 0.2, "seed": 0, "num_predict": 256},
+            "options": options,
         }
         started = time.monotonic()
         try:
@@ -130,13 +135,43 @@ class OllamaAdapter:
 def _instruction(*, mode: str, prompt: str, direction: str) -> str:
     if mode == "refine":
         return (
-            "You compose one polished image-generation prompt. Preserve the user's intent and do "
-            "not add policy commentary. Return JSON with exactly one string field named prompt.\n\n"
+            "You are a precise editor of prompts for modern text-to-image models. Revise the "
+            "Current prompt only as requested by the Creative direction.\n\n"
+            "Editing rules:\n"
+            "- Treat the Current prompt as the source of truth.\n"
+            "- Apply the smallest possible set of edits that satisfies the Creative direction.\n"
+            "- Preserve every existing detail, constraint, relationship, count, negation, subject, "
+            "action, setting, composition, camera detail, lighting choice, color, material, and "
+            "style that the Creative direction does not explicitly change or necessarily imply "
+            "changing.\n"
+            "- Do not omit, generalize, contradict, embellish, or invent content that is unrelated "
+            "to the Creative direction. Do not add unsolicited visual details.\n"
+            "- If the Creative direction is empty or already satisfied, return the Current prompt "
+            "unchanged.\n"
+            "- Return the finalized prompt only: valid JSON with exactly one string field named "
+            '"prompt" and no commentary, preface, markdown, or alternatives.\n\n'
             f"Current prompt:\n{prompt}\n\nCreative direction:\n{direction}"
         )
     return (
-        "You compose one polished image-generation prompt from a creative direction. Return JSON "
-        "with exactly one string field named prompt and no commentary.\n\n"
+        "You are an expert prompt writer for Krea 2 and other current text-to-image models. Create "
+        "one complete, polished, directly usable image prompt from the Creative direction. This "
+        "mode is intentionally creative.\n\n"
+        "Composition rules:\n"
+        "- Preserve every detail the Creative direction specifies and never contradict it.\n"
+        "- Creatively invent coherent, visually specific missing details. In particular, when the "
+        "user supplies only a subject or otherwise leaves gaps, invent an action or pose, a rich "
+        "setting, a purposeful composition, and concrete camera details rather than leaving those "
+        "parts unspecified.\n"
+        "- Organize the prompt naturally in this order: subject and defining attributes; action or "
+        "pose; setting and environment; composition and camera details such as shot type, "
+        "viewpoint, lens, and depth of field; then lighting, color, atmosphere, and visual style.\n"
+        "- Use fluent, descriptive natural language suited to a modern prompt-understanding model. "
+        "Do not use legacy keyword spam, token weights, model parameters, a negative-prompt "
+        "section, or empty quality claims.\n"
+        "- Commit to one cohesive visual concept. Do not offer alternatives, explain your choices, "
+        "or mention Krea 2, the Creative direction, or these rules in the result.\n"
+        "- Return the finalized prompt only: valid JSON with exactly one string field named "
+        '"prompt" and no commentary, preface, markdown, or alternatives.\n\n'
         f"Creative direction:\n{direction}"
     )
 
