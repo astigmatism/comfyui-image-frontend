@@ -1455,13 +1455,11 @@ code {
 
 .image-input-selection {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
   gap: 9px;
+  min-width: 0;
 }
 
 .image-input-selection img {
-  grid-column: 1 / -1;
   width: 100%;
   height: 150px;
   object-fit: contain;
@@ -1469,7 +1467,7 @@ code {
   background: #06090d;
 }
 
-.image-input-selection div {
+.image-input-details {
   display: grid;
   gap: 2px;
   min-width: 0;
@@ -1482,13 +1480,26 @@ code {
   white-space: nowrap;
 }
 
-.image-input-browse {
-  justify-self: stretch;
-  cursor: pointer;
+.image-input-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
 }
 
-.image-input-dropzone.has-selection .image-input-browse {
-  justify-self: start;
+.image-input-actions.is-single {
+  grid-template-columns: 1fr;
+}
+
+.image-input-actions .button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: var(--control-height);
+}
+
+.image-input-browse {
+  cursor: pointer;
 }
 
 [data-gallery-artifact-id] {

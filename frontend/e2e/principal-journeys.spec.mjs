@@ -1745,6 +1745,19 @@ test("required image input accepts Browse and a retained gallery image drag", as
   expect((await browseUpload).status()).toBe(200);
   await expect(dropzone).toContainText("browse-reference.png");
   await expect(dropzone.locator(".image-input-selection img")).toBeVisible();
+  const previewBox = await dropzone.locator(".image-input-selection img").boundingBox();
+  const detailsBox = await dropzone.locator(".image-input-details").boundingBox();
+  const browseBox = await dropzone.locator(".image-input-browse").boundingBox();
+  const removeBox = await dropzone.locator(".image-input-remove").boundingBox();
+  expect(previewBox).not.toBeNull();
+  expect(detailsBox).not.toBeNull();
+  expect(browseBox).not.toBeNull();
+  expect(removeBox).not.toBeNull();
+  expect(detailsBox.y).toBeGreaterThanOrEqual(previewBox.y + previewBox.height);
+  expect(browseBox.y).toBeGreaterThanOrEqual(detailsBox.y + detailsBox.height);
+  expect(Math.abs(browseBox.y - removeBox.y)).toBeLessThan(1);
+  expect(Math.abs(browseBox.width - removeBox.width)).toBeLessThan(1);
+  expect(Math.abs(browseBox.height - removeBox.height)).toBeLessThan(1);
 
   await dropzone.getByRole("button", { name: "Remove" }).click();
   await expect(dropzone).toContainText("Drop an image here");

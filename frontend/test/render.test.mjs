@@ -164,6 +164,7 @@ test("published image input renders a required computer-and-gallery drop target"
   assert.match(empty, /Drop an image here/);
   assert.match(empty, /From your computer or the gallery/);
   assert.match(empty, />Browse<input/);
+  assert.match(empty, /image-input-actions is-single/);
   assert.match(empty, /accept="image\/png,image\/jpeg,image\/webp"/);
   assert.doesNotMatch(empty, /Guides the edit\.|20 MB|8192 × 8192 px|help-text|role="tooltip"/);
   assert.doesNotMatch(empty, /fixture\.png/);
@@ -184,6 +185,40 @@ test("published image input renders a required computer-and-gallery drop target"
   assert.match(selected, /portrait\.png/);
   assert.match(selected, /384 × 640/);
   assert.match(selected, /data-clear-upload="reference_image"/);
+  assert.match(
+    selected,
+    /image-input-details[\s\S]*?portrait\.png[\s\S]*?384 × 640[\s\S]*?image-input-actions[\s\S]*?Browse[\s\S]*?Remove/,
+  );
+  assert.doesNotMatch(
+    selected.match(/<div class="image-input-selection">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || "",
+    /data-clear-upload/,
+  );
+});
+
+test("published image input uses its section title as the only visible label", () => {
+  const image = {
+    id: "reference_image",
+    type: "image",
+    label: "Reference Image",
+    required: true,
+  };
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: {},
+    fieldErrors: {},
+    formError: null,
+  };
+
+  const html = generationPanelMarkup(state, publishedSource, { inputs: [image] });
+
+  assert.match(html, /class="control-section-title">Reference Image/);
+  assert.match(html, /<legend class="visually-hidden">Reference Image/);
+  assert.doesNotMatch(html, /<legend>Reference Image/);
 });
 
 test("gallery cards expose only the opaque artifact id as drag data metadata", () => {

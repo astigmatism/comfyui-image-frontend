@@ -578,7 +578,11 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
         : section.controls
             .map((input) =>
               controlMarkup(input, values, contract, errors, {
-                hideLabel: section.kind === "prompt" || section.kind === "seed" || input.type === "resolution",
+                hideLabel:
+                  section.kind === "prompt" ||
+                  section.kind === "seed" ||
+                  input.type === "image" ||
+                  input.type === "resolution",
               }),
             )
             .join("");
@@ -830,7 +834,7 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
       break;
     case "image":
       input = imageInputMarkup(control, value, common, id, disabled);
-      field = `<div class="field"><span>${labelContent}</span>${input}</div>`;
+      field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "resolution":
       input = resolutionMarkup(control, value, disabled, required, error, describedBy, id);
@@ -900,11 +904,14 @@ function imageInputMarkup(control, value, common, id, disabled) {
       ? `${selection.width} × ${selection.height}`
       : "Ready to generate";
   const selected = assetId
-    ? `<div class="image-input-selection"><img src="${escapeHtml(previewUrl)}" alt="Selected ${escapeHtml(control.label || control.id)}" /><div><strong>${escapeHtml(selection.name || "Image selected")}</strong><span>${escapeHtml(dimensions)}</span></div><button type="button" class="button low" data-clear-upload="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""}>Remove</button></div>`
+    ? `<div class="image-input-selection"><img src="${escapeHtml(previewUrl)}" alt="Selected ${escapeHtml(control.label || control.id)}" /><div class="image-input-details"><strong>${escapeHtml(selection.name || "Image selected")}</strong><span>${escapeHtml(dimensions)}</span></div></div>`
     : `<div class="image-input-empty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15v4h14v-4" /></svg><strong>Drop an image here</strong><span>From your computer or the gallery</span></div>`;
   return `<div class="image-input-dropzone ${assetId ? "has-selection" : ""}" data-image-drop-control="${escapeHtml(control.id)}" data-max-bytes="${escapeHtml(control.media?.max_bytes || "")}" data-max-width="${escapeHtml(control.media?.max_width || "")}" data-max-height="${escapeHtml(control.media?.max_height || "")}" data-accepted-mime-types="${escapeHtml(accept)}" ${disabled ? 'aria-disabled="true"' : ""}>
     ${selected}
-    <label class="button secondary image-input-browse" for="${id}">Browse<input ${common} class="visually-hidden" type="file" accept="${escapeHtml(accept)}" data-upload-kind="reference-images" data-image-input="true" /></label>
+    <div class="image-input-actions ${assetId ? "" : "is-single"}">
+      <label class="button secondary image-input-browse" for="${id}">Browse<input ${common} class="visually-hidden" type="file" accept="${escapeHtml(accept)}" data-upload-kind="reference-images" data-image-input="true" /></label>
+      ${assetId ? `<button type="button" class="button low image-input-remove" data-clear-upload="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""}>Remove</button>` : ""}
+    </div>
   </div>`;
 }
 
