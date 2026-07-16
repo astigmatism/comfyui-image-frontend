@@ -13,6 +13,7 @@ import {
   photoViewerMarkup,
   promptEditorMarkup,
   serviceBannerMarkup,
+  sourcePickerDialogMarkup,
 } from "../src/render.mjs";
 
 const promptControl = {
@@ -337,7 +338,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
 
-test("generation panel places the custom source picker before generated controls", () => {
+test("generation panel places the source dialog launcher before generated controls", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -353,14 +354,10 @@ test("generation panel places the custom source picker before generated controls
   const sourceIndex = html.indexOf('id="workflow-source"');
   const promptIndex = html.indexOf('data-control-block="prompt.text"');
   assert.ok(generateIndex >= 0 && generateIndex < sourceIndex && sourceIndex < promptIndex);
-  assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /aria-expanded="false"/);
+  assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /aria-haspopup="dialog"/);
+  assert.match(html, /data-action="open-generation-source-dialog"/);
   assert.doesNotMatch(html, /<select id="workflow-source"/);
-  assert.doesNotMatch(html, /All Generation Sources/);
-  assert.match(html, /data-primary-source-key="p1"/);
-  assert.match(
-    html.match(/<input[^>]*data-shared-source-key="p1"[^>]*>/)?.[0] || "",
-    /checked[^>]*disabled/,
-  );
+  assert.doesNotMatch(html, /generation-source-menu|data-primary-source-key|data-shared-source-key/);
   assert.match(
     html,
     /data-control-section="advanced"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
@@ -401,7 +398,7 @@ test("generation panel turns a Basic group into a divider section while preservi
   assert.doesNotMatch(html, /<h3 class="control-group-heading">Basic<\/h3>/);
 });
 
-test("source picker marks primary and shared sources and shows the selected queue count", () => {
+test("source picker launcher shows the selected queue count while submitting", () => {
   const state = {
     submitting: true,
     comparisonSourceKeys: new Set(["two"]),
@@ -417,58 +414,100 @@ test("source picker marks primary and shared sources and shows the selected queu
   };
   const html = generationPanelMarkup(state, state.sources[0], publishedInterface);
   assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /disabled/);
-  assert.match(
-    html.match(/<input[^>]*data-shared-source-key="one"[^>]*>/)?.[0] || "",
-    /checked[^>]*disabled/,
-  );
-  assert.match(
-    html.match(/<input[^>]*data-shared-source-key="two"[^>]*>/)?.[0] || "",
-    /checked[^>]*disabled/,
-  );
   assert.match(html, /Queueing 2…/);
   assert.match(html, /2 sources selected/);
-  assert.doesNotMatch(html, /Select as primary|>Primary source</);
+  assert.doesNotMatch(html, /data-source-draft-key|data-source-primary-key/);
 });
 
-test("source picker allows additional sources without requiring a complete comparison contract", () => {
+test("source picker dialog supports transactional primary and additional source selection", () => {
   const sources = [
-    { source_key: "one", display_name: "One", instance_id: "default", available: true },
-    { source_key: "two", display_name: "Two", instance_id: "default", available: true },
-  ];
-  const promptOnlyInterface = {
-    inputs: [
-      {
-        id: "prompt",
-        label: "Prompt",
-        type: "string",
-        semantic_role: "positive_prompt",
-        default: "a lighthouse",
-      },
-    ],
-  };
-  const html = generationPanelMarkup(
     {
-      submitting: false,
-      comparisonSourceKeys: new Set(),
-      services: [{ service: "comfyui", available: true }],
-      servicesStatus: "ready",
-      sources,
-      sourceCatalogStatus: "ready",
-      activeSourceKey: "one",
-      sourceMenuOpen: true,
-      parameters: { prompt: "a lighthouse" },
-      fieldErrors: {},
+      source_key: "one",
+      display_name: "One",
+      instance_id: "default",
+      available: true,
+      generation_source: {
+        generation_type: "text_to_image",
+        base_model: {
+          architecture: "flux_dev",
+          architecture_label: "FLUX Dev",
+          family: "flux",
+          family_label: "FLUX",
+        },
+        technologies: [{ id: "controlnet", label: "ControlNet" }],
+      },
     },
-    sources[0],
-    promptOnlyInterface,
-  );
+    { source_key: "two", display_name: "Two", instance_id: "default", available: true },
+    { source_key: "offline", display_name: "Offline", available: false },
+  ];
+  const html = sourcePickerDialogMarkup(sources, {
+    primaryKey: "one",
+    selectedKeys: new Set(["one", "two"]),
+  });
 
-  const additionalCheckbox =
-    html.match(/<input[^>]*data-shared-source-key="two"[^>]*>/)?.[0] || "";
+  const primaryCheckbox = html.match(/<input[^>]*data-source-draft-key="one"[^>]*>/)?.[0] || "";
+  const additionalCheckbox = html.match(/<input[^>]*data-source-draft-key="two"[^>]*>/)?.[0] || "";
+  const unavailableCheckbox =
+    html.match(/<input[^>]*data-source-draft-key="offline"[^>]*>/)?.[0] || "";
+  assert.match(primaryCheckbox, /checked[^>]*disabled/);
   assert.ok(additionalCheckbox);
+  assert.match(additionalCheckbox, /checked/);
   assert.doesNotMatch(additionalCheckbox, /disabled/);
-  assert.doesNotMatch(html, /must publish|Select as primary|>Primary source<| · default/);
+  assert.match(unavailableCheckbox, /disabled/);
+  assert.match(html, /data-source-primary-key="one"[^>]*checked/);
+  assert.match(html, />Architecture</);
+  assert.match(html, />Model family</);
+  assert.match(html, />Generation type</);
+  assert.match(html, />Technologies</);
+  assert.match(html, /FLUX Dev/);
+  assert.match(html, /Text To Image/);
+  assert.match(html, /ControlNet/);
+  assert.match(html, /2 of 2 available sources selected/);
+  assert.match(html, /data-action="select-all-generation-sources"/);
+  assert.match(html, /data-action="deselect-all-generation-sources"/);
+  assert.match(html, /data-action="cancel-generation-source-dialog">Cancel/);
+  assert.match(html, /data-action="apply-generation-source-dialog"[^>]*>Apply/);
   assert.match(html, /reuse compatible prompt, resolution, and seed settings when available/);
+});
+
+test("source picker dialog sorts metadata columns and preserves sources without metadata", () => {
+  const sources = [
+    {
+      source_key: "zeta",
+      display_name: "Zeta",
+      available: true,
+      generation_source: {
+        generation_type: "image_to_image",
+        base_model: { architecture: "sdxl", family: "stable_diffusion" },
+        technologies: [],
+      },
+    },
+    { source_key: "legacy", display_name: "Legacy", available: true },
+    {
+      source_key: "alpha",
+      display_name: "Alpha",
+      available: true,
+      generation_source: {
+        generation_type: "text_to_image",
+        base_model: { architecture: "auraflow", family: "aura_flow" },
+        technologies: [],
+      },
+    },
+  ];
+  const html = sourcePickerDialogMarkup(sources, {
+    primaryKey: "alpha",
+    selectedKeys: ["alpha"],
+    sortKey: "architecture",
+    sortDirection: "ascending",
+  });
+
+  assert.match(html, /data-source-sort-key="architecture"[^>]*data-source-sort-direction="descending"/);
+  assert.match(html, /aria-sort="ascending"/);
+  assert.ok(html.indexOf('data-source-row-key="legacy"') < html.indexOf('data-source-row-key="alpha"'));
+  assert.ok(html.indexOf('data-source-row-key="alpha"') < html.indexOf('data-source-row-key="zeta"'));
+  assert.match(html, /Aura Flow/);
+  assert.match(html, /Image To Image/);
+  assert.match(html, /<td>—<\/td>/);
 });
 
 test("card footer groups generation actions and exposes permanent deletion", () => {

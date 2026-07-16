@@ -87,6 +87,7 @@ export function shellMarkup(state) {
       <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
+      <dialog id="source-picker-dialog" class="source-picker-dialog" aria-label="Generation sources"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     </div>`;
 }
@@ -191,50 +192,153 @@ function sourcePickerMarkup(
   const sharedCount = sources.filter(
     (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
   ).length;
-  const sourceCountCopy = sharedCount
-    ? `${sharedCount + 1} sources selected`
-    : "";
-  const open = Boolean(state.sourceMenuOpen && !disabled);
-  const options = sources
-    .map((item) => {
-      const key = sourceKey(item);
-      const primary = key === activeKey;
-      const shared = !primary && sharedSourceKeys.has(key);
-      const unavailable = item.available === false;
-      const checkboxDisabled =
-        primary || unavailable || state.submitting || state.sourceCatalogStatus === "loading";
-      const shareLabel = primary
-        ? `${item.display_name} is the primary source and is always included`
-        : `Generate with ${item.display_name} using compatible settings from the primary source`;
-      return `
-        <li class="source-picker-option ${primary ? "is-primary" : ""} ${shared ? "is-shared" : ""} ${unavailable ? "is-unavailable" : ""}">
-          <label class="source-picker-check" title="${escapeHtml(shareLabel)}">
-            <input class="source-share-checkbox" type="checkbox" data-shared-source-key="${escapeHtml(key)}" aria-label="${escapeHtml(shareLabel)}" ${primary || shared ? "checked" : ""} ${checkboxDisabled ? "disabled" : ""} />
-            <span aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2" /></svg></span>
-          </label>
-          <button type="button" class="source-primary-option" data-action="select-generation-source" data-primary-source-key="${escapeHtml(key)}" aria-pressed="${primary}" aria-label="Make ${escapeHtml(item.display_name)} the primary generation source">
-            <strong>${escapeHtml(sourceDisplayName(item))}</strong>
-          </button>
-          <span class="source-primary-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" /></svg></span>
-        </li>`;
-    })
-    .join("");
-  const comparisonHelp =
-    "Click a name to make it primary. Check additional sources to reuse compatible prompt, resolution, and seed settings when available.";
+  const sourceCountCopy = sharedCount ? `${sharedCount + 1} sources selected` : "";
   return `
     <div class="field compact source-picker-field">
       <span id="generation-source-label">Generation source</span>
-      <div class="source-picker ${open ? "is-open" : ""}">
-        <button id="workflow-source" class="source-picker-trigger" type="button" data-action="toggle-generation-source-menu" data-source-key="${escapeHtml(activeKey || "")}" aria-expanded="${open}" aria-controls="generation-source-menu" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
+      <div class="source-picker">
+        <button id="workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
           <span class="source-picker-current"><strong id="generation-source-value">${escapeHtml(activeName)}</strong>${sourceCountCopy ? `<small>${escapeHtml(sourceCountCopy)}</small>` : ""}</span>
-          <svg class="source-picker-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m5.5 7.5 4.5 4.5 4.5-4.5" /></svg>
+          <svg class="source-picker-launch-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h12M4 14.5h12" /><circle cx="7" cy="5.5" r="1.5" /><circle cx="13" cy="10" r="1.5" /><circle cx="9" cy="14.5" r="1.5" /></svg>
         </button>
-        <div id="generation-source-menu" class="source-picker-menu" role="group" aria-labelledby="generation-source-label" aria-describedby="generation-source-help" aria-hidden="${!open}" ${open ? "" : "inert"}>
-          <p id="generation-source-help">${escapeHtml(comparisonHelp)}</p>
-          <ul>${options}</ul>
-        </div>
       </div>
     </div>`;
+}
+
+const SOURCE_SORT_KEYS = new Set([
+  "display_name",
+  "architecture",
+  "family",
+  "generation_type",
+  "technologies",
+]);
+
+export function sourcePickerDialogMarkup(
+  sources,
+  {
+    primaryKey,
+    selectedKeys = new Set(),
+    sortKey = "display_name",
+    sortDirection = "ascending",
+  } = {},
+) {
+  const selected = selectedKeys instanceof Set ? selectedKeys : new Set(selectedKeys || []);
+  const normalizedSortKey = SOURCE_SORT_KEYS.has(sortKey) ? sortKey : "display_name";
+  const normalizedDirection = sortDirection === "descending" ? "descending" : "ascending";
+  const availableSources = sources.filter((source) => source.available !== false);
+  const selectedCount = availableSources.filter((source) => selected.has(sourceKey(source))).length;
+  const sortedSources = [...sources].sort((first, second) => {
+    const compared = sourceSortValue(first, normalizedSortKey).localeCompare(
+      sourceSortValue(second, normalizedSortKey),
+      undefined,
+      { numeric: true, sensitivity: "base" },
+    );
+    if (compared) return normalizedDirection === "descending" ? -compared : compared;
+    return sourceDisplayName(first).localeCompare(sourceDisplayName(second), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
+  const rows = sortedSources
+    .map((source) => sourcePickerRowMarkup(source, primaryKey, selected))
+    .join("");
+  const countCopy = `${selectedCount} of ${availableSources.length} available source${availableSources.length === 1 ? "" : "s"} selected`;
+  return `<form class="dialog-frame source-picker-dialog-frame" method="dialog">
+    <header class="dialog-header source-picker-dialog-header">
+      <div><h2 id="source-picker-title">Generation sources</h2><p>Choose one primary source and optionally include others in the same generation.</p></div>
+      <button type="button" class="icon-button source-picker-dialog-close" data-action="cancel-generation-source-dialog" aria-label="Cancel source selection" title="Cancel source selection"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+    </header>
+    <div class="source-picker-dialog-content">
+      <div class="source-picker-dialog-toolbar">
+        <p data-source-selection-count>${escapeHtml(countCopy)}</p>
+        <div class="source-picker-dialog-tools" aria-label="Bulk selection">
+          <button type="button" class="button low" data-action="select-all-generation-sources" ${selectedCount === availableSources.length ? "disabled" : ""}>Select all</button>
+          <button type="button" class="button low" data-action="deselect-all-generation-sources" ${selectedCount <= (primaryKey ? 1 : 0) ? "disabled" : ""}>Deselect all</button>
+        </div>
+      </div>
+      <div class="source-picker-table-wrap">
+        <table class="source-picker-table">
+          <thead><tr>
+            <th class="source-picker-include-column" scope="col">Include</th>
+            <th class="source-picker-primary-column" scope="col">Primary</th>
+            ${sourceSortHeading("display_name", "Source", normalizedSortKey, normalizedDirection)}
+            ${sourceSortHeading("architecture", "Architecture", normalizedSortKey, normalizedDirection)}
+            ${sourceSortHeading("family", "Model family", normalizedSortKey, normalizedDirection)}
+            ${sourceSortHeading("generation_type", "Generation type", normalizedSortKey, normalizedDirection)}
+            ${sourceSortHeading("technologies", "Technologies", normalizedSortKey, normalizedDirection)}
+          </tr></thead>
+          <tbody>${rows || '<tr><td class="source-picker-empty" colspan="7">No generation sources are available.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <p class="source-picker-dialog-help">The primary source provides the control values. Additional sources reuse compatible prompt, resolution, and seed settings when available.</p>
+    </div>
+    <footer class="dialog-actions">
+      <button type="button" class="button secondary" data-action="cancel-generation-source-dialog">Cancel</button>
+      <button type="button" class="button primary" data-action="apply-generation-source-dialog" ${primaryKey ? "" : "disabled"}>Apply</button>
+    </footer>
+  </form>`;
+}
+
+function sourceSortHeading(key, label, activeKey, direction) {
+  const active = key === activeKey;
+  const nextDirection = active && direction === "ascending" ? "descending" : "ascending";
+  return `<th scope="col" ${active ? `aria-sort="${direction}"` : ""}><button type="button" class="source-sort-button" data-action="sort-generation-sources" data-source-sort-key="${escapeHtml(key)}" data-source-sort-direction="${nextDirection}">${escapeHtml(label)}<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3-3 3 3M11 10l-3 3-3-3" /></svg></button></th>`;
+}
+
+function sourcePickerRowMarkup(source, primaryKey, selectedKeys) {
+  const key = sourceKey(source);
+  const primary = key === primaryKey;
+  const selected = selectedKeys.has(key) || primary;
+  const unavailable = source.available === false;
+  const metadata = sourceMetadataPresentation(source);
+  const status = unavailable ? source.message || "Unavailable" : source.cached ? "Cached" : "Available";
+  return `<tr class="${selected ? "is-selected " : ""}${primary ? "is-primary " : ""}${unavailable ? "is-unavailable" : ""}" data-source-row-key="${escapeHtml(key)}">
+    <td class="source-picker-include-column"><label class="source-dialog-choice" title="${escapeHtml(primary ? `${source.display_name} is always included as the primary source` : `Include ${source.display_name}`)}"><input type="checkbox" data-source-draft-key="${escapeHtml(key)}" aria-label="Include ${escapeHtml(source.display_name)}" ${selected ? "checked" : ""} ${primary || unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
+    <td class="source-picker-primary-column"><label class="source-dialog-primary" title="Make ${escapeHtml(source.display_name)} the primary source"><input type="radio" name="source-picker-primary" data-source-primary-key="${escapeHtml(key)}" aria-label="Make ${escapeHtml(source.display_name)} the primary source" ${primary ? "checked" : ""} ${unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
+    <th class="source-picker-name-cell" scope="row"><strong>${escapeHtml(sourceDisplayName(source))}</strong><small>${escapeHtml(status)}</small></th>
+    <td>${escapeHtml(metadata.architecture)}</td>
+    <td>${escapeHtml(metadata.family)}</td>
+    <td>${escapeHtml(metadata.generationType)}</td>
+    <td class="source-picker-technologies-cell">${escapeHtml(metadata.technologies)}</td>
+  </tr>`;
+}
+
+function sourceMetadataPresentation(source) {
+  const generation = source?.generation_source || {};
+  const baseModel = generation.base_model || {};
+  const technologies = Array.isArray(generation.technologies)
+    ? generation.technologies
+    : Array.isArray(source?.technical_inventory?.technologies)
+      ? source.technical_inventory.technologies
+      : [];
+  return {
+    architecture: metadataLabel(baseModel.architecture_label || baseModel.architecture),
+    family: metadataLabel(baseModel.family_label || baseModel.family),
+    generationType: metadataLabel(generation.generation_type),
+    technologies:
+      technologies
+        .map((technology) => metadataLabel(technology?.label || technology?.id, ""))
+        .filter(Boolean)
+        .join(", ") || "—",
+  };
+}
+
+function metadataLabel(value, fallback = "—") {
+  const text = String(value ?? "").trim();
+  if (!text) return fallback;
+  return text
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/gu, (character) => character.toUpperCase());
+}
+
+function sourceSortValue(source, key) {
+  const metadata = sourceMetadataPresentation(source);
+  if (key === "architecture") return metadata.architecture;
+  if (key === "family") return metadata.family;
+  if (key === "generation_type") return metadata.generationType;
+  if (key === "technologies") return metadata.technologies;
+  return sourceDisplayName(source);
 }
 
 function warningText(warning) {

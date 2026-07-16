@@ -36,6 +36,7 @@ import {
   promptEditorMarkup,
   serviceBannerMarkup,
   shellMarkup,
+  sourcePickerDialogMarkup,
 } from "./render.mjs";
 
 const root = document.querySelector("#app");
@@ -54,7 +55,10 @@ const state = {
   activeSourceKey: null,
   activeSource: null,
   comparisonSourceKeys: new Set(),
-  sourceMenuOpen: false,
+  sourcePickerDialogOpen: false,
+  sourcePickerDraft: null,
+  sourcePickerSortKey: "display_name",
+  sourcePickerSortDirection: "ascending",
   controlSectionOpen: {},
   parameters: {},
   explicitParameterIds: new Set(),
@@ -106,6 +110,7 @@ const generationRefreshGate = createLatestRequestGate();
 let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
+let sourcePickerReturnFocus = null;
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
 let applicationStartupController = null;
@@ -216,9 +221,6 @@ async function handleSubmit(event) {
 }
 
 async function handleClick(event) {
-  if (state.sourceMenuOpen && !event.target.closest(".source-picker")) {
-    setSourceMenuOpen(false);
-  }
   const clearUpload = event.target.closest("[data-clear-upload]");
   if (clearUpload) {
     const id = clearUpload.dataset.clearUpload;
@@ -233,19 +235,13 @@ async function handleClick(event) {
   const action = target.dataset.action;
   try {
     if (action === "generate") await generate();
-    else if (action === "toggle-generation-source-menu") {
-      setSourceMenuOpen(!state.sourceMenuOpen);
-    } else if (action === "select-generation-source") {
-      const key = target.dataset.primarySourceKey;
-      if (!key || key === state.activeSourceKey) {
-        setSourceMenuOpen(false);
-        return;
-      }
-      state.comparisonSourceKeys.delete(key);
-      setSourceMenuOpen(false, { flushDeferredUpdates: false });
-      await selectSource(key);
-      await flushDeferredSourceMenuUpdates({ panelAlreadyRendered: true });
-    } else if (action === "logout") await logout();
+    else if (action === "open-generation-source-dialog") openSourcePickerDialog(target);
+    else if (action === "cancel-generation-source-dialog") closeSourcePickerDialog("cancel");
+    else if (action === "apply-generation-source-dialog") await applySourcePickerDialog();
+    else if (action === "select-all-generation-sources") selectAllSourcePickerDraft();
+    else if (action === "deselect-all-generation-sources") deselectAllSourcePickerDraft();
+    else if (action === "sort-generation-sources") sortSourcePickerDialog(target);
+    else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
       renderPasswordChange(false);
@@ -300,14 +296,12 @@ async function handleClick(event) {
 
 async function handleChange(event) {
   const element = event.target;
-  if (element.matches("[data-shared-source-key]")) {
-    const key = element.dataset.sharedSourceKey;
-    if (!key || key === state.activeSourceKey) return;
-    if (element.checked) state.comparisonSourceKeys.add(key);
-    else state.comparisonSourceKeys.delete(key);
-    state.serverFieldErrors = {};
-    state.formError = null;
-    renderPanel();
+  if (element.matches("[data-source-draft-key]")) {
+    updateSourcePickerDraftSelection(element.dataset.sourceDraftKey, element.checked);
+    return;
+  }
+  if (element.matches("[data-source-primary-key]")) {
+    updateSourcePickerDraftPrimary(element.dataset.sourcePrimaryKey);
     return;
   }
   if (element.id === "preset-select") {
@@ -345,27 +339,7 @@ async function handleChange(event) {
   }
 }
 
-function setSourceMenuOpen(
-  open,
-  { restoreFocus = false, flushDeferredUpdates = true } = {},
-) {
-  const wasOpen = state.sourceMenuOpen;
-  state.sourceMenuOpen = Boolean(open);
-  const picker = document.querySelector(".source-picker");
-  const trigger = picker?.querySelector("#workflow-source");
-  const menu = picker?.querySelector("#generation-source-menu");
-  picker?.classList.toggle("is-open", state.sourceMenuOpen);
-  trigger?.setAttribute("aria-expanded", String(state.sourceMenuOpen));
-  menu?.setAttribute("aria-hidden", String(!state.sourceMenuOpen));
-  if (state.sourceMenuOpen) menu?.removeAttribute("inert");
-  else menu?.setAttribute("inert", "");
-  if (restoreFocus) trigger?.focus({ preventScroll: true });
-  if (wasOpen && !state.sourceMenuOpen && flushDeferredUpdates) {
-    void flushDeferredSourceMenuUpdates();
-  }
-}
-
-async function flushDeferredSourceMenuUpdates({ panelAlreadyRendered = false } = {}) {
+async function flushDeferredSourcePickerUpdates({ panelAlreadyRendered = false } = {}) {
   const catalogRefreshPending = state.sourceCatalogRefreshPending;
   const panelRefreshPending = state.servicePanelRefreshPending;
   state.sourceCatalogRefreshPending = false;
@@ -375,6 +349,164 @@ async function flushDeferredSourceMenuUpdates({ panelAlreadyRendered = false } =
   } else if (panelRefreshPending && !panelAlreadyRendered) {
     renderPanel();
   }
+}
+
+function openSourcePickerDialog(button) {
+  const dialog = document.querySelector("#source-picker-dialog");
+  if (!dialog || dialog.open || button.disabled || !state.activeSourceKey) return;
+  sourcePickerReturnFocus = button;
+  state.sourcePickerDraft = {
+    primaryKey: state.activeSourceKey,
+    selectedKeys: new Set([state.activeSourceKey, ...selectedComparisonSourceKeys()]),
+  };
+  state.sourcePickerDialogOpen = true;
+  renderSourcePickerDialog();
+  dialog.showModal();
+  queueMicrotask(() => {
+    dialog.querySelector("[data-source-sort-key]")?.focus({ preventScroll: true });
+  });
+}
+
+function renderSourcePickerDialog() {
+  const dialog = document.querySelector("#source-picker-dialog");
+  const draft = state.sourcePickerDraft;
+  if (!dialog || !draft) return;
+  const scrollLeft = dialog.querySelector(".source-picker-table-wrap")?.scrollLeft || 0;
+  const scrollTop = dialog.querySelector(".source-picker-table-wrap")?.scrollTop || 0;
+  dialog.innerHTML = sourcePickerDialogMarkup(state.sources, {
+    primaryKey: draft.primaryKey,
+    selectedKeys: draft.selectedKeys,
+    sortKey: state.sourcePickerSortKey,
+    sortDirection: state.sourcePickerSortDirection,
+  });
+  const scroller = dialog.querySelector(".source-picker-table-wrap");
+  if (scroller) {
+    scroller.scrollLeft = scrollLeft;
+    scroller.scrollTop = scrollTop;
+  }
+}
+
+function updateSourcePickerDraftSelection(key, checked) {
+  const draft = state.sourcePickerDraft;
+  const source = state.sources.find((item) => sourceKey(item) === key);
+  if (!draft || !key || key === draft.primaryKey || source?.available === false) return;
+  if (checked) draft.selectedKeys.add(key);
+  else draft.selectedKeys.delete(key);
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector(`#source-picker-dialog [data-source-draft-key="${CSS.escape(key)}"]`)
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function updateSourcePickerDraftPrimary(key) {
+  const draft = state.sourcePickerDraft;
+  const source = state.sources.find((item) => sourceKey(item) === key);
+  if (!draft || !key || source?.available === false) return;
+  const previousPrimaryKey = draft.primaryKey;
+  draft.primaryKey = key;
+  draft.selectedKeys.add(key);
+  if (previousPrimaryKey && previousPrimaryKey !== key) {
+    draft.selectedKeys.delete(previousPrimaryKey);
+  }
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector(`#source-picker-dialog [data-source-primary-key="${CSS.escape(key)}"]`)
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function selectAllSourcePickerDraft() {
+  const draft = state.sourcePickerDraft;
+  if (!draft) return;
+  draft.selectedKeys = new Set(
+    state.sources
+      .filter((source) => source.available !== false)
+      .map((source) => sourceKey(source)),
+  );
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector('#source-picker-dialog [data-action="deselect-all-generation-sources"]')
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function deselectAllSourcePickerDraft() {
+  const draft = state.sourcePickerDraft;
+  if (!draft) return;
+  draft.selectedKeys = new Set(draft.primaryKey ? [draft.primaryKey] : []);
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector('#source-picker-dialog [data-action="select-all-generation-sources"]')
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function sortSourcePickerDialog(button) {
+  state.sourcePickerSortKey = button.dataset.sourceSortKey || "display_name";
+  state.sourcePickerSortDirection =
+    button.dataset.sourceSortDirection === "descending" ? "descending" : "ascending";
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector(
+        `#source-picker-dialog [data-source-sort-key="${CSS.escape(state.sourcePickerSortKey)}"]`,
+      )
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function closeSourcePickerDialog(returnValue, { flushDeferredUpdates = true } = {}) {
+  const dialog = document.querySelector("#source-picker-dialog");
+  const wasOpen = state.sourcePickerDialogOpen;
+  state.sourcePickerDialogOpen = false;
+  state.sourcePickerDraft = null;
+  if (dialog?.open) dialog.close(returnValue);
+  if (wasOpen && flushDeferredUpdates) void flushDeferredSourcePickerUpdates();
+}
+
+async function applySourcePickerDialog() {
+  const draft = state.sourcePickerDraft;
+  const primary = state.sources.find(
+    (source) => sourceKey(source) === draft?.primaryKey && source.available !== false,
+  );
+  if (!draft || !primary) return;
+  const availableKeys = new Set(
+    state.sources
+      .filter((source) => source.available !== false)
+      .map((source) => sourceKey(source)),
+  );
+  const comparisonKeys = new Set(
+    [...draft.selectedKeys].filter(
+      (key) => key !== draft.primaryKey && availableKeys.has(key),
+    ),
+  );
+  const primaryChanged = draft.primaryKey !== state.activeSourceKey;
+  closeSourcePickerDialog("apply", { flushDeferredUpdates: false });
+  state.comparisonSourceKeys = comparisonKeys;
+  state.serverFieldErrors = {};
+  state.formError = null;
+  if (primaryChanged) await selectSource(draft.primaryKey, { summary: primary });
+  else renderPanel();
+  await flushDeferredSourcePickerUpdates({ panelAlreadyRendered: true });
+}
+
+function handleSourcePickerDialogClose(event) {
+  const wasOpen = state.sourcePickerDialogOpen;
+  state.sourcePickerDialogOpen = false;
+  state.sourcePickerDraft = null;
+  const previous = sourcePickerReturnFocus;
+  sourcePickerReturnFocus = null;
+  queueMicrotask(() => {
+    const fallback = document.querySelector("#workflow-source");
+    const target = previous?.isConnected ? previous : fallback;
+    if (target && !target.disabled) target.focus({ preventScroll: true });
+  });
+  if (wasOpen) void flushDeferredSourcePickerUpdates();
 }
 
 function toggleControlSection(trigger) {
@@ -901,11 +1033,6 @@ function handlePhotoViewerWheel(event) {
 }
 
 function handleKeyDown(event) {
-  if (event.key === "Escape" && state.sourceMenuOpen) {
-    event.preventDefault();
-    setSourceMenuOpen(false, { restoreFocus: true });
-    return;
-  }
   if (
     event.target.matches("[data-prompt-editor-input]") &&
     event.key === "Enter" &&
@@ -1290,7 +1417,8 @@ async function logout() {
   state.activeSourceKey = null;
   state.activeSource = null;
   state.comparisonSourceKeys = new Set();
-  state.sourceMenuOpen = false;
+  state.sourcePickerDialogOpen = false;
+  state.sourcePickerDraft = null;
   state.parameters = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
@@ -1359,6 +1487,9 @@ async function enterApplication() {
   root.innerHTML = shellMarkup(state);
   document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
   document.querySelector("#prompt-editor-dialog")?.addEventListener("close", handlePromptEditorClose);
+  document
+    .querySelector("#source-picker-dialog")
+    ?.addEventListener("close", handleSourcePickerDialogClose);
   renderPanel();
   renderGallery();
   renderServiceBanner();
@@ -1752,7 +1883,6 @@ function renderPanel() {
 function capturePanelView(panel) {
   const view = {
     scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
-    sourceMenuScrollTop: panel.querySelector("#generation-source-menu ul")?.scrollTop || 0,
     selector: null,
     selection: null,
     sectionKey: null,
@@ -1793,8 +1923,6 @@ function capturePanelView(panel) {
 function restorePanelView(panel, view) {
   const scroller = panel.querySelector("#panel-scroll");
   if (scroller) scroller.scrollTop = view.scrollTop;
-  const sourceMenuScroller = panel.querySelector("#generation-source-menu ul");
-  if (sourceMenuScroller) sourceMenuScroller.scrollTop = view.sourceMenuScrollTop;
   if (!view.selector) return;
   if (view.sectionKey && view.sectionOpen) {
     const section = panel.querySelector(
@@ -2462,7 +2590,8 @@ async function recall(id) {
   state.activeSourceKey = key;
   state.activeSource = { ...source, interface: contract };
   state.comparisonSourceKeys = new Set();
-  state.sourceMenuOpen = false;
+  state.sourcePickerDialogOpen = false;
+  state.sourcePickerDraft = null;
   state.pendingSourceMigration = null;
   state.explicitParameterIds = new Set(
     Object.entries(recalledState.parameters || {})
@@ -3098,12 +3227,12 @@ async function refreshServices(signal) {
     const currentComfy = state.services.find((item) => item.service === "comfyui")?.available;
     renderServiceBanner();
     if (previousPanelState !== servicePanelState()) {
-      // Do not replace controls beneath a user who is navigating the open source menu.
-      if (state.sourceMenuOpen) state.servicePanelRefreshPending = true;
+      // Keep the source catalog stable while the user reviews a transactional draft.
+      if (state.sourcePickerDialogOpen) state.servicePanelRefreshPending = true;
       else renderPanel();
     }
     if (previousComfy !== currentComfy) {
-      if (state.sourceMenuOpen) state.sourceCatalogRefreshPending = true;
+      if (state.sourcePickerDialogOpen) state.sourceCatalogRefreshPending = true;
       else await loadSources({ signal });
     }
   } catch (error) {
@@ -3112,7 +3241,7 @@ async function refreshServices(signal) {
     state.servicesMessage = error.message || "Service status is temporarily unavailable.";
     renderServiceBanner();
     if (previousPanelState !== servicePanelState()) {
-      if (state.sourceMenuOpen) state.servicePanelRefreshPending = true;
+      if (state.sourcePickerDialogOpen) state.servicePanelRefreshPending = true;
       else renderPanel();
     }
     // Session expiry is handled by normal API interaction; avoid disruptive polling errors.

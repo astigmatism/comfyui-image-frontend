@@ -45,11 +45,15 @@ async function openAccountMenu(page) {
 async function selectPublishedSource(page, name) {
   const selector = page.locator("#workflow-source");
   await selector.click();
-  const option = page.locator("[data-primary-source-key]").filter({ hasText: name });
-  await expect(option).toHaveCount(1);
-  const value = await option.getAttribute("data-primary-source-key");
+  const dialog = page.locator("#source-picker-dialog");
+  await expect(dialog).toBeVisible();
+  const row = dialog.locator("[data-source-row-key]").filter({ hasText: name });
+  await expect(row).toHaveCount(1);
+  const option = row.locator("[data-source-primary-key]");
+  const value = await option.getAttribute("data-source-primary-key");
   expect(value).toBeTruthy();
-  await option.click();
+  await option.check();
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
 }
 
@@ -712,13 +716,32 @@ test("checked generation sources reuse compatible settings without blocking part
   });
 
   await page.locator("#workflow-source").click();
-  const genericCheckbox = page.getByLabel(
-    "Generate with Generic Landscape using compatible settings from the primary source",
+  const sourceDialog = page.locator("#source-picker-dialog");
+  let genericCheckbox = page.getByLabel(
+    "Include Generic Landscape",
     { exact: true },
   );
-  const genericSourceKey = await genericCheckbox.getAttribute("data-shared-source-key");
+  await genericCheckbox.check();
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("#workflow-source")).not.toContainText("2 sources");
+
+  await page.locator("#workflow-source").click();
+  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
+  await expect(genericCheckbox).not.toBeChecked();
+  const architectureHeading = sourceDialog.getByRole("columnheader", { name: "Architecture" });
+  await architectureHeading.getByRole("button").click();
+  await expect(architectureHeading).toHaveAttribute("aria-sort", "ascending");
+  await sourceDialog.getByRole("button", { name: "Select all", exact: true }).click();
+  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
+  await expect(genericCheckbox).toBeChecked();
+  await sourceDialog.getByRole("button", { name: "Deselect all", exact: true }).click();
+  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
+  await expect(genericCheckbox).not.toBeChecked();
+
+  const genericSourceKey = await genericCheckbox.getAttribute("data-source-draft-key");
   const primarySourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
   await genericCheckbox.check();
+  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator("#workflow-source")).toContainText("2 sources");
   await page.getByRole("button", { name: "Generate" }).click();
   await expect(page.locator("#toast-region")).toContainText(
@@ -997,10 +1020,10 @@ test("background service polling does not interrupt focused generation controls"
   await expect(iterations).toBeFocused();
 
   await page.locator("#workflow-source").click();
-  const sourceMenu = page.locator("#generation-source-menu");
-  await expect(sourceMenu).toBeVisible();
-  await sourceMenu.evaluate((menu) => {
-    window.__sourceMenuBeforeServicePoll = menu;
+  const sourceDialog = page.locator("#source-picker-dialog");
+  await expect(sourceDialog).toBeVisible();
+  await sourceDialog.evaluate((dialog) => {
+    window.__sourceDialogBeforeServicePoll = dialog;
   });
   const catalogRequestsBeforePoll = workflowCatalogRequests;
   const openMenuPoll = page.waitForResponse(
@@ -1009,10 +1032,10 @@ test("background service polling does not interrupt focused generation controls"
       response.request().method() === "GET",
   );
   await openMenuPoll;
-  await expect(sourceMenu).toBeVisible();
+  await expect(sourceDialog).toBeVisible();
   expect(
     await page.evaluate(
-      () => window.__sourceMenuBeforeServicePoll === document.querySelector("#generation-source-menu"),
+      () => window.__sourceDialogBeforeServicePoll === document.querySelector("#source-picker-dialog"),
     ),
   ).toBe(true);
   expect(workflowCatalogRequests).toBe(catalogRequestsBeforePoll);
@@ -1043,14 +1066,14 @@ test("background service polling does not interrupt focused generation controls"
   });
   await changedServicePollHeld;
 
-  const sourceList = sourceMenu.locator("ul");
-  const sourceListScrollTop = await sourceList.evaluate((list) => {
-    list.style.height = "36px";
-    list.scrollTop = 24;
-    window.__sourceListBeforeChangedServicePoll = list;
-    return list.scrollTop;
+  const sourceTable = sourceDialog.locator(".source-picker-table-wrap");
+  const sourceTableScrollTop = await sourceTable.evaluate((table) => {
+    table.style.height = "36px";
+    table.scrollTop = 24;
+    window.__sourceTableBeforeChangedServicePoll = table;
+    return table.scrollTop;
   });
-  expect(sourceListScrollTop).toBeGreaterThan(0);
+  expect(sourceTableScrollTop).toBeGreaterThan(0);
   const changedServicePoll = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/services" &&
@@ -1060,17 +1083,17 @@ test("background service polling does not interrupt focused generation controls"
   await changedServicePoll;
   expect(
     await page.evaluate(
-      () => window.__sourceMenuBeforeServicePoll === document.querySelector("#generation-source-menu"),
+      () => window.__sourceDialogBeforeServicePoll === document.querySelector("#source-picker-dialog"),
     ),
   ).toBe(true);
   expect(
     await page.evaluate(
       () =>
-        window.__sourceListBeforeChangedServicePoll ===
-        document.querySelector("#generation-source-menu ul"),
+        window.__sourceTableBeforeChangedServicePoll ===
+        document.querySelector("#source-picker-dialog .source-picker-table-wrap"),
     ),
   ).toBe(true);
-  await expect(sourceList).toHaveJSProperty("scrollTop", sourceListScrollTop);
+  await expect(sourceTable).toHaveJSProperty("scrollTop", sourceTableScrollTop);
   expect(workflowCatalogRequests).toBe(catalogRequestsBeforePoll);
 
   const deferredCatalogRefresh = page.waitForResponse(
@@ -1078,7 +1101,7 @@ test("background service polling does not interrupt focused generation controls"
       new URL(response.url()).pathname === "/api/workflows" &&
       response.request().method() === "GET",
   );
-  await page.locator("#workflow-source").click();
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await deferredCatalogRefresh;
   await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
 });
