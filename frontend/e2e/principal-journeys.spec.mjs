@@ -105,12 +105,20 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
   const viewerMedia = photoViewer.locator(".photo-viewer-media");
   const viewerImage = viewerMedia.locator("img");
-  const fitButton = photoViewer.getByRole("button", { name: "Fit", exact: true });
+  const sizingControl = photoViewer.getByRole("group", { name: "Image sizing" });
+  const playbackControl = photoViewer.getByRole("group", { name: "Playback mode" });
+  const fitButton = sizingControl.getByRole("button", { name: "Fit", exact: true });
+  const fillButton = sizingControl.getByRole("button", { name: "Fill", exact: true });
   const fullscreenButton = photoViewer.getByRole("button", { name: "Full screen", exact: true });
   await expect(viewerImage).toBeVisible();
   await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
   await expect(viewerImage).toHaveCSS("object-fit", "contain");
-  await expect(fitButton).toBeVisible();
+  await expect(fitButton).toHaveAttribute("aria-pressed", "false");
+  await expect(fillButton).toHaveAttribute("aria-pressed", "true");
+  await expect(sizingControl.getByRole("switch", { name: "Fill image" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   await expect(fullscreenButton).toHaveAttribute("aria-pressed", "false");
   await fullscreenButton.click();
   await expect.poll(() => fullscreenHost.evaluate((host) => document.fullscreenElement === host)).toBe(true);
@@ -131,13 +139,14 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await fitButton.click();
   await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
   await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
-  const fillButton = photoViewer.getByRole("button", { name: "Fill", exact: true });
+  await expect(fitButton).toHaveAttribute("aria-pressed", "true");
+  await expect(fillButton).toHaveAttribute("aria-pressed", "false");
   const fittedBounds = await viewerImage.boundingBox();
   expect(fittedBounds.width).toBeLessThanOrEqual(filledMediaBounds.width + 1);
   expect(fittedBounds.height).toBeLessThanOrEqual(filledMediaBounds.height + 1);
   await fillButton.click();
   await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
-  await expect(fitButton).toBeVisible();
+  await expect(fillButton).toHaveAttribute("aria-pressed", "true");
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThanOrEqual(1);
   await expect.poll(async () => (await viewerImage.boundingBox()).y).toBeCloseTo(filledMediaBounds.y, 0);
 
@@ -189,6 +198,8 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(viewerClose).toHaveCSS("opacity", "1");
   await page.waitForTimeout(2200);
   await expect(viewerClose).toHaveCSS("opacity", "0");
+  await expect(sizingControl).toHaveCSS("opacity", "0");
+  await expect(playbackControl).toHaveCSS("opacity", "0");
   await page.mouse.move(80, 80);
   await expect(viewerClose).toHaveCSS("opacity", "1");
   await page.keyboard.press("Escape");
@@ -322,12 +333,33 @@ test("photo viewer slideshow waits for a generation's final completed image", as
   const viewerFrame = photoViewer.locator(".photo-viewer-frame");
   const viewerMedia = photoViewer.locator(".photo-viewer-media");
   const viewerImage = viewerMedia.locator("img");
+  const sizingControl = photoViewer.getByRole("group", { name: "Image sizing" });
+  const playbackControl = photoViewer.getByRole("group", { name: "Playback mode" });
   await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", baseline.id);
-  await photoViewer.getByRole("button", { name: "Slideshow", exact: true }).click();
-  await expect(photoViewer.getByRole("button", { name: "Hold", exact: true })).toBeVisible();
+  await playbackControl.getByRole("button", { name: "Slideshow", exact: true }).click();
+  await expect(playbackControl.getByRole("button", { name: "Hold", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(
+    playbackControl.getByRole("button", { name: "Slideshow", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(playbackControl.getByRole("switch", { name: "Slideshow mode" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
+  await expect(sizingControl.getByRole("button", { name: "Fill", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(sizingControl.getByRole("button", { name: "Fit", exact: true })).toBeEnabled();
+  await sizingControl.getByRole("button", { name: "Fit", exact: true }).click();
   await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
   await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
-  await expect(photoViewer.getByRole("button", { name: "Fill", exact: true })).toBeDisabled();
+  await sizingControl.getByRole("button", { name: "Fill", exact: true }).click();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(1);
 
   const producer = await context.newPage();
   await producer.goto("/");
@@ -357,13 +389,18 @@ test("photo viewer slideshow waits for a generation's final completed image", as
   expect(completedDetail.display_artifact.state).toBe("final");
   await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", next.id);
   await expect(viewerImage).toHaveAttribute("src", completedDetail.display_artifact.content_url);
-  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
-  await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThan(1);
 
   await page.mouse.move(80, 80);
-  await photoViewer.getByRole("button", { name: "Hold", exact: true }).click();
-  await expect(photoViewer.getByRole("button", { name: "Slideshow", exact: true })).toBeVisible();
-  await expect(photoViewer.getByRole("button", { name: "Fill", exact: true })).toBeEnabled();
+  await playbackControl.getByRole("button", { name: "Hold", exact: true }).click();
+  await expect(playbackControl.getByRole("button", { name: "Hold", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(
+    playbackControl.getByRole("button", { name: "Slideshow", exact: true }),
+  ).toHaveAttribute("aria-pressed", "false");
   await producerPrompt.fill("hold this completed slideshow image");
   const heldResponse = await generateAndExpectAccepted(producer);
   const held = await heldResponse.json();

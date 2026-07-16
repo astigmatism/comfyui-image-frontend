@@ -538,7 +538,7 @@ test("one generation renders one card while progressive media changes in place",
   assert.match(first, /data-action="open-detail"/);
 });
 
-test("photo viewer fills by default, offers the next sizing action, omits unavailable navigation controls, and shows active status", () => {
+test("photo viewer exposes explicit sizing and playback state, omits unavailable navigation controls, and shows active status", () => {
   const html = photoViewerMarkup(
     {
       id: "g-live",
@@ -554,9 +554,14 @@ test("photo viewer fills by default, offers the next sizing action, omits unavai
   );
   assert.match(html, /src="\/api\/artifacts\/latest\/content"/);
   assert.match(html, /data-photo-view-mode="fill"/);
-  assert.match(html, /data-action="toggle-photo-slideshow">Slideshow<\/button>/);
-  assert.match(html, /data-action="toggle-photo-view">Fit<\/button>/);
-  assert.doesNotMatch(html, />Fill<\/button>/);
+  assert.match(html, /data-photo-toggle-state="hold" role="group" aria-label="Playback mode"/);
+  assert.match(html, /data-photo-playback-mode="hold" aria-pressed="true">Hold<\/button>/);
+  assert.match(html, /aria-label="Slideshow mode" aria-checked="false"/);
+  assert.match(html, /data-photo-playback-mode="slideshow" aria-pressed="false">Slideshow<\/button>/);
+  assert.match(html, /data-photo-toggle-state="fill" role="group" aria-label="Image sizing"/);
+  assert.match(html, /data-photo-view-mode="fit" aria-pressed="false">Fit<\/button>/);
+  assert.match(html, /aria-label="Fill image" aria-checked="true"/);
+  assert.match(html, /data-photo-view-mode="fill" aria-pressed="true">Fill<\/button>/);
   assert.match(html, /draggable="false"/);
   assert.match(html, /data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen/);
   assert.match(html, /aria-label="Close image viewer"/);
@@ -588,8 +593,15 @@ test("photo viewer fills by default, offers the next sizing action, omits unavai
     "slideshow",
   );
   assert.match(fit, /data-photo-view-mode="fit"/);
-  assert.match(fit, /data-action="toggle-photo-slideshow">Hold<\/button>/);
-  assert.match(fit, /data-action="toggle-photo-view" disabled>Fill<\/button>/);
+  assert.match(fit, /data-photo-toggle-state="slideshow" role="group" aria-label="Playback mode"/);
+  assert.match(fit, /data-photo-playback-mode="hold" aria-pressed="false">Hold<\/button>/);
+  assert.match(fit, /aria-label="Slideshow mode" aria-checked="true"/);
+  assert.match(fit, /data-photo-playback-mode="slideshow" aria-pressed="true">Slideshow<\/button>/);
+  assert.match(fit, /data-photo-toggle-state="fit" role="group" aria-label="Image sizing"/);
+  assert.match(fit, /data-photo-view-mode="fit" aria-pressed="true">Fit<\/button>/);
+  assert.match(fit, /aria-label="Fill image" aria-checked="false"/);
+  assert.match(fit, /data-photo-view-mode="fill" aria-pressed="false">Fill<\/button>/);
+  assert.doesNotMatch(fit, /disabled/);
 });
 
 test("historical native-only image batches use complete artifact count on the gallery card", () => {

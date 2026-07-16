@@ -983,7 +983,6 @@ export function photoViewerMarkup(
   const hasImage = artifact?.kind === "image";
   const viewMode = requestedViewMode === "fit" ? "fit" : "fill";
   const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";
-  const viewModeDisabled = playbackMode === "slideshow" ? " disabled" : "";
   const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
   const status = generation?.current_stage_label || statusLabel(generation?.status);
   const media = hasImage
@@ -991,8 +990,16 @@ export function photoViewerMarkup(
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
-    <button type="button" class="photo-viewer-slideshow photo-viewer-control" data-action="toggle-photo-slideshow">${playbackMode === "slideshow" ? "Hold" : "Slideshow"}</button>
-    <button type="button" class="photo-viewer-mode photo-viewer-control" data-action="toggle-photo-view"${viewModeDisabled}>${viewMode === "fill" ? "Fit" : "Fill"}</button>
+    <div class="photo-viewer-toggle photo-viewer-slideshow photo-viewer-control" data-photo-toggle-state="${playbackMode}" role="group" aria-label="Playback mode">
+      <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-playback" data-photo-playback-mode="hold" aria-pressed="${playbackMode === "hold"}">Hold</button>
+      <button type="button" class="photo-viewer-toggle-switch" data-action="toggle-photo-slideshow" role="switch" aria-label="Slideshow mode" aria-checked="${playbackMode === "slideshow"}"><span class="photo-viewer-toggle-thumb" aria-hidden="true"></span></button>
+      <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-playback" data-photo-playback-mode="slideshow" aria-pressed="${playbackMode === "slideshow"}">Slideshow</button>
+    </div>
+    <div class="photo-viewer-toggle photo-viewer-mode photo-viewer-control" data-photo-toggle-state="${viewMode}" role="group" aria-label="Image sizing">
+      <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="${viewMode === "fit"}">Fit</button>
+      <button type="button" class="photo-viewer-toggle-switch" data-action="toggle-photo-view" role="switch" aria-label="Fill image" aria-checked="${viewMode === "fill"}"><span class="photo-viewer-toggle-thumb" aria-hidden="true"></span></button>
+      <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="${viewMode === "fill"}">Fill</button>
+    </div>
     <button type="button" class="photo-viewer-fullscreen photo-viewer-control" data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen</button>
     <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close image viewer">×</button>
     ${navigation.hasNewer ? '<button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" aria-label="View newer generation">‹</button>' : ""}

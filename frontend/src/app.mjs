@@ -275,7 +275,11 @@ async function handleClick(event) {
     else if (action === "close-photo") closePhotoViewer();
     else if (action === "toggle-photo-fullscreen") togglePhotoViewerFullscreen();
     else if (action === "toggle-photo-view") togglePhotoViewerMode();
+    else if (action === "set-photo-view") setPhotoViewerMode(target.dataset.photoViewMode);
     else if (action === "toggle-photo-slideshow") togglePhotoViewerPlaybackMode();
+    else if (action === "set-photo-playback") {
+      setPhotoViewerPlaybackMode(target.dataset.photoPlaybackMode);
+    }
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -2642,7 +2646,6 @@ function togglePhotoViewerMode() {
 
 function setPhotoViewerMode(mode) {
   if (!["fit", "fill"].includes(mode)) return;
-  if (state.photoViewerPlaybackMode === "slideshow" && mode !== "fit") return;
   resetPhotoViewerView(mode);
   const dialog = document.querySelector("#photo-viewer");
   const media = dialog?.querySelector(".photo-viewer-media");
@@ -2652,18 +2655,22 @@ function setPhotoViewerMode(mode) {
 }
 
 function togglePhotoViewerPlaybackMode() {
+  setPhotoViewerPlaybackMode(
+    state.photoViewerPlaybackMode === "slideshow" ? "hold" : "slideshow",
+  );
+}
+
+function setPhotoViewerPlaybackMode(mode) {
+  if (!["hold", "slideshow"].includes(mode)) return;
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog?.open) return;
-  if (state.photoViewerPlaybackMode === "slideshow") {
-    state.photoViewerPlaybackMode = "hold";
+  state.photoViewerPlaybackMode = mode;
+  if (mode === "hold") {
     updatePhotoViewerPlaybackControl();
-    updatePhotoViewerModeControl();
     return;
   }
 
-  state.photoViewerPlaybackMode = "slideshow";
   if (showLatestCompletedSlideshowGeneration({ force: true })) return;
-  setPhotoViewerMode("fit");
   updatePhotoViewerPlaybackControl();
 }
 
@@ -2685,7 +2692,7 @@ function showLatestCompletedSlideshowGeneration({
     return false;
   }
   state.photoViewerGenerationId = latest.id;
-  resetPhotoViewerView("fit");
+  resetPhotoViewerView(state.photoViewerMode);
   renderPhotoViewer();
   return true;
 }
@@ -2806,16 +2813,31 @@ function updatePhotoViewerFullscreenControl() {
 }
 
 function updatePhotoViewerModeControl() {
-  const button = document.querySelector("#photo-viewer [data-action=toggle-photo-view]");
-  if (!button) return;
-  button.textContent = state.photoViewerMode === "fill" ? "Fit" : "Fill";
-  button.disabled = state.photoViewerPlaybackMode === "slideshow";
+  const control = document.querySelector("#photo-viewer .photo-viewer-mode");
+  const toggle = control?.querySelector("[data-action=toggle-photo-view]");
+  if (!control || !toggle) return;
+  control.dataset.photoToggleState = state.photoViewerMode;
+  toggle.setAttribute("aria-checked", String(state.photoViewerMode === "fill"));
+  for (const label of control.querySelectorAll("[data-action=set-photo-view]")) {
+    label.setAttribute("aria-pressed", String(label.dataset.photoViewMode === state.photoViewerMode));
+  }
 }
 
 function updatePhotoViewerPlaybackControl() {
-  const button = document.querySelector("#photo-viewer [data-action=toggle-photo-slideshow]");
-  if (!button) return;
-  button.textContent = state.photoViewerPlaybackMode === "slideshow" ? "Hold" : "Slideshow";
+  const control = document.querySelector("#photo-viewer .photo-viewer-slideshow");
+  const toggle = control?.querySelector("[data-action=toggle-photo-slideshow]");
+  if (!control || !toggle) return;
+  control.dataset.photoToggleState = state.photoViewerPlaybackMode;
+  toggle.setAttribute(
+    "aria-checked",
+    String(state.photoViewerPlaybackMode === "slideshow"),
+  );
+  for (const label of control.querySelectorAll("[data-action=set-photo-playback]")) {
+    label.setAttribute(
+      "aria-pressed",
+      String(label.dataset.photoPlaybackMode === state.photoViewerPlaybackMode),
+    );
+  }
 }
 
 function handlePhotoViewerResize() {
