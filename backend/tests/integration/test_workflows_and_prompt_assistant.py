@@ -352,7 +352,7 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     assert "Apply the smallest possible set of edits" in request_payload["prompt"]
     assert "Preserve every existing detail" in request_payload["prompt"]
     assert "Do not add unsolicited visual details" in request_payload["prompt"]
-    assert composed["template_version"] == "v2"
+    assert composed["template_version"] == "v3"
     assert app_client.get("/api/generations").json()["items"] == before
 
     payload = generation_payload(app_client, composed["prompt"], seed=123)
@@ -407,13 +407,18 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     instruction = request_payload["prompt"]
     assert "expert prompt writer for Krea 2" in instruction
     assert "This mode is intentionally creative" in instruction
+    assert "copy the complete Creative direction exactly as the user wrote it" in instruction
+    assert "Copy through its final character before generating any new words" in instruction
+    assert "Do not paraphrase, reorder, correct, or omit" in instruction
+    assert "Never return the Creative direction alone" in instruction
+    assert "Keep inline exclusions such as 'no people' explicit" in instruction
     assert "invent an action or pose" in instruction
     assert "setting and environment" in instruction
     assert "composition and camera details" in instruction
     assert "subject and defining attributes; action or pose; setting and environment" in instruction
     assert "old prompt that create mode must ignore" not in instruction
-    assert request_payload["options"] == {"temperature": 0.7, "seed": 0, "num_predict": 512}
-    assert response.json()["template_version"] == "v2"
+    assert request_payload["options"] == {"temperature": 0.5, "seed": 0, "num_predict": 512}
+    assert response.json()["template_version"] == "v3"
 
 
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:

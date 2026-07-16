@@ -87,7 +87,7 @@ class OllamaAdapter:
         options = (
             {"temperature": 0.1, "seed": 0, "num_predict": 512}
             if mode == "refine"
-            else {"temperature": 0.7, "seed": 0, "num_predict": 512}
+            else {"temperature": 0.5, "seed": 0, "num_predict": 512}
         )
         payload = {
             "prompt": instruction,
@@ -157,7 +157,19 @@ def _instruction(*, mode: str, prompt: str, direction: str) -> str:
         "one complete, polished, directly usable image prompt from the Creative direction. This "
         "mode is intentionally creative.\n\n"
         "Composition rules:\n"
-        "- Preserve every detail the Creative direction specifies and never contradict it.\n"
+        "- First copy the complete Creative direction exactly as the user wrote it into the start "
+        "of the finalized prompt, without adding a label or wrapping it in quotation marks. Copy "
+        "through its final character before generating any new words. Do not paraphrase, reorder, "
+        "correct, or omit any part of that opening.\n"
+        "- Always continue after that exact opening and expand it into a cohesive prompt of "
+        "roughly 70 to 160 words. Never return the Creative direction alone, even when it already "
+        "specifies many details. Add coherent visual specificity without contradicting or "
+        "repeating the opening.\n"
+        "- Never contradict the Creative direction. Treat every subject, attribute, action, "
+        "setting, count, relationship, exclusion, exact quoted text, medium, named style or mood, "
+        "palette, composition, and camera choice in it as mandatory.\n"
+        "- Keep inline exclusions such as 'no people' explicit in the final prompt. The rule "
+        "against a negative-prompt section does not permit dropping a user-specified exclusion.\n"
         "- Creatively invent coherent, visually specific missing details. In particular, when the "
         "user supplies only a subject or otherwise leaves gaps, invent an action or pose, a rich "
         "setting, a purposeful composition, and concrete camera details rather than leaving those "

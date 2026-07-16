@@ -34,6 +34,13 @@ def test_create_instruction_requires_missing_action_setting_and_camera_details()
 
     assert "expert prompt writer for Krea 2" in instruction
     assert "This mode is intentionally creative" in instruction
+    assert "copy the complete Creative direction exactly as the user wrote it" in instruction
+    assert "Copy through its final character before generating any new words" in instruction
+    assert "Do not paraphrase, reorder, correct, or omit" in instruction
+    assert "Never return the Creative direction alone" in instruction
+    assert "exact quoted text" in instruction
+    assert "named style or mood" in instruction
+    assert "Keep inline exclusions such as 'no people' explicit" in instruction
     assert "Creatively invent coherent, visually specific missing details" in instruction
     assert "invent an action or pose" in instruction
     assert "a rich setting" in instruction
