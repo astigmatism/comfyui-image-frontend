@@ -1,6 +1,7 @@
 import {
   controlPresentation,
   escapeHtml,
+  formatTimelineMonth,
   formatLocalDate,
   interfaceInputs,
   isAdvancedInput,
@@ -12,6 +13,7 @@ import {
   sortGenerationsNewestFirst,
   sortInterfaceInputs,
   statusLabel,
+  validTimelineMonth,
 } from "./lib.mjs";
 
 export function loginMarkup(appTitle) {
@@ -341,6 +343,7 @@ function sourcePickerRowMarkup(source, primaryKey, selectedKeys) {
 function sourceMetadataPresentation(source) {
   const generation = source?.generation_source || {};
   const baseModel = generation.base_model || {};
+  const introduction = modelIntroductionPresentation(baseModel, generation);
   const technologies = Array.isArray(generation.technologies)
     ? generation.technologies
     : Array.isArray(source?.technical_inventory?.technologies)
@@ -348,7 +351,8 @@ function sourceMetadataPresentation(source) {
       : [];
   return {
     architecture: metadataLabel(baseModel.architecture_label || baseModel.architecture),
-    introduced: modelIntroductionLabel(baseModel, generation),
+    introduced: introduction.label,
+    introducedSortValue: introduction.sortValue,
     generationType: metadataLabel(generation.generation_type),
     technologies:
       technologies
@@ -358,7 +362,17 @@ function sourceMetadataPresentation(source) {
   };
 }
 
-function modelIntroductionLabel(baseModel, generation) {
+function modelIntroductionPresentation(baseModel, generation) {
+  const canonicalMonth = validTimelineMonth(
+    baseModel?.timeline?.architecture?.introduced_month,
+  );
+  if (canonicalMonth) {
+    return {
+      label: formatTimelineMonth(canonicalMonth),
+      sortValue: canonicalMonth,
+    };
+  }
+
   const candidates = [
     baseModel.introduced_at,
     baseModel.introduced,
@@ -375,9 +389,9 @@ function modelIntroductionLabel(baseModel, generation) {
   ];
   for (const candidate of candidates) {
     const year = modelIntroductionYear(candidate);
-    if (year) return year;
+    if (year) return { label: year, sortValue: year };
   }
-  return "—";
+  return { label: "—", sortValue: "" };
 }
 
 function modelIntroductionYear(value) {
@@ -424,7 +438,7 @@ function metadataLabel(value, fallback = "—") {
 function sourceSortValue(source, key) {
   const metadata = sourceMetadataPresentation(source);
   if (key === "architecture") return metadata.architecture;
-  if (key === "introduced") return metadata.introduced;
+  if (key === "introduced") return metadata.introducedSortValue;
   if (key === "generation_type") return metadata.generationType;
   return sourceDisplayName(source);
 }

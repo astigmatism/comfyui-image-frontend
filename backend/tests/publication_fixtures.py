@@ -116,6 +116,47 @@ def object_info_fixture() -> JsonObject:
     }
 
 
+def generation_source_timeline_fixture() -> JsonObject:
+    return {
+        "architecture": {
+            "introduced_month": "2026-01",
+            "source": {
+                "source_type": "official_announcement",
+                "publisher": "Fixture Models",
+                "title": "Fixture architecture announcement",
+                "url": "https://models.invalid/architecture",
+            },
+            "future_architecture_note": "preserved",
+        },
+        "default_model": {
+            "artifact": "krea2-model.safetensors",
+            "released_month": "2026-06",
+            "release_basis": "fixed_primary_model",
+            "source": {
+                "source_type": "creator_release",
+                "publisher": "Fixture Creator",
+                "title": "Fixture default model",
+                "url": "https://models.invalid/default-model",
+            },
+        },
+        "model_variants": [
+            {
+                "parameter_id": "checkpoint",
+                "value": "fixture_v4_int8",
+                "label": "Fixture V4 INT8",
+                "released_month": "2026-07",
+                "source": {
+                    "source_type": "creator_release",
+                    "publisher": "Fixture Creator",
+                    "title": "Fixture V4 INT8 release",
+                    "url": "https://models.invalid/model-variant",
+                },
+            }
+        ],
+        "future_timeline_field": {"rank": 7},
+    }
+
+
 def _binding(node_id: str, class_type: str) -> list[JsonObject]:
     return [{"node_id": node_id, "input": "value", "class_type": class_type}]
 

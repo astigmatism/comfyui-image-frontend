@@ -12,6 +12,8 @@ import {
   createLatestRequestGate,
   defaultsForContract,
   defaultsForInterface,
+  formatTimelineMonth,
+  generationSourceModelVariant,
   insertTranscription,
   latestCompletedImageGeneration,
   migrateInterfaceState,
@@ -30,7 +32,42 @@ import {
   snapResolutionValue,
   sortGenerationsNewestFirst,
   sortInterfaceInputs,
+  validTimelineMonth,
 } from "../src/lib.mjs";
+
+test("timeline months validate exactly and format without a local-midnight shift", () => {
+  assert.equal(validTimelineMonth("2026-01"), "2026-01");
+  assert.equal(formatTimelineMonth("2026-01", "en-US"), "January 2026");
+  for (const malformed of ["2026", "2026-00", "2026-13", "2200-01", " 2026-01 ", 202601]) {
+    assert.equal(validTimelineMonth(malformed), "");
+    assert.equal(formatTimelineMonth(malformed, "en-US"), "");
+  }
+});
+
+test("model variants match only the public parameter id and value", () => {
+  const first = {
+    parameter_id: "checkpoint",
+    value: "v4_int8",
+    label: "Fixture V4 INT8",
+    released_month: "2026-07",
+  };
+  const generationSource = {
+    base_model: {
+      timeline: {
+        model_variants: [
+          first,
+          { parameter_id: "secondary_checkpoint", value: "v4_int8", label: first.label },
+        ],
+      },
+    },
+  };
+
+  assert.equal(generationSourceModelVariant(generationSource, "checkpoint", "v4_int8"), first);
+  assert.equal(generationSourceModelVariant(generationSource, "checkpoint", first.label), null);
+  assert.equal(generationSourceModelVariant(generationSource, "unknown", "v4_int8"), null);
+  assert.equal(generationSourceModelVariant(generationSource, "secondary_checkpoint", "v4_int8")?.parameter_id, "secondary_checkpoint");
+  assert.doesNotMatch(JSON.stringify(first), /binding|filename|path|safetensors/);
+});
 
 test("voice transcripts insert at or replace the saved text selection", () => {
   assert.deepEqual(insertTranscription("hello world", "brave", 5, 5), {

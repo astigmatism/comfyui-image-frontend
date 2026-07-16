@@ -15,7 +15,10 @@ from tests.helpers import (
     provision_user,
     restore_cookie,
 )
-from tests.publication_fixtures import build_publication_bundle
+from tests.publication_fixtures import (
+    build_publication_bundle,
+    generation_source_timeline_fixture,
+)
 
 
 def _cache_ollama_health(
@@ -62,6 +65,7 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     )
     assert profile["generation_source"]["generation_type"] == "text_to_image"
     assert profile["generation_source"]["base_model"]["architecture"] == "krea2"
+    assert "timeline" not in profile["generation_source"]["base_model"]
     counts = profile["technical_inventory"]["node_counts"]
     assert set(counts) == {
         "editable_root",
@@ -198,6 +202,38 @@ def test_source_api_preserves_unknown_additive_metadata(fake_state, settings_fac
             "class_type": "FutureModelProvider",
             "future_hint": True,
         }
+
+
+def test_source_list_and_detail_preserve_model_timeline_without_private_bindings(
+    fake_state, settings_factory
+) -> None:
+    timeline = generation_source_timeline_fixture()
+    settings = settings_factory()
+    provenance_path = "/provenance-must-remain-inert"
+    timeline["architecture"]["source"]["url"] = f"{settings.comfyui_base_url}{provenance_path}"
+
+    def add_timeline(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["generation_source"]["base_model"]["timeline"] = timeline
+
+    bundle = build_publication_bundle("krea", mutate_manifest=add_timeline)
+    fake_state.workflow_files = dict(bundle.files)
+
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="timeline.metadata")
+        summary = first_profile(client)
+        detail_response = client.get(f"/api/workflows/{summary['source_key']}")
+
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert summary["readiness"] == "ready"
+        assert summary["generation_source"]["base_model"]["timeline"] == timeline
+        assert detail["generation_source"]["base_model"]["timeline"] == timeline
+        assert detail["generation_source"] == summary["generation_source"]
+        assert timeline["architecture"]["introduced_month"] == "2026-01"
+        assert timeline["default_model"]["released_month"] == "2026-06"
+        assert timeline["future_timeline_field"] == {"rank": 7}
+        assert _contains_private_graph_key(detail["interface"]) is False
+        assert provenance_path not in fake_state.http_request_paths
 
 
 def test_editable_workflow_drift_keeps_both_sources_visible_through_refresh(

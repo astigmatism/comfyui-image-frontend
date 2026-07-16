@@ -532,6 +532,88 @@ test("source picker dialog sorts model introduction metadata and filters generat
   );
 });
 
+test("source picker renders and sorts canonical architecture introduction months", () => {
+  const source = (sourceKey, introducedMonth, defaultModelMonth = undefined) => ({
+    source_key: sourceKey,
+    display_name: sourceKey,
+    available: true,
+    generation_source: {
+      generation_type: "text_to_image",
+      base_model: {
+        architecture: sourceKey,
+        timeline: {
+          ...(introducedMonth
+            ? { architecture: { introduced_month: introducedMonth } }
+            : {}),
+          ...(defaultModelMonth
+            ? { default_model: { released_month: defaultModelMonth } }
+            : {}),
+          model_variants: [
+            {
+              parameter_id: "checkpoint",
+              value: "public-v1",
+              path: "/private/models/never-render-this.safetensors",
+            },
+          ],
+        },
+      },
+      technologies: [],
+    },
+  });
+  const sources = [
+    source("january", "2026-01", "2026-12"),
+    source("june", "2026-06"),
+    source("december", "2025-12"),
+    source("missing", undefined, "2024-01"),
+  ];
+
+  const ascending = sourcePickerDialogMarkup(sources, {
+    primaryKey: "january",
+    selectedKeys: ["january"],
+    sortKey: "introduced",
+    sortDirection: "ascending",
+  });
+  const descending = sourcePickerDialogMarkup(sources, {
+    primaryKey: "january",
+    selectedKeys: ["january"],
+    sortKey: "introduced",
+    sortDirection: "descending",
+  });
+  const rowKeys = (html) =>
+    Array.from(html.matchAll(/data-source-row-key="([^"]+)"/g), (match) => match[1]);
+
+  assert.deepEqual(rowKeys(ascending), ["december", "january", "june", "missing"]);
+  assert.deepEqual(rowKeys(descending), ["june", "january", "december", "missing"]);
+  assert.match(ascending, />January 2026<\/td>/);
+  assert.match(ascending, />June 2026<\/td>/);
+  assert.match(ascending, />December 2025<\/td>/);
+  assert.doesNotMatch(ascending, /December 2026|January 2024/);
+  assert.doesNotMatch(ascending, /never-render-this|safetensors|private\/models/);
+});
+
+test("source picker falls back to legacy aliases when a canonical month is malformed", () => {
+  const html = sourcePickerDialogMarkup(
+    [
+      {
+        source_key: "fallback",
+        display_name: "Fallback",
+        available: true,
+        generation_source: {
+          base_model: {
+            architecture: "fixture",
+            release_year: 2024,
+            timeline: { architecture: { introduced_month: "2026-13" } },
+          },
+        },
+      },
+    ],
+    { primaryKey: "fallback", selectedKeys: ["fallback"], sortKey: "introduced" },
+  );
+
+  assert.match(html, />2024<\/td>/);
+  assert.doesNotMatch(html, /2026|Invalid Date/);
+});
+
 test("card footer groups generation actions and exposes permanent deletion", () => {
   const generation = {
     id: "g1",

@@ -5,7 +5,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+)
 
 GENERATION_SOURCE_SCHEMA = "comfyui-image-frontend.generation-source/v1"
 TECHNICAL_INVENTORY_SCHEMA = "comfyui-image-frontend.technical-inventory/v1"
@@ -28,6 +35,46 @@ class OpenMetadataModel(BaseModel):
 
     model_config = ConfigDict(extra="allow", strict=True, allow_inf_nan=False)
 
+    @model_serializer(mode="wrap")
+    def preserve_published_shape(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Do not synthesize absent optional metadata members in API responses."""
+
+        serialized = handler(self)
+        if not isinstance(serialized, dict):
+            return {}
+        return {key: value for key, value in serialized.items() if key in self.model_fields_set}
+
+
+TIMELINE_MONTH_PATTERN = r"^(19|20|21)\d{2}-(0[1-9]|1[0-2])$"
+
+
+class TimelineSource(OpenMetadataModel):
+    source_type: str
+    publisher: str
+    title: str
+    url: str
+
+
+class ArchitectureTimeline(OpenMetadataModel):
+    introduced_month: str = Field(pattern=TIMELINE_MONTH_PATTERN)
+    source: TimelineSource
+
+
+class ModelTimeline(OpenMetadataModel):
+    released_month: str = Field(pattern=TIMELINE_MONTH_PATTERN)
+    release_basis: str | None = None
+    source: TimelineSource
+    artifact: str | None = None
+    parameter_id: str | None = None
+    value: str | None = None
+    label: str | None = None
+
+
+class BaseModelTimeline(OpenMetadataModel):
+    architecture: ArchitectureTimeline | None = None
+    default_model: ModelTimeline | None = None
+    model_variants: list[ModelTimeline] = Field(default_factory=list)
+
 
 class BaseModelMetadata(OpenMetadataModel):
     family: str
@@ -35,6 +82,7 @@ class BaseModelMetadata(OpenMetadataModel):
     architecture: str
     architecture_label: str
     primary_artifacts: list[str]
+    timeline: BaseModelTimeline | None = None
 
 
 class TechnologyMetadata(OpenMetadataModel):
@@ -228,7 +276,57 @@ def _recognize_section(
             diagnostics.append(invalid_code)
             warnings.append(warning)
             return None
+    if model is GenerationSourceMetadata and not _generation_source_timeline_is_safe(section):
+        diagnostics.append(invalid_code)
+        warnings.append(warning)
+        return None
     return section
+
+
+def _generation_source_timeline_is_safe(section: Mapping[str, Any]) -> bool:
+    """Timeline metadata is descriptive and cannot carry private graph/model bindings."""
+
+    base_model = section.get("base_model")
+    if not isinstance(base_model, Mapping):
+        return False
+    timeline = base_model.get("timeline")
+    if timeline is None:
+        return True
+    if not isinstance(timeline, Mapping):
+        return False
+
+    private_keys = {
+        "binding",
+        "bindings",
+        "filename",
+        "model_path",
+        "node_id",
+        "options_json",
+        "path",
+        "prompt_path",
+    }
+    pending: list[Any] = [timeline]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Mapping):
+            if private_keys.intersection(item):
+                return False
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+
+    variants = timeline.get("model_variants", [])
+    if not isinstance(variants, list):
+        return False
+    if any(isinstance(variant, Mapping) and "artifact" in variant for variant in variants):
+        return False
+
+    default_model = timeline.get("default_model")
+    return not (
+        isinstance(default_model, Mapping)
+        and default_model.get("release_basis") == "default_checkpoint"
+        and "artifact" in default_model
+    )
 
 
 def _known_inventory_entries_are_typed(section: Mapping[str, Any]) -> bool:

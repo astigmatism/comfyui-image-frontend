@@ -16,6 +16,7 @@ from tests.publication_fixtures import (
     PublicationBundle,
     add_image_input,
     build_publication_bundle,
+    generation_source_timeline_fixture,
     object_info_fixture,
 )
 
@@ -757,6 +758,65 @@ def test_older_publication_without_metadata_remains_discoverable() -> None:
     assert publication.generation_source is None
     assert publication.technical_inventory is None
     assert publication.metadata_diagnostics == ()
+
+
+def test_older_v1_generation_source_without_timeline_remains_recognized() -> None:
+    publication = validate(build_publication_bundle("krea"))
+
+    assert publication.readiness == "ready"
+    assert publication.generation_source is not None
+    assert "timeline" not in publication.generation_source["base_model"]
+    assert publication.metadata_diagnostics == ()
+
+
+def test_generation_source_timeline_is_typed_and_preserved_losslessly() -> None:
+    timeline = generation_source_timeline_fixture()
+
+    def add_timeline(manifest) -> None:  # type: ignore[no-untyped-def]
+        manifest["generation_source"]["base_model"]["timeline"] = timeline
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=add_timeline))
+
+    assert publication.readiness == "ready"
+    assert publication.metadata_diagnostics == ()
+    assert publication.generation_source is not None
+    assert publication.generation_source["base_model"]["timeline"] == timeline
+    assert publication.generation_source["base_model"]["timeline"]["future_timeline_field"] == {
+        "rank": 7
+    }
+
+
+@pytest.mark.parametrize("introduced_month", ["2026", "2026-00", "2026-13", "2200-01", 202601])
+def test_malformed_optional_architecture_timeline_is_nonfatal(
+    introduced_month: object,
+) -> None:
+    def add_malformed_timeline(manifest) -> None:  # type: ignore[no-untyped-def]
+        timeline = generation_source_timeline_fixture()
+        timeline["architecture"]["introduced_month"] = introduced_month
+        manifest["generation_source"]["base_model"]["timeline"] = timeline
+
+    publication = validate(build_publication_bundle("krea", mutate_manifest=add_malformed_timeline))
+
+    assert publication.readiness == "ready_with_warnings"
+    assert publication.generation_source is None
+    assert publication.metadata_diagnostics == ("generation_source_invalid",)
+    assert publication.api_document
+
+
+def test_model_variant_timeline_cannot_expose_private_selector_bindings() -> None:
+    def add_private_timeline_binding(manifest) -> None:  # type: ignore[no-untyped-def]
+        timeline = generation_source_timeline_fixture()
+        timeline["model_variants"][0]["path"] = "/models/private/fixture.safetensors"
+        manifest["generation_source"]["base_model"]["timeline"] = timeline
+
+    publication = validate(
+        build_publication_bundle("krea", mutate_manifest=add_private_timeline_binding)
+    )
+
+    assert publication.readiness == "ready_with_warnings"
+    assert publication.generation_source is None
+    assert publication.metadata_diagnostics == ("generation_source_invalid",)
+    assert "private/fixture" not in str(publication.public_interface)
 
 
 def test_unknown_metadata_values_entries_warnings_and_fields_are_preserved() -> None:

@@ -73,7 +73,18 @@ The historical route name `workflows` is retained, but objects now represent del
       "family_label": "Krea 2",
       "architecture": "krea2",
       "architecture_label": "Krea 2",
-      "primary_artifacts": ["model.safetensors"]
+      "primary_artifacts": ["model.safetensors"],
+      "timeline": {
+        "architecture": {
+          "introduced_month": "2026-01",
+          "source": {
+            "source_type": "official_announcement",
+            "publisher": "Model publisher",
+            "title": "Architecture announcement",
+            "url": "https://publisher.example/architecture"
+          }
+        }
+      }
     },
     "technologies": [],
     "tags": ["text-to-image"]
@@ -107,6 +118,8 @@ The historical route name `workflows` is retained, but objects now represent del
 `readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled.
 
 Recognized v1 `generation_source` and `technical_inventory` objects are typed, additive, and returned on both summary and detail responses so clients can plan later catalog/dropdown behavior without refetching every source. Older manifests and unrecognized/malformed section schemas return `null` for that section while the raw manifest remains retained server-side. Unknown v1 values, array entries, warning strings, and extra fields are preserved. Artifact basenames, class types, and counts are descriptive only and are never accepted as request selectors. `output_reachable + compiled_orphans = compiled_api` and the accepted API count are checked diagnostically, not as queue gates.
+
+The optional `generation_source.base_model.timeline` keeps three clocks distinct. `architecture.introduced_month` is the base architecture's `YYYY-MM` introduction, `default_model.released_month` is the exact fixed/default model release when known, and top-level `published_at` is the workflow-bundle publication time. Timeline dates include inert provenance objects that are returned losslessly and are never fetched during discovery. `model_variants` identify selectable releases only by public `parameter_id` plus `value`; they do not expose or require a private filename, binding, node ID, or filesystem path. A malformed timeline makes generation-source metadata unavailable with a nonfatal diagnostic, but does not reject or disable the executable source.
 
 Ordinary source responses describe missing dependencies generically. `technical_inventory.reachable_class_types` and `orphan_class_types` are publisher-declared public inventory; current runtime dependency failures and exact missing classes remain restricted to administrator diagnostics.
 

@@ -7,6 +7,38 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+const TIMELINE_MONTH_PATTERN = /^(?:19|20|21)\d{2}-(?:0[1-9]|1[0-2])$/u;
+
+export function validTimelineMonth(value) {
+  return typeof value === "string" && TIMELINE_MONTH_PATTERN.test(value) ? value : "";
+}
+
+export function formatTimelineMonth(value, locales = undefined) {
+  const monthValue = validTimelineMonth(value);
+  if (!monthValue) return "";
+  const [year, month] = monthValue.split("-").map(Number);
+  return new Intl.DateTimeFormat(locales, {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year, month - 1, 1)));
+}
+
+export function generationSourceModelVariant(generationSource, parameterId, value) {
+  if (typeof parameterId !== "string" || typeof value !== "string") return null;
+  const variants = generationSource?.base_model?.timeline?.model_variants;
+  if (!Array.isArray(variants)) return null;
+  return (
+    variants.find(
+      (variant) =>
+        variant &&
+        typeof variant === "object" &&
+        variant.parameter_id === parameterId &&
+        variant.value === value,
+    ) || null
+  );
+}
+
 export function insertTranscription(value, transcript, selectionStart, selectionEnd) {
   const source = String(value ?? "");
   const spoken = String(transcript ?? "").trim();

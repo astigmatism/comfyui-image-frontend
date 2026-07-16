@@ -109,6 +109,7 @@ class FakeServiceState:
     speech_to_text_result: str = "transcribed speech"
     speech_to_text_calls: list[dict[str, Any]] = field(default_factory=list)
     uploaded: list[str] = field(default_factory=list)
+    http_request_paths: list[str] = field(default_factory=list)
     comfy_user_headers: list[tuple[str, str | None]] = field(default_factory=list)
     userdata_raw_paths: list[bytes] = field(default_factory=list)
     background_tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -151,6 +152,7 @@ class FakeServiceState:
         self.speech_to_text_result = "transcribed speech"
         self.speech_to_text_calls.clear()
         self.uploaded.clear()
+        self.http_request_paths.clear()
         self.comfy_user_headers.clear()
         self.userdata_raw_paths.clear()
         self.background_tasks.clear()
@@ -448,6 +450,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
 
     @app.middleware("http")
     async def preserve_userdata_route_segment(request: Request, call_next):  # type: ignore[no-untyped-def]
+        state.http_request_paths.append(request.url.path)
         raw_path = request.scope.get("raw_path", b"")
         if isinstance(raw_path, bytes) and raw_path.startswith(b"/userdata/"):
             state.userdata_raw_paths.append(raw_path.split(b"?", 1)[0])
