@@ -323,12 +323,14 @@ test("photo viewer fill zoom anchors overflow at the top of the viewport", () =>
     height: 450,
     fillZoom: 800 / 450,
     fillPanY: 0,
+    oneToOneZoom: 2,
   });
   assert.deepEqual(photoViewerImageLayout(900, 1600, 800, 800), {
     width: 450,
     height: 800,
     fillZoom: 800 / 450,
     fillPanY: (800 * (800 / 450) - 800) / 2,
+    oneToOneZoom: 2,
   });
   assert.equal(photoViewerImageLayout(0, 1600, 800, 800), null);
 });
@@ -491,17 +493,17 @@ test("resolution grid mirrors Resolution Master snapping and live details", () =
   });
 });
 
-test("published inputs sort basic before advanced with deterministic order, group, and id fallbacks", () => {
+test("published inputs put seed first, then sort by tier, order, group, and id", () => {
   const sorted = sortInterfaceInputs([
     ...publishedInterface.inputs,
     { id: "zeta", type: "string", group: "B", advanced: false },
     { id: "alpha", type: "string", group: "A", advanced: false },
   ]);
   assert.deepEqual(sorted.map((input) => input.id), [
+    "seed",
     "prompt",
     "width",
     "height",
-    "seed",
     "enable_seedvr2_upscale",
     "alpha",
     "zeta",

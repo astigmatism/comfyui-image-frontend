@@ -2645,7 +2645,7 @@ function togglePhotoViewerMode() {
 }
 
 function setPhotoViewerMode(mode) {
-  if (!["fit", "fill"].includes(mode)) return;
+  if (!["actual", "fit", "fill"].includes(mode)) return;
   resetPhotoViewerView(mode);
   const dialog = document.querySelector("#photo-viewer");
   const media = dialog?.querySelector(".photo-viewer-media");
@@ -2718,7 +2718,12 @@ function layoutPhotoViewerImage() {
   photo.style.width = `${layout.width}px`;
   photo.style.height = `${layout.height}px`;
   if (state.photoViewerNeedsBaseZoom) {
-    state.photoViewerZoom = state.photoViewerMode === "fill" ? layout.fillZoom : 1;
+    state.photoViewerZoom =
+      state.photoViewerMode === "fill"
+        ? layout.fillZoom
+        : state.photoViewerMode === "actual"
+          ? layout.oneToOneZoom
+          : 1;
     state.photoViewerPanX = 0;
     state.photoViewerPanY = state.photoViewerMode === "fill" ? layout.fillPanY : 0;
     state.photoViewerNeedsBaseZoom = false;
@@ -2736,7 +2741,7 @@ function applyPhotoViewerTransform() {
 }
 
 function resetPhotoViewerView(mode = "fill") {
-  state.photoViewerMode = mode === "fit" ? "fit" : "fill";
+  state.photoViewerMode = ["actual", "fit"].includes(mode) ? mode : "fill";
   state.photoViewerZoom = 1;
   state.photoViewerPanX = 0;
   state.photoViewerPanY = 0;
@@ -2813,10 +2818,11 @@ function updatePhotoViewerFullscreenControl() {
 }
 
 function updatePhotoViewerModeControl() {
-  const control = document.querySelector("#photo-viewer .photo-viewer-mode");
-  const toggle = control?.querySelector("[data-action=toggle-photo-view]");
-  if (!control || !toggle) return;
-  control.dataset.photoToggleState = state.photoViewerMode;
+  const control = document.querySelector("#photo-viewer .photo-viewer-view-controls");
+  const modeToggle = control?.querySelector(".photo-viewer-mode");
+  const toggle = modeToggle?.querySelector("[data-action=toggle-photo-view]");
+  if (!control || !modeToggle || !toggle) return;
+  modeToggle.dataset.photoToggleState = state.photoViewerMode;
   toggle.setAttribute("aria-checked", String(state.photoViewerMode === "fill"));
   for (const label of control.querySelectorAll("[data-action=set-photo-view]")) {
     label.setAttribute("aria-pressed", String(label.dataset.photoViewMode === state.photoViewerMode));

@@ -107,6 +107,7 @@ export function photoViewerImageLayout(imageWidth, imageHeight, viewportWidth, v
     height,
     fillZoom,
     fillPanY: Math.max(0, (height * fillZoom - availableHeight) / 2),
+    oneToOneZoom: 1 / fitScale,
   };
 }
 
@@ -237,6 +238,8 @@ export function sortInterfaceInputs(inputs) {
   return [...(inputs || [])].sort((first, second) => {
     const tier = Number(isAdvancedInput(first)) - Number(isAdvancedInput(second));
     if (tier) return tier;
+    const seed = Number(!isSeedInput(first)) - Number(!isSeedInput(second));
+    if (seed) return seed;
     const firstOrder = Number.isFinite(Number(first?.order)) ? Number(first.order) : Number.MAX_SAFE_INTEGER;
     const secondOrder = Number.isFinite(Number(second?.order)) ? Number(second.order) : Number.MAX_SAFE_INTEGER;
     if (firstOrder !== secondOrder) return firstOrder - secondOrder;
@@ -244,6 +247,10 @@ export function sortInterfaceInputs(inputs) {
     if (group) return group;
     return compareText(String(first?.id || ""), String(second?.id || ""));
   });
+}
+
+function isSeedInput(input) {
+  return input?.type === "seed" || input?.semantic_role === "seed";
 }
 
 function compareText(first, second) {

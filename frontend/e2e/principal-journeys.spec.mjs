@@ -107,6 +107,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   const viewerImage = viewerMedia.locator("img");
   const sizingControl = photoViewer.getByRole("group", { name: "Image sizing" });
   const playbackControl = photoViewer.getByRole("group", { name: "Playback mode" });
+  const oneToOneButton = sizingControl.getByRole("button", { name: "1:1", exact: true });
   const fitButton = sizingControl.getByRole("button", { name: "Fit", exact: true });
   const fillButton = sizingControl.getByRole("button", { name: "Fill", exact: true });
   const fullscreenButton = photoViewer.getByRole("button", { name: "Full screen", exact: true });
@@ -115,6 +116,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(viewerImage).toHaveCSS("object-fit", "contain");
   await expect(fitButton).toHaveAttribute("aria-pressed", "false");
   await expect(fillButton).toHaveAttribute("aria-pressed", "true");
+  await expect(oneToOneButton).toHaveAttribute("aria-pressed", "false");
   await expect(sizingControl.getByRole("switch", { name: "Fill image" })).toHaveAttribute(
     "aria-checked",
     "true",
@@ -126,6 +128,12 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
     "aria-pressed",
     "true",
   );
+  const oneToOneBounds = await oneToOneButton.boundingBox();
+  const fitFillBounds = await photoViewer.locator(".photo-viewer-mode").boundingBox();
+  expect(oneToOneBounds).toBeTruthy();
+  expect(fitFillBounds).toBeTruthy();
+  expect(oneToOneBounds.x + oneToOneBounds.width).toBeLessThan(fitFillBounds.x);
+  expect(fitFillBounds.x - (oneToOneBounds.x + oneToOneBounds.width)).toBeLessThanOrEqual(12);
 
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThanOrEqual(1);
   const filledBounds = await viewerImage.boundingBox();
@@ -193,6 +201,20 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await page.mouse.up();
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-x"))).toBeCloseTo(panXBefore + 36, 4);
   await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-pan-y"))).toBeCloseTo(panYBefore + 24, 4);
+
+  const naturalSize = await viewerImage.evaluate((image) => ({
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+  }));
+  await oneToOneButton.click();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "actual");
+  await expect(oneToOneButton).toHaveAttribute("aria-pressed", "true");
+  await expect(fitButton).toHaveAttribute("aria-pressed", "false");
+  await expect(fillButton).toHaveAttribute("aria-pressed", "false");
+  await expect(viewerImage).toHaveAttribute("data-photo-pan-x", "0");
+  await expect(viewerImage).toHaveAttribute("data-photo-pan-y", "0");
+  await expect.poll(async () => (await viewerImage.boundingBox()).width).toBeCloseTo(naturalSize.width, 1);
+  await expect.poll(async () => (await viewerImage.boundingBox()).height).toBeCloseTo(naturalSize.height, 1);
 
   const viewerClose = photoViewer.getByRole("button", { name: "Close image viewer" });
   await expect(viewerClose).toHaveCSS("opacity", "1");

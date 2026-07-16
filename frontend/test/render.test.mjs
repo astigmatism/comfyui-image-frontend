@@ -558,7 +558,8 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   assert.match(html, /data-photo-playback-mode="hold" aria-pressed="true">Hold<\/button>/);
   assert.match(html, /aria-label="Slideshow mode" aria-checked="false"/);
   assert.match(html, /data-photo-playback-mode="slideshow" aria-pressed="false">Slideshow<\/button>/);
-  assert.match(html, /data-photo-toggle-state="fill" role="group" aria-label="Image sizing"/);
+  assert.match(html, /photo-viewer-view-controls" role="group" aria-label="Image sizing"/);
+  assert.match(html, /data-photo-view-mode="actual" aria-pressed="false"[^>]*>1:1<\/button>/);
   assert.match(html, /data-photo-view-mode="fit" aria-pressed="false">Fit<\/button>/);
   assert.match(html, /aria-label="Fill image" aria-checked="true"/);
   assert.match(html, /data-photo-view-mode="fill" aria-pressed="true">Fill<\/button>/);
@@ -597,11 +598,31 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   assert.match(fit, /data-photo-playback-mode="hold" aria-pressed="false">Hold<\/button>/);
   assert.match(fit, /aria-label="Slideshow mode" aria-checked="true"/);
   assert.match(fit, /data-photo-playback-mode="slideshow" aria-pressed="true">Slideshow<\/button>/);
-  assert.match(fit, /data-photo-toggle-state="fit" role="group" aria-label="Image sizing"/);
+  assert.match(fit, /photo-viewer-view-controls" role="group" aria-label="Image sizing"/);
+  assert.match(fit, /data-photo-view-mode="actual" aria-pressed="false"[^>]*>1:1<\/button>/);
   assert.match(fit, /data-photo-view-mode="fit" aria-pressed="true">Fit<\/button>/);
   assert.match(fit, /aria-label="Fill image" aria-checked="false"/);
   assert.match(fit, /data-photo-view-mode="fill" aria-pressed="false">Fill<\/button>/);
   assert.doesNotMatch(fit, /disabled/);
+
+  const actual = photoViewerMarkup(
+    {
+      id: "g-actual",
+      workflow_display_name: "Published source",
+      status: "succeeded",
+      display_artifact: { kind: "image", content_url: "/actual.png" },
+    },
+    {},
+    "actual",
+  );
+  assert.match(actual, /data-photo-view-mode="actual"/);
+  assert.match(actual, /data-photo-view-mode="actual" aria-pressed="true"[^>]*>1:1<\/button>/);
+  assert.match(actual, /data-photo-view-mode="fit" aria-pressed="false">Fit<\/button>/);
+  assert.match(actual, /data-photo-view-mode="fill" aria-pressed="false">Fill<\/button>/);
+  assert.ok(
+    actual.indexOf('data-photo-view-mode="actual"') <
+      actual.indexOf('class="photo-viewer-toggle photo-viewer-mode'),
+  );
 });
 
 test("historical native-only image batches use complete artifact count on the gallery card", () => {
@@ -766,9 +787,9 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.match(html, /data-control-section-status="seed">Random<\/span>/);
   assert.match(html, /<div class="resolution-preview">/);
   assert.doesNotMatch(html, /<span aria-hidden="true">×<\/span>/);
+  assert.ok(html.indexOf('data-control-block="seed"') < html.indexOf('data-control-block="prompt"'));
   assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf("data-resolution-pair-block"));
   assert.ok(html.indexOf('data-control-block="width"') < html.indexOf('data-control-block="height"'));
-  assert.ok(html.indexOf('data-control-block="height"') < html.indexOf('data-control-block="seed"'));
   assert.match(html, /data-control-id="seed"[^>]*type="text"[^>]*inputmode="numeric"/);
   assert.doesNotMatch(html, /Use random or enter an exact seed\.|role="tooltip"|help-text/);
   assert.match(html, /data-control-id="enable_seedvr2_upscale"[^>]*type="checkbox"/);
