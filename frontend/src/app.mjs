@@ -4,7 +4,6 @@ import {
   clientValidate,
   choiceStrengthCompanion,
   comparisonInputs,
-  comparisonInterface,
   comparisonParametersForRequest,
   createLatestRequestGate,
   defaultsForInterface,
@@ -12,7 +11,6 @@ import {
   insertTranscription,
   latestCompletedImageGeneration,
   migrateInterfaceState,
-  missingComparisonRoles,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -48,6 +46,8 @@ const state = {
   sourceCatalogStatus: "idle",
   sourceCatalogMessage: null,
   sourceCatalogToken: 0,
+  sourceCatalogRefreshPending: false,
+  servicePanelRefreshPending: false,
   sourceDetailLoading: false,
   sourceDetailError: null,
   sourceLoadToken: 0,
@@ -242,8 +242,9 @@ async function handleClick(event) {
         return;
       }
       state.comparisonSourceKeys.delete(key);
-      setSourceMenuOpen(false);
+      setSourceMenuOpen(false, { flushDeferredUpdates: false });
       await selectSource(key);
+      await flushDeferredSourceMenuUpdates({ panelAlreadyRendered: true });
     } else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
@@ -344,7 +345,11 @@ async function handleChange(event) {
   }
 }
 
-function setSourceMenuOpen(open, { restoreFocus = false } = {}) {
+function setSourceMenuOpen(
+  open,
+  { restoreFocus = false, flushDeferredUpdates = true } = {},
+) {
+  const wasOpen = state.sourceMenuOpen;
   state.sourceMenuOpen = Boolean(open);
   const picker = document.querySelector(".source-picker");
   const trigger = picker?.querySelector("#workflow-source");
@@ -355,6 +360,21 @@ function setSourceMenuOpen(open, { restoreFocus = false } = {}) {
   if (state.sourceMenuOpen) menu?.removeAttribute("inert");
   else menu?.setAttribute("inert", "");
   if (restoreFocus) trigger?.focus({ preventScroll: true });
+  if (wasOpen && !state.sourceMenuOpen && flushDeferredUpdates) {
+    void flushDeferredSourceMenuUpdates();
+  }
+}
+
+async function flushDeferredSourceMenuUpdates({ panelAlreadyRendered = false } = {}) {
+  const catalogRefreshPending = state.sourceCatalogRefreshPending;
+  const panelRefreshPending = state.servicePanelRefreshPending;
+  state.sourceCatalogRefreshPending = false;
+  state.servicePanelRefreshPending = false;
+  if (catalogRefreshPending) {
+    await loadSources();
+  } else if (panelRefreshPending && !panelAlreadyRendered) {
+    renderPanel();
+  }
 }
 
 function toggleControlSection(trigger) {
@@ -1152,9 +1172,8 @@ function syncNumberControlPair(element) {
 
 function syncParameterValidation(controlId) {
   const contract = sourceInterface(state.activeSource);
-  const validationContract = hasComparisonSources() ? comparisonInterface(contract) : contract;
   const errors = {
-    ...clientValidate(validationContract, state.parameters),
+    ...clientValidate(contract, state.parameters),
     ...withoutNulls(state.serverFieldErrors),
   };
   state.fieldErrors = errors;
@@ -1277,6 +1296,8 @@ async function logout() {
   state.parameterStateBySource = {};
   state.pendingSourceMigration = null;
   state.sourceCatalogStatus = "idle";
+  state.sourceCatalogRefreshPending = false;
+  state.servicePanelRefreshPending = false;
   state.sourceCatalogToken += 1;
   state.sourceLoadToken += 1;
   state.services = [];
@@ -1707,10 +1728,9 @@ function applyPreset(presetId) {
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
-  const focus = capturePanelFocus(panel);
+  const panelView = capturePanelView(panel);
   const contract = sourceInterface(state.activeSource);
-  const validationContract = hasComparisonSources() ? comparisonInterface(contract) : contract;
-  const clientErrors = clientValidate(validationContract, state.parameters);
+  const clientErrors = clientValidate(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
   const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
   panel.innerHTML = generationPanelMarkup(state, selected, contract);
@@ -1725,13 +1745,21 @@ function renderPanel() {
       button.disabled = true;
     }
   }
-  restorePanelFocus(panel, focus);
+  restorePanelView(panel, panelView);
   syncSpeechControls();
 }
 
-function capturePanelFocus(panel) {
+function capturePanelView(panel) {
+  const view = {
+    scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
+    sourceMenuScrollTop: panel.querySelector("#generation-source-menu ul")?.scrollTop || 0,
+    selector: null,
+    selection: null,
+    sectionKey: null,
+    sectionOpen: false,
+  };
   const element = document.activeElement;
-  if (!element || !panel.contains(element)) return null;
+  if (!element || !panel.contains(element)) return view;
   let selector = null;
   if (element.id) {
     selector = `#${CSS.escape(element.id)}`;
@@ -1740,7 +1768,7 @@ function capturePanelFocus(panel) {
   } else if (element.name === "assistant-mode") {
     selector = `[name="assistant-mode"][value="${CSS.escape(element.value)}"]`;
   }
-  if (!selector) return null;
+  if (!selector) return view;
   let selection = null;
   try {
     if (element.selectionStart !== null) {
@@ -1754,33 +1782,35 @@ function capturePanelFocus(panel) {
     // Selection ranges are only available on text-editing controls.
   }
   return {
+    ...view,
     selector,
     selection,
     sectionKey: element.closest("[data-control-section]")?.dataset.controlSection || null,
     sectionOpen: Boolean(element.closest(".control-section.is-expanded")),
-    scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
   };
 }
 
-function restorePanelFocus(panel, focus) {
-  if (!focus) return;
-  if (focus.sectionKey && focus.sectionOpen) {
+function restorePanelView(panel, view) {
+  const scroller = panel.querySelector("#panel-scroll");
+  if (scroller) scroller.scrollTop = view.scrollTop;
+  const sourceMenuScroller = panel.querySelector("#generation-source-menu ul");
+  if (sourceMenuScroller) sourceMenuScroller.scrollTop = view.sourceMenuScrollTop;
+  if (!view.selector) return;
+  if (view.sectionKey && view.sectionOpen) {
     const section = panel.querySelector(
-      `[data-control-section="${CSS.escape(focus.sectionKey)}"]`,
+      `[data-control-section="${CSS.escape(view.sectionKey)}"]`,
     );
     if (section) setControlSectionElementOpen(section, true);
   }
-  const scroller = panel.querySelector("#panel-scroll");
-  if (scroller) scroller.scrollTop = focus.scrollTop;
-  const element = panel.querySelector(focus.selector);
+  const element = panel.querySelector(view.selector);
   if (!element || element.disabled) return;
   element.focus({ preventScroll: true });
-  if (!focus.selection) return;
+  if (!view.selection) return;
   try {
     element.setSelectionRange(
-      focus.selection.start,
-      focus.selection.end,
-      focus.selection.direction,
+      view.selection.start,
+      view.selection.end,
+      view.selection.direction,
     );
   } catch {
     // The replacement control may no longer support a text selection.
@@ -1880,14 +1910,7 @@ async function generateSelectedSources() {
   )
     return;
 
-  const missingSourceRoles = missingComparisonRoles(contract);
-  if (missingSourceRoles.length) {
-    state.formError = `The selected source cannot provide a complete comparison: ${missingSourceRoles.join(", ")}.`;
-    renderPanel();
-    return;
-  }
-
-  const errors = clientValidate(comparisonInterface(contract), requestParameters);
+  const errors = clientValidate(contract, requestParameters);
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted comparison controls.";
@@ -1902,17 +1925,13 @@ async function generateSelectedSources() {
   renderPanel();
   let focusErrors = false;
   try {
-    const comparisonParameters = comparisonParametersForRequest(
-      contract,
-      requestParameters,
-      contract,
-    );
+    const primaryParameters = parametersForRequest(contract, requestParameters);
     const validation = await api("/api/generations/validate", {
       method: "POST",
       body: JSON.stringify({
         source_key: requestSourceKey,
         revision: requestRevision,
-        parameters: comparisonParameters,
+        parameters: primaryParameters,
       }),
     });
     const seedInput = comparisonInputs(contract).find(
@@ -1948,23 +1967,19 @@ async function generateSelectedSources() {
         failures.push({ source: summary, error: new Error("No public interface is available.") });
         continue;
       }
-      const missingRoles = missingComparisonRoles(targetContract);
-      if (missingRoles.length) {
-        failures.push({
-          source: summary,
-          error: new Error(`Does not publish comparison controls for ${missingRoles.join(", ")}.`),
-        });
-        continue;
-      }
+      const targetKey = sourceKey(detail);
       const payload = {
-        source_key: sourceKey(detail),
+        source_key: targetKey,
         revision: structuredClone(sourceRevision(detail)),
-        parameters: comparisonParametersForRequest(
-          contract,
-          requestParameters,
-          targetContract,
-          resolvedSeed,
-        ),
+        parameters:
+          targetKey === requestSourceKey
+            ? primaryParameters
+            : comparisonParametersForRequest(
+                contract,
+                requestParameters,
+                targetContract,
+                resolvedSeed,
+              ),
       };
       if (payload.source_key === requestSourceKey && requestCompositionId) {
         payload.prompt_assistant_run_id = requestCompositionId;
@@ -3070,8 +3085,9 @@ function stopLiveUpdates() {
 }
 
 async function refreshServices(signal) {
+  const previousPanelState = servicePanelState();
+  const previousComfy = state.services.find((item) => item.service === "comfyui")?.available;
   try {
-    const previousComfy = state.services.find((item) => item.service === "comfyui")?.available;
     state.services = await api("/api/services", {
       operation: "Service status",
       deadlineMs: STARTUP_DEADLINES.services,
@@ -3081,16 +3097,41 @@ async function refreshServices(signal) {
     state.servicesMessage = null;
     const currentComfy = state.services.find((item) => item.service === "comfyui")?.available;
     renderServiceBanner();
-    renderPanel();
-    if (previousComfy !== currentComfy) await loadSources({ signal });
+    if (previousPanelState !== servicePanelState()) {
+      // Do not replace controls beneath a user who is navigating the open source menu.
+      if (state.sourceMenuOpen) state.servicePanelRefreshPending = true;
+      else renderPanel();
+    }
+    if (previousComfy !== currentComfy) {
+      if (state.sourceMenuOpen) state.sourceCatalogRefreshPending = true;
+      else await loadSources({ signal });
+    }
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
     state.servicesStatus = "error";
     state.servicesMessage = error.message || "Service status is temporarily unavailable.";
     renderServiceBanner();
-    renderPanel();
+    if (previousPanelState !== servicePanelState()) {
+      if (state.sourceMenuOpen) state.servicePanelRefreshPending = true;
+      else renderPanel();
+    }
     // Session expiry is handled by normal API interaction; avoid disruptive polling errors.
   }
+}
+
+function servicePanelState() {
+  const services = [...(state.services || [])]
+    .map((item) => ({
+      service: item.service,
+      available: Boolean(item.available),
+      message: item.message || null,
+    }))
+    .sort((first, second) => String(first.service).localeCompare(String(second.service)));
+  return JSON.stringify({
+    status: state.servicesStatus,
+    message: state.servicesStatus === "error" ? state.servicesMessage : null,
+    services,
+  });
 }
 
 function renderServiceBanner() {

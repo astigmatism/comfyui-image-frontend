@@ -688,7 +688,7 @@ test("failed initial gallery snapshot preserves buffered live generations", asyn
   }
 });
 
-test("checked generation sources share comparison settings and report incompatible selections", async ({
+test("checked generation sources reuse compatible settings without blocking partial interfaces", async ({
   page,
 }) => {
   await page.goto("/");
@@ -712,28 +712,38 @@ test("checked generation sources share comparison settings and report incompatib
   });
 
   await page.locator("#workflow-source").click();
-  await page
-    .getByLabel("Use Generic Landscape with the same prompt, resolution, and seed", { exact: true })
-    .check();
+  const genericCheckbox = page.getByLabel(
+    "Generate with Generic Landscape using compatible settings from the primary source",
+    { exact: true },
+  );
+  const genericSourceKey = await genericCheckbox.getAttribute("data-shared-source-key");
+  const primarySourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
+  await genericCheckbox.check();
   await expect(page.locator("#workflow-source")).toContainText("2 sources");
   await page.getByRole("button", { name: "Generate" }).click();
   await expect(page.locator("#toast-region")).toContainText(
-    "Queued 1 of 2 selected generation sources.",
+    "2 generations queued across 2 selected sources.",
   );
-  await expect(page.locator("#toast-region")).toContainText(
-    "Generic Landscape: Does not publish comparison controls for width, height, seed.",
-  );
-  await expect.poll(() => generationRequests.length).toBe(1);
+  await expect.poll(() => generationRequests.length).toBe(2);
 
-  const kreaRequest = generationRequests[0];
+  const kreaRequest = generationRequests.find((request) => request.source_key === primarySourceKey);
+  const genericRequest = generationRequests.find((request) => request.source_key === genericSourceKey);
   expect(kreaRequest).toBeTruthy();
+  expect(genericRequest).toBeTruthy();
   expect(kreaRequest.parameters).toEqual({
     prompt: "selected-source comparison lighthouse",
     width: 768,
     height: 1024,
     seed: "424242",
+    enable_seedvr2_upscale: false,
+    lora: "knp_v4_1",
+    lora_strength: 1,
   });
-  await expect(page.locator(".gallery-card").nth(0)).toContainText("Krea 2 NSFW V4");
+  expect(genericRequest.parameters).toEqual({
+    prompt: "selected-source comparison lighthouse",
+  });
+  await expect(page.locator(".gallery-card").filter({ hasText: "Krea 2 NSFW V4" })).toBeVisible();
+  await expect(page.locator(".gallery-card").filter({ hasText: "Generic Landscape" })).toBeVisible();
 });
 
 test("gallery defaults to request initiation order when the page arrives unsorted", async ({
@@ -948,12 +958,19 @@ test("voice input records and inserts transcripts at the cursor in every prompt 
 
 test("background service polling does not interrupt focused generation controls", async ({ page }) => {
   await page.addInitScript(() => {
-    const setInterval = window.setInterval.bind(window);
-    window.setInterval = (handler, delay, ...args) =>
-      setInterval(handler, delay === 10_000 ? 100 : delay, ...args);
+    const setTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (handler, delay, ...args) =>
+      setTimeout(handler, delay === 10_000 ? 100 : delay, ...args);
+  });
+  let workflowCatalogRequests = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/workflows" && request.method() === "GET") {
+      workflowCatalogRequests += 1;
+    }
   });
   await page.goto("/");
-  await signIn(page, "admin", "E2EAdminPermanent123!");
+  await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
@@ -978,6 +995,92 @@ test("background service polling does not interrupt focused generation controls"
   );
   await numericPoll;
   await expect(iterations).toBeFocused();
+
+  await page.locator("#workflow-source").click();
+  const sourceMenu = page.locator("#generation-source-menu");
+  await expect(sourceMenu).toBeVisible();
+  await sourceMenu.evaluate((menu) => {
+    window.__sourceMenuBeforeServicePoll = menu;
+  });
+  const catalogRequestsBeforePoll = workflowCatalogRequests;
+  const openMenuPoll = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/services" &&
+      response.request().method() === "GET",
+  );
+  await openMenuPoll;
+  await expect(sourceMenu).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => window.__sourceMenuBeforeServicePoll === document.querySelector("#generation-source-menu"),
+    ),
+  ).toBe(true);
+  expect(workflowCatalogRequests).toBe(catalogRequestsBeforePoll);
+
+  let holdChangedServicePoll = true;
+  let releaseChangedServicePoll;
+  let reportChangedServicePoll;
+  const changedServicePollHeld = new Promise((resolve) => {
+    reportChangedServicePoll = resolve;
+  });
+  const changedServicePollReleased = new Promise((resolve) => {
+    releaseChangedServicePoll = resolve;
+  });
+  await page.route("**/api/services", async (route) => {
+    if (holdChangedServicePoll) {
+      holdChangedServicePoll = false;
+      reportChangedServicePoll();
+      await changedServicePollReleased;
+    }
+    const response = await route.fetch();
+    const services = await response.json();
+    const comfy = services.find((item) => item.service === "comfyui");
+    if (comfy) {
+      comfy.available = false;
+      comfy.message = "ComfyUI is temporarily unavailable during this poll.";
+    }
+    await route.fulfill({ response, json: services });
+  });
+  await changedServicePollHeld;
+
+  const sourceList = sourceMenu.locator("ul");
+  const sourceListScrollTop = await sourceList.evaluate((list) => {
+    list.style.height = "36px";
+    list.scrollTop = 24;
+    window.__sourceListBeforeChangedServicePoll = list;
+    return list.scrollTop;
+  });
+  expect(sourceListScrollTop).toBeGreaterThan(0);
+  const changedServicePoll = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/services" &&
+      response.request().method() === "GET",
+  );
+  releaseChangedServicePoll();
+  await changedServicePoll;
+  expect(
+    await page.evaluate(
+      () => window.__sourceMenuBeforeServicePoll === document.querySelector("#generation-source-menu"),
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(
+      () =>
+        window.__sourceListBeforeChangedServicePoll ===
+        document.querySelector("#generation-source-menu ul"),
+    ),
+  ).toBe(true);
+  await expect(sourceList).toHaveJSProperty("scrollTop", sourceListScrollTop);
+  expect(workflowCatalogRequests).toBe(catalogRequestsBeforePoll);
+
+  const deferredCatalogRefresh = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/workflows" &&
+      response.request().method() === "GET",
+  );
+  await page.locator("#workflow-source").click();
+  await deferredCatalogRefresh;
+  await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
 });
 
 test("published Krea source exposes choice controls, strict outputs, and the authored result hierarchy", async ({

@@ -426,7 +426,49 @@ test("source picker marks primary and shared sources and shows the selected queu
     /checked[^>]*disabled/,
   );
   assert.match(html, /Queueing 2…/);
-  assert.match(html, /2 sources · shared prompt, resolution &amp; seed/);
+  assert.match(html, /2 sources selected/);
+  assert.doesNotMatch(html, /Select as primary|>Primary source</);
+});
+
+test("source picker allows additional sources without requiring a complete comparison contract", () => {
+  const sources = [
+    { source_key: "one", display_name: "One", instance_id: "default", available: true },
+    { source_key: "two", display_name: "Two", instance_id: "default", available: true },
+  ];
+  const promptOnlyInterface = {
+    inputs: [
+      {
+        id: "prompt",
+        label: "Prompt",
+        type: "string",
+        semantic_role: "positive_prompt",
+        default: "a lighthouse",
+      },
+    ],
+  };
+  const html = generationPanelMarkup(
+    {
+      submitting: false,
+      comparisonSourceKeys: new Set(),
+      services: [{ service: "comfyui", available: true }],
+      servicesStatus: "ready",
+      sources,
+      sourceCatalogStatus: "ready",
+      activeSourceKey: "one",
+      sourceMenuOpen: true,
+      parameters: { prompt: "a lighthouse" },
+      fieldErrors: {},
+    },
+    sources[0],
+    promptOnlyInterface,
+  );
+
+  const additionalCheckbox =
+    html.match(/<input[^>]*data-shared-source-key="two"[^>]*>/)?.[0] || "";
+  assert.ok(additionalCheckbox);
+  assert.doesNotMatch(additionalCheckbox, /disabled/);
+  assert.doesNotMatch(html, /must publish|Select as primary|>Primary source<| · default/);
+  assert.match(html, /reuse compatible prompt, resolution, and seed settings when available/);
 });
 
 test("card footer groups generation actions and exposes permanent deletion", () => {

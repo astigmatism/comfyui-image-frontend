@@ -1080,7 +1080,7 @@ code {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 52px;
+  min-height: 44px;
   padding: 7px 9px 7px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1333,8 +1333,7 @@ code {
   cursor: pointer;
 }
 
-.source-primary-option strong,
-.source-primary-option small {
+.source-primary-option strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1343,12 +1342,6 @@ code {
 .source-primary-option strong {
   font-size: 0.77rem;
   font-weight: 620;
-}
-
-.source-primary-option small {
-  color: var(--muted);
-  font-size: 0.66rem;
-  font-weight: 500;
 }
 
 .source-picker-option.is-primary .source-primary-option strong {
