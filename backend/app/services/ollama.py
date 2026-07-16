@@ -92,7 +92,7 @@ class OllamaAdapter:
         payload = {
             "prompt": instruction,
             "stream": False,
-            "think": False,
+            "think": True,
             "format": {
                 "type": "object",
                 "properties": {"prompt": {"type": "string"}},
@@ -113,11 +113,16 @@ class OllamaAdapter:
                 status_code=503,
             ) from exc
         raw_text = data.get("response") if isinstance(data, dict) else None
-        if not isinstance(raw_text, str):
-            raise AppError("ollama_invalid_response", "Prompt Assistant returned no usable prompt.")
-        final = _extract_prompt(raw_text)
+        final = _extract_prompt(raw_text) if isinstance(raw_text, str) else ""
+        if not final and isinstance(data, dict):
+            # Thinking-capable Ollama parsers can place a schema-constrained final object in
+            # `thinking` while leaving `response` empty. Only accept a structured prompt from
+            # that field so internal reasoning can never become the visible image prompt.
+            thinking_text = data.get("thinking")
+            if isinstance(thinking_text, str):
+                final = _extract_structured_prompt(thinking_text)
         if not final:
-            raise AppError("ollama_invalid_response", "Prompt Assistant returned an empty prompt.")
+            raise AppError("ollama_invalid_response", "Prompt Assistant returned no usable prompt.")
         effective_model = data.get("model") if isinstance(data, dict) else None
         if not isinstance(effective_model, str) or not effective_model.strip():
             raise AppError(
@@ -190,6 +195,12 @@ def _instruction(*, mode: str, prompt: str, direction: str) -> str:
 
 def _extract_prompt(raw_text: str) -> str:
     text = raw_text.strip()
+    structured = _extract_structured_prompt(text)
+    return structured or text
+
+
+def _extract_structured_prompt(raw_text: str) -> str:
+    text = raw_text.strip()
     try:
         parsed = json.loads(text)
         prompt = parsed.get("prompt") if isinstance(parsed, dict) else None
@@ -207,4 +218,4 @@ def _extract_prompt(raw_text: str) -> str:
                 return prompt.strip()
         except json.JSONDecodeError:
             pass
-    return text
+    return ""

@@ -138,8 +138,8 @@ Validation must happen before queue acceptance. Resolve random seeds to concrete
 Implement a backend Ollama adapter and the collapsed Prompt Assistant:
 
 - Server-configured base URL.
-- Exact server-configured model validation, with no user-facing model control.
-- Non-thinking generation requests and effective-model provenance from the Ollama response.
+- Active-only router model validation, with no user-facing model control.
+- Thinking-enabled generation requests, safe structured final-prompt extraction, and effective-model provenance from the Ollama response.
 - Creative direction text area.
 - Compact mode choice: Refine current prompt or Create from creative direction.
 - Explicit Compose Prompt action.

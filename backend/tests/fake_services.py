@@ -93,6 +93,7 @@ class FakeServiceState:
     orphan_prompt_substrings: set[str] = field(default_factory=set)
     models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest"])
     ollama_effective_model: str | None = None
+    ollama_response_in_thinking: bool = False
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -134,6 +135,7 @@ class FakeServiceState:
         self.orphan_prompt_substrings.clear()
         self.models = ["zeta:latest", "alpha:latest"]
         self.ollama_effective_model = None
+        self.ollama_response_in_thinking = False
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -668,9 +670,11 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         effective_model = state.ollama_effective_model or payload.get("model")
         if not effective_model and state.models:
             effective_model = state.models[0]
+        response_text = json.dumps({"prompt": composed})
         return {
             "model": str(effective_model or ""),
-            "response": json.dumps({"prompt": composed}),
+            "response": "" if state.ollama_response_in_thinking else response_text,
+            "thinking": response_text if state.ollama_response_in_thinking else "",
             "done": True,
         }
 

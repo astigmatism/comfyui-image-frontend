@@ -767,9 +767,6 @@ async function toggleSpeechRecording(button) {
 
   if (activeSpeechSession) {
     if (activeSpeechSession.targetId !== targetId) return;
-    if (activeSpeechSession.targetElement === target) {
-      activeSpeechSession.selection = textSelection(target);
-    }
     if (activeSpeechSession.phase === "requesting") discardSpeechSession();
     else if (activeSpeechSession.phase === "recording") stopSpeechRecording(activeSpeechSession);
     return;

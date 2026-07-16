@@ -341,7 +341,7 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     request_payload = fake_state.ollama_calls[-1]
     assert "model" not in request_payload
     assert request_payload["stream"] is False
-    assert request_payload["think"] is False
+    assert request_payload["think"] is True
     assert request_payload["format"] == {
         "type": "object",
         "properties": {"prompt": {"type": "string"}},
@@ -417,8 +417,31 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     assert "composition and camera details" in instruction
     assert "subject and defining attributes; action or pose; setting and environment" in instruction
     assert "old prompt that create mode must ignore" not in instruction
+    assert request_payload["think"] is True
     assert request_payload["options"] == {"temperature": 0.5, "seed": 0, "num_predict": 512}
     assert response.json()["template_version"] == "v3"
+
+
+def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="thinking.prompt")
+    _cache_ollama_health(app_client, available=True)
+    fake_state.ollama_response_in_thinking = True
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "",
+            "creative_direction": "a red fox",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "a red fox"
+    assert fake_state.ollama_calls[-1]["think"] is True
 
 
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:

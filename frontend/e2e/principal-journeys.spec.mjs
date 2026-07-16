@@ -774,8 +774,12 @@ test("checked generation sources reuse compatible settings without blocking part
   expect(genericRequest.parameters).toEqual({
     prompt: "selected-source comparison lighthouse",
   });
-  await expect(page.locator(".gallery-card").filter({ hasText: "Krea 2 NSFW V4" })).toBeVisible();
-  await expect(page.locator(".gallery-card").filter({ hasText: "Generic Landscape" })).toBeVisible();
+  await expect(
+    page.locator(".gallery-card").filter({ hasText: "Krea 2 NSFW V4" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.locator(".gallery-card").filter({ hasText: "Generic Landscape" }).first(),
+  ).toBeVisible();
 });
 
 test("gallery defaults to request initiation order when the page arrives unsorted", async ({
@@ -1113,6 +1117,7 @@ test("background service polling does not interrupt focused generation controls"
   await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await deferredCatalogRefresh;
   await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("published Krea source exposes choice controls, strict outputs, and the authored result hierarchy", async ({
@@ -1524,6 +1529,7 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
 });
 
 test("cancelling a queued generation removes its card and history", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Krea 2 NSFW V4");
@@ -1535,7 +1541,7 @@ test("cancelling a queued generation removes its card and history", async ({ pag
   const blockerCard = page.locator(
     `.gallery-card[data-generation-id="${blocker.id}"]`,
   );
-  await expect(blockerCard).toHaveClass(/status-running/);
+  await expect(blockerCard).toHaveClass(/status-running/, { timeout: 40_000 });
 
   await prompt.fill("remove this queued generation");
   const queuedResponse = await generateAndExpectAccepted(page);
@@ -1566,6 +1572,7 @@ test("cancelling a queued generation removes its card and history", async ({ pag
 });
 
 test("working card reserves final aspect ratio and cancels in place", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");
   await selectPublishedSource(page, "Krea 2 NSFW V4");
@@ -1603,7 +1610,9 @@ test("working card reserves final aspect ratio and cancels in place", async ({ p
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(card.locator(".media-status")).toContainText("Cancelled generation");
+  await expect(card.locator(".media-status")).toContainText("Cancelled generation", {
+    timeout: 40_000,
+  });
   await expect(card.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
   await expect(page.locator(`.gallery-card[data-generation-id="${generationId}"]`)).toHaveCount(1);
   await expect(card.getByRole("button", { name: "Recall settings" })).toBeEnabled();

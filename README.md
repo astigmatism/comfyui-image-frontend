@@ -82,13 +82,13 @@ CIF_COMFYUI_BASE_URL=http://comfyui:8188
 CIF_COMFYUI_WS_URL=ws://comfyui:8188/ws
 CIF_COMFYUI_INSTANCE_ID=home
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
-CIF_OLLAMA_BASE_URL=http://local-ai-ollama-router:11434
+CIF_OLLAMA_BASE_URL=http://192.168.1.21:11434
 CIF_SPEECH_TO_TEXT_URL=http://192.168.1.22:9000/v1/audio/transcriptions
 CIF_SPEECH_TO_TEXT_API_KEY=replace-with-whisper-api-key
 CIF_SPEECH_TO_TEXT_MODEL=whisper-1
 ```
 
-Do not set `CIF_OLLAMA_MODEL` when using the router. The backend omits the model from `/api/generate`, allowing the router to select its active model, and records the effective model returned in the response. Keep both `/api/tags` and `/api/generate` routed through the router; never point the application at its private upstream Ollama container.
+The Prompt Assistant uses the router's native Ollama API with no authentication, sends `think: true` on every composition request, and does not use the OpenAI-compatible `/v1` API. Do not set `CIF_OLLAMA_MODEL`: the backend omits the model from `/api/generate`, allowing this active-only router to select `hauhau-qwen3.6-35b-a3b-aggressive-q4-k-m:qwen35-parser`, and records the effective model returned in the response. The operator-only router dashboard is `http://192.168.1.21:11435/`; it is not exposed in the application UI. Keep both `/api/tags` and `/api/generate` routed through the router, never its private upstream Ollama container.
 
 Voice input records in the browser until the microphone button is pressed again, then sends the bounded audio upload to the application. The application adds `CIF_SPEECH_TO_TEXT_API_KEY` and forwards it to the configured OpenAI-compatible transcription endpoint with `model=whisper-1` and `response_format=json`. The recording is not retained. Browser microphone capture requires a secure context: use HTTPS for access by LAN hostname/IP (localhost is the browser-development exception).
 
@@ -119,7 +119,7 @@ CIF_DATA_DIR=./backend/data
 CIF_COMFYUI_BASE_URL=http://127.0.0.1:8188
 CIF_COMFYUI_INSTANCE_ID=local
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
-CIF_OLLAMA_BASE_URL=http://local-ai-ollama-router:11434
+CIF_OLLAMA_BASE_URL=http://192.168.1.21:11434
 CIF_SPEECH_TO_TEXT_URL=http://192.168.1.22:9000/v1/audio/transcriptions
 CIF_SPEECH_TO_TEXT_API_KEY=replace-with-whisper-api-key
 ```
