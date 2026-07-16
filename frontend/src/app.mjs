@@ -10,6 +10,7 @@ import {
   defaultsForInterface,
   interfaceInputs,
   insertTranscription,
+  latestCompletedImageGeneration,
   migrateInterfaceState,
   missingComparisonRoles,
   normalizeInputValue,
@@ -89,6 +90,8 @@ const state = {
   observer: null,
   photoViewerGenerationId: null,
   photoViewerTimer: null,
+  photoViewerMode: "fill",
+  photoViewerPlaybackMode: "hold",
   photoViewerZoom: 1,
   photoViewerPanX: 0,
   photoViewerPanY: 0,
@@ -271,6 +274,8 @@ async function handleClick(event) {
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
     else if (action === "toggle-photo-fullscreen") togglePhotoViewerFullscreen();
+    else if (action === "toggle-photo-view") togglePhotoViewerMode();
+    else if (action === "toggle-photo-slideshow") togglePhotoViewerPlaybackMode();
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -2376,6 +2381,7 @@ async function refreshGeneration(id, { insertIf = () => true } = {}) {
     const detail = await api(`/api/generations/${id}`);
     if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     const index = state.generations.findIndex((item) => item.id === id);
+    const previous = index >= 0 ? state.generations[index] : null;
     const inserted = index < 0;
     const becameViewable =
       index >= 0 &&
@@ -2388,8 +2394,17 @@ async function refreshGeneration(id, { insertIf = () => true } = {}) {
     upsertGalleryCard(detail);
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);
+    const completedForSlideshow =
+      detail.status === "succeeded" && previous?.status !== "succeeded";
+    if (
+      completedForSlideshow &&
+      showLatestCompletedSlideshowGeneration({ completedGenerationId: id })
+    ) {
+      return;
+    }
     if (
       state.photoViewerGenerationId &&
+      state.photoViewerPlaybackMode === "hold" &&
       (state.photoViewerGenerationId === id || inserted || becameViewable)
     ) {
       renderPhotoViewer();
@@ -2576,6 +2591,8 @@ function renderPhotoViewer() {
   host.innerHTML = photoViewerMarkup(
     generation,
     photoViewerNavigation(generation.id),
+    state.photoViewerMode,
+    state.photoViewerPlaybackMode,
   );
   preparePhotoViewerImage();
   updatePhotoViewerFullscreenControl();
@@ -2586,6 +2603,7 @@ function openPhotoViewer(id) {
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") return;
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog) return;
+  state.photoViewerPlaybackMode = "hold";
   resetPhotoViewerView();
   state.photoViewerGenerationId = id;
   if (!dialog.open) dialog.showModal();
@@ -2596,6 +2614,9 @@ function openPhotoViewer(id) {
 
 async function navigatePhotoViewer(direction) {
   if (!state.photoViewerGenerationId || !["older", "newer"].includes(direction)) return;
+  if (state.photoViewerPlaybackMode === "slideshow") {
+    state.photoViewerPlaybackMode = "hold";
+  }
   let generations = photoViewerGenerations();
   let index = generations.findIndex((generation) => generation.id === state.photoViewerGenerationId);
   let target = generations[index + (direction === "older" ? 1 : -1)];
@@ -2610,9 +2631,63 @@ async function navigatePhotoViewer(direction) {
     return;
   }
   state.photoViewerGenerationId = target.id;
-  resetPhotoViewerView();
+  resetPhotoViewerView(state.photoViewerMode);
   renderPhotoViewer();
   notePhotoViewerActivity();
+}
+
+function togglePhotoViewerMode() {
+  setPhotoViewerMode(state.photoViewerMode === "fill" ? "fit" : "fill");
+}
+
+function setPhotoViewerMode(mode) {
+  if (!["fit", "fill"].includes(mode)) return;
+  if (state.photoViewerPlaybackMode === "slideshow" && mode !== "fit") return;
+  resetPhotoViewerView(mode);
+  const dialog = document.querySelector("#photo-viewer");
+  const media = dialog?.querySelector(".photo-viewer-media");
+  if (media) media.dataset.photoViewMode = mode;
+  updatePhotoViewerModeControl();
+  layoutPhotoViewerImage();
+}
+
+function togglePhotoViewerPlaybackMode() {
+  const dialog = document.querySelector("#photo-viewer");
+  if (!dialog?.open) return;
+  if (state.photoViewerPlaybackMode === "slideshow") {
+    state.photoViewerPlaybackMode = "hold";
+    updatePhotoViewerPlaybackControl();
+    updatePhotoViewerModeControl();
+    return;
+  }
+
+  state.photoViewerPlaybackMode = "slideshow";
+  if (showLatestCompletedSlideshowGeneration({ force: true })) return;
+  setPhotoViewerMode("fit");
+  updatePhotoViewerPlaybackControl();
+}
+
+function showLatestCompletedSlideshowGeneration({
+  force = false,
+  completedGenerationId = null,
+} = {}) {
+  if (
+    state.photoViewerPlaybackMode !== "slideshow" ||
+    !state.photoViewerGenerationId
+  ) {
+    return false;
+  }
+  const latest = latestCompletedImageGeneration(state.generations);
+  if (!latest) return false;
+  const currentIsNewlyComplete =
+    latest.id === state.photoViewerGenerationId && latest.id === completedGenerationId;
+  if (!force && latest.id === state.photoViewerGenerationId && !currentIsNewlyComplete) {
+    return false;
+  }
+  state.photoViewerGenerationId = latest.id;
+  resetPhotoViewerView("fit");
+  renderPhotoViewer();
+  return true;
 }
 
 function preparePhotoViewerImage() {
@@ -2636,9 +2711,9 @@ function layoutPhotoViewerImage() {
   photo.style.width = `${layout.width}px`;
   photo.style.height = `${layout.height}px`;
   if (state.photoViewerNeedsBaseZoom) {
-    state.photoViewerZoom = layout.fillZoom;
+    state.photoViewerZoom = state.photoViewerMode === "fill" ? layout.fillZoom : 1;
     state.photoViewerPanX = 0;
-    state.photoViewerPanY = layout.fillPanY;
+    state.photoViewerPanY = state.photoViewerMode === "fill" ? layout.fillPanY : 0;
     state.photoViewerNeedsBaseZoom = false;
   }
   applyPhotoViewerTransform();
@@ -2653,7 +2728,8 @@ function applyPhotoViewerTransform() {
   photo.dataset.photoPanY = String(state.photoViewerPanY);
 }
 
-function resetPhotoViewerView() {
+function resetPhotoViewerView(mode = "fill") {
+  state.photoViewerMode = mode === "fit" ? "fit" : "fill";
   state.photoViewerZoom = 1;
   state.photoViewerPanX = 0;
   state.photoViewerPanY = 0;
@@ -2729,6 +2805,19 @@ function updatePhotoViewerFullscreenControl() {
   button.setAttribute("aria-pressed", String(active));
 }
 
+function updatePhotoViewerModeControl() {
+  const button = document.querySelector("#photo-viewer [data-action=toggle-photo-view]");
+  if (!button) return;
+  button.textContent = state.photoViewerMode === "fill" ? "Fit" : "Fill";
+  button.disabled = state.photoViewerPlaybackMode === "slideshow";
+}
+
+function updatePhotoViewerPlaybackControl() {
+  const button = document.querySelector("#photo-viewer [data-action=toggle-photo-slideshow]");
+  if (!button) return;
+  button.textContent = state.photoViewerPlaybackMode === "slideshow" ? "Hold" : "Slideshow";
+}
+
 function handlePhotoViewerResize() {
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog?.open) return;
@@ -2759,6 +2848,7 @@ function resetPhotoViewerState() {
   if (state.photoViewerTimer) window.clearTimeout(state.photoViewerTimer);
   state.photoViewerTimer = null;
   state.photoViewerGenerationId = null;
+  state.photoViewerPlaybackMode = "hold";
   state.photoViewerFullscreenOwned = false;
   state.photoViewerFullscreenPending = false;
   state.photoViewerFullscreenRequestToken += 1;

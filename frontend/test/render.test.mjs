@@ -538,7 +538,7 @@ test("one generation renders one card while progressive media changes in place",
   assert.match(first, /data-action="open-detail"/);
 });
 
-test("photo viewer fills by default, omits sizing and unavailable navigation controls, and shows active status", () => {
+test("photo viewer fills by default, offers the next sizing action, omits unavailable navigation controls, and shows active status", () => {
   const html = photoViewerMarkup(
     {
       id: "g-live",
@@ -554,7 +554,9 @@ test("photo viewer fills by default, omits sizing and unavailable navigation con
   );
   assert.match(html, /src="\/api\/artifacts\/latest\/content"/);
   assert.match(html, /data-photo-view-mode="fill"/);
-  assert.doesNotMatch(html, /Image sizing|set-photo-view|>Fit<|>Fill</);
+  assert.match(html, /data-action="toggle-photo-slideshow">Slideshow<\/button>/);
+  assert.match(html, /data-action="toggle-photo-view">Fit<\/button>/);
+  assert.doesNotMatch(html, />Fill<\/button>/);
   assert.match(html, /draggable="false"/);
   assert.match(html, /data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen/);
   assert.match(html, /aria-label="Close image viewer"/);
@@ -573,6 +575,21 @@ test("photo viewer fills by default, omits sizing and unavailable navigation con
   );
   assert.match(middle, /data-direction="newer"/);
   assert.match(middle, /data-direction="older"/);
+
+  const fit = photoViewerMarkup(
+    {
+      id: "g-fit",
+      workflow_display_name: "Published source",
+      status: "succeeded",
+      display_artifact: { kind: "image", content_url: "/fit.png" },
+    },
+    {},
+    "fit",
+    "slideshow",
+  );
+  assert.match(fit, /data-photo-view-mode="fit"/);
+  assert.match(fit, /data-action="toggle-photo-slideshow">Hold<\/button>/);
+  assert.match(fit, /data-action="toggle-photo-view" disabled>Fill<\/button>/);
 });
 
 test("historical native-only image batches use complete artifact count on the gallery card", () => {

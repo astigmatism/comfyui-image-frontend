@@ -2078,6 +2078,31 @@ dialog::backdrop {
   font-weight: 700;
 }
 
+.photo-viewer-mode,
+.photo-viewer-slideshow {
+  top: 18px;
+  min-width: 52px;
+  height: 42px;
+  padding: 0 15px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.photo-viewer-mode {
+  right: 200px;
+}
+
+.photo-viewer-slideshow {
+  right: 264px;
+}
+
+.photo-viewer.controls-visible .photo-viewer-mode:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .photo-viewer-nav {
   top: 50%;
   width: 48px;
@@ -2914,6 +2939,16 @@ tr:last-child td {
     right: 66px;
   }
 
+  .photo-viewer-mode {
+    top: 12px;
+    right: 194px;
+  }
+
+  .photo-viewer-slideshow {
+    top: 12px;
+    right: 258px;
+  }
+
   .photo-viewer-newer {
     left: 10px;
   }
@@ -3013,6 +3048,11 @@ tr:last-child td {
   .account-menu > summary {
     max-width: 48px;
     padding: 0 7px;
+  }
+
+  .photo-viewer-slideshow {
+    top: 66px;
+    right: 12px;
   }
 }
 

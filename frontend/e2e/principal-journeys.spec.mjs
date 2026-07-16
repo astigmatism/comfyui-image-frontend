@@ -105,11 +105,12 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true);
   const viewerMedia = photoViewer.locator(".photo-viewer-media");
   const viewerImage = viewerMedia.locator("img");
+  const fitButton = photoViewer.getByRole("button", { name: "Fit", exact: true });
   const fullscreenButton = photoViewer.getByRole("button", { name: "Full screen", exact: true });
   await expect(viewerImage).toBeVisible();
   await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
   await expect(viewerImage).toHaveCSS("object-fit", "contain");
-  await expect(photoViewer.getByRole("group", { name: "Image sizing" })).toHaveCount(0);
+  await expect(fitButton).toBeVisible();
   await expect(fullscreenButton).toHaveAttribute("aria-pressed", "false");
   await fullscreenButton.click();
   await expect.poll(() => fullscreenHost.evaluate((host) => document.fullscreenElement === host)).toBe(true);
@@ -126,6 +127,20 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   expect(filledBounds.width).toBeGreaterThanOrEqual(filledMediaBounds.width - 1);
   expect(filledBounds.height).toBeGreaterThanOrEqual(filledMediaBounds.height - 1);
   expect(Math.abs(filledBounds.y - filledMediaBounds.y)).toBeLessThan(1);
+
+  await fitButton.click();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
+  await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
+  const fillButton = photoViewer.getByRole("button", { name: "Fill", exact: true });
+  const fittedBounds = await viewerImage.boundingBox();
+  expect(fittedBounds.width).toBeLessThanOrEqual(filledMediaBounds.width + 1);
+  expect(fittedBounds.height).toBeLessThanOrEqual(filledMediaBounds.height + 1);
+  await fillButton.click();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fill");
+  await expect(fitButton).toBeVisible();
+  await expect.poll(async () => Number(await viewerImage.getAttribute("data-photo-zoom"))).toBeGreaterThanOrEqual(1);
+  await expect.poll(async () => (await viewerImage.boundingBox()).y).toBeCloseTo(filledMediaBounds.y, 0);
+
   const visibleCenter = {
     x: filledMediaBounds.x + filledMediaBounds.width / 2,
     y: filledMediaBounds.y + filledMediaBounds.height / 2,
@@ -284,6 +299,82 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await deleteButton.click();
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose - 1);
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
+});
+
+test("photo viewer slideshow waits for a generation's final completed image", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("slideshow baseline");
+  const baselineResponse = await generateAndExpectAccepted(page);
+  const baseline = await baselineResponse.json();
+  const baselineCard = page.locator(`.gallery-card[data-generation-id="${baseline.id}"]`);
+  await expect(baselineCard).toHaveClass(/status-succeeded/);
+  await baselineCard.locator(".card-media").click();
+
+  const photoViewer = page.locator("#photo-viewer");
+  const viewerFrame = photoViewer.locator(".photo-viewer-frame");
+  const viewerMedia = photoViewer.locator(".photo-viewer-media");
+  const viewerImage = viewerMedia.locator("img");
+  await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", baseline.id);
+  await photoViewer.getByRole("button", { name: "Slideshow", exact: true }).click();
+  await expect(photoViewer.getByRole("button", { name: "Hold", exact: true })).toBeVisible();
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
+  await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
+  await expect(photoViewer.getByRole("button", { name: "Fill", exact: true })).toBeDisabled();
+
+  const producer = await context.newPage();
+  await producer.goto("/");
+  await expect(producer.locator(".gallery-viewport")).toBeVisible();
+  await selectPublishedSource(producer, "Generic Landscape");
+  const producerPrompt = producer.getByRole("textbox", { name: "Prompt", exact: true });
+  await producerPrompt.fill("slow slideshow final boundary");
+  const nextResponse = await generateAndExpectAccepted(producer);
+  const next = await nextResponse.json();
+  let progressiveDetail;
+  await expect.poll(async () => {
+    progressiveDetail = await (await producer.request.get(`/api/generations/${next.id}`)).json();
+    return progressiveDetail.status === "running" && progressiveDetail.display_artifact
+      ? progressiveDetail.display_artifact.state
+      : null;
+  }).toBe("provisional");
+  expect(progressiveDetail.display_artifact.state).toBe("provisional");
+  await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", baseline.id);
+  await expect(viewerImage).not.toHaveAttribute("src", progressiveDetail.display_artifact.content_url);
+
+  await expect.poll(async () => {
+    const detail = await (await producer.request.get(`/api/generations/${next.id}`)).json();
+    return detail.status;
+  }).toBe("succeeded");
+  const completedDetail = await (await producer.request.get(`/api/generations/${next.id}`)).json();
+  expect(completedDetail.status).toBe("succeeded");
+  expect(completedDetail.display_artifact.state).toBe("final");
+  await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", next.id);
+  await expect(viewerImage).toHaveAttribute("src", completedDetail.display_artifact.content_url);
+  await expect(viewerMedia).toHaveAttribute("data-photo-view-mode", "fit");
+  await expect(viewerImage).toHaveAttribute("data-photo-zoom", "1");
+
+  await page.mouse.move(80, 80);
+  await photoViewer.getByRole("button", { name: "Hold", exact: true }).click();
+  await expect(photoViewer.getByRole("button", { name: "Slideshow", exact: true })).toBeVisible();
+  await expect(photoViewer.getByRole("button", { name: "Fill", exact: true })).toBeEnabled();
+  await producerPrompt.fill("hold this completed slideshow image");
+  const heldResponse = await generateAndExpectAccepted(producer);
+  const held = await heldResponse.json();
+  await expect.poll(async () => {
+    const detail = await (await producer.request.get(`/api/generations/${held.id}`)).json();
+    return detail.status;
+  }).toBe("succeeded");
+  await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", next.id);
+
+  await producer.close();
+  await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 });
 
 test("progressive bootstrap renders while optional status is delayed and localizes failures", async ({

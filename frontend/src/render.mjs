@@ -972,17 +972,27 @@ export function cardFooterMarkup(generation) {
   </button></div></footer>`;
 }
 
-export function photoViewerMarkup(generation, navigation = {}) {
+export function photoViewerMarkup(
+  generation,
+  navigation = {},
+  requestedViewMode = "fill",
+  requestedPlaybackMode = "hold",
+) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
   const hasImage = artifact?.kind === "image";
+  const viewMode = requestedViewMode === "fit" ? "fit" : "fill";
+  const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";
+  const viewModeDisabled = playbackMode === "slideshow" ? " disabled" : "";
   const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
   const status = generation?.current_stage_label || statusLabel(generation?.status);
   const media = hasImage
     ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="false" />`
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
-    <div class="photo-viewer-media" data-photo-view-mode="fill">${media}</div>
+    <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
+    <button type="button" class="photo-viewer-slideshow photo-viewer-control" data-action="toggle-photo-slideshow">${playbackMode === "slideshow" ? "Hold" : "Slideshow"}</button>
+    <button type="button" class="photo-viewer-mode photo-viewer-control" data-action="toggle-photo-view"${viewModeDisabled}>${viewMode === "fill" ? "Fit" : "Fill"}</button>
     <button type="button" class="photo-viewer-fullscreen photo-viewer-control" data-action="toggle-photo-fullscreen" aria-pressed="false">Full screen</button>
     <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close image viewer">×</button>
     ${navigation.hasNewer ? '<button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" aria-label="View newer generation">‹</button>' : ""}

@@ -13,6 +13,7 @@ import {
   defaultsForContract,
   defaultsForInterface,
   insertTranscription,
+  latestCompletedImageGeneration,
   migrateInterfaceState,
   missingComparisonRoles,
   normalizeInputValue,
@@ -270,6 +271,50 @@ test("gallery scale spans compact thumbnails through a full-width card", () => {
   assert.deepEqual(scaleToLayout(100), { full: true, cardWidth: 1200 });
   assert.equal(scaleToLayout(0).cardWidth, 170);
   assert.ok(scaleToLayout(75).cardWidth > scaleToLayout(25).cardWidth);
+});
+
+test("slideshow selects only the newest fully completed image generation", () => {
+  const completed = {
+    id: "completed",
+    accepted_at: "2026-07-15T12:00:00Z",
+    status: "succeeded",
+    display_artifact: { kind: "image", state: "final" },
+  };
+  assert.equal(
+    latestCompletedImageGeneration([
+      {
+        id: "older-completed",
+        accepted_at: "2026-07-15T11:00:00Z",
+        status: "succeeded",
+        display_artifact: { kind: "image", state: "final" },
+      },
+      completed,
+      {
+        id: "prototype",
+        accepted_at: "2026-07-15T12:02:00Z",
+        status: "running",
+        display_artifact: { kind: "image", state: "provisional" },
+      },
+      {
+        id: "failed",
+        accepted_at: "2026-07-15T12:03:00Z",
+        status: "failed_with_artifacts",
+        display_artifact: { kind: "image", state: "best_available" },
+      },
+    ]),
+    completed,
+  );
+  assert.equal(
+    latestCompletedImageGeneration([
+      {
+        id: "no-image",
+        accepted_at: "2026-07-15T12:04:00Z",
+        status: "succeeded",
+        display_artifact: null,
+      },
+    ]),
+    null,
+  );
 });
 
 test("photo viewer fill zoom anchors overflow at the top of the viewport", () => {

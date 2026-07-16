@@ -78,6 +78,15 @@ export function sortGenerationsNewestFirst(generations) {
   return [...(generations || [])].sort(compareGenerationsNewestFirst);
 }
 
+export function latestCompletedImageGeneration(generations) {
+  return (
+    sortGenerationsNewestFirst(generations).find(
+      (generation) =>
+        generation?.status === "succeeded" && generation.display_artifact?.kind === "image",
+    ) || null
+  );
+}
+
 export function scaleToLayout(value) {
   const normalized = Math.max(0, Math.min(100, Number(value) || 0));
   if (normalized >= 96) return { full: true, cardWidth: 1200 };
