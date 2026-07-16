@@ -5,13 +5,21 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from app.models import Artifact, Favorite, Generation, GenerationStatus, User, WorkflowProfile
+from app.models import (
+    Artifact,
+    Favorite,
+    Generation,
+    GenerationStatus,
+    User,
+    UserPreference,
+    WorkflowProfile,
+)
 from sqlalchemy import MetaData, create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "b84f2d6a91c3"
+HEAD_REVISION = "e52a8c1f4b90"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -34,9 +42,17 @@ def _insert_populated_legacy_rows(engine: Engine) -> None:
         metadata = MetaData()
         metadata.reflect(
             bind=connection,
-            only=("users", "workflow_profiles", "generations", "artifacts", "favorites"),
+            only=(
+                "users",
+                "user_preferences",
+                "workflow_profiles",
+                "generations",
+                "artifacts",
+                "favorites",
+            ),
         )
         users = metadata.tables["users"]
+        user_preferences = metadata.tables["user_preferences"]
         profiles = metadata.tables["workflow_profiles"]
         generations = metadata.tables["generations"]
         artifacts = metadata.tables["artifacts"]
@@ -55,6 +71,14 @@ def _insert_populated_legacy_rows(engine: Engine) -> None:
                 "is_bootstrap": False,
                 "session_epoch": 3,
                 "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            user_preferences.insert(),
+            {
+                "user_id": LEGACY_USER_ID,
+                "gallery_scale": 73,
                 "updated_at": now,
             },
         )
@@ -188,12 +212,16 @@ def _insert_populated_legacy_rows(engine: Engine) -> None:
 def _assert_populated_head_rows(engine: Engine) -> None:
     with Session(engine) as session:
         user = session.get(User, LEGACY_USER_ID)
+        preference = session.get(UserPreference, LEGACY_USER_ID)
         profile = session.get(WorkflowProfile, LEGACY_PROFILE_ID)
         generation = session.get(Generation, LEGACY_GENERATION_ID)
         artifact = session.get(Artifact, LEGACY_ARTIFACT_ID)
         favorite = session.get(Favorite, LEGACY_FAVORITE_ID)
 
         assert user is not None and user.username == "legacy.owner"
+        assert preference is not None
+        assert preference.gallery_scale == 73
+        assert preference.source_ratings_json == {}
         assert profile is not None
         assert profile.instance_id is None
         assert profile.source_key is None
@@ -236,9 +264,17 @@ def _assert_populated_legacy_rows(engine: Engine) -> None:
     metadata = MetaData()
     metadata.reflect(
         bind=engine,
-        only=("users", "workflow_profiles", "generations", "artifacts", "favorites"),
+        only=(
+            "users",
+            "user_preferences",
+            "workflow_profiles",
+            "generations",
+            "artifacts",
+            "favorites",
+        ),
     )
     users = metadata.tables["users"]
+    user_preferences = metadata.tables["user_preferences"]
     profiles = metadata.tables["workflow_profiles"]
     generations = metadata.tables["generations"]
     artifacts = metadata.tables["artifacts"]
@@ -268,6 +304,14 @@ def _assert_populated_legacy_rows(engine: Engine) -> None:
             "storage_path": "generations/legacy/final.png",
             "favorite_id": LEGACY_FAVORITE_ID,
         }
+        assert (
+            connection.execute(
+                select(user_preferences.c.gallery_scale).where(
+                    user_preferences.c.user_id == LEGACY_USER_ID
+                )
+            ).scalar_one()
+            == 73
+        )
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
 
 
@@ -282,9 +326,17 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     assert revision == HEAD_REVISION
-    assert {"users", "generations", "artifacts", "workflow_profiles", "favorites"}.issubset(
-        set(inspect(engine).get_table_names())
-    )
+    assert {
+        "users",
+        "user_preferences",
+        "generations",
+        "artifacts",
+        "workflow_profiles",
+        "favorites",
+    }.issubset(set(inspect(engine).get_table_names()))
+    assert "source_ratings_json" in {
+        column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
 
     command.downgrade(config, "base")
     assert "users" not in inspect(engine).get_table_names()

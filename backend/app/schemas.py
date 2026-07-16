@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
 
@@ -60,10 +60,32 @@ class ResetPasswordRequest(APIModel):
 
 class PreferenceResponse(APIModel):
     gallery_scale: int
+    source_ratings: dict[str, int] = Field(default_factory=dict)
 
 
 class PreferenceUpdate(APIModel):
-    gallery_scale: int = Field(ge=0, le=100)
+    gallery_scale: int | None = Field(default=None, ge=0, le=100)
+    source_ratings: dict[str, StrictInt] | None = None
+
+    @field_validator("source_ratings")
+    @classmethod
+    def validate_source_ratings(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return value
+        if len(value) > 500:
+            raise ValueError("source_ratings cannot contain more than 500 entries")
+        for key, rating in value.items():
+            if not key or key != key.strip() or len(key) > 256:
+                raise ValueError("source rating keys must be 1 to 256 non-whitespace characters")
+            if isinstance(rating, bool) or rating < 1 or rating > 5:
+                raise ValueError("source ratings must be integers from 1 to 5")
+        return value
+
+    @model_validator(mode="after")
+    def validate_update_fields(self) -> PreferenceUpdate:
+        if self.gallery_scale is None and self.source_ratings is None:
+            raise ValueError("at least one preference field is required")
+        return self
 
 
 class WorkflowIdentity(APIModel):

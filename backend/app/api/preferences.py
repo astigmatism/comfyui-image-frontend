@@ -18,7 +18,10 @@ def get_preferences(
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> PreferenceResponse:
     preference = session.get(UserPreference, context.user.id)
-    return PreferenceResponse(gallery_scale=preference.gallery_scale if preference else 45)
+    return PreferenceResponse(
+        gallery_scale=preference.gallery_scale if preference else 45,
+        source_ratings=preference.source_ratings_json if preference else {},
+    )
 
 
 @router.put("", response_model=PreferenceResponse)
@@ -29,8 +32,18 @@ def update_preferences(
 ) -> PreferenceResponse:
     preference = session.get(UserPreference, context.user.id)
     if preference is None:
-        preference = UserPreference(user_id=context.user.id)
+        preference = UserPreference(
+            user_id=context.user.id,
+            gallery_scale=45,
+            source_ratings_json={},
+        )
         session.add(preference)
-    preference.gallery_scale = payload.gallery_scale
+    if payload.gallery_scale is not None:
+        preference.gallery_scale = payload.gallery_scale
+    if payload.source_ratings is not None:
+        preference.source_ratings_json = dict(payload.source_ratings)
     session.commit()
-    return PreferenceResponse(gallery_scale=preference.gallery_scale)
+    return PreferenceResponse(
+        gallery_scale=preference.gallery_scale,
+        source_ratings=preference.source_ratings_json,
+    )

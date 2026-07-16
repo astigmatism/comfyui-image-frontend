@@ -2017,7 +2017,7 @@ dialog::backdrop {
 }
 
 .source-picker-dialog {
-  width: min(1220px, calc(100vw - 48px));
+  width: min(1360px, calc(100vw - 48px));
   height: min(760px, calc(100vh - 48px));
 }
 
@@ -2177,7 +2177,7 @@ dialog::backdrop {
 
 .source-picker-table {
   width: 100%;
-  min-width: 960px;
+  min-width: 1100px;
   border-spacing: 0;
   table-layout: fixed;
 }
@@ -2246,6 +2246,10 @@ dialog::backdrop {
   width: 230px;
 }
 
+.source-picker-table .source-picker-rating-column {
+  width: 142px;
+}
+
 .source-picker-name-cell strong,
 .source-picker-name-cell small {
   display: block;
@@ -2261,6 +2265,54 @@ dialog::backdrop {
   color: var(--muted);
   font-size: 0.68rem;
   font-weight: 500;
+}
+
+.source-rating-stars {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.source-rating-star {
+  display: inline-grid;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  place-items: center;
+  cursor: pointer;
+}
+
+.source-rating-star svg {
+  width: 18px;
+  height: 18px;
+  fill: transparent;
+  stroke: #71849a;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition:
+    fill var(--motion-fast) ease,
+    stroke var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+
+.source-rating-star.is-filled svg {
+  fill: rgb(230 187 91 / 30%);
+  stroke: #d2ae61;
+}
+
+.source-rating-star:hover svg {
+  fill: rgb(230 187 91 / 18%);
+  stroke: #e0c17d;
+  transform: scale(1.12);
+}
+
+.source-rating-star:focus-visible {
+  border-radius: 5px;
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .source-sort-button {

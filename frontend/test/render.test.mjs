@@ -444,6 +444,7 @@ test("source picker dialog supports transactional primary and additional source 
   const html = sourcePickerDialogMarkup(sources, {
     primaryKey: "one",
     selectedKeys: new Set(["one", "two"]),
+    sourceRatings: { one: 3 },
   });
 
   const primaryCheckbox = html.match(/<input[^>]*data-source-draft-key="one"[^>]*>/)?.[0] || "";
@@ -456,6 +457,7 @@ test("source picker dialog supports transactional primary and additional source 
   assert.doesNotMatch(additionalCheckbox, /disabled/);
   assert.match(unavailableCheckbox, /disabled/);
   assert.match(html, /data-source-primary-key="one"[^>]*checked/);
+  assert.match(html, />Rating</);
   assert.match(html, />Architecture</);
   assert.match(html, />Introduced</);
   assert.match(html, />Generation type</);
@@ -476,6 +478,44 @@ test("source picker dialog supports transactional primary and additional source 
   assert.match(html, /source-picker-dialog-close[\s\S]*?<svg[^>]*>[\s\S]*?<path/);
   assert.doesNotMatch(html, /data-source-sort-key="technologies"/);
   assert.match(html, /reuse compatible prompt, resolution, and seed settings when available/);
+
+  const primaryRow = html.match(/<tr[^>]*data-source-row-key="one"[\s\S]*?<\/tr>/)?.[0] || "";
+  assert.equal(Array.from(primaryRow.matchAll(/data-source-rating-key="one"/g)).length, 5);
+  assert.equal(Array.from(primaryRow.matchAll(/source-rating-star is-filled/g)).length, 3);
+  assert.match(primaryRow, /data-source-rating="3"[^>]*aria-pressed="true"/);
+  assert.match(primaryRow, /data-source-rating-value="3"/);
+});
+
+test("source picker sorts rated sources while keeping unrated sources last", () => {
+  const sources = [
+    { source_key: "five", display_name: "Five", available: true },
+    { source_key: "unrated", display_name: "Unrated", available: true },
+    { source_key: "three", display_name: "Three", available: true },
+  ];
+  const rowKeys = (html) =>
+    Array.from(html.matchAll(/data-source-row-key="([^"]+)"/g), (match) => match[1]);
+  const ascending = sourcePickerDialogMarkup(sources, {
+    primaryKey: "three",
+    selectedKeys: ["three"],
+    sourceRatings: { five: 5, three: 3 },
+    sortKey: "rating",
+    sortDirection: "ascending",
+  });
+  const descending = sourcePickerDialogMarkup(sources, {
+    primaryKey: "three",
+    selectedKeys: ["three"],
+    sourceRatings: { five: 5, three: 3 },
+    sortKey: "rating",
+    sortDirection: "descending",
+  });
+
+  assert.deepEqual(rowKeys(ascending), ["three", "five", "unrated"]);
+  assert.deepEqual(rowKeys(descending), ["five", "three", "unrated"]);
+  assert.match(ascending, /aria-sort="ascending"[^>]*>[\s\S]*?data-source-sort-key="rating"/);
+  assert.match(
+    ascending,
+    /data-source-sort-key="rating"[^>]*data-source-sort-direction="descending"/,
+  );
 });
 
 test("source picker dialog sorts model introduction metadata and filters generation types", () => {

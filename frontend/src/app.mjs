@@ -59,6 +59,7 @@ const state = {
   sourcePickerDraft: null,
   sourcePickerSortKey: "display_name",
   sourcePickerSortDirection: "ascending",
+  sourceRatings: {},
   controlSectionOpen: {},
   parameters: {},
   explicitParameterIds: new Set(),
@@ -111,6 +112,8 @@ let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
 let sourcePickerReturnFocus = null;
+let sourceRatingsRevision = 0;
+let sourceRatingsSaveChain = Promise.resolve();
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
 let applicationStartupController = null;
@@ -241,6 +244,7 @@ async function handleClick(event) {
     else if (action === "select-all-generation-sources") selectAllSourcePickerDraft();
     else if (action === "deselect-all-generation-sources") deselectAllSourcePickerDraft();
     else if (action === "sort-generation-sources") sortSourcePickerDialog(target);
+    else if (action === "rate-generation-source") await updateSourceRating(target);
     else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
@@ -386,6 +390,7 @@ function renderSourcePickerDialog() {
   dialog.innerHTML = sourcePickerDialogMarkup(state.sources, {
     primaryKey: draft.primaryKey,
     selectedKeys: draft.selectedKeys,
+    sourceRatings: state.sourceRatings,
     sortKey: state.sourcePickerSortKey,
     sortDirection: state.sourcePickerSortDirection,
     generationTypeFilters: draft.generationTypeFilters,
@@ -500,6 +505,44 @@ function sortSourcePickerDialog(button) {
       )
       ?.focus({ preventScroll: true });
   });
+}
+
+async function updateSourceRating(button) {
+  const key = button.dataset.sourceRatingKey;
+  const rating = Number(button.dataset.sourceRating);
+  if (
+    !key ||
+    !state.sources.some((source) => sourceKey(source) === key) ||
+    !Number.isInteger(rating) ||
+    rating < 1 ||
+    rating > 5
+  ) {
+    return;
+  }
+  state.sourceRatings = { ...state.sourceRatings, [key]: rating };
+  sourceRatingsRevision += 1;
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector(
+        `#source-picker-dialog [data-source-rating-key="${CSS.escape(key)}"][data-source-rating="${rating}"]`,
+      )
+      ?.focus({ preventScroll: true });
+  });
+
+  const ratings = { ...state.sourceRatings };
+  const save = sourceRatingsSaveChain.then(() =>
+    api("/api/preferences", {
+      method: "PUT",
+      body: JSON.stringify({ source_ratings: ratings }),
+    }),
+  );
+  sourceRatingsSaveChain = save.catch(() => {});
+  try {
+    await save;
+  } catch {
+    toast("Source rating could not be saved.", "error");
+  }
 }
 
 function closeSourcePickerDialog(returnValue, { flushDeferredUpdates = true } = {}) {
@@ -1458,6 +1501,8 @@ async function logout() {
   state.comparisonSourceKeys = new Set();
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
+  state.sourceRatings = {};
+  sourceRatingsRevision += 1;
   state.parameters = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
@@ -1514,6 +1559,8 @@ async function enterApplication() {
   state.galleryMessage = null;
   state.favorites = [];
   state.favoritesNextCursor = null;
+  state.sourceRatings = {};
+  sourceRatingsRevision += 1;
   state.promptAssistant = {
     ...state.promptAssistant,
     available: false,
@@ -1566,6 +1613,7 @@ function requestWasAborted(error, signal) {
 }
 
 async function loadStartupPreferences(signal = applicationStartupController?.signal) {
+  const ratingsRevision = sourceRatingsRevision;
   try {
     const preferences = await startupGet("/api/preferences", {
       operation: "Display preferences",
@@ -1574,11 +1622,24 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
     });
     if (signal?.aborted) return;
     state.galleryScale = preferences.gallery_scale;
+    if (ratingsRevision === sourceRatingsRevision) {
+      state.sourceRatings = normalizedSourceRatings(preferences.source_ratings);
+      if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
+    }
     applyGalleryScale();
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
     toast(`Display preferences unavailable: ${error.message}`, "error");
   }
+}
+
+function normalizedSourceRatings(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, rating]) => [key, Number(rating)])
+      .filter(([, rating]) => Number.isInteger(rating) && rating >= 1 && rating <= 5),
+  );
 }
 
 async function loadStartupServices(signal = applicationStartupController?.signal) {

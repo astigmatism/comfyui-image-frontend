@@ -375,8 +375,8 @@ The transcription request is multipart with one `file` field whose media type is
 | `GET` | `/api/favorites?limit=40&cursor=...` | Newest-first owner favorites |
 | `PUT` | `/api/generations/{id}/favorite` | Idempotently bookmark an owned generation |
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
-| `GET` | `/api/preferences` | Read owner gallery scale |
-| `PUT` | `/api/preferences` | Persist scale from 0 through 100 |
+| `GET` | `/api/preferences` | Read owner gallery scale and generation-source ratings |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or source ratings from 1 through 5 |
 
 ## Authentication and account routes
 

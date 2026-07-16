@@ -782,6 +782,77 @@ test("checked generation sources reuse compatible settings without blocking part
   ).toBeVisible();
 });
 
+test("generation source ratings persist and sort in both directions", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  await page.locator("#workflow-source").click();
+  let sourceDialog = page.locator("#source-picker-dialog");
+  const sourceRow = (name) =>
+    sourceDialog.locator("[data-source-row-key]").filter({ hasText: name });
+  const kreaSourceKey = await sourceRow("Krea 2 NSFW V4").getAttribute("data-source-row-key");
+  const genericSourceKey = await sourceRow("Generic Landscape").getAttribute(
+    "data-source-row-key",
+  );
+  expect(kreaSourceKey).toBeTruthy();
+  expect(genericSourceKey).toBeTruthy();
+  const setRating = async (name, rating) => {
+    const saved = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/preferences" &&
+        response.request().method() === "PUT",
+    );
+    await sourceRow(name)
+      .getByRole("button", { name: `Set ${name} rating to ${rating} stars`, exact: true })
+      .click();
+    expect((await saved).ok()).toBe(true);
+    await expect(sourceRow(name).locator(".source-rating-star.is-filled")).toHaveCount(rating);
+  };
+
+  await setRating("Krea 2 NSFW V4", 3);
+  await setRating("Generic Landscape", 5);
+
+  const ratingHeading = sourceDialog.getByRole("columnheader", { name: "Rating" });
+  await ratingHeading.getByRole("button").click();
+  await expect(ratingHeading).toHaveAttribute("aria-sort", "ascending");
+  let names = await sourceDialog
+    .locator("[data-source-row-key] .source-picker-name-cell strong")
+    .allTextContents();
+  expect(names.findIndex((name) => name.includes("Krea 2 NSFW V4"))).toBeLessThan(
+    names.findIndex((name) => name.includes("Generic Landscape")),
+  );
+
+  await ratingHeading.getByRole("button").click();
+  await expect(ratingHeading).toHaveAttribute("aria-sort", "descending");
+  names = await sourceDialog
+    .locator("[data-source-row-key] .source-picker-name-cell strong")
+    .allTextContents();
+  expect(names.findIndex((name) => name.includes("Generic Landscape"))).toBeLessThan(
+    names.findIndex((name) => name.includes("Krea 2 NSFW V4")),
+  );
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  const preferencesLoaded = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "GET",
+  );
+  await page.reload();
+  const preferences = await (await preferencesLoaded).json();
+  expect(preferences.source_ratings[kreaSourceKey]).toBe(3);
+  expect(preferences.source_ratings[genericSourceKey]).toBe(5);
+  await expect(page.locator("#workflow-source")).toBeEnabled();
+  await page.locator("#workflow-source").click();
+  sourceDialog = page.locator("#source-picker-dialog");
+  await expect(
+    sourceRow("Krea 2 NSFW V4").locator('[data-source-rating-value="3"]'),
+  ).toBeVisible();
+  await expect(
+    sourceRow("Generic Landscape").locator('[data-source-rating-value="5"]'),
+  ).toBeVisible();
+});
+
 test("gallery defaults to request initiation order when the page arrives unsorted", async ({
   page,
 }) => {

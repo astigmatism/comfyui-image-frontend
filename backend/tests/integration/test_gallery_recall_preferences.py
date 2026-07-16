@@ -37,6 +37,10 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         assert actual == expected
         assert len(set(actual)) == 7
         assert third_page["next_cursor"] is None
+        assert first.get("/api/preferences").json() == {
+            "gallery_scale": 45,
+            "source_ratings": {},
+        }
 
         saved = first.put(
             "/api/preferences",
@@ -44,7 +48,17 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             json={"gallery_scale": 93},
         )
         assert saved.status_code == 200
-        assert saved.json()["gallery_scale"] == 93
+        assert saved.json() == {"gallery_scale": 93, "source_ratings": {}}
+        ratings_saved = first.put(
+            "/api/preferences",
+            headers={"X-CSRF-Token": csrf(first)},
+            json={"source_ratings": {"source-alpha": 3, "source-beta": 5}},
+        )
+        assert ratings_saved.status_code == 200
+        assert ratings_saved.json() == {
+            "gallery_scale": 93,
+            "source_ratings": {"source-alpha": 3, "source-beta": 5},
+        }
         assert (
             first.put(
                 "/api/preferences",
@@ -53,10 +67,37 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             ).status_code
             == 422
         )
+        assert (
+            first.put(
+                "/api/preferences",
+                headers={"X-CSRF-Token": csrf(first)},
+                json={"source_ratings": {"source-alpha": 6}},
+            ).status_code
+            == 422
+        )
+        assert (
+            first.put(
+                "/api/preferences",
+                headers={"X-CSRF-Token": csrf(first)},
+                json={"source_ratings": {"source-alpha": True}},
+            ).status_code
+            == 422
+        )
+        assert (
+            first.put(
+                "/api/preferences",
+                headers={"X-CSRF-Token": csrf(first)},
+                json={},
+            ).status_code
+            == 422
+        )
 
     with TestClient(create_app(settings)) as second:
         restore_cookie(second, cookie, name=settings.session_cookie_name)
-        assert second.get("/api/preferences").json()["gallery_scale"] == 93
+        assert second.get("/api/preferences").json() == {
+            "gallery_scale": 93,
+            "source_ratings": {"source-alpha": 3, "source-beta": 5},
+        }
 
 
 def test_recall_keeps_historical_settings_when_exact_workflow_disappears(

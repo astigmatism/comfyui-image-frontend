@@ -209,6 +209,7 @@ function sourcePickerMarkup(
 
 const SOURCE_SORT_KEYS = new Set([
   "display_name",
+  "rating",
   "architecture",
   "introduced",
   "generation_type",
@@ -219,6 +220,7 @@ export function sourcePickerDialogMarkup(
   {
     primaryKey,
     selectedKeys = new Set(),
+    sourceRatings = {},
     sortKey = "display_name",
     sortDirection = "ascending",
     generationTypeFilters = null,
@@ -247,8 +249,8 @@ export function sourcePickerDialogMarkup(
     (source) => sourceKey(source) !== primaryKey && selected.has(sourceKey(source)),
   );
   const sortedSources = [...visibleSources].sort((first, second) => {
-    const firstValue = sourceSortValue(first, normalizedSortKey);
-    const secondValue = sourceSortValue(second, normalizedSortKey);
+    const firstValue = sourceSortValue(first, normalizedSortKey, sourceRatings);
+    const secondValue = sourceSortValue(second, normalizedSortKey, sourceRatings);
     const firstMissing = !firstValue || firstValue === "—";
     const secondMissing = !secondValue || secondValue === "—";
     if (firstMissing !== secondMissing) return firstMissing ? 1 : -1;
@@ -264,7 +266,7 @@ export function sourcePickerDialogMarkup(
     });
   });
   const rows = sortedSources
-    .map((source) => sourcePickerRowMarkup(source, primaryKey, selected))
+    .map((source) => sourcePickerRowMarkup(source, primaryKey, selected, sourceRatings))
     .join("");
   const generationTypeFiltersMarkup = generationTypes
     .map(
@@ -294,12 +296,13 @@ export function sourcePickerDialogMarkup(
             <th class="source-picker-include-column" scope="col">Include</th>
             <th class="source-picker-primary-column" scope="col">Primary</th>
             ${sourceSortHeading("display_name", "Source", normalizedSortKey, normalizedDirection)}
+            ${sourceSortHeading("rating", "Rating", normalizedSortKey, normalizedDirection, "source-picker-rating-column")}
             ${sourceSortHeading("architecture", "Architecture", normalizedSortKey, normalizedDirection)}
             ${sourceSortHeading("introduced", "Introduced", normalizedSortKey, normalizedDirection)}
             ${sourceSortHeading("generation_type", "Generation type", normalizedSortKey, normalizedDirection)}
             <th scope="col"><span class="source-column-heading">Technologies</span></th>
           </tr></thead>
-          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="7">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="8">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
         </table>
       </div>
       <p class="source-picker-dialog-help">The primary source provides the control values. Additional sources reuse compatible prompt, resolution, and seed settings when available.</p>
@@ -311,7 +314,7 @@ export function sourcePickerDialogMarkup(
   </form>`;
 }
 
-function sourceSortHeading(key, label, activeKey, direction) {
+function sourceSortHeading(key, label, activeKey, direction, className = "") {
   const active = key === activeKey;
   const nextDirection = active && direction === "ascending" ? "descending" : "ascending";
   const indicator = active
@@ -319,10 +322,10 @@ function sourceSortHeading(key, label, activeKey, direction) {
       ? '<svg class="source-sort-indicator" data-sort-direction-indicator="ascending" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" /></svg>'
       : '<svg class="source-sort-indicator" data-sort-direction-indicator="descending" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10m-4-4 4 4 4-4" /></svg>'
     : "";
-  return `<th scope="col" ${active ? `aria-sort="${direction}"` : ""}><button type="button" class="source-sort-button" data-action="sort-generation-sources" data-source-sort-key="${escapeHtml(key)}" data-source-sort-direction="${nextDirection}"><span>${escapeHtml(label)}</span>${indicator}</button></th>`;
+  return `<th${className ? ` class="${escapeHtml(className)}"` : ""} scope="col" ${active ? `aria-sort="${direction}"` : ""}><button type="button" class="source-sort-button" data-action="sort-generation-sources" data-source-sort-key="${escapeHtml(key)}" data-source-sort-direction="${nextDirection}"><span>${escapeHtml(label)}</span>${indicator}</button></th>`;
 }
 
-function sourcePickerRowMarkup(source, primaryKey, selectedKeys) {
+function sourcePickerRowMarkup(source, primaryKey, selectedKeys, sourceRatings) {
   const key = sourceKey(source);
   const primary = key === primaryKey;
   const selected = selectedKeys.has(key) || primary;
@@ -333,11 +336,29 @@ function sourcePickerRowMarkup(source, primaryKey, selectedKeys) {
     <td class="source-picker-include-column"><label class="source-dialog-choice" title="${escapeHtml(primary ? `${source.display_name} is always included as the primary source` : `Include ${source.display_name}`)}"><input type="checkbox" data-source-draft-key="${escapeHtml(key)}" aria-label="Include ${escapeHtml(source.display_name)}" ${selected ? "checked" : ""} ${primary || unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
     <td class="source-picker-primary-column"><label class="source-dialog-primary" title="Make ${escapeHtml(source.display_name)} the primary source"><input type="radio" name="source-picker-primary" data-source-primary-key="${escapeHtml(key)}" aria-label="Make ${escapeHtml(source.display_name)} the primary source" ${primary ? "checked" : ""} ${unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
     <th class="source-picker-name-cell" scope="row"><strong>${escapeHtml(sourceDisplayName(source))}</strong><small>${escapeHtml(status)}</small></th>
+    <td class="source-picker-rating-column">${sourceRatingMarkup(source, sourceRatings)}</td>
     <td>${escapeHtml(metadata.architecture)}</td>
     <td>${escapeHtml(metadata.introduced)}</td>
     <td>${escapeHtml(metadata.generationType)}</td>
     <td class="source-picker-technologies-cell">${escapeHtml(metadata.technologies)}</td>
   </tr>`;
+}
+
+function sourceRatingMarkup(source, sourceRatings) {
+  const key = sourceKey(source);
+  const rating = sourceRatingValue(sourceRatings, key);
+  const name = source.display_name;
+  const stars = Array.from({ length: 5 }, (_, index) => {
+    const value = index + 1;
+    const label = `Set ${name} rating to ${value} star${value === 1 ? "" : "s"}`;
+    return `<button type="button" class="source-rating-star${value <= rating ? " is-filled" : ""}" data-action="rate-generation-source" data-source-rating-key="${escapeHtml(key)}" data-source-rating="${value}" aria-label="${escapeHtml(label)}" aria-pressed="${value === rating}" title="${escapeHtml(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.25 2.7 5.47 6.04.88-4.37 4.26 1.03 6.02L12 17.04l-5.4 2.84 1.03-6.02L3.26 9.6l6.04-.88L12 3.25Z" /></svg></button>`;
+  }).join("");
+  return `<div class="source-rating-stars" role="group" aria-label="Rating for ${escapeHtml(name)}" data-source-rating-value="${rating}">${stars}</div>`;
+}
+
+function sourceRatingValue(sourceRatings, key) {
+  const rating = Number(sourceRatings?.[key]);
+  return Number.isInteger(rating) && rating >= 1 && rating <= 5 ? rating : 0;
 }
 
 function sourceMetadataPresentation(source) {
@@ -435,8 +456,12 @@ function metadataLabel(value, fallback = "—") {
     .replace(/\b\w/gu, (character) => character.toUpperCase());
 }
 
-function sourceSortValue(source, key) {
+function sourceSortValue(source, key, sourceRatings) {
   const metadata = sourceMetadataPresentation(source);
+  if (key === "rating") {
+    const rating = sourceRatingValue(sourceRatings, sourceKey(source));
+    return rating ? String(rating) : "";
+  }
   if (key === "architecture") return metadata.architecture;
   if (key === "introduced") return metadata.introducedSortValue;
   if (key === "generation_type") return metadata.generationType;
