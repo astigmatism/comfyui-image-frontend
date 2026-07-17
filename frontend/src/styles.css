@@ -556,29 +556,29 @@ code {
 
 .generation-progress-slot {
   position: absolute;
-  inset: 0;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
   display: grid;
-  place-items: center;
+  justify-items: center;
   min-width: 0;
-  padding: 12px;
   pointer-events: none;
   z-index: 3;
 }
 
 .generation-progress {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  justify-items: center;
-  gap: 8px;
-  width: min(100%, 184px);
+  grid-template-columns: 62px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  width: min(100%, 330px);
   min-width: 0;
-  padding: 12px 14px;
+  padding: 9px 12px 9px 9px;
   border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 22px;
+  border-radius: 999px;
   background: rgb(7 12 18 / 88%);
   box-shadow: 0 4px 18px rgb(0 0 0 / 38%);
   color: var(--text-soft);
-  text-align: center;
   backdrop-filter: blur(10px);
 }
 
@@ -645,10 +645,9 @@ code {
 
 .generation-progress-copy {
   display: grid;
-  justify-items: center;
   min-width: 0;
   gap: 2px;
-  text-align: center;
+  text-align: left;
 }
 
 .generation-progress-copy > span {
@@ -3382,9 +3381,8 @@ tr:last-child td {
 
 @media (max-width: 520px) {
   .generation-progress {
-    width: min(100%, 168px);
-    gap: 7px;
-    padding: 10px 12px;
+    grid-template-columns: 54px minmax(0, 1fr);
+    gap: 9px;
   }
 
   .progress-ring {
