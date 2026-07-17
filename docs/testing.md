@@ -64,7 +64,8 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - revision mismatch and invalid republish behavior;
 - validate/accept with dynamic parameters, random/fixed maximum seed, workflow `extra_pnginfo`, and native prompt ID;
 - durable acceptance, rapid submissions, per-user FIFO and round-robin fairness;
-- WebSocket progress plus delayed/missing-event history reconciliation;
+- pre-submission WebSocket readiness, structured node-local progress with legacy fallback,
+  coalescing, prompt/client isolation, and delayed/missing-event history reconciliation;
 - complete multiple-node/multiple-publisher/multiple-batch archive, ordinary publisher-image mirror de-duplication, untouched unmapped outputs, optional retrieval warnings, and partial/failure/interruption result retention;
 - restart/outage recovery and cached source availability;
 - automatic full catalog refresh on offline-to-online recovery, including empty-cache startup, without continuous online refetch;
@@ -79,7 +80,10 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - slow ComfyUI startup discovery and restart reconciliation while local session, health, and retained-history requests remain responsive;
 - safe request-duration logs and timing headers without query/body/private content.
 
-The fake ComfyUI service implements both userdata listings/retrieval, object info, prompt accept/reject, queue/interrupt, WebSocket progress/terminal events, history timing/status, `/view`, retrieval failure, and outage modes. Production code never silently uses the fake service.
+The fake ComfyUI service implements both userdata listings/retrieval, object info, prompt
+accept/reject, queue/interrupt, realistic non-replayed WebSocket `progress_state`/legacy/terminal
+events, history timing/status, `/view`, retrieval failure, and outage modes. Production code never
+silently uses the fake service.
 
 ## Browser journeys
 

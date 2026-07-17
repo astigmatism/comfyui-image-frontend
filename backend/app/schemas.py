@@ -205,6 +205,19 @@ class DeclaredOutputSummary(APIModel):
     artifacts: list[DeclaredArtifactReference] = Field(default_factory=list)
 
 
+class GenerationProgress(APIModel):
+    kind: Literal["indeterminate", "node"]
+    node_id: str | None = None
+    display_node_id: str | None = None
+    real_node_id: str | None = None
+    parent_node_id: str | None = None
+    label: str
+    value: int | float | None = None
+    maximum: int | float | None = None
+    fraction: float | None = Field(default=None, ge=0, le=1)
+    updated_at: datetime
+
+
 class GenerationSummary(APIModel):
     id: str
     status: str
@@ -212,6 +225,7 @@ class GenerationSummary(APIModel):
     accepted_at: datetime
     current_stage_id: str | None = None
     current_stage_label: str | None = None
+    progress: GenerationProgress | None = None
     artifact_count: int
     image_count: int
     final_artifact_count: int

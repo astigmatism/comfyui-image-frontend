@@ -218,8 +218,50 @@ class FakeServiceState:
             await self.emit(
                 client_id,
                 {
+                    "type": "progress_state",
+                    "data": {
+                        "prompt_id": prompt_id,
+                        "nodes": {
+                            stage_node: {
+                                "value": 1,
+                                "max": 2,
+                                "state": "running",
+                                "node_id": stage_node,
+                                "display_node_id": stage_node,
+                                "real_node_id": stage_node,
+                                "parent_node_id": None,
+                            }
+                        },
+                    },
+                },
+            )
+            # Real ComfyUI versions can emit both forms. The application should prefer the
+            # structured state for this node and ignore the equivalent legacy callback.
+            await self.emit(
+                client_id,
+                {
                     "type": "progress",
                     "data": {"prompt_id": prompt_id, "node": stage_node, "value": 1, "max": 2},
+                },
+            )
+            await self.emit(
+                client_id,
+                {
+                    "type": "progress_state",
+                    "data": {
+                        "prompt_id": prompt_id,
+                        "nodes": {
+                            stage_node: {
+                                "value": 2,
+                                "max": 2,
+                                "state": "running",
+                                "node_id": stage_node,
+                                "display_node_id": stage_node,
+                                "real_node_id": stage_node,
+                                "parent_node_id": None,
+                            }
+                        },
+                    },
                 },
             )
             await self.emit(
@@ -547,6 +589,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 "strength": _node_value(graph, "CIFDecimalParameter"),
                 "extra_data": copy.deepcopy(extra_data),
                 "graph": copy.deepcopy(graph),
+                "websocket_connected_before_submit": bool(state.websocket_clients.get(client_id)),
             }
         )
         task = asyncio.create_task(state.execute_prompt(prompt_id), name=f"fake-prompt-{prompt_id}")
@@ -563,8 +606,15 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             await websocket.close(code=1011)
             return
         state.websocket_clients.setdefault(client_id, []).append(websocket)
-        for event in state.event_log.get(client_id, []):
-            await websocket.send_json(event)
+        await websocket.send_json(
+            {
+                "type": "status",
+                "data": {
+                    "status": {"exec_info": {"queue_remaining": 0}},
+                    "sid": client_id,
+                },
+            }
+        )
         try:
             while True:
                 await websocket.receive_text()

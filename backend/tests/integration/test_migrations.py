@@ -19,7 +19,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "e52a8c1f4b90"
+HEAD_REVISION = "4f2a8c1d9e70"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -247,6 +247,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert generation.result_warnings_json == []
         assert generation.result_errors_json == []
         assert generation.comfyui_status_json == {}
+        assert generation.progress_json is None
 
         assert artifact is not None
         assert artifact.generation_id == generation.id

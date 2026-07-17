@@ -1143,10 +1143,11 @@ export function galleryCardMarkup(generation) {
   const media = hasImage
     ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
     : statusPlaceholderMarkup(generation);
-  const statusOverlay = generation.status === "succeeded" ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
+  const progress = generationProgressMarkup(generation);
+  const statusOverlay = generation.status === "succeeded" || progress ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
   const finalCount = Number(generation.final_artifact_count) || 0;
   const imageCount = generation.image_count ?? (finalCount > 0 ? finalCount : generation.artifact_count ?? 0);
-  const count = imageCount > 1 ? `<div class="batch-count" aria-label="${imageCount} images">${imageCount}</div>` : "";
+  const count = imageCount > 1 ? `<div class="batch-count${progress ? " batch-count-with-progress" : ""}" aria-label="${imageCount} images">${imageCount}</div>` : "";
   const width = positiveNumber(generation.expected_width) || positiveNumber(artifact?.width);
   const height = positiveNumber(generation.expected_height) || positiveNumber(artifact?.height);
   const aspectStyle = width && height ? ` style="--gallery-media-aspect: ${width} / ${height}"` : "";
@@ -1156,10 +1157,65 @@ export function galleryCardMarkup(generation) {
   return `<article class="gallery-card status-${stateClass}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
       ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(sourceName)} image">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
+      <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
       ${cancel}
     </div>
     ${cardFooterMarkup(generation)}
   </article>`;
+}
+
+export function generationProgressMarkup(generation) {
+  const progress = activeGenerationProgress(generation);
+  if (!progress) return "";
+  const label = String(progress.label || "Processing");
+  const determinate = progress.kind === "node";
+  if (!determinate) {
+    return `<div class="generation-progress generation-progress-indeterminate">
+      <div class="progress-ring progress-ring-indeterminate" role="progressbar" aria-label="${escapeHtml(`${label}, current operation`)}">
+        <span class="progress-ring-pulse" aria-hidden="true"></span>
+      </div>
+      <div class="generation-progress-copy"><span>Current operation</span><strong>${escapeHtml(label)}</strong></div>
+    </div>`;
+  }
+  const value = finiteProgressNumber(progress.value);
+  const maximum = finiteProgressNumber(progress.maximum);
+  const fraction = Math.max(0, Math.min(1, Number(progress.fraction) || 0));
+  if (value === null || maximum === null || maximum <= 0) {
+    return generationProgressMarkup({
+      ...generation,
+      progress: { ...progress, kind: "indeterminate", value: null, maximum: null, fraction: null },
+    });
+  }
+  const displayValue = Math.max(0, Math.min(maximum, value));
+  const valueLabel = formatProgressNumber(displayValue);
+  const maximumLabel = formatProgressNumber(maximum);
+  return `<div class="generation-progress generation-progress-determinate">
+    <div class="progress-ring progress-ring-determinate" role="progressbar" aria-label="${escapeHtml(`${label}, current operation`)}" aria-valuemin="0" aria-valuemax="${escapeHtml(maximum)}" aria-valuenow="${escapeHtml(displayValue)}" aria-valuetext="${escapeHtml(`${valueLabel} of ${maximumLabel} for ${label}`)}" style="--progress-value: ${escapeHtml((fraction * 100).toFixed(2))}%">
+      <strong>${escapeHtml(valueLabel)}</strong><span>of ${escapeHtml(maximumLabel)}</span>
+    </div>
+    <div class="generation-progress-copy"><span>Current operation</span><strong>${escapeHtml(label)}</strong></div>
+  </div>`;
+}
+
+function activeGenerationProgress(generation) {
+  if (!generation || !["dispatching", "running", "cancel_requested"].includes(generation.status)) return null;
+  const progress = generation.progress;
+  if (progress && ["node", "indeterminate"].includes(progress.kind)) return progress;
+  if (generation.status === "dispatching") return { kind: "indeterminate", label: "Starting generation" };
+  if (generation.status === "cancel_requested") return { kind: "indeterminate", label: "Stopping generation" };
+  return {
+    kind: "indeterminate",
+    label: generation.current_stage_label || "Processing",
+  };
+}
+
+function finiteProgressNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatProgressNumber(value) {
+  return Number.isInteger(value) ? String(value) : Number(value).toFixed(1).replace(/\.0$/, "");
 }
 
 function positiveNumber(value) {
@@ -1218,7 +1274,7 @@ export function photoViewerMarkup(
   const viewMode = ["actual", "fit"].includes(requestedViewMode) ? requestedViewMode : "fill";
   const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";
   const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
-  const status = generation?.current_stage_label || statusLabel(generation?.status);
+  const status = generation?.progress?.label || generation?.current_stage_label || statusLabel(generation?.status);
   const media = hasImage
     ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="false" />`
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;

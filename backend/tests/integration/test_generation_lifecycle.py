@@ -268,9 +268,9 @@ def _declared_output_list(value: Any) -> list[dict[str, Any]]:
 def test_progressive_success_multiple_outputs_and_exact_recall(
     settings_factory, fake_state
 ) -> None:
-    # Leave enough deterministic fake-runtime time for the worker to subscribe before the
-    # progressive event, even on a heavily loaded full-suite run.
-    fake_state.initial_event_delay = 0.5
+    # Emit the first runtime event immediately after prompt acceptance. The worker must already
+    # have established the matching client socket rather than depending on a scheduling delay.
+    fake_state.initial_event_delay = 0
     fake_state.default_stage_delay = 0.5
     settings = settings_factory(enable_background_worker=True)
     with TestClient(create_app(settings)) as client:
@@ -286,8 +286,14 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         )
         assert progressive["canonical_artifact_id"] is None
         assert progressive["best_available_artifact_id"] is not None
+        assert progressive["progress"]["kind"] == "node"
+        assert progressive["progress"]["value"] == 2
+        assert progressive["progress"]["maximum"] == 2
+        assert progressive["progress"]["fraction"] == 1
+        assert progressive["progress"]["label"] == "Processing"
 
         complete = wait_for_status(client, generation_id, "succeeded")
+        assert complete["progress"] is None
         assert complete["artifact_count"] == 8
         assert complete["final_artifact_count"] == 2
         assert complete["canonical_artifact_id"] is not None
@@ -336,7 +342,14 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
             event for event in detail["events"] if event["type"] == "generation.progress"
         ]
         assert progress_events
-        assert all(set(event["payload"]) == {"value", "maximum"} for event in progress_events)
+        assert all(set(event["payload"]) == {"progress"} for event in progress_events)
+        assert any(
+            event["payload"]["progress"]["kind"] == "node"
+            and event["payload"]["progress"]["value"] == 2
+            and event["payload"]["progress"]["maximum"] == 2
+            for event in progress_events
+        )
+        assert fake_state.submitted[-1]["websocket_connected_before_submit"] is True
         assert fake_state.submitted[-1]["extra_data"] == {
             "extra_pnginfo": {"workflow": build_publication_bundle("krea").workflow()}
         }
@@ -388,7 +401,8 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
             event for event in projected["events"] if event["type"] == "generation.progress"
         ]
         assert progress_events
-        assert all("node" not in event["payload"] for event in progress_events)
+        assert all("prompt" not in str(event["payload"]) for event in progress_events)
+        assert all("inputs" not in str(event["payload"]) for event in progress_events)
         recall = client.get(f"/api/generations/{generation_id}/recall")
         assert recall.status_code == 200
         recalled = recall.json()
@@ -403,6 +417,20 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         thumbnail = client.get(artifact["thumbnail_url"])
         assert content.status_code == 200 and content.headers["content-type"] == "image/png"
         assert thumbnail.status_code == 200 and thumbnail.headers["content-type"] == "image/webp"
+
+
+def test_websocket_setup_failure_falls_back_to_history_without_stranding_generation(
+    settings_factory, fake_state
+) -> None:
+    fake_state.disconnect_websocket = True
+    settings = settings_factory(enable_background_worker=True)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="progress.socket.fallback")
+        accepted = create_generation(client, "history-only progress fallback", seed=509)
+
+        complete = wait_for_status(client, accepted["id"], "succeeded", timeout=12)
+        assert complete["progress"] is None
+        assert complete["artifact_count"] == 5
 
 
 def test_concurrent_choice_submissions_apply_public_values_and_option_strength_hints(

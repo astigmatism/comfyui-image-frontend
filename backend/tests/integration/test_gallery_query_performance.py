@@ -169,6 +169,18 @@ def test_batched_gallery_summary_matches_single_item_semantics_with_artifacts_an
             stored = session.get(Generation, generation["id"])
             assert stored is not None
             stored.status = GenerationStatus.RUNNING
+            stored.progress_json = {
+                "kind": "node",
+                "node_id": "54",
+                "display_node_id": "54",
+                "real_node_id": "54",
+                "parent_node_id": None,
+                "label": "Main sampling",
+                "value": 12,
+                "maximum": 24,
+                "fraction": 0.5,
+                "updated_at": "2026-07-17T12:34:56.789Z",
+            }
             fallback = Artifact(
                 generation_id=stored.id,
                 owner_id=str(user["id"]),
@@ -230,6 +242,9 @@ def test_batched_gallery_summary_matches_single_item_semantics_with_artifacts_an
         assert actual.image_count == 2
         assert actual.is_favorite is True
         assert actual.cancel_allowed is True
+        assert actual.progress is not None
+        assert actual.progress.label == "Main sampling"
+        assert actual.progress.fraction == 0.5
         assert actual.expected_width == 512
         assert actual.expected_height == 512
 

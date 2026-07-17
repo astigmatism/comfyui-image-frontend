@@ -105,9 +105,17 @@ Temporary legacy request/response aliases are isolated at the schema/service bou
 
 The worker maintains up to `CIF_COMFYUI_CONCURRENCY` active jobs. A SQLite lock row serializes fair selection: oldest queued item per user, round-robin across owners, preserving each owner's FIFO order.
 
-Before `/prompt`, the worker reuses the generation's immutable compiled graph. When the accepted publication runtime flag requests it, the accepted editable snapshot is attached only as `extra_data.extra_pnginfo.workflow`; its observed hash is tracked separately when it differs from the publication record. Submission uses a request-specific client ID. The returned native `prompt_id` is persisted before monitoring.
+Before `/prompt`, the worker reuses the generation's immutable compiled graph. When the accepted publication runtime flag requests it, the accepted editable snapshot is attached only as `extra_data.extra_pnginfo.workflow`; its observed hash is tracked separately when it differs from the publication record. Submission uses a request-specific client ID. After uploads are materialized, the worker opens and begins consuming that client's ComfyUI WebSocket before submission, with a bounded readiness wait and history-only fallback. The returned native `prompt_id` is then persisted before buffered events are applied.
 
-The monitor combines WebSocket progress with bounded history polling/retry. WebSocket events are timely but incomplete: cached runs may omit them, and a terminal event may precede history persistence. `/history/{prompt_id}` is therefore terminal/recovery truth.
+The monitor combines a reconnecting WebSocket pump with bounded history polling/retry.
+`progress_state` is preferred per node and legacy `progress` remains a fallback. Executing nodes
+without valid numeric counters produce an indeterminate snapshot. Numeric callbacks are
+coalesced before database/SSE work, while node transitions and final counters are retained as
+sparse durable events. Safe labels come from frozen node metadata/editable titles, optional object
+metadata, or the neutral `Processing` fallback; graph inputs and widget values are never used.
+WebSocket events remain timely but incomplete: cached runs may omit them, and a terminal event may
+precede history persistence. `/history/{prompt_id}` is therefore terminal/recovery truth and clears
+the active snapshot on every terminal outcome.
 
 ## Result normalization and files
 

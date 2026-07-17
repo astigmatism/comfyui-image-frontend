@@ -30,6 +30,7 @@ import {
   favoritesMarkup,
   galleryCardMarkup,
   galleryMarkup,
+  generationProgressMarkup,
   generationPanelMarkup,
   generationRequestBlocked,
   generationSubmissionDisabled,
@@ -2117,7 +2118,13 @@ function syncGenerationSubmissionState() {
     const block = panel.querySelector(
       `[data-control-block="${CSS.escape(control.id)}"]`,
     );
-    if (block) syncFieldError(block, control.id, errors[control.id]);
+    if (block) {
+      syncFieldError(block, control.id, errors[control.id]);
+      if (errors[control.id]) {
+        const section = block.closest("[data-control-section]");
+        if (section) setControlSectionElementOpen(section, true);
+      }
+    }
   }
 
   let summary = panel.querySelector(".form-error.summary");
@@ -2866,10 +2873,17 @@ function setupPaginationObserver() {
 async function refreshGeneration(id, { insertIf = () => true } = {}) {
   const refreshToken = generationRefreshGate.issue(id);
   try {
-    const detail = await api(`/api/generations/${id}`);
+    let detail = await api(`/api/generations/${id}`);
     if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     const index = state.generations.findIndex((item) => item.id === id);
     const previous = index >= 0 ? state.generations[index] : null;
+    if (
+      previous?.progress &&
+      !TERMINAL_GENERATION_STATUSES.has(detail.status) &&
+      progressUpdatedAt(previous.progress) > progressUpdatedAt(detail.progress)
+    ) {
+      detail = { ...detail, progress: previous.progress };
+    }
     const inserted = index < 0;
     const becameViewable =
       index >= 0 &&
@@ -3472,7 +3486,34 @@ function startLiveUpdates({ paused = false } = {}) {
 
 function applyLiveUpdate({ type, payload }) {
   if (type === "generation.deleted") removeGeneration(payload.generation_id);
+  else if (type === "generation.progress") applyGenerationProgress(payload);
   else if (payload.generation_id) refreshGeneration(payload.generation_id).catch(() => {});
+}
+
+function applyGenerationProgress(event) {
+  const generationId = event?.generation_id;
+  const progress = event?.payload?.progress;
+  if (!generationId || !progress || !["node", "indeterminate"].includes(progress.kind)) return;
+  const index = state.generations.findIndex((item) => item.id === generationId);
+  if (index < 0 || TERMINAL_GENERATION_STATUSES.has(state.generations[index].status)) return;
+  const current = state.generations[index].progress;
+  if (progressUpdatedAt(progress) < progressUpdatedAt(current)) return;
+  state.generations[index] = { ...state.generations[index], progress };
+  const card = document.querySelector(`[data-generation-id="${CSS.escape(generationId)}"]`);
+  const slot = card?.querySelector("[data-generation-progress-slot]");
+  if (slot) slot.innerHTML = generationProgressMarkup(state.generations[index]);
+  if (
+    state.photoViewerGenerationId === generationId &&
+    state.photoViewerPlaybackMode === "hold"
+  ) {
+    renderPhotoViewer();
+  }
+}
+
+function progressUpdatedAt(progress) {
+  if (!progress?.updated_at) return 0;
+  const timestamp = Date.parse(progress.updated_at);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function resumeLiveUpdates() {

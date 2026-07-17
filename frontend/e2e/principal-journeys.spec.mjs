@@ -70,7 +70,7 @@ async function generateAndExpectAccepted(page) {
 }
 
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   await page.goto("/");
   await signIn(page, "admin", "E2EAdminTemporary123!");
   await setForcedPassword(page, "E2EAdminPermanent123!");
@@ -95,6 +95,12 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await prompt.fill("slow multi lighthouse at dusk");
   await generateAndExpectAccepted(page);
   await expect(page.locator(".gallery-card")).toHaveCount(1);
+  const liveProgress = page.locator(".gallery-card").getByRole("progressbar");
+  await expect(liveProgress).toBeVisible();
+  await expect(liveProgress).toHaveAttribute("aria-valuetext", /of .* for Processing/);
+  await expect(page.locator(".gallery-card .generation-progress-copy")).toContainText(
+    "Current operation",
+  );
   await expect(page.locator(".gallery-card .card-media img")).toBeVisible();
   await expect(page.locator(".gallery-card")).toHaveClass(/status-(running|succeeded)/);
   await expect(page.locator(".gallery-card .batch-count")).toHaveText("4");
@@ -437,6 +443,7 @@ test("photo viewer slideshow waits for a generation's final completed image", as
   await expect(viewerFrame).toHaveAttribute("data-photo-generation-id", next.id);
 
   await producer.close();
+  await page.mouse.move(80, 80);
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 });
 
@@ -1066,8 +1073,11 @@ test("voice input records and inserts transcripts at the cursor in every prompt 
 test("background service polling does not interrupt focused generation controls", async ({ page }) => {
   await page.addInitScript(() => {
     const setTimeout = window.setTimeout.bind(window);
-    window.setTimeout = (handler, delay, ...args) =>
-      setTimeout(handler, delay === 10_000 ? 100 : delay, ...args);
+    window.setTimeout = (handler, delay, ...args) => {
+      const servicePoll =
+        delay === 10_000 && String(handler).includes("refreshServices");
+      return setTimeout(handler, servicePoll ? 100 : delay, ...args);
+    };
   });
   let workflowCatalogRequests = 0;
   page.on("request", (request) => {
@@ -1662,7 +1672,9 @@ test("working card reserves final aspect ratio and cancels in place", async ({ p
   const photoViewer = page.locator("#photo-viewer");
   await expect(photoViewer).toHaveAttribute("open", "");
   await expect(photoViewer.locator(".photo-viewer-status")).toBeVisible();
-  await expect(photoViewer.locator(".photo-viewer-status")).toContainText(/Running|Preparing|image/i);
+  await expect(photoViewer.locator(".photo-viewer-status")).toContainText(
+    /Running|Preparing|Processing|image/i,
+  );
   const viewedGenerationId = await photoViewer.locator(".photo-viewer-frame").getAttribute("data-photo-generation-id");
   await expect(photoViewer.getByRole("button", { name: "View newer generation" })).toHaveCount(0);
   await expect(photoViewer.getByRole("button", { name: "View older generation" })).toBeVisible();

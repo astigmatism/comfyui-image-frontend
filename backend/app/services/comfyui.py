@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from collections.abc import AsyncIterator, Mapping
@@ -393,7 +394,12 @@ class ComfyUIAdapter:
             raise AppError("upload_failed", "ComfyUI returned an unexpected upload namespace.")
         return f"{returned_subfolder}/{raw_name}" if returned_subfolder else raw_name
 
-    async def events(self, client_id: str) -> AsyncIterator[dict[str, Any]]:
+    async def events(
+        self,
+        client_id: str,
+        *,
+        connected: asyncio.Event | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         ws_url = self.settings.comfyui_ws_url or _derive_ws_url(self.base_url)
         separator = "&" if "?" in ws_url else "?"
         url = f"{ws_url}{separator}{urlencode({'clientId': client_id})}"
@@ -402,11 +408,13 @@ class ComfyUIAdapter:
         )
         async with websockets.connect(
             url,
-            open_timeout=8,
+            open_timeout=3,
             close_timeout=3,
             max_size=8 * 1024 * 1024,
             additional_headers=additional_headers,
         ) as ws:
+            if connected is not None:
+                connected.set()
             async for message in ws:
                 if isinstance(message, bytes):
                     # Binary sampler previews are deliberately ignored; only contract-declared
@@ -418,6 +426,9 @@ class ComfyUIAdapter:
                     continue
                 if isinstance(payload, dict):
                     yield payload
+
+    def cached_object_info(self) -> Mapping[str, Any]:
+        return self._capabilities.object_info if self._capabilities is not None else {}
 
     async def history(self, prompt_id: str) -> dict[str, Any] | None:
         safe_id = quote(prompt_id, safe="")

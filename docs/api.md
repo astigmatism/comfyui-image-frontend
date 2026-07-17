@@ -256,7 +256,34 @@ Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_ou
 | `POST` | `/api/generations/{id}/cancel` | Request running cancellation, or cancel and delete a queued item (`204`) |
 | `DELETE` | `/api/generations/{id}` | Delete owned history/files; may return 202 while active deletion reconciles |
 
-A summary contains lifecycle status, source display name, acceptance/stage state, total artifact count, image count, final-image count, one optional `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native `prompt_id`, `source_key`, and `publication_id`. The display artifact is a gallery convenience selected from the workflow-authored final when available.
+A summary contains lifecycle status, source display name, acceptance/stage state, one optional
+active `progress` snapshot, total artifact count, image count, final-image count, one optional
+`display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native
+`prompt_id`, `source_key`, and `publication_id`. The display artifact is a gallery convenience
+selected from the workflow-authored final when available.
+
+Determinate progress is explicitly local to the current ComfyUI node:
+
+```json
+{
+  "progress": {
+    "kind": "node",
+    "node_id": "54",
+    "display_node_id": "54",
+    "real_node_id": "54",
+    "parent_node_id": null,
+    "label": "Main sampling",
+    "value": 12,
+    "maximum": 24,
+    "fraction": 0.5,
+    "updated_at": "2026-07-17T12:34:56.789Z"
+  }
+}
+```
+
+Nodes without a valid positive maximum use `kind: "indeterminate"` with null numeric fields.
+`progress` is null for fair-queued and terminal generations. Counter resets across nodes must not
+be interpreted as workflow-wide completion.
 
 List and favorites pages are bounded summary projections. They do not fetch generation compiled/submitted graphs, raw history, full result diagnostics, or full workflow-profile JSON. Related artifact, image-count, favorite, exact-revision, dependency-health data is resolved in a low constant number of batched statements while preserving owner and cursor ordering.
 
@@ -405,4 +432,9 @@ event: generation.running
 data: {"id":123,"type":"generation.running","generation_id":"...","created_at":"...","payload":{...}}
 ```
 
-Events cover queue, dispatch, running/progress, artifact availability, persistence failure, cancellation/reconciliation, terminal completion/error, requeue, and deletion. The client fetches current durable generation state after relevant events, so correctness does not depend on transient event payload completeness.
+Events cover queue, dispatch, running/progress, artifact availability, persistence failure,
+cancellation/reconciliation, terminal completion/error, requeue, and deletion. Coalesced
+`generation.progress` events include the safe current snapshot under `payload.progress` and update
+the affected card directly. Node transitions/final counters are durable replay events; intermediate
+ticks may be live-only because the same latest snapshot is durable on the generation. Other
+lifecycle and artifact events continue to trigger a single-generation fetch.

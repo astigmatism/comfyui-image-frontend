@@ -312,6 +312,7 @@ class Generation(Base):
     current_stage_id: Mapped[str | None] = mapped_column(String(100))
     current_stage_label: Mapped[str | None] = mapped_column(String(255))
     current_stage_sequence: Mapped[int | None] = mapped_column(Integer)
+    progress_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     best_available_artifact_id: Mapped[str | None] = mapped_column(String(36))
     canonical_artifact_id: Mapped[str | None] = mapped_column(String(36))
     artifact_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

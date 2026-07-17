@@ -43,6 +43,7 @@ from ..schemas import (
     GenerationCreate,
     GenerationDetail,
     GenerationPage,
+    GenerationProgress,
     GenerationSummary,
     RecallResponse,
     SourceRevision,
@@ -69,6 +70,7 @@ class _GenerationSummaryRow:
     accepted_at: datetime
     current_stage_id: str | None
     current_stage_label: str | None
+    progress_json: dict[str, Any] | None
     artifact_count: int
     final_artifact_count: int
     best_available_artifact_id: str | None
@@ -682,6 +684,7 @@ class GenerationService:
             accepted_at=row.accepted_at,
             current_stage_id=row.current_stage_id,
             current_stage_label=row.current_stage_label,
+            progress=_progress_summary(row.progress_json),
             artifact_count=row.artifact_count,
             image_count=context.image_counts.get(row.id, 0),
             final_artifact_count=row.final_artifact_count,
@@ -770,6 +773,7 @@ class GenerationService:
             accepted_at=generation.accepted_at,
             current_stage_id=generation.current_stage_id,
             current_stage_label=generation.current_stage_label,
+            progress=_progress_summary(generation.progress_json),
             artifact_count=generation.artifact_count,
             image_count=image_count,
             final_artifact_count=generation.final_artifact_count,
@@ -1242,6 +1246,7 @@ def _summary_projection() -> tuple[Any, ...]:
         Generation.accepted_at.label("accepted_at"),
         Generation.current_stage_id.label("current_stage_id"),
         Generation.current_stage_label.label("current_stage_label"),
+        Generation.progress_json.label("progress_json"),
         Generation.artifact_count.label("artifact_count"),
         Generation.final_artifact_count.label("final_artifact_count"),
         Generation.best_available_artifact_id.label("best_available_artifact_id"),
@@ -1280,6 +1285,7 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         accepted_at=values["accepted_at"],
         current_stage_id=values["current_stage_id"],
         current_stage_label=values["current_stage_label"],
+        progress_json=values["progress_json"],
         artifact_count=int(values["artifact_count"]),
         final_artifact_count=int(values["final_artifact_count"]),
         best_available_artifact_id=values["best_available_artifact_id"],
@@ -1296,6 +1302,12 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         expected_width=values["expected_width"],
         expected_height=values["expected_height"],
     )
+
+
+def _progress_summary(value: Mapping[str, Any] | None) -> GenerationProgress | None:
+    if not isinstance(value, Mapping):
+        return None
+    return GenerationProgress.model_validate(copy.deepcopy(dict(value)))
 
 
 def _favorite_summary_row(row: Any) -> _FavoriteSummaryRow:

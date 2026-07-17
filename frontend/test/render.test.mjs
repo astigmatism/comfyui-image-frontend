@@ -9,6 +9,7 @@ import {
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
+  generationProgressMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
@@ -234,6 +235,57 @@ test("gallery cards expose only the opaque artifact id as drag data metadata", (
   assert.match(html, /draggable="true"/);
   assert.match(html, /data-gallery-artifact-id="artifact-opaque-id"/);
   assert.doesNotMatch(html, /data-gallery-artifact-url/);
+});
+
+test("running generation renders an accessible node-local circular progress ring", () => {
+  const generation = {
+    id: "generation-progress",
+    status: "running",
+    workflow_display_name: "Portrait",
+    progress: {
+      kind: "node",
+      label: "Main sampling",
+      value: 12,
+      maximum: 24,
+      fraction: 0.5,
+      updated_at: "2026-07-17T12:00:00Z",
+    },
+  };
+  const html = galleryCardMarkup(generation);
+  assert.match(html, /class="progress-ring progress-ring-determinate"/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /aria-valuemin="0"/);
+  assert.match(html, /aria-valuemax="24"/);
+  assert.match(html, /aria-valuenow="12"/);
+  assert.match(html, /aria-valuetext="12 of 24 for Main sampling"/);
+  assert.match(html, /style="--progress-value: 50\.00%"/);
+  assert.match(html, /<strong>12<\/strong><span>of 24<\/span>/);
+  assert.match(html, /Current operation/);
+  assert.doesNotMatch(html, /media-status/);
+});
+
+test("indeterminate circular progress omits aria-valuenow and queued cards keep queue copy", () => {
+  const indeterminate = generationProgressMarkup({
+    id: "generation-loading",
+    status: "running",
+    progress: {
+      kind: "indeterminate",
+      label: "Loading model",
+      updated_at: "2026-07-17T12:00:00Z",
+    },
+  });
+  assert.match(indeterminate, /progress-ring-indeterminate/);
+  assert.match(indeterminate, /role="progressbar"/);
+  assert.match(indeterminate, /Loading model/);
+  assert.doesNotMatch(indeterminate, /aria-valuenow|aria-valuemax/);
+
+  const queued = galleryCardMarkup({
+    id: "generation-queued",
+    status: "queued",
+    workflow_display_name: "Portrait",
+  });
+  assert.match(queued, /Waiting for a fair queue slot/);
+  assert.doesNotMatch(queued, /generation-progress-indeterminate/);
 });
 
 const loraChoice = {

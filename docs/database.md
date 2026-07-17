@@ -13,6 +13,11 @@ Publication integration is additive. Migration `b84f2d6a91c3_add_published_sourc
 
 A successful authoritative publication refresh marks embedded-contract profiles non-current/stale; it does not delete their rows or application assets. Old generations remain viewable and deletable. Exact recall is available only if a matching current published revision exists and recompiles identically.
 
+Migration `4f2a8c1d9e70_add_generation_progress_snapshot.py` adds nullable
+`generations.progress_json`. Existing and terminal generations remain null. While a request is
+active, the column contains only the latest safe node-local progress snapshot; it is cleared when
+the request is requeued or reaches its history-backed terminal state.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -68,6 +73,7 @@ After ComfyUI history reconciliation, these columns retain the result without fl
 | `result_warnings_json` | Publication and normalization warnings |
 | `result_errors_json` | Safe execution/publisher/normalization errors |
 | `comfyui_status_json` | Native bounded status/error metadata |
+| `progress_json` | Coalesced active current-operation label, safe node identity, counter/fraction, and timestamp; never a workflow-wide percentage |
 
 The existing `comfyui_prompt_id` stores the native prompt ID. `artifacts` remains the retrievable binary index: every successfully archived image reference in declared and unmapped results has its own row, including batch siblings. Logical publisher references remain in `declared_outputs_json` even when `/view` retrieval fails, so normalization is not reduced to the set of locally stored binaries. `canonical` / `best_available` and generation artifact pointers remain presentation/legacy lifecycle aids; they do not rewrite the declared/unmapped/raw result structures.
 

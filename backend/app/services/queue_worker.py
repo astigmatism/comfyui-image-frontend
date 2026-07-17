@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
+import re
 import time
 from collections.abc import Callable, Coroutine, Mapping
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -55,6 +58,25 @@ DispatcherState = Literal[
 ]
 RecoveryNotification = tuple[str, dict[str, Any]]
 RecoveryPlan = tuple[tuple[RecoveryNotification, ...], tuple[tuple[str, str], ...]]
+_PROGRESS_WRITE_INTERVAL_SECONDS = 0.15
+_RUNTIME_READY_TIMEOUT_SECONDS = 3.25
+_RUNTIME_EVENT_BATCH_SIZE = 128
+
+
+@dataclass
+class _RuntimeEventChannel:
+    queue: asyncio.Queue[dict[str, Any]]
+    connected: asyncio.Event
+    pump: asyncio.Task[None]
+
+
+@dataclass
+class _ProgressTracker:
+    last_snapshot: dict[str, Any] | None = None
+    pending_snapshot: dict[str, Any] | None = None
+    last_persisted_monotonic: float = 0.0
+    last_audited_snapshot: dict[str, Any] | None = None
+    progress_state_nodes: set[str] = field(default_factory=set)
 
 
 async def _run_blocking[T](operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
@@ -92,6 +114,7 @@ class QueueWorker:
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
         self._active: dict[str, asyncio.Task[None]] = {}
+        self._progress_trackers: dict[str, _ProgressTracker] = {}
         self._dispatcher_started = asyncio.Event()
         self._dispatcher_state: DispatcherState = "not_started"
         self._dispatcher_done = False
@@ -342,6 +365,7 @@ class QueueWorker:
                 and not generation.comfyui_prompt_id
             ):
                 generation.status = GenerationStatus.QUEUED
+                generation.progress_json = None
                 event = add_generation_event(
                     session,
                     generation,
@@ -522,6 +546,7 @@ class QueueWorker:
             if generation is None:
                 return None
             generation.status = GenerationStatus.DISPATCHING
+            generation.progress_json = None
             state.last_user_id = owner_id
             event = add_generation_event(
                 session,
@@ -576,6 +601,15 @@ class QueueWorker:
             await self._fail_before_start(generation_id, exc)
             return
 
+        runtime_channel = self._start_runtime_event_channel(
+            generation_id,
+            generation.comfyui_client_id,
+        )
+        try:
+            await self._wait_for_runtime_ready(runtime_channel)
+        except asyncio.CancelledError:
+            await self._close_runtime_event_channel(runtime_channel)
+            raise
         try:
             submission_task = asyncio.create_task(
                 self._submit_and_mark_running(
@@ -600,22 +634,29 @@ class QueueWorker:
                     await self._fail_ambiguous_submission(generation_id, exc)
                 except Exception as exc:
                     await self._fail_before_start(generation_id, exc)
+                await self._close_runtime_event_channel(runtime_channel)
                 raise
         except httpx.ConnectError:
+            await self._close_runtime_event_channel(runtime_channel)
             await self._requeue_after_outage(generation_id)
             return
         except (httpx.TransportError, OSError) as exc:
             # A response/read/write failure can occur after ComfyUI accepted the prompt. Since
             # the native API has no idempotency key, never requeue this ambiguous submission.
+            await self._close_runtime_event_channel(runtime_channel)
             await self._fail_ambiguous_submission(generation_id, exc)
             return
         except Exception as exc:
+            await self._close_runtime_event_channel(runtime_channel)
             await self._fail_before_start(generation_id, exc)
             return
 
-        if event is not None:
-            await self._publish_event_best_effort(event, generation_id=generation_id)
-        await self._monitor(generation_id, prompt_id)
+        try:
+            if event is not None:
+                await self._publish_event_best_effort(event, generation_id=generation_id)
+            await self._monitor(generation_id, prompt_id, runtime_channel=runtime_channel)
+        finally:
+            await self._close_runtime_event_channel(runtime_channel)
 
     async def _submit_and_mark_running(
         self,
@@ -713,29 +754,77 @@ class QueueWorker:
             raise RuntimeError("compiled graph materialization returned an invalid value")
         return materialized
 
-    async def _monitor(self, generation_id: str, prompt_id: str) -> None:
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
+    def _start_runtime_event_channel(
+        self,
+        generation_id: str,
+        client_id: str,
+    ) -> _RuntimeEventChannel:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
+        connected = asyncio.Event()
+        pump = asyncio.create_task(
+            self._runtime_event_pump(generation_id, client_id, queue, connected),
+            name=f"comfy-ws-{generation_id}",
+        )
+        return _RuntimeEventChannel(queue=queue, connected=connected, pump=pump)
 
-        async def websocket_pump() -> None:
+    async def _wait_for_runtime_ready(self, channel: _RuntimeEventChannel) -> None:
+        try:
+            await asyncio.wait_for(
+                channel.connected.wait(),
+                timeout=_RUNTIME_READY_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            # Submission remains available through history polling when the progress socket is
+            # unavailable. The reconnecting pump continues in the background.
+            return
+
+    async def _close_runtime_event_channel(self, channel: _RuntimeEventChannel) -> None:
+        channel.pump.cancel()
+        await asyncio.gather(channel.pump, return_exceptions=True)
+
+    async def _runtime_event_pump(
+        self,
+        generation_id: str,
+        client_id: str,
+        queue: asyncio.Queue[dict[str, Any]],
+        connected: asyncio.Event,
+    ) -> None:
+        failures = 0
+        while not self._stop.is_set():
             try:
-                with self.session_factory() as session:
-                    generation = session.get(Generation, generation_id)
-                    if generation is None:
-                        return
-                    client_id = generation.comfyui_client_id
-                async for event in self.comfyui.events(client_id):
-                    data = event.get("data", {}) if isinstance(event, Mapping) else {}
-                    event_prompt = data.get("prompt_id") if isinstance(data, Mapping) else None
-                    if event_prompt in {None, prompt_id}:
-                        await queue.put(event)
+                async for event in self.comfyui.events(client_id, connected=connected):
+                    failures = 0
+                    await queue.put(event)
             except asyncio.CancelledError:
                 raise
             except Exception:
+                failures += 1
                 logger.info(
-                    "comfyui_websocket_disconnected", extra={"generation_id": generation_id}
+                    "comfyui_websocket_disconnected",
+                    extra={
+                        "generation_id": generation_id,
+                        "reconnect_attempt": failures,
+                    },
                 )
+            if self._stop.is_set():
+                return
+            await asyncio.sleep(min(0.25 * (2 ** min(failures, 3)), 2.0))
 
-        pump = asyncio.create_task(websocket_pump(), name=f"comfy-ws-{generation_id}")
+    async def _monitor(
+        self,
+        generation_id: str,
+        prompt_id: str,
+        *,
+        runtime_channel: _RuntimeEventChannel | None = None,
+    ) -> None:
+        if runtime_channel is None:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return
+                client_id = generation.comfyui_client_id
+            runtime_channel = self._start_runtime_event_channel(generation_id, client_id)
+        queue = runtime_channel.queue
         reconciliation_requested = False
         unknown_reachable_since: float | None = None
         latest_history: dict[str, Any] | None = None
@@ -747,8 +836,20 @@ class QueueWorker:
                         # WebSocket completion/error/cache messages are only wake-up hints.
                         # Native history remains authoritative for every terminal outcome.
                         reconciliation_requested = True
+                    for _ in range(_RUNTIME_EVENT_BATCH_SIZE - 1):
+                        try:
+                            queued_event = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        if await self._process_runtime_event(
+                            generation_id,
+                            prompt_id,
+                            queued_event,
+                        ):
+                            reconciliation_requested = True
                 except TimeoutError:
                     pass
+                await self._flush_pending_progress(generation_id)
                 await self._ensure_cancel_sent(generation_id, prompt_id)
                 history = None
                 try:
@@ -825,12 +926,9 @@ class QueueWorker:
                         outcome=terminal or "interrupted",
                     )
                     return
-                if pump.done():
-                    # A transient WebSocket outage must not lose the durable result.
-                    await asyncio.sleep(0.5)
         finally:
-            pump.cancel()
-            await asyncio.gather(pump, return_exceptions=True)
+            await self._close_runtime_event_channel(runtime_channel)
+            self._progress_trackers.pop(generation_id, None)
 
     async def _process_runtime_event(
         self, generation_id: str, prompt_id: str, event: Mapping[str, Any]
@@ -839,12 +937,30 @@ class QueueWorker:
         data = event.get("data", {})
         if not isinstance(data, Mapping):
             data = {}
+        event_prompt_id = data.get("prompt_id")
+        if event_prompt_id is not None and str(event_prompt_id) != prompt_id:
+            return False
         node_id = data.get("node")
-        if event_type == "executing" and node_id is not None:
+        if event_type == "execution_start":
+            await self._record_indeterminate_progress(
+                generation_id,
+                label="Starting workflow",
+                identities={},
+            )
+        elif event_type == "executing" and node_id is not None:
             await self._update_stage(generation_id, str(node_id))
+            identities = _runtime_node_identities(data)
+            await self._record_indeterminate_progress(
+                generation_id,
+                label=await self._resolve_progress_label(generation_id, identities),
+                identities=identities,
+            )
+        elif event_type == "progress_state":
+            await self._record_progress_state(generation_id, data)
         elif event_type == "progress":
-            await self._record_progress(generation_id, data)
+            await self._record_legacy_progress(generation_id, data)
         elif event_type == "executed" and node_id is not None:
+            await self._flush_pending_progress(generation_id, force=True, audit=True)
             output = data.get("output", {})
             if isinstance(output, Mapping):
                 await self._process_node_output(generation_id, str(node_id), output)
@@ -893,23 +1009,292 @@ class QueueWorker:
             session.commit()
         await self._publish_event_best_effort(event, generation_id=generation_id)
 
-    async def _record_progress(self, generation_id: str, data: Mapping[str, Any]) -> None:
-        value = data.get("value")
-        maximum = data.get("max")
-        if not isinstance(value, (int, float)) or not isinstance(maximum, (int, float)):
+    async def _record_progress_state(
+        self,
+        generation_id: str,
+        data: Mapping[str, Any],
+    ) -> None:
+        raw_nodes = data.get("nodes")
+        if not isinstance(raw_nodes, Mapping):
             return
+        running: list[tuple[str, Mapping[str, Any]]] = []
+        for raw_node_id, raw_state in raw_nodes.items():
+            if isinstance(raw_state, Mapping) and raw_state.get("state") == "running":
+                running.append((str(raw_node_id), raw_state))
+        if not running:
+            await self._flush_pending_progress(generation_id, force=True, audit=True)
+            return
+        tracker = self._progress_tracker(generation_id)
+        current_key = _progress_snapshot_node_key(tracker.last_snapshot)
+        selected_node_id, selected = next(
+            (
+                item
+                for item in running
+                if _progress_node_key(_runtime_node_identities(item[1], fallback_node_id=item[0]))
+                == current_key
+            ),
+            running[0],
+        )
+        identities = _runtime_node_identities(selected, fallback_node_id=selected_node_id)
+        node_key = _progress_node_key(identities)
+        if node_key:
+            tracker.progress_state_nodes.add(node_key)
+        await self._record_numeric_or_indeterminate_progress(
+            generation_id,
+            identities=identities,
+            value=selected.get("value"),
+            maximum=selected.get("max"),
+        )
+
+    async def _record_legacy_progress(
+        self,
+        generation_id: str,
+        data: Mapping[str, Any],
+    ) -> None:
+        identities = _runtime_node_identities(data)
+        node_key = _progress_node_key(identities)
+        tracker = self._progress_tracker(generation_id)
+        if node_key and node_key in tracker.progress_state_nodes:
+            return
+        await self._record_numeric_or_indeterminate_progress(
+            generation_id,
+            identities=identities,
+            value=data.get("value"),
+            maximum=data.get("max"),
+        )
+
+    async def _record_numeric_or_indeterminate_progress(
+        self,
+        generation_id: str,
+        *,
+        identities: Mapping[str, str | None],
+        value: Any,
+        maximum: Any,
+    ) -> None:
+        numeric_value = _finite_number(value)
+        if numeric_value is None:
+            return
+        numeric_maximum = _finite_number(maximum)
+        label = await self._resolve_progress_label(generation_id, identities)
+        if numeric_maximum is None or numeric_maximum <= 0:
+            await self._record_indeterminate_progress(
+                generation_id,
+                label=label,
+                identities=identities,
+            )
+            return
+        fraction = min(1.0, max(0.0, numeric_value / numeric_maximum))
+        snapshot = _progress_snapshot(
+            kind="node",
+            label=label,
+            identities=identities,
+            value=numeric_value,
+            maximum=numeric_maximum,
+            fraction=fraction,
+        )
+        await self._queue_progress_snapshot(generation_id, snapshot)
+
+    async def _record_indeterminate_progress(
+        self,
+        generation_id: str,
+        *,
+        label: str,
+        identities: Mapping[str, str | None],
+    ) -> None:
+        await self._queue_progress_snapshot(
+            generation_id,
+            _progress_snapshot(
+                kind="indeterminate",
+                label=label,
+                identities=identities,
+            ),
+            audit=True,
+        )
+
+    def _progress_tracker(self, generation_id: str) -> _ProgressTracker:
+        tracker = self._progress_trackers.get(generation_id)
+        if tracker is not None:
+            return tracker
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            saved = (
+                copy.deepcopy(generation.progress_json)
+                if generation is not None and isinstance(generation.progress_json, dict)
+                else None
+            )
+        tracker = _ProgressTracker(last_snapshot=saved)
+        self._progress_trackers[generation_id] = tracker
+        return tracker
+
+    async def _queue_progress_snapshot(
+        self,
+        generation_id: str,
+        snapshot: dict[str, Any],
+        *,
+        audit: bool = False,
+    ) -> None:
+        tracker = self._progress_tracker(generation_id)
+        previous = tracker.last_snapshot
+        if _same_progress_snapshot(previous, snapshot):
+            return
+        if previous is not None and _progress_snapshot_node_key(
+            previous
+        ) != _progress_snapshot_node_key(snapshot):
+            await self._flush_pending_progress(generation_id, force=True, audit=True)
+            audit = True
+        if previous is None or previous.get("kind") != snapshot.get("kind"):
+            audit = True
+        tracker.last_snapshot = copy.deepcopy(snapshot)
+        now = time.monotonic()
+        if audit or now - tracker.last_persisted_monotonic >= _PROGRESS_WRITE_INTERVAL_SECONDS:
+            tracker.pending_snapshot = None
+            await self._persist_progress_snapshot(generation_id, snapshot, audit=audit)
+            return
+        tracker.pending_snapshot = copy.deepcopy(snapshot)
+
+    async def _flush_pending_progress(
+        self,
+        generation_id: str,
+        *,
+        force: bool = False,
+        audit: bool = False,
+    ) -> None:
+        tracker = self._progress_trackers.get(generation_id)
+        if tracker is None:
+            return
+        now = time.monotonic()
+        if tracker.pending_snapshot is not None and (
+            force or now - tracker.last_persisted_monotonic >= _PROGRESS_WRITE_INTERVAL_SECONDS
+        ):
+            snapshot = tracker.pending_snapshot
+            tracker.pending_snapshot = None
+            await self._persist_progress_snapshot(generation_id, snapshot, audit=audit)
+            return
+        if (
+            force
+            and audit
+            and tracker.last_snapshot is not None
+            and not _same_progress_snapshot(
+                tracker.last_audited_snapshot,
+                tracker.last_snapshot,
+            )
+        ):
+            await self._persist_progress_snapshot(
+                generation_id,
+                tracker.last_snapshot,
+                audit=True,
+            )
+
+    async def _persist_progress_snapshot(
+        self,
+        generation_id: str,
+        snapshot: Mapping[str, Any],
+        *,
+        audit: bool,
+    ) -> None:
+        stored_snapshot = copy.deepcopy(dict(snapshot))
+        event = None
+        owner_id = None
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None or generation.status in TERMINAL_STATUSES:
                 return
-            event = add_generation_event(
-                session,
-                generation,
-                "generation.progress",
-                {"value": value, "maximum": maximum},
-            )
+            generation.progress_json = stored_snapshot
+            owner_id = generation.owner_id
+            tracker = self._progress_tracker(generation_id)
+            if audit and not _same_progress_snapshot(
+                tracker.last_audited_snapshot,
+                stored_snapshot,
+            ):
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "generation.progress",
+                    {"progress": stored_snapshot},
+                )
+                tracker.last_audited_snapshot = copy.deepcopy(stored_snapshot)
             session.commit()
-        await self._publish_event_best_effort(event, generation_id=generation_id)
+        tracker = self._progress_tracker(generation_id)
+        tracker.last_persisted_monotonic = time.monotonic()
+        if event is not None:
+            await self._publish_event_best_effort(event, generation_id=generation_id)
+        elif owner_id is not None:
+            await self._publish_broker_best_effort(
+                owner_id,
+                {
+                    "id": None,
+                    "type": "generation.progress",
+                    "generation_id": generation_id,
+                    "created_at": stored_snapshot["updated_at"],
+                    "payload": {"progress": stored_snapshot},
+                },
+                generation_id=generation_id,
+            )
+
+    async def _resolve_progress_label(
+        self,
+        generation_id: str,
+        identities: Mapping[str, str | None],
+    ) -> str:
+        tracker = self._progress_tracker(generation_id)
+        current = tracker.last_snapshot
+        if (
+            current is not None
+            and _progress_snapshot_node_key(current) == _progress_node_key(identities)
+            and isinstance(current.get("label"), str)
+        ):
+            return str(current["label"])
+        candidates = [
+            value
+            for value in (
+                identities.get("display_node_id"),
+                identities.get("real_node_id"),
+                identities.get("node_id"),
+            )
+            if isinstance(value, str) and value
+        ]
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None:
+                return "Processing"
+            graph = generation.compiled_graph_json
+            profile = session.get(WorkflowProfile, generation.workflow_profile_id)
+            editable = profile.source_ui_json if profile is not None else {}
+        class_type = None
+        for candidate in candidates:
+            raw_node = graph.get(candidate) if isinstance(graph, Mapping) else None
+            if not isinstance(raw_node, Mapping):
+                continue
+            raw_meta = raw_node.get("_meta")
+            if isinstance(raw_meta, Mapping):
+                label = _safe_progress_label(raw_meta.get("title"))
+                if label is not None:
+                    return label
+            if class_type is None and isinstance(raw_node.get("class_type"), str):
+                class_type = str(raw_node["class_type"])
+        raw_editable_nodes = editable.get("nodes") if isinstance(editable, Mapping) else None
+        if isinstance(raw_editable_nodes, list):
+            for candidate in candidates:
+                raw_node = next(
+                    (
+                        item
+                        for item in raw_editable_nodes
+                        if isinstance(item, Mapping) and str(item.get("id")) == candidate
+                    ),
+                    None,
+                )
+                if isinstance(raw_node, Mapping):
+                    label = _safe_progress_label(raw_node.get("title"))
+                    if label is not None:
+                        return label
+        object_info = self.comfyui.cached_object_info()
+        raw_object = object_info.get(class_type) if class_type is not None else None
+        if isinstance(raw_object, Mapping):
+            for key in ("display_name", "name"):
+                label = _safe_progress_label(raw_object.get(key))
+                if label is not None:
+                    return label
+        return "Processing"
 
     async def _process_node_output(
         self, generation_id: str, node_id: str, output_payload: Mapping[str, Any]
@@ -1558,6 +1943,7 @@ class QueueWorker:
             generation.completed_at = datetime.now(UTC)
             generation.current_stage_id = None
             generation.current_stage_label = None
+            generation.progress_json = None
             event = add_generation_event(
                 session,
                 generation,
@@ -1600,6 +1986,7 @@ class QueueWorker:
                 generation.status = GenerationStatus.QUEUED
                 generation.submitted_graph_json = None
                 generation.submitted_graph_sha256 = None
+                generation.progress_json = None
                 event = add_generation_event(
                     session,
                     generation,
@@ -1626,6 +2013,7 @@ class QueueWorker:
                 {"code": generation.error_code, "message": generation.error_message}
             ]
             generation.completed_at = datetime.now(UTC)
+            generation.progress_json = None
             generation.internal_diagnostics_json = {
                 "exception_type": type(exc).__name__,
                 "queue_validation": copy.deepcopy(getattr(exc, "details", {})),
@@ -1769,6 +2157,7 @@ class QueueWorker:
                                 status=GenerationStatus.QUEUED,
                                 submitted_graph_json=None,
                                 submitted_graph_sha256=None,
+                                progress_json=None,
                             )
                         )
                         event = GenerationEvent(
@@ -1864,6 +2253,112 @@ class QueueWorker:
         health.available = available
         health.message = message
         health.checked_at = datetime.now(UTC)
+
+
+def _finite_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _safe_node_id(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    normalized = str(value).strip()
+    return normalized if normalized and len(normalized) <= 100 else None
+
+
+def _runtime_node_identities(
+    data: Mapping[str, Any],
+    *,
+    fallback_node_id: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "node_id": _safe_node_id(data.get("node_id", data.get("node", fallback_node_id))),
+        "display_node_id": _safe_node_id(data.get("display_node_id", data.get("display_node"))),
+        "real_node_id": _safe_node_id(data.get("real_node_id")),
+        "parent_node_id": _safe_node_id(data.get("parent_node_id")),
+    }
+
+
+def _progress_node_key(identities: Mapping[str, str | None]) -> str | None:
+    return next(
+        (
+            value
+            for value in (
+                identities.get("display_node_id"),
+                identities.get("real_node_id"),
+                identities.get("node_id"),
+            )
+            if isinstance(value, str) and value
+        ),
+        None,
+    )
+
+
+def _progress_snapshot_node_key(snapshot: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(snapshot, Mapping):
+        return None
+    return _progress_node_key(
+        {
+            "node_id": _safe_node_id(snapshot.get("node_id")),
+            "display_node_id": _safe_node_id(snapshot.get("display_node_id")),
+            "real_node_id": _safe_node_id(snapshot.get("real_node_id")),
+            "parent_node_id": _safe_node_id(snapshot.get("parent_node_id")),
+        }
+    )
+
+
+def _progress_snapshot(
+    *,
+    kind: Literal["indeterminate", "node"],
+    label: str,
+    identities: Mapping[str, str | None],
+    value: int | float | None = None,
+    maximum: int | float | None = None,
+    fraction: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "node_id": identities.get("node_id"),
+        "display_node_id": identities.get("display_node_id"),
+        "real_node_id": identities.get("real_node_id"),
+        "parent_node_id": identities.get("parent_node_id"),
+        "label": label,
+        "value": value,
+        "maximum": maximum,
+        "fraction": fraction,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _same_progress_snapshot(
+    left: Mapping[str, Any] | None,
+    right: Mapping[str, Any] | None,
+) -> bool:
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return left is None and right is None
+    keys = {
+        "kind",
+        "node_id",
+        "display_node_id",
+        "real_node_id",
+        "parent_node_id",
+        "label",
+        "value",
+        "maximum",
+        "fraction",
+    }
+    return all(left.get(key) == right.get(key) for key in keys)
+
+
+def _safe_progress_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"\s+", " ", value).strip()
+    if not normalized:
+        return None
+    return normalized[:120]
 
 
 def _history_terminal(history: Mapping[str, Any] | None) -> str | None:
