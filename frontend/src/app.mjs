@@ -311,7 +311,7 @@ async function handleChange(event) {
   if (element.id === "auto-generate") {
     state.autoGenerate = element.checked;
     autoGenerateAssistantFingerprint = null;
-    renderPanel();
+    syncGenerationSubmissionState();
     scheduleAutoGenerate();
     return;
   }
@@ -2015,9 +2015,29 @@ function syncPromptAssistantAction() {
   else button.removeAttribute("aria-busy");
 }
 
+function syncPromptAssistantDraftFromPanel() {
+  const assistant = document.querySelector("#prompt-assistant");
+  if (!assistant) return;
+  const direction = assistant.querySelector("#creative-direction");
+  const mode = assistant.querySelector('[name="assistant-mode"]:checked');
+  const nextDirection = direction?.value ?? state.promptAssistant.creativeDirection ?? "";
+  const nextMode = mode?.value === "create" ? "create" : "refine";
+  if (
+    nextDirection !== state.promptAssistant.creativeDirection ||
+    nextMode !== state.promptAssistant.mode
+  ) {
+    autoGenerateAssistantFingerprint = null;
+  }
+  state.promptAssistant.creativeDirection = nextDirection;
+  state.promptAssistant.mode = nextMode;
+}
+
 function capturePanelView(panel) {
   const view = {
     scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
+    textareaHeights: [...panel.querySelectorAll("textarea[id]")]
+      .filter((textarea) => textarea.style.height)
+      .map((textarea) => ({ id: textarea.id, height: textarea.style.height })),
     selector: null,
     selection: null,
     sectionKey: null,
@@ -2058,6 +2078,10 @@ function capturePanelView(panel) {
 function restorePanelView(panel, view) {
   const scroller = panel.querySelector("#panel-scroll");
   if (scroller) scroller.scrollTop = view.scrollTop;
+  for (const { id, height } of view.textareaHeights || []) {
+    const textarea = panel.querySelector(`#${CSS.escape(id)}`);
+    if (textarea) textarea.style.height = height;
+  }
   if (!view.selector) return;
   if (view.sectionKey && view.sectionOpen) {
     const section = panel.querySelector(
@@ -2077,6 +2101,63 @@ function restorePanelView(panel, view) {
     );
   } catch {
     // The replacement control may no longer support a text selection.
+  }
+}
+
+function syncGenerationSubmissionState() {
+  const panel = document.querySelector("#generation-panel");
+  if (!panel) return;
+  const contract = sourceInterface(state.activeSource);
+  const errors = {
+    ...clientValidate(contract, state.parameters),
+    ...withoutNulls(state.serverFieldErrors),
+  };
+  state.fieldErrors = errors;
+  for (const control of interfaceInputs(contract)) {
+    const block = panel.querySelector(
+      `[data-control-block="${CSS.escape(control.id)}"]`,
+    );
+    if (block) syncFieldError(block, control.id, errors[control.id]);
+  }
+
+  let summary = panel.querySelector(".form-error.summary");
+  if (state.formError) {
+    if (!summary) {
+      summary = document.createElement("div");
+      summary.className = "form-error summary";
+      summary.setAttribute("role", "alert");
+      panel.querySelector(".panel-fixed")?.append(summary);
+    }
+    summary.textContent = state.formError;
+  } else {
+    summary?.remove();
+  }
+
+  const selected =
+    state.activeSource ||
+    state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+  const generateButton = panel.querySelector("#generate-button");
+  if (generateButton) {
+    const comparisonKeys = selectedComparisonSourceKeys();
+    const comparisonCount = state.sources.filter(
+      (source) => source.available !== false && comparisonKeys.has(sourceKey(source)),
+    ).length;
+    generateButton.disabled = generationSubmissionDisabled(
+      state,
+      selected,
+      contract,
+      errors,
+    );
+    generateButton.textContent = state.submitting
+      ? comparisonCount
+        ? `Queueing ${comparisonCount + 1}…`
+        : "Queueing…"
+      : "Generate";
+  }
+  const sourcePicker = panel.querySelector("#workflow-source");
+  if (sourcePicker) {
+    sourcePicker.disabled =
+      !state.sources.length || (state.submitting && !state.autoGenerate);
   }
 }
 
@@ -2186,14 +2267,14 @@ async function generateSingleSource() {
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted controls.";
-    renderPanel();
+    syncGenerationSubmissionState();
     focusFirstInvalid();
     return false;
   }
   state.submitting = true;
   state.formError = null;
   state.serverFieldErrors = {};
-  renderPanel();
+  syncGenerationSubmissionState();
   let focusErrors = false;
   try {
     const payload = {
@@ -2236,7 +2317,7 @@ async function generateSingleSource() {
     return false;
   } finally {
     state.submitting = false;
-    renderPanel();
+    syncGenerationSubmissionState();
     if (focusErrors) focusFirstInvalid();
   }
 }
@@ -2265,7 +2346,7 @@ async function generateSelectedSources() {
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted comparison controls.";
-    renderPanel();
+    syncGenerationSubmissionState();
     focusFirstInvalid();
     return false;
   }
@@ -2273,7 +2354,7 @@ async function generateSelectedSources() {
   state.submitting = true;
   state.formError = null;
   state.serverFieldErrors = {};
-  renderPanel();
+  syncGenerationSubmissionState();
   let focusErrors = false;
   try {
     const primaryParameters = parametersForRequest(contract, requestParameters);
@@ -2400,19 +2481,27 @@ async function generateSelectedSources() {
     return false;
   } finally {
     state.submitting = false;
-    renderPanel();
+    syncGenerationSubmissionState();
     if (focusErrors) focusFirstInvalid();
   }
 }
 
 async function composePrompt(button, { automatic = false } = {}) {
   if (!state.promptAssistant.available || promptCompositionRequests > 0) return false;
+  syncPromptAssistantDraftFromPanel();
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const contract = sourceInterface(state.activeSource);
   const promptInput =
     positivePromptInput(contract) || interfaceInputs(contract).find((input) => input.id === "prompt.text");
   if (!requestSourceKey || !promptInput) return false;
+  const visiblePrompt = document.querySelector(
+    `[data-control-id="${CSS.escape(promptInput.id)}"]`,
+  );
+  if (visiblePrompt) {
+    state.parameters[promptInput.id] = normalizeInputValue(promptInput, visiblePrompt.value);
+    persistActiveParameterState();
+  }
   const requestMode = state.promptAssistant.mode;
   const requestPrompt = state.parameters[promptInput.id] || "";
   const requestDirection = state.promptAssistant.creativeDirection || "";
@@ -2452,9 +2541,12 @@ async function composePrompt(button, { automatic = false } = {}) {
     ) {
       autoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }
-    renderPanel();
+    const prompt = document.querySelector(
+      `[data-control-id="${CSS.escape(promptInput.id)}"]`,
+    );
+    if (prompt) prompt.value = result.prompt;
+    syncParameterValidation(promptInput.id);
     if (!automatic) {
-      const prompt = document.querySelector(`[data-control-id="${CSS.escape(promptInput.id)}"]`);
       prompt?.focus();
       toast("Creative direction applied to the editable Prompt field.", "success");
     }

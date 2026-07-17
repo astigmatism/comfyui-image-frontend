@@ -123,6 +123,12 @@ class OllamaAdapter:
                 final = _extract_structured_prompt(thinking_text)
         if not final:
             raise AppError("ollama_invalid_response", "Prompt Assistant returned no usable prompt.")
+        if mode == "create" and prompt.strip() and _same_prompt(final, prompt):
+            raise AppError(
+                "ollama_invalid_response",
+                "Prompt Assistant returned the current prompt unchanged instead of creating a "
+                "new prompt.",
+            )
         effective_model = data.get("model") if isinstance(data, dict) else None
         if not isinstance(effective_model, str) or not effective_model.strip():
             raise AppError(
@@ -197,6 +203,10 @@ def _extract_prompt(raw_text: str) -> str:
     text = raw_text.strip()
     structured = _extract_structured_prompt(text)
     return structured or text
+
+
+def _same_prompt(first: str, second: str) -> bool:
+    return " ".join(first.split()).casefold() == " ".join(second.split()).casefold()
 
 
 def _extract_structured_prompt(raw_text: str) -> str:

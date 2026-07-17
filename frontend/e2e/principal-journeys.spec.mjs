@@ -1839,6 +1839,143 @@ test("required image input accepts Browse and a retained gallery image drag", as
   });
 });
 
+test("Prompt Assistant submits the live create mode and generation preserves control elements", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const createMode = page.getByRole("radio", {
+    name: "New Prompt from Creative Direction",
+  });
+  const applyCreativeDirection = page.locator(
+    '#prompt-assistant [data-action="compose-prompt"]',
+  );
+  const generate = page.locator("#generate-button");
+  const composedPrompt = "a crimson fox beneath moonlit pines";
+
+  await prompt.fill("the prompt that must be replaced");
+  await direction.fill("a crimson fox beneath moonlit pines");
+  await createMode.check();
+  await page.evaluate(() => {
+    const promptElement = document.querySelector('[data-control-id="prompt"]');
+    const directionElement = document.querySelector("#creative-direction");
+    promptElement.style.height = "280px";
+    directionElement.style.height = "170px";
+    window.__stablePromptElement = promptElement;
+    window.__stableDirectionElement = directionElement;
+  });
+
+  let composePayload;
+  let releaseComposition;
+  const compositionGate = new Promise((resolve) => {
+    releaseComposition = resolve;
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    composePayload = route.request().postDataJSON();
+    await compositionGate;
+    await route.continue();
+  });
+
+  const compositionRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST",
+  );
+  await applyCreativeDirection.click();
+  await compositionRequest;
+  expect(composePayload).toEqual({
+    mode: "create",
+    prompt: "the prompt that must be replaced",
+    creative_direction: "a crimson fox beneath moonlit pines",
+  });
+  await expect(applyCreativeDirection).toBeDisabled();
+  await expect(applyCreativeDirection).toHaveText("Applying…");
+  expect(
+    await page.evaluate(() => ({
+      promptStable:
+        document.querySelector('[data-control-id="prompt"]') ===
+        window.__stablePromptElement,
+      directionStable:
+        document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      promptHeight: window.__stablePromptElement.style.height,
+      directionHeight: window.__stableDirectionElement.style.height,
+    })),
+  ).toEqual({
+    promptStable: true,
+    directionStable: true,
+    promptHeight: "280px",
+    directionHeight: "170px",
+  });
+
+  releaseComposition();
+  await expect(prompt).toHaveValue(composedPrompt);
+  await expect(applyCreativeDirection).toBeEnabled();
+  expect(
+    await page.evaluate(() => ({
+      promptStable:
+        document.querySelector('[data-control-id="prompt"]') ===
+        window.__stablePromptElement,
+      directionStable:
+        document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      promptHeight: window.__stablePromptElement.style.height,
+      directionHeight: window.__stableDirectionElement.style.height,
+    })),
+  ).toEqual({
+    promptStable: true,
+    directionStable: true,
+    promptHeight: "280px",
+    directionHeight: "170px",
+  });
+
+  let releaseGeneration;
+  const generationGate = new Promise((resolve) => {
+    releaseGeneration = resolve;
+  });
+  await page.route("**/api/generations", async (route) => {
+    if (route.request().method() === "POST") await generationGate;
+    await route.continue();
+  });
+  const generationResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/generations" &&
+      response.request().method() === "POST",
+  );
+  await generate.click();
+  await expect(generate).toHaveText("Queueing…");
+  expect(
+    await page.evaluate(() =>
+      document.querySelector('[data-control-id="prompt"]') === window.__stablePromptElement &&
+      document.querySelector("#creative-direction") === window.__stableDirectionElement,
+    ),
+  ).toBe(true);
+  releaseGeneration();
+  expect((await generationResponse).status()).toBe(201);
+  await expect(generate).toHaveText("Generate");
+  expect(
+    await page.evaluate(() => ({
+      promptStable:
+        document.querySelector('[data-control-id="prompt"]') ===
+        window.__stablePromptElement,
+      directionStable:
+        document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      promptHeight: window.__stablePromptElement.style.height,
+      directionHeight: window.__stableDirectionElement.style.height,
+    })),
+  ).toEqual({
+    promptStable: true,
+    directionStable: true,
+    promptHeight: "280px",
+    directionHeight: "170px",
+  });
+});
+
 test("auto-generate applies each Creative Direction draft once and queues only when idle", async ({
   page,
 }) => {

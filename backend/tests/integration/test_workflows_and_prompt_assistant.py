@@ -458,6 +458,33 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     assert response.json()["template_version"] == "v3"
 
 
+def test_create_prompt_assistant_rejects_an_unchanged_current_prompt(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="unchanged.prompt")
+    _cache_ollama_health(app_client, available=True)
+    fake_state.ollama_response_prompt = "  OLD   PROMPT that create mode must replace  "
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "old prompt that create mode must replace",
+            "creative_direction": "a red fox",
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "ollama_invalid_response"
+    assert error["message"] == (
+        "Prompt Assistant returned the current prompt unchanged instead of creating a new prompt."
+    )
+    assert error["fields"] == {}
+    assert error["details"] == {}
+
+
 def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
     app_client: TestClient, fake_state
 ) -> None:
