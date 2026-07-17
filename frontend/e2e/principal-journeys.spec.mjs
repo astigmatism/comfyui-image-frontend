@@ -1854,8 +1854,16 @@ test("auto-generate applies each Creative Direction draft once and queues only w
   });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
   const generate = page.locator("#generate-button");
+  const applyCreativeDirection = page.locator(
+    '#prompt-assistant [data-action="compose-prompt"]',
+  );
   const sequence = [];
   const generationRequests = [];
+  let releaseFirstComposition;
+  const firstCompositionGate = new Promise((resolve) => {
+    releaseFirstComposition = resolve;
+  });
+  let firstCompositionHeld = false;
   let releaseFirstGeneration;
   const firstGenerationGate = new Promise((resolve) => {
     releaseFirstGeneration = resolve;
@@ -1872,6 +1880,13 @@ test("auto-generate applies each Creative Direction draft once and queues only w
       generationRequests.push(request);
     }
   });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    if (route.request().method() === "POST" && !firstCompositionHeld) {
+      firstCompositionHeld = true;
+      await firstCompositionGate;
+    }
+    await route.continue();
+  });
   await page.route("**/api/generations", async (route) => {
     if (route.request().method() === "POST" && !firstGenerationHeld) {
       firstGenerationHeld = true;
@@ -1882,16 +1897,35 @@ test("auto-generate applies each Creative Direction draft once and queues only w
 
   await prompt.fill("slow auto lighthouse");
   await direction.fill("cinematic blue hour");
+  const firstCompositionPromise = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST",
+  );
   const firstRequestPromise = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/generations" &&
       request.method() === "POST",
   );
   await autoGenerate.check();
+  await firstCompositionPromise;
+
+  await expect(applyCreativeDirection).toBeDisabled();
+  await expect(applyCreativeDirection).toHaveText("Applying…");
+  await expect(applyCreativeDirection).toHaveAttribute("aria-busy", "true");
+  await expect(prompt).toBeEnabled();
+  await applyCreativeDirection.evaluate((button) => button.click());
+  await page.waitForTimeout(100);
+  expect(sequence).toEqual(["compose"]);
+
+  releaseFirstComposition();
   const firstRequest = await firstRequestPromise;
 
   await expect(autoGenerate).toBeChecked();
   await expect(generate).toBeDisabled();
+  await expect(applyCreativeDirection).toBeEnabled();
+  await expect(applyCreativeDirection).toHaveText("Apply Creative Direction");
+  await expect(applyCreativeDirection).not.toHaveAttribute("aria-busy", "true");
   await expect(prompt).toBeEnabled();
   await expect(page.locator("#workflow-source")).toBeEnabled();
   expect(sequence.slice(0, 2)).toEqual(["compose", "generate"]);
@@ -1947,5 +1981,6 @@ test("auto-generate applies each Creative Direction draft once and queues only w
   await page.waitForTimeout(500);
   expect(generationRequests).toHaveLength(3);
   await expect(generate).toBeEnabled();
+  await page.unroute("**/api/prompt-assistant/compose");
   await page.unroute("**/api/generations");
 });

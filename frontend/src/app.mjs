@@ -1998,14 +1998,21 @@ function renderPanel() {
     direction.value = state.promptAssistant.creativeDirection || "";
     const mode = assistant.querySelector(`[name=assistant-mode][value=${state.promptAssistant.mode}]`);
     if (mode) mode.checked = true;
-    const button = assistant.querySelector("[data-action=compose-prompt]");
-    if (!state.promptAssistant.available) {
-      button.disabled = true;
-    }
   }
+  syncPromptAssistantAction();
   restorePanelView(panel, panelView);
   syncSpeechControls();
   scheduleAutoGenerate();
+}
+
+function syncPromptAssistantAction() {
+  const button = document.querySelector("#prompt-assistant [data-action=compose-prompt]");
+  if (!button) return;
+  const busy = promptCompositionRequests > 0;
+  button.disabled = busy || !state.promptAssistant.available;
+  button.textContent = busy ? "Applying…" : "Apply Creative Direction";
+  if (busy) button.setAttribute("aria-busy", "true");
+  else button.removeAttribute("aria-busy");
 }
 
 function capturePanelView(panel) {
@@ -2399,7 +2406,7 @@ async function generateSelectedSources() {
 }
 
 async function composePrompt(button, { automatic = false } = {}) {
-  if (!state.promptAssistant.available) return false;
+  if (!state.promptAssistant.available || promptCompositionRequests > 0) return false;
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const contract = sourceInterface(state.activeSource);
@@ -2410,10 +2417,7 @@ async function composePrompt(button, { automatic = false } = {}) {
   const requestPrompt = state.parameters[promptInput.id] || "";
   const requestDirection = state.promptAssistant.creativeDirection || "";
   promptCompositionRequests += 1;
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Applying…";
-  }
+  syncPromptAssistantAction();
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -2469,10 +2473,7 @@ async function composePrompt(button, { automatic = false } = {}) {
     return false;
   } finally {
     promptCompositionRequests = Math.max(0, promptCompositionRequests - 1);
-    if (button?.isConnected) {
-      button.disabled = false;
-      button.textContent = "Apply Creative Direction";
-    }
+    syncPromptAssistantAction();
     if (!automatic) scheduleAutoGenerate();
   }
 }
