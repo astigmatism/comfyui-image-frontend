@@ -294,6 +294,7 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
 
         complete = wait_for_status(client, generation_id, "succeeded")
         assert complete["progress"] is None
+        assert complete["generation_duration_seconds"] >= 0.5
         assert complete["artifact_count"] == 8
         assert complete["final_artifact_count"] == 2
         assert complete["canonical_artifact_id"] is not None
@@ -311,6 +312,7 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         gallery = client.get("/api/generations").json()["items"]
         assert [item["id"] for item in gallery].count(generation_id) == 1
         assert gallery[0]["display_artifact"]["state"] == "final"
+        assert gallery[0]["generation_duration_seconds"] == complete["generation_duration_seconds"]
 
         detail = client.get(f"/api/generations/{generation_id}").json()
         seed = detail["resolved_seeds"]["seed"]

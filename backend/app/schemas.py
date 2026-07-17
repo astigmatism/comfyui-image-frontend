@@ -223,6 +223,7 @@ class GenerationSummary(APIModel):
     status: str
     workflow_display_name: str
     accepted_at: datetime
+    generation_duration_seconds: float | None = None
     current_stage_id: str | None = None
     current_stage_label: str | None = None
     progress: GenerationProgress | None = None

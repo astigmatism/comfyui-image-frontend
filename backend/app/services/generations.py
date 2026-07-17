@@ -68,6 +68,8 @@ class _GenerationSummaryRow:
     status: GenerationStatus
     workflow_display_name: str
     accepted_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
     current_stage_id: str | None
     current_stage_label: str | None
     progress_json: dict[str, Any] | None
@@ -682,6 +684,9 @@ class GenerationService:
             status=status,
             workflow_display_name=row.workflow_display_name,
             accepted_at=row.accepted_at,
+            generation_duration_seconds=_generation_duration_seconds(
+                row.started_at, row.completed_at
+            ),
             current_stage_id=row.current_stage_id,
             current_stage_label=row.current_stage_label,
             progress=_progress_summary(row.progress_json),
@@ -771,6 +776,9 @@ class GenerationService:
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
             accepted_at=generation.accepted_at,
+            generation_duration_seconds=_generation_duration_seconds(
+                generation.started_at, generation.completed_at
+            ),
             current_stage_id=generation.current_stage_id,
             current_stage_label=generation.current_stage_label,
             progress=_progress_summary(generation.progress_json),
@@ -1244,6 +1252,8 @@ def _summary_projection() -> tuple[Any, ...]:
         Generation.status.label("status"),
         Generation.workflow_display_name.label("workflow_display_name"),
         Generation.accepted_at.label("accepted_at"),
+        Generation.started_at.label("started_at"),
+        Generation.completed_at.label("completed_at"),
         Generation.current_stage_id.label("current_stage_id"),
         Generation.current_stage_label.label("current_stage_label"),
         Generation.progress_json.label("progress_json"),
@@ -1283,6 +1293,8 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),
         accepted_at=values["accepted_at"],
+        started_at=values["started_at"],
+        completed_at=values["completed_at"],
         current_stage_id=values["current_stage_id"],
         current_stage_label=values["current_stage_label"],
         progress_json=values["progress_json"],
@@ -1322,6 +1334,14 @@ def _favorite_summary_row(row: Any) -> _FavoriteSummaryRow:
 
 def _positive_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _generation_duration_seconds(
+    started_at: datetime | None, completed_at: datetime | None
+) -> float | None:
+    if started_at is None or completed_at is None:
+        return None
+    return max(0.0, (completed_at - started_at).total_seconds())
 
 
 def _encode_cursor(accepted_at: datetime, generation_id: str) -> str:

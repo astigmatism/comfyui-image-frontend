@@ -539,11 +539,11 @@ The authenticated application uses a two-dimensional shell:
 
 The card footer is intentionally minimal.
 
-- **GAL-022:** It MUST show only two pieces of informational metadata: the generation source display name and the generation submission date.
-- **GAL-023:** Those values MUST appear in one horizontal metadata line separated by a centered dot, for example: `Portrait Workflow · Jul 12, 2026`.
+- **GAL-022:** It MUST show only two pieces of informational metadata: the generation source display name and the completed generation duration.
+- **GAL-023:** Those values MUST appear in one horizontal metadata line separated by a centered dot. Duration MUST use whole minutes and seconds without an hours unit, for example: `Portrait Workflow · 1m 30s`.
 - **GAL-024:** Long source names MUST truncate gracefully without breaking the card layout.
 - **GAL-025:** The only persistent interactive control in the footer MUST be **Recall settings**.
-- **GAL-026:** Status, prompt excerpts, seed, dimensions, queue position, and error text MUST NOT be added to the footer in the first release.
+- **GAL-026:** Status, prompt excerpts, seed, dimensions, queue position, submission date, and error text MUST NOT be added to the footer in the first release.
 
 ### 17.5 Card details
 
@@ -797,7 +797,7 @@ The application is acceptable only when all of the following are true:
 11. Users can submit multiple generations and the application queues them durably and fairly.
 12. The gallery is the main view and shows one card for every accepted generation, including failed and cancelled attempts.
 13. The top-right slider scales cards from approximately one per row to compact thumbnails and persists per user.
-14. Each card footer displays only `generation source · date` plus Recall settings.
+14. Each completed card footer displays `generation source · generation duration` plus its actions; cards without a completed duration display only the generation source.
 15. A running card updates in place as contract-declared artifacts arrive.
 16. Only a terminal successful output is marked canonical; cancelled/failed checkpoints remain visibly non-final.
 17. Recall settings immediately overwrites the left panel, restores all inputs and the resolved seed, and never submits automatically.

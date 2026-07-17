@@ -6,6 +6,7 @@ import {
   controlMarkup,
   detailMarkup,
   favoritesMarkup,
+  formatGenerationDuration,
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
@@ -776,6 +777,7 @@ test("card footer groups generation actions and exposes permanent deletion", () 
     id: "g1",
     workflow_display_name: "Portrait Workflow",
     accepted_at: "2026-07-12T12:00:00Z",
+    generation_duration_seconds: 90,
     status: "failed_with_artifacts",
     recall_available: true,
     is_favorite: false,
@@ -787,7 +789,7 @@ test("card footer groups generation actions and exposes permanent deletion", () 
     },
   };
   const html = cardFooterMarkup(generation);
-  assert.match(html, />Portrait Workflow<\/button>/);
+  assert.match(html, />Portrait Workflow · 1m 30s<\/button>/);
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
@@ -816,6 +818,15 @@ test("card footer groups generation actions and exposes permanent deletion", () 
 
   const pending = cardFooterMarkup({ ...generation, delete_pending: true });
   assert.match(pending, /data-action="delete-generation"[^>]+disabled[^>]+aria-label="Deletion pending"/);
+});
+
+test("generation duration uses only whole minutes and seconds", () => {
+  assert.equal(formatGenerationDuration(0), "0s");
+  assert.equal(formatGenerationDuration(29.6), "30s");
+  assert.equal(formatGenerationDuration(60), "1m 0s");
+  assert.equal(formatGenerationDuration(3661), "61m 1s");
+  assert.equal(formatGenerationDuration(null), null);
+  assert.equal(formatGenerationDuration(-1), null);
 });
 
 test("Favorites modal renders a thumbnail, generation details, recall, and delete", () => {

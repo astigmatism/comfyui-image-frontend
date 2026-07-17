@@ -62,7 +62,7 @@ Build the dark, minimal, consistent interface described by the product requireme
 - Collapsed Prompt Assistant adjacent to the `prompt.text` field.
 - Primary gallery viewport, newest first, lazy-loaded and paginated for thousands of images.
 - One card per accepted generation.
-- Card footer with `generation source · localized submission date`, a two-state heart, and the Recall settings action.
+- Card footer with `generation source · generation duration` for completed work, a two-state heart, and the Recall settings action.
 - Owner-only Favorites dialog with a scrollable thumbnail/detail list, exact Recall action, and confirmed bookmark deletion that preserves generation history.
 - Natural image aspect ratios, no forced square crops.
 - Running cards updated in place as progressive artifacts arrive.

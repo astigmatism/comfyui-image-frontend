@@ -266,7 +266,9 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
-  await expect(footer.locator(".card-metadata")).toHaveText("Generic Landscape");
+  await expect(footer.locator(".card-metadata")).toHaveText(
+    /^Generic Landscape · (?:\d+m )?\d+s$/,
+  );
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
   const downloadPromise = page.waitForEvent("download");
