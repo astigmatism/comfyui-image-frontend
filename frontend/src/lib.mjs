@@ -307,6 +307,22 @@ export function positivePromptInput(contract) {
   return interfaceInputs(contract).find((input) => input.semantic_role === "positive_prompt") || null;
 }
 
+export function autoGenerationPromptAssistantFingerprint({
+  sourceKey,
+  mode,
+  creativeDirection,
+  prompt,
+}) {
+  const direction = String(creativeDirection || "");
+  if (!direction.trim()) return null;
+  return JSON.stringify([
+    String(sourceKey || ""),
+    mode === "create" ? "create" : "refine",
+    direction,
+    String(prompt || ""),
+  ]);
+}
+
 const COMPARISON_INPUT_TYPES = new Map([
   ["positive_prompt", "string"],
   ["width", "integer"],

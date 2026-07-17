@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyChoiceStrengthDefaults,
+  autoGenerationPromptAssistantFingerprint,
   clientValidate,
   choiceStrengthCompanion,
   comparisonInputs,
@@ -220,6 +221,43 @@ test("active generation detection covers every non-terminal generation phase", (
     false,
   );
   assert.equal(hasActiveGeneration([]), false);
+});
+
+test("auto-generation fingerprints only non-empty unapplied Prompt Assistant drafts", () => {
+  const refine = autoGenerationPromptAssistantFingerprint({
+    sourceKey: "landscape",
+    mode: "refine",
+    creativeDirection: "cinematic light",
+    prompt: "a lighthouse",
+  });
+  assert.ok(refine);
+  assert.equal(
+    autoGenerationPromptAssistantFingerprint({
+      sourceKey: "landscape",
+      mode: "refine",
+      creativeDirection: "   ",
+      prompt: "a lighthouse",
+    }),
+    null,
+  );
+  assert.notEqual(
+    refine,
+    autoGenerationPromptAssistantFingerprint({
+      sourceKey: "landscape",
+      mode: "create",
+      creativeDirection: "cinematic light",
+      prompt: "a lighthouse",
+    }),
+  );
+  assert.notEqual(
+    refine,
+    autoGenerationPromptAssistantFingerprint({
+      sourceKey: "landscape",
+      mode: "refine",
+      creativeDirection: "cinematic light",
+      prompt: "a mountain",
+    }),
+  );
 });
 
 test("comparison requests map only prompt, resolution, and one concrete seed by semantic role", () => {

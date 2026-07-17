@@ -1,6 +1,7 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
 import {
   applyChoiceStrengthDefaults,
+  autoGenerationPromptAssistantFingerprint,
   clientValidate,
   choiceStrengthCompanion,
   comparisonInputs,
@@ -124,6 +125,7 @@ let servicePollingController = null;
 let startupGalleryBoundary = null;
 let autoGenerateScheduled = false;
 let autoGenerateCycleRunning = false;
+let autoGenerateAssistantFingerprint = null;
 let promptCompositionRequests = 0;
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
@@ -308,6 +310,7 @@ async function handleChange(event) {
   const element = event.target;
   if (element.id === "auto-generate") {
     state.autoGenerate = element.checked;
+    autoGenerateAssistantFingerprint = null;
     renderPanel();
     scheduleAutoGenerate();
     return;
@@ -636,11 +639,13 @@ function handleInput(event) {
   }
   if (element.id === "creative-direction") {
     state.promptAssistant.creativeDirection = element.value;
+    autoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
   if (element.name === "assistant-mode") {
     state.promptAssistant.mode = element.value;
+    autoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
@@ -720,9 +725,13 @@ function applyPromptEditor() {
   state.formError = null;
   state.promptAssistant.creativeDirection = creativeDirection?.value || "";
   state.promptAssistant.mode = assistantMode?.value === "create" ? "create" : "refine";
+  autoGenerateAssistantFingerprint = null;
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
     state.promptAssistant.historicalModel = dialog.dataset.promptAssistantModel || null;
+    if (state.autoGenerate) {
+      autoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
+    }
   }
   persistActiveParameterState();
   renderPanel();
@@ -2075,6 +2084,24 @@ function scheduleAutoGenerate() {
   });
 }
 
+function currentAutoGenerateAssistantFingerprint() {
+  const contract = sourceInterface(state.activeSource);
+  const promptInput =
+    positivePromptInput(contract) ||
+    interfaceInputs(contract).find((input) => input.id === "prompt.text");
+  return autoGenerationPromptAssistantFingerprint({
+    sourceKey: state.activeSourceKey,
+    mode: state.promptAssistant.mode,
+    creativeDirection: state.promptAssistant.creativeDirection,
+    prompt: promptInput ? state.parameters[promptInput.id] : "",
+  });
+}
+
+function autoGenerationNeedsPromptAssistant() {
+  const fingerprint = currentAutoGenerateAssistantFingerprint();
+  return Boolean(fingerprint && fingerprint !== autoGenerateAssistantFingerprint);
+}
+
 function autoGenerationReady() {
   const contract = sourceInterface(state.activeSource);
   const selected =
@@ -2086,9 +2113,7 @@ function autoGenerationReady() {
   };
   const galleryPending =
     state.galleryStatus !== undefined && state.galleryStatus !== "ready";
-  const assistantRequired = Boolean(
-    String(state.promptAssistant.creativeDirection || "").trim(),
-  );
+  const assistantRequired = autoGenerationNeedsPromptAssistant();
   return Boolean(
     state.autoGenerate &&
       !autoGenerateCycleRunning &&
@@ -2103,12 +2128,19 @@ function autoGenerationReady() {
 async function runAutoGenerateCycle() {
   if (!autoGenerationReady()) return;
   const requestSourceKey = state.activeSourceKey;
+  const requestAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
   let queued = false;
   autoGenerateCycleRunning = true;
   try {
-    if (String(state.promptAssistant.creativeDirection || "").trim()) {
+    if (autoGenerationNeedsPromptAssistant()) {
       const composed = await composePrompt(null, { automatic: true });
-      if (!composed || !state.autoGenerate || hasActiveGeneration(state.generations)) return;
+      if (
+        !composed ||
+        !state.autoGenerate ||
+        hasActiveGeneration(state.generations) ||
+        autoGenerationNeedsPromptAssistant()
+      )
+        return;
     }
     queued = await generate({ automatic: true });
   } finally {
@@ -2116,6 +2148,8 @@ async function runAutoGenerateCycle() {
     if (
       state.autoGenerate &&
       (state.activeSourceKey !== requestSourceKey ||
+        (autoGenerationNeedsPromptAssistant() &&
+          currentAutoGenerateAssistantFingerprint() !== requestAssistantFingerprint) ||
         (queued && !hasActiveGeneration(state.generations)))
     ) {
       scheduleAutoGenerate();
@@ -2391,7 +2425,11 @@ async function composePrompt(button, { automatic = false } = {}) {
     });
     if (
       !sourceContextIsCurrent(requestSourceKey, requestRevision) ||
-      (automatic && !state.autoGenerate)
+      (automatic &&
+        (!state.autoGenerate ||
+          (state.parameters[promptInput.id] || "") !== requestPrompt ||
+          state.promptAssistant.mode !== requestMode ||
+          state.promptAssistant.creativeDirection !== requestDirection))
     ) {
       if (!automatic) {
         toast("Prompt composition finished after the source changed and was not applied.");
@@ -2403,6 +2441,13 @@ async function composePrompt(button, { automatic = false } = {}) {
     persistActiveParameterState();
     state.compositionId = result.composition_id;
     state.promptAssistant.historicalModel = result.model;
+    if (
+      state.autoGenerate &&
+      state.promptAssistant.mode === requestMode &&
+      state.promptAssistant.creativeDirection === requestDirection
+    ) {
+      autoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
+    }
     renderPanel();
     if (!automatic) {
       const prompt = document.querySelector(`[data-control-id="${CSS.escape(promptInput.id)}"]`);

@@ -1839,7 +1839,7 @@ test("required image input accepts Browse and a retained gallery image drag", as
   });
 });
 
-test("auto-generate composes Creative Direction and queues the latest controls only when idle", async ({
+test("auto-generate applies each Creative Direction draft once and queues only when idle", async ({
   page,
 }) => {
   test.setTimeout(60_000);
@@ -1917,15 +1917,35 @@ test("auto-generate composes Creative Direction and queues the latest controls o
       request.method() === "POST" &&
       request !== firstRequest,
   );
-  await autoGenerate.uncheck();
 
   expect(sequence.slice(0, 4)).toEqual(["compose", "generate", "compose", "generate"]);
   expect(secondRequest.postDataJSON().parameters.prompt).toBe(
     "slow updated auto controls, cinematic blue hour",
   );
   expect(secondRequest.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+
+  const thirdRequest = await page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST" &&
+      request !== firstRequest &&
+      request !== secondRequest,
+  );
+  await autoGenerate.uncheck();
+
+  expect(sequence.slice(0, 5)).toEqual([
+    "compose",
+    "generate",
+    "compose",
+    "generate",
+    "generate",
+  ]);
+  expect(thirdRequest.postDataJSON().parameters.prompt).toBe(
+    "slow updated auto controls, cinematic blue hour",
+  );
+  expect(thirdRequest.postDataJSON().prompt_assistant_run_id).toBeUndefined();
   await page.waitForTimeout(500);
-  expect(generationRequests).toHaveLength(2);
+  expect(generationRequests).toHaveLength(3);
   await expect(generate).toBeEnabled();
   await page.unroute("**/api/generations");
 });
