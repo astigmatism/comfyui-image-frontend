@@ -83,63 +83,59 @@ class OllamaAdapter:
                 "The Ollama router has no reachable model; manual prompting still works.",
                 status_code=503,
             )
-        instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
-        options = (
-            {"temperature": 0.1, "seed": 0, "num_predict": 512}
-            if mode == "refine"
-            else {"temperature": 0.5, "seed": 0, "num_predict": 512}
-        )
-        payload = {
-            "prompt": instruction,
-            "stream": False,
-            "think": True,
-            "format": {
-                "type": "object",
-                "properties": {"prompt": {"type": "string"}},
-                "required": ["prompt"],
-                "additionalProperties": False,
-            },
-            "options": options,
-        }
         started = time.monotonic()
-        try:
-            response = await self._client.post("/api/generate", json=payload)
-            response.raise_for_status()
-            data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise AppError(
-                "ollama_unavailable",
-                "Prompt Assistant could not compose a prompt; manual prompting still works.",
-                status_code=503,
-            ) from exc
-        raw_text = data.get("response") if isinstance(data, dict) else None
-        final = _extract_prompt(raw_text) if isinstance(raw_text, str) else ""
-        if not final and isinstance(data, dict):
-            # Thinking-capable Ollama parsers can place a schema-constrained final object in
-            # `thinking` while leaving `response` empty. Only accept a structured prompt from
-            # that field so internal reasoning can never become the visible image prompt.
-            thinking_text = data.get("thinking")
-            if isinstance(thinking_text, str):
-                final = _extract_structured_prompt(thinking_text)
-        if not final:
-            raise AppError("ollama_invalid_response", "Prompt Assistant returned no usable prompt.")
-        if mode == "create" and prompt.strip() and _same_prompt(final, prompt):
-            raise AppError(
-                "ollama_invalid_response",
-                "Prompt Assistant returned the current prompt unchanged instead of creating a "
-                "new prompt.",
-            )
-        effective_model = data.get("model") if isinstance(data, dict) else None
-        if not isinstance(effective_model, str) or not effective_model.strip():
-            raise AppError(
-                "ollama_invalid_response",
-                "Prompt Assistant did not identify the Ollama model that produced its response.",
-            )
-        return ComposeResult(
-            prompt=final,
-            model=effective_model.strip(),
-            raw_response=data if isinstance(data, dict) else {},
-            duration_ms=int((time.monotonic() - started) * 1000),
+        responses: list[dict[str, Any]] = []
+        previous_attempt = ""
+        maximum_attempts = 3 if mode == "create" and prompt.strip() else 1
+        for attempt in range(maximum_attempts):
+            if attempt == 0:
+                instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
+            else:
+                instruction = _distinct_create_instruction(
+                    direction=direction,
+                    previous_prompt=previous_attempt or prompt,
+                )
+            payload = _generate_payload(mode=mode, instruction=instruction, attempt=attempt)
+            try:
+                response = await self._client.post("/api/generate", json=payload)
+                response.raise_for_status()
+                received = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise AppError(
+                    "ollama_unavailable",
+                    "Prompt Assistant could not compose a prompt; manual prompting still works.",
+                    status_code=503,
+                ) from exc
+            data = received if isinstance(received, dict) else {}
+            responses.append(data)
+            final = _response_prompt(data)
+            if not final:
+                raise AppError(
+                    "ollama_invalid_response", "Prompt Assistant returned no usable prompt."
+                )
+            effective_model = data.get("model")
+            if not isinstance(effective_model, str) or not effective_model.strip():
+                raise AppError(
+                    "ollama_invalid_response",
+                    "Prompt Assistant did not identify the Ollama model that produced its "
+                    "response.",
+                )
+            if mode != "create" or not prompt.strip() or not _same_prompt(final, prompt):
+                raw_response = (
+                    data
+                    if len(responses) == 1
+                    else {"attempts": responses, "selected_attempt": len(responses)}
+                )
+                return ComposeResult(
+                    prompt=final,
+                    model=effective_model.strip(),
+                    raw_response=raw_response,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+            previous_attempt = final
+        raise AppError(
+            "ollama_invalid_response",
+            "Prompt Assistant could not produce a distinct new prompt after retrying.",
         )
 
 
@@ -207,6 +203,53 @@ def _extract_prompt(raw_text: str) -> str:
 
 def _same_prompt(first: str, second: str) -> bool:
     return " ".join(first.split()).casefold() == " ".join(second.split()).casefold()
+
+
+def _generate_payload(*, mode: str, instruction: str, attempt: int = 0) -> dict[str, Any]:
+    if mode == "refine":
+        options = {"temperature": 0.1, "seed": 0, "num_predict": 512}
+    else:
+        options = {
+            "temperature": min(0.9, 0.5 + (attempt * 0.2)),
+            "seed": attempt,
+            "num_predict": 512,
+        }
+    return {
+        "prompt": instruction,
+        "stream": False,
+        "think": True,
+        "format": {
+            "type": "object",
+            "properties": {"prompt": {"type": "string"}},
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+        "options": options,
+    }
+
+
+def _response_prompt(data: dict[str, Any]) -> str:
+    raw_text = data.get("response")
+    final = _extract_prompt(raw_text) if isinstance(raw_text, str) else ""
+    if final:
+        return final
+    # Thinking-capable Ollama parsers can place a schema-constrained final object in
+    # `thinking` while leaving `response` empty. Only accept a structured prompt from
+    # that field so internal reasoning can never become the visible image prompt.
+    thinking_text = data.get("thinking")
+    return _extract_structured_prompt(thinking_text) if isinstance(thinking_text, str) else ""
+
+
+def _distinct_create_instruction(*, direction: str, previous_prompt: str) -> str:
+    return (
+        _instruction(mode="create", prompt="", direction=direction)
+        + "\n\nDistinct-result requirement:\n"
+        "A previous attempt produced the prompt below. Create a substantively different "
+        "realization of the Creative direction. Do not repeat, paraphrase, or lightly edit that "
+        "previous attempt; choose different invented details, composition, camera, lighting, and "
+        "atmosphere while preserving every requirement in the Creative direction.\n\n"
+        "Previous attempt that must not be returned:\n" + previous_prompt
+    )
 
 
 def _extract_structured_prompt(raw_text: str) -> str:

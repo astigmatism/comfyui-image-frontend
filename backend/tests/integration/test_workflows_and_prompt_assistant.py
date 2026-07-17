@@ -458,12 +458,15 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     assert response.json()["template_version"] == "v3"
 
 
-def test_create_prompt_assistant_rejects_an_unchanged_current_prompt(
+def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client, username="unchanged.prompt")
     _cache_ollama_health(app_client, available=True)
-    fake_state.ollama_response_prompt = "  OLD   PROMPT that create mode must replace  "
+    fake_state.ollama_response_prompts = [
+        "  OLD   PROMPT that create mode must replace  ",
+        "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise",
+    ]
 
     response = app_client.post(
         "/api/prompt-assistant/compose",
@@ -475,14 +478,21 @@ def test_create_prompt_assistant_rejects_an_unchanged_current_prompt(
         },
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "ollama_invalid_response"
-    assert error["message"] == (
-        "Prompt Assistant returned the current prompt unchanged instead of creating a new prompt."
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == (
+        "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
     )
-    assert error["fields"] == {}
-    assert error["details"] == {}
+    assert response.json()["template_version"] == "v3"
+    assert len(fake_state.ollama_calls) == 2
+    first_request, retry_request = fake_state.ollama_calls
+    assert first_request["options"] == {"temperature": 0.5, "seed": 0, "num_predict": 512}
+    assert retry_request["options"] == {
+        "temperature": 0.7,
+        "seed": 1,
+        "num_predict": 512,
+    }
+    assert "Distinct-result requirement" in retry_request["prompt"]
+    assert "OLD   PROMPT that create mode must replace" in retry_request["prompt"]
 
 
 def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from app.services.ollama import _extract_prompt, _instruction
+from app.services.ollama import (
+    _distinct_create_instruction,
+    _extract_prompt,
+    _generate_payload,
+    _instruction,
+)
 
 
 def test_refine_instruction_requires_lossless_minimal_editing() -> None:
@@ -65,3 +70,25 @@ def test_extract_prompt_supports_structured_and_plain_text_responses() -> None:
     assert _extract_prompt(json.dumps({"prompt": "  a detailed scene  "})) == "a detailed scene"
     assert _extract_prompt('```json\n{"prompt": "a fenced response"}\n```') == ("a fenced response")
     assert _extract_prompt("  a plain response  ") == "a plain response"
+
+
+def test_duplicate_create_retry_requires_a_distinct_result_and_changes_sampling() -> None:
+    previous = "A ceramic robot waving in a bright studio."
+    instruction = _distinct_create_instruction(
+        direction="a ceramic robot",
+        previous_prompt=previous,
+    )
+    payload = _generate_payload(mode="create", instruction=instruction, attempt=1)
+
+    assert "Distinct-result requirement" in instruction
+    assert "Do not repeat, paraphrase, or lightly edit" in instruction
+    assert f"Previous attempt that must not be returned:\n{previous}" in instruction
+    assert payload["prompt"] == instruction
+    assert payload["options"] == {"temperature": 0.7, "seed": 1, "num_predict": 512}
+    assert payload["think"] is True
+
+
+def test_refine_sampling_remains_deterministic() -> None:
+    payload = _generate_payload(mode="refine", instruction="refine this", attempt=2)
+
+    assert payload["options"] == {"temperature": 0.1, "seed": 0, "num_predict": 512}

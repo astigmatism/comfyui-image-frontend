@@ -95,6 +95,7 @@ class FakeServiceState:
     ollama_effective_model: str | None = None
     ollama_response_in_thinking: bool = False
     ollama_response_prompt: str | None = None
+    ollama_response_prompts: list[str] = field(default_factory=list)
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -139,6 +140,7 @@ class FakeServiceState:
         self.ollama_effective_model = None
         self.ollama_response_in_thinking = False
         self.ollama_response_prompt = None
+        self.ollama_response_prompts.clear()
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -671,11 +673,12 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 .split("\n\nCreative direction:", 1)[0]
                 .strip()
             )
-        composed = (
-            state.ollama_response_prompt
-            if state.ollama_response_prompt is not None
-            else f"{current}, {direction}".strip(" ,") or "composed image prompt"
-        )
+        if state.ollama_response_prompts:
+            composed = state.ollama_response_prompts.pop(0)
+        elif state.ollama_response_prompt is not None:
+            composed = state.ollama_response_prompt
+        else:
+            composed = f"{current}, {direction}".strip(" ,") or "composed image prompt"
         effective_model = state.ollama_effective_model or payload.get("model")
         if not effective_model and state.models:
             effective_model = state.models[0]

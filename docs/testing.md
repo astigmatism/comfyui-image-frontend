@@ -127,3 +127,15 @@ Automated tests never require household services. For a live check, configure `.
 10. Submit two deliberately different concurrent requests and confirm choices, strengths, graphs, prompt IDs, status, and files do not cross.
 
 Do not claim live end-to-end completion unless the exact latest publication was discovered, queued through `/prompt`, reconciled through `/history/{prompt_id}`, and its `/view` assets were retained. Report the exact prompt ID and result. If the live server is unavailable, state that and report deterministic commands/results plus this remaining procedure.
+
+## Optional live Ollama verification
+
+The opt-in live suite exercises create, refine, and repeated-create behavior through the production `OllamaAdapter`. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
+
+```sh
+CIF_RUN_LIVE_OLLAMA_TESTS=1 \
+CIF_OLLAMA_BASE_URL=http://router-host:11434 \
+PYTHONPATH=backend pytest -q backend/tests/live/test_ollama_integration.py
+```
+
+The repeated-create case deliberately submits the first generated prompt as the current prompt for the same Creative Direction and requires the adapter's duplicate-aware retry to return a distinct second prompt.
