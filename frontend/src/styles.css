@@ -289,6 +289,21 @@ code {
   z-index: 2;
 }
 
+.generation-actions {
+  display: grid;
+  gap: 9px;
+}
+
+.auto-generate-switch {
+  margin-left: 2px;
+}
+
+.auto-generate-switch em {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
 .panel-scroll {
   overflow-y: auto;
   overscroll-behavior: contain;

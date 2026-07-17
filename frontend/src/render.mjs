@@ -111,11 +111,19 @@ export function generationPanelMarkup(state, profile, contract) {
   const advancedHasError = advanced.some((item) => clientErrors[item.id]);
   const disabled = generationSubmissionDisabled(state, profile, contract, clientErrors);
   const presets = contract?.presets || [];
-  const sourceSelectorDisabled = !sources.length || state.submitting;
+  const sourceSelectorDisabled =
+    !sources.length || (state.submitting && !state.autoGenerate);
   return `
     <div class="panel-layout">
       <div class="panel-fixed">
-        <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (sharedSourceCount ? `Queueing ${selectedSourceCount}…` : "Queueing…") : "Generate"}</button>
+        <div class="generation-actions">
+          <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (sharedSourceCount ? `Queueing ${selectedSourceCount}…` : "Queueing…") : "Generate"}</button>
+          <label class="switch auto-generate-switch" for="auto-generate">
+            <input id="auto-generate" type="checkbox" role="switch" ${state.autoGenerate ? "checked" : ""} />
+            <span aria-hidden="true"></span>
+            <em>Auto-generate</em>
+          </label>
+        </div>
         ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
         ${sourceStateMarkup(state, profile)}
@@ -140,6 +148,12 @@ export function generationPanelMarkup(state, profile, contract) {
 }
 
 export function generationSubmissionDisabled(state, profile, contract, clientErrors = {}) {
+  return Boolean(
+    state.autoGenerate || generationRequestBlocked(state, profile, contract, clientErrors),
+  );
+}
+
+export function generationRequestBlocked(state, profile, contract, clientErrors = {}) {
   const services = state.services || [];
   const comfy = services.find((item) => item.service === "comfyui");
   const serviceStateBlocksGeneration =

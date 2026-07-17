@@ -14,6 +14,7 @@ import {
   defaultsForInterface,
   formatTimelineMonth,
   generationSourceModelVariant,
+  hasActiveGeneration,
   insertTranscription,
   latestCompletedImageGeneration,
   migrateInterfaceState,
@@ -204,6 +205,21 @@ test("generations sort by request acceptance time newest first with the API tie-
     "same-z",
     "microsecond-newer",
   ]);
+});
+
+test("active generation detection covers every non-terminal generation phase", () => {
+  for (const status of ["queued", "dispatching", "running", "cancel_requested"]) {
+    assert.equal(hasActiveGeneration([{ id: status, status }]), true);
+  }
+  assert.equal(
+    hasActiveGeneration([
+      { id: "complete", status: "succeeded" },
+      { id: "failed", status: "failed_without_artifacts" },
+      { id: "cancelled", status: "cancelled_without_artifacts" },
+    ]),
+    false,
+  );
+  assert.equal(hasActiveGeneration([]), false);
 });
 
 test("comparison requests map only prompt, resolution, and one concrete seed by semantic role", () => {

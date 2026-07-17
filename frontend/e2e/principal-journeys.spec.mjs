@@ -1838,3 +1838,94 @@ test("required image input accepts Browse and a retained gallery image drag", as
     asset_id: retainedAssetId,
   });
 });
+
+test("auto-generate composes Creative Direction and queues the latest controls only when idle", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const generate = page.locator("#generate-button");
+  const sequence = [];
+  const generationRequests = [];
+  let releaseFirstGeneration;
+  const firstGenerationGate = new Promise((resolve) => {
+    releaseFirstGeneration = resolve;
+  });
+  let firstGenerationHeld = false;
+
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/prompt-assistant/compose" && request.method() === "POST") {
+      sequence.push("compose");
+    }
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      sequence.push("generate");
+      generationRequests.push(request);
+    }
+  });
+  await page.route("**/api/generations", async (route) => {
+    if (route.request().method() === "POST" && !firstGenerationHeld) {
+      firstGenerationHeld = true;
+      await firstGenerationGate;
+    }
+    await route.continue();
+  });
+
+  await prompt.fill("slow auto lighthouse");
+  await direction.fill("cinematic blue hour");
+  const firstRequestPromise = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  await autoGenerate.check();
+  const firstRequest = await firstRequestPromise;
+
+  await expect(autoGenerate).toBeChecked();
+  await expect(generate).toBeDisabled();
+  await expect(prompt).toBeEnabled();
+  await expect(page.locator("#workflow-source")).toBeEnabled();
+  expect(sequence.slice(0, 2)).toEqual(["compose", "generate"]);
+  expect(firstRequest.postDataJSON().parameters.prompt).toBe(
+    "slow auto lighthouse, cinematic blue hour",
+  );
+  expect(firstRequest.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+
+  await prompt.fill("slow updated auto controls");
+  const firstResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/generations" &&
+      response.request().method() === "POST",
+  );
+  releaseFirstGeneration();
+  expect((await firstResponsePromise).status()).toBe(201);
+
+  await page.waitForTimeout(500);
+  expect(generationRequests).toHaveLength(1);
+  const secondRequest = await page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST" &&
+      request !== firstRequest,
+  );
+  await autoGenerate.uncheck();
+
+  expect(sequence.slice(0, 4)).toEqual(["compose", "generate", "compose", "generate"]);
+  expect(secondRequest.postDataJSON().parameters.prompt).toBe(
+    "slow updated auto controls, cinematic blue hour",
+  );
+  expect(secondRequest.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+  await page.waitForTimeout(500);
+  expect(generationRequests).toHaveLength(2);
+  await expect(generate).toBeEnabled();
+  await page.unroute("**/api/generations");
+});

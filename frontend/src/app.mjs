@@ -7,6 +7,7 @@ import {
   comparisonParametersForRequest,
   createLatestRequestGate,
   defaultsForInterface,
+  hasActiveGeneration,
   interfaceInputs,
   insertTranscription,
   latestCompletedImageGeneration,
@@ -29,6 +30,7 @@ import {
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
+  generationRequestBlocked,
   generationSubmissionDisabled,
   loginMarkup,
   passwordChangeMarkup,
@@ -82,6 +84,7 @@ const state = {
   galleryStatus: "idle",
   galleryMessage: null,
   submitting: false,
+  autoGenerate: false,
   imageUploadsPending: 0,
   serverFieldErrors: {},
   formError: null,
@@ -119,6 +122,9 @@ let speechSessionSequence = 0;
 let applicationStartupController = null;
 let servicePollingController = null;
 let startupGalleryBoundary = null;
+let autoGenerateScheduled = false;
+let autoGenerateCycleRunning = false;
+let promptCompositionRequests = 0;
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
 const TERMINAL_GENERATION_STATUSES = new Set([
@@ -300,6 +306,12 @@ async function handleClick(event) {
 
 async function handleChange(event) {
   const element = event.target;
+  if (element.id === "auto-generate") {
+    state.autoGenerate = element.checked;
+    renderPanel();
+    scheduleAutoGenerate();
+    return;
+  }
   if (element.matches("[data-source-draft-key]")) {
     updateSourcePickerDraftSelection(element.dataset.sourceDraftKey, element.checked);
     return;
@@ -624,10 +636,12 @@ function handleInput(event) {
   }
   if (element.id === "creative-direction") {
     state.promptAssistant.creativeDirection = element.value;
+    scheduleAutoGenerate();
     return;
   }
   if (element.name === "assistant-mode") {
     state.promptAssistant.mode = element.value;
+    scheduleAutoGenerate();
     return;
   }
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
@@ -1405,6 +1419,7 @@ function syncParameterValidation(controlId) {
       errors,
     );
   }
+  scheduleAutoGenerate();
 }
 
 function syncFieldError(block, controlId, message) {
@@ -1520,6 +1535,7 @@ async function logout() {
   startupGalleryBoundary = null;
   state.galleryStatus = "idle";
   state.galleryMessage = null;
+  state.autoGenerate = false;
   const session = await api("/api/auth/session", {
     operation: "Session request",
     deadlineMs: STARTUP_DEADLINES.session,
@@ -1557,6 +1573,7 @@ async function enterApplication() {
   state.nextCursor = null;
   state.galleryStatus = "loading";
   state.galleryMessage = null;
+  state.autoGenerate = false;
   state.favorites = [];
   state.favoritesNextCursor = null;
   state.sourceRatings = {};
@@ -1694,6 +1711,7 @@ async function loadStartupGallery(signal = applicationStartupController?.signal)
   }
   renderGallery();
   setupPaginationObserver();
+  scheduleAutoGenerate();
 }
 
 async function loadStartupPromptAssistant(signal = applicationStartupController?.signal) {
@@ -1978,6 +1996,7 @@ function renderPanel() {
   }
   restorePanelView(panel, panelView);
   syncSpeechControls();
+  scheduleAutoGenerate();
 }
 
 function capturePanelView(panel) {
@@ -2045,7 +2064,67 @@ function restorePanelView(panel, view) {
   }
 }
 
-async function generate() {
+function scheduleAutoGenerate() {
+  if (!state.autoGenerate || autoGenerateScheduled || autoGenerateCycleRunning) return;
+  autoGenerateScheduled = true;
+  queueMicrotask(() => {
+    autoGenerateScheduled = false;
+    void runAutoGenerateCycle().catch((error) => {
+      toast(error.message || "Auto-generation failed.", "error");
+    });
+  });
+}
+
+function autoGenerationReady() {
+  const contract = sourceInterface(state.activeSource);
+  const selected =
+    state.activeSource ||
+    state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+  const errors = {
+    ...clientValidate(contract, state.parameters),
+    ...withoutNulls(state.serverFieldErrors),
+  };
+  const galleryPending =
+    state.galleryStatus !== undefined && state.galleryStatus !== "ready";
+  const assistantRequired = Boolean(
+    String(state.promptAssistant.creativeDirection || "").trim(),
+  );
+  return Boolean(
+    state.autoGenerate &&
+      !autoGenerateCycleRunning &&
+      !promptCompositionRequests &&
+      !galleryPending &&
+      !hasActiveGeneration(state.generations) &&
+      !generationRequestBlocked(state, selected, contract, errors) &&
+      (!assistantRequired || state.promptAssistant.available),
+  );
+}
+
+async function runAutoGenerateCycle() {
+  if (!autoGenerationReady()) return;
+  const requestSourceKey = state.activeSourceKey;
+  let queued = false;
+  autoGenerateCycleRunning = true;
+  try {
+    if (String(state.promptAssistant.creativeDirection || "").trim()) {
+      const composed = await composePrompt(null, { automatic: true });
+      if (!composed || !state.autoGenerate || hasActiveGeneration(state.generations)) return;
+    }
+    queued = await generate({ automatic: true });
+  } finally {
+    autoGenerateCycleRunning = false;
+    if (
+      state.autoGenerate &&
+      (state.activeSourceKey !== requestSourceKey ||
+        (queued && !hasActiveGeneration(state.generations)))
+    ) {
+      scheduleAutoGenerate();
+    }
+  }
+}
+
+async function generate({ automatic = false } = {}) {
+  if (state.autoGenerate && !automatic) return;
   if (hasComparisonSources()) return generateSelectedSources();
   return generateSingleSource();
 }
@@ -2061,14 +2140,14 @@ async function generateSingleSource() {
     !contract ||
     state.activeSource.available === false
   )
-    return;
+    return false;
   const errors = clientValidate(contract, state.parameters);
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted controls.";
     renderPanel();
     focusFirstInvalid();
-    return;
+    return false;
   }
   state.submitting = true;
   state.formError = null;
@@ -2086,8 +2165,9 @@ async function generateSingleSource() {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    const current = state.generations.find((item) => item.id === generation.id);
     state.generations = sortGenerationsNewestFirst([
-      generation,
+      current || generation,
       ...state.generations.filter((item) => item.id !== generation.id),
     ]);
     if (
@@ -2096,12 +2176,13 @@ async function generateSingleSource() {
     ) {
       state.compositionId = null;
     }
-    upsertGalleryCard(generation);
+    upsertGalleryCard(current || generation);
     toast("Generation queued.", "success");
+    return true;
   } catch (error) {
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       toast(`Generation request for the previous source failed: ${error.message}`, "error");
-      return;
+      return false;
     }
     state.formError = error.message;
     state.serverFieldErrors = normalizeParameterErrors(error.fields);
@@ -2111,6 +2192,7 @@ async function generateSingleSource() {
       await loadSources();
       if (state.activeSourceKey === requestSourceKey) state.formError = message;
     }
+    return false;
   } finally {
     state.submitting = false;
     renderPanel();
@@ -2136,7 +2218,7 @@ async function generateSelectedSources() {
     state.activeSource.available === false ||
     !sources.length
   )
-    return;
+    return false;
 
   const errors = clientValidate(contract, requestParameters);
   if (Object.keys(errors).length) {
@@ -2144,7 +2226,7 @@ async function generateSelectedSources() {
     state.formError = "Review the highlighted comparison controls.";
     renderPanel();
     focusFirstInvalid();
-    return;
+    return false;
   }
 
   state.submitting = true;
@@ -2260,10 +2342,11 @@ async function generateSelectedSources() {
     } else {
       toast(`${queued.length} generations queued across ${sources.length} selected sources.`, "success");
     }
+    return queued.length > 0 && failures.length === 0;
   } catch (error) {
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       toast(`Comparison request for the previous source failed: ${error.message}`, "error");
-      return;
+      return false;
     }
     state.formError = error.message;
     state.serverFieldErrors = normalizeParameterErrors(error.fields);
@@ -2273,6 +2356,7 @@ async function generateSelectedSources() {
       await loadSources();
       if (state.activeSourceKey === requestSourceKey) state.formError = message;
     }
+    return false;
   } finally {
     state.submitting = false;
     renderPanel();
@@ -2280,19 +2364,22 @@ async function generateSelectedSources() {
   }
 }
 
-async function composePrompt(button) {
-  if (!state.promptAssistant.available) return;
+async function composePrompt(button, { automatic = false } = {}) {
+  if (!state.promptAssistant.available) return false;
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const contract = sourceInterface(state.activeSource);
   const promptInput =
     positivePromptInput(contract) || interfaceInputs(contract).find((input) => input.id === "prompt.text");
-  if (!requestSourceKey || !promptInput) return;
+  if (!requestSourceKey || !promptInput) return false;
   const requestMode = state.promptAssistant.mode;
   const requestPrompt = state.parameters[promptInput.id] || "";
   const requestDirection = state.promptAssistant.creativeDirection || "";
-  button.disabled = true;
-  button.textContent = "Applying…";
+  promptCompositionRequests += 1;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Applying…";
+  }
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -2302,9 +2389,14 @@ async function composePrompt(button) {
         creative_direction: requestDirection,
       }),
     });
-    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      toast("Prompt composition finished after the source changed and was not applied.");
-      return;
+    if (
+      !sourceContextIsCurrent(requestSourceKey, requestRevision) ||
+      (automatic && !state.autoGenerate)
+    ) {
+      if (!automatic) {
+        toast("Prompt composition finished after the source changed and was not applied.");
+      }
+      return false;
     }
     state.parameters[promptInput.id] = result.prompt;
     state.explicitParameterIds.add(promptInput.id);
@@ -2312,20 +2404,31 @@ async function composePrompt(button) {
     state.compositionId = result.composition_id;
     state.promptAssistant.historicalModel = result.model;
     renderPanel();
-    const prompt = document.querySelector(`[data-control-id="${CSS.escape(promptInput.id)}"]`);
-    prompt?.focus();
-    toast("Creative direction applied to the editable Prompt field.", "success");
+    if (!automatic) {
+      const prompt = document.querySelector(`[data-control-id="${CSS.escape(promptInput.id)}"]`);
+      prompt?.focus();
+      toast("Creative direction applied to the editable Prompt field.", "success");
+    }
+    return true;
   } catch (error) {
     if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      toast(error.message || "Creative direction could not be applied.", "error");
+      toast(
+        automatic
+          ? `Auto-generate could not apply Creative Direction: ${error.message}`
+          : error.message || "Creative direction could not be applied.",
+        "error",
+      );
     } else {
       toast(`Prompt composition for the previous source failed: ${error.message}`, "error");
     }
+    return false;
   } finally {
-    if (button.isConnected) {
+    promptCompositionRequests = Math.max(0, promptCompositionRequests - 1);
+    if (button?.isConnected) {
       button.disabled = false;
       button.textContent = "Apply Creative Direction";
     }
+    if (!automatic) scheduleAutoGenerate();
   }
 }
 
@@ -2639,6 +2742,7 @@ async function refreshGeneration(id, { insertIf = () => true } = {}) {
     else return;
     state.generations = sortGenerationsNewestFirst(state.generations);
     upsertGalleryCard(detail);
+    scheduleAutoGenerate();
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);
     const completedForSlideshow =
@@ -3191,6 +3295,7 @@ function removeGeneration(id) {
   if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
   if (!state.generations.length) renderGallery();
   else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
+  scheduleAutoGenerate();
 }
 
 function startLiveUpdates({ paused = false } = {}) {

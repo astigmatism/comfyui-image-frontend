@@ -110,6 +110,19 @@ export function sortGenerationsNewestFirst(generations) {
   return [...(generations || [])].sort(compareGenerationsNewestFirst);
 }
 
+const ACTIVE_GENERATION_STATUSES = new Set([
+  "queued",
+  "dispatching",
+  "running",
+  "cancel_requested",
+]);
+
+export function hasActiveGeneration(generations) {
+  return (generations || []).some((generation) =>
+    ACTIVE_GENERATION_STATUSES.has(generation?.status),
+  );
+}
+
 export function latestCompletedImageGeneration(generations) {
   return (
     sortGenerationsNewestFirst(generations).find(
