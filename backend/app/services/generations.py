@@ -1118,6 +1118,10 @@ class GenerationService:
             return None
         generation.status = GenerationStatus.CANCEL_REQUESTED
         generation.cancel_requested_at = datetime.now(UTC)
+        if isinstance(generation.progress_json, dict) and "eta" in generation.progress_json:
+            progress = copy.deepcopy(generation.progress_json)
+            progress.pop("eta", None)
+            generation.progress_json = progress
         event = add_generation_event(
             session,
             generation,

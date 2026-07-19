@@ -594,6 +594,22 @@ code {
   text-overflow: ellipsis;
 }
 
+.generation-progress-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.generation-progress-eta {
+  display: block;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .progress-bar {
   height: 4px;
   overflow: hidden;

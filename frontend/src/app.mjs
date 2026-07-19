@@ -28,6 +28,7 @@ import {
 import {
   detailMarkup,
   favoritesMarkup,
+  formatGenerationEta,
   galleryCardMarkup,
   galleryMarkup,
   generationProgressMarkup,
@@ -96,6 +97,7 @@ const state = {
   pendingLiveUpdates: [],
   lastEventId: 0,
   serviceTimer: null,
+  generationEtaTimer: null,
   scaleTimer: null,
   observer: null,
   photoViewerGenerationId: null,
@@ -3505,6 +3507,7 @@ function startLiveUpdates({ paused = false } = {}) {
   }
   source.onerror = () => {};
   state.eventSource = source;
+  startGenerationEtaTimer();
 }
 
 function applyLiveUpdate({ type, payload }) {
@@ -3537,6 +3540,35 @@ function progressUpdatedAt(progress) {
   if (!progress?.updated_at) return 0;
   const timestamp = Date.parse(progress.updated_at);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function startGenerationEtaTimer() {
+  stopGenerationEtaTimer();
+  refreshGenerationEtaCountdowns();
+  state.generationEtaTimer = window.setInterval(refreshGenerationEtaCountdowns, 1_000);
+}
+
+function stopGenerationEtaTimer() {
+  if (state.generationEtaTimer !== null) window.clearInterval(state.generationEtaTimer);
+  state.generationEtaTimer = null;
+}
+
+function refreshGenerationEtaCountdowns() {
+  const now = Date.now();
+  for (const eta of root.querySelectorAll("[data-generation-eta-completion]")) {
+    const completionTimestamp = Number(eta.getAttribute("data-generation-eta-completion"));
+    if (!Number.isFinite(completionTimestamp)) continue;
+    const text = formatGenerationEta((completionTimestamp - now) / 1000);
+    if (!text) continue;
+    if (eta.textContent !== text) eta.textContent = text;
+    const progress = eta.closest(".generation-progress");
+    const bar = progress?.querySelector("[data-progress-valuetext-base]");
+    const baseValueText = bar?.getAttribute("data-progress-valuetext-base");
+    if (baseValueText) {
+      const accessibleEta = text === "Finishing…" ? "finishing" : text.replace(/^About/, "about");
+      bar.setAttribute("aria-valuetext", `${baseValueText}, ${accessibleEta}`);
+    }
+  }
 }
 
 function resumeLiveUpdates() {
@@ -3608,6 +3640,7 @@ function stopServicePolling() {
 }
 
 function stopLiveUpdates() {
+  stopGenerationEtaTimer();
   discardSpeechSession();
   state.eventSource?.close();
   state.eventSource = null;

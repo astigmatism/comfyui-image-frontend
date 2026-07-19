@@ -52,7 +52,17 @@ The publication/registry/adapter/compiler/result tests cover:
 - exact list-shaped publisher history normalization, authoritative `artifacts[].batch_index`, multiple declared roles and batches, untouched node-keyed nonpublisher results, runtime independence from `native_outputs`, publisher mismatch errors, status/error/warning preservation, and public removal of only top-level native prompt/extra-data graph envelopes;
 - file-reference allowlists, asset path safety, status transitions, and owner-specific event serialization.
 
-Frontend unit/render tests cover source-driven control ordering and defaults, Advanced disclosure, all input types, finite single-select choices, stale-option reconciliation, absence of invented controls, BigInt-safe seed behavior, revision-aware request payloads, field errors, loading/ready/warning/offline/unavailable/empty states, multiple artifacts, unmapped output provenance, recall, favorites, and accessible markup.
+Estimator unit tests cover privacy-safe feature normalization, bounded robust timing profiles,
+outlier resistance, successful-outcome filtering, exact-cohort selection and hierarchical fallback,
+node-local refinement without workflow-fraction extrapolation, confidence/interval validation, and
+cache serialization/reload. They also cover compatibility-capped confidence, separate profile
+quotas, versioned cursor backfill and deletion survival, per-generation landmark windows, idle-race
+rollback, and joining an in-flight audit during shutdown. Frontend unit/render tests cover source-driven control ordering and
+defaults, Advanced disclosure, all input types, finite single-select choices, stale-option
+reconciliation, absence of invented controls, BigInt-safe seed behavior, revision-aware request
+payloads, field errors, loading/ready/warning/offline/unavailable/empty states, multiple artifacts,
+unmapped output provenance, recall, favorites, accessible markup, nested ETA rendering, and a local
+absolute-timestamp countdown that does not require server timer ticks or restart on stale rerenders.
 
 ## Integration coverage
 
@@ -66,6 +76,8 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - durable acceptance, rapid submissions, per-user FIFO and round-robin fairness;
 - pre-submission WebSocket readiness, structured node-local progress with legacy fallback,
   coalescing, prompt/client isolation, and delayed/missing-event history reconciliation;
+- passive successful-run ETA learning, profile persistence/reload, matching-cohort reuse,
+  terminal clearing, and idle-only legacy audit behavior;
 - complete multiple-node/multiple-publisher/multiple-batch archive, ordinary publisher-image mirror de-duplication, untouched unmapped outputs, optional retrieval warnings, and partial/failure/interruption result retention;
 - restart/outage recovery and cached source availability;
 - automatic full catalog refresh on offline-to-online recovery, including empty-cache startup, without continuous online refetch;

@@ -117,6 +117,46 @@ WebSocket events remain timely but incomplete: cached runs may omit them, and a 
 precede history persistence. `/history/{prompt_id}` is therefore terminal/recovery truth and clears
 the active snapshot on every terminal outcome.
 
+### Cached completion estimates
+
+The completion estimator is a passive companion to node-local progress, not a second execution
+probe. Successful terminal generations contribute only privacy-safe technical timing observations:
+stable source revision, normalized resolution and performance-relevant controls, and the measured
+running interval. Bounded robust profiles resist outliers and use hierarchical fallbacks when an
+exact source/control cohort is sparse. Cancelled, failed, and interrupted durations are not treated
+as successful completion samples, and no prompt, seed, user, upload content, graph, or result data is
+part of a profile.
+
+Prepared profiles are persisted and atomically exposed as an in-memory lookup cache. Dispatch uses
+that history-size-independent cache; accepting or starting a generation never scans or collates
+historical rows. A bounded audit of legacy successful rows may seed or repair the cache, but it runs
+only while generation work is idle and never submits synthetic ComfyUI jobs. This keeps both normal
+request latency and active generation throughput independent of retained gallery size.
+
+The audit advances a single feature-versioned `(completed_at, generation_id)` watermark instead of
+retaining one marker per generation. Total-duration and node-landmark profiles have separate hard
+quotas, every profile keeps only a fixed recent sample window, and cache updates merge only the
+profiles touched by a batch. Maintenance work therefore remains bounded as history grows; evicted
+exact cohorts safely fall back to broader profiles until matching runs make them recent again.
+
+An initial estimate comes from the best compatible source/resolution/control cohort. As safe runtime
+events arrive, the estimator may refine it with historical remaining-time observations for the
+current node and counter range. Per-generation audit windows preserve both early and late landmarks
+without allowing one verbose run to crowd out another. The observed `fraction` is still local to that node: neither backend
+nor browser treats it as workflow completion or applies `elapsed / fraction` extrapolation. Sparse
+evidence yields a wider interval, lower confidence, a broader safe basis description, or no ETA.
+Confidence is also capped by compatibility: only exact technical cohorts or exact node landmarks
+can become high confidence, resolution-matched revision cohorts top out at medium, and broader
+revision/source/instance fallbacks remain low confidence regardless of sample count.
+
+Each estimate carries remaining seconds, an absolute completion timestamp, lower/upper
+remaining-time bounds, confidence, basis, and its own update timestamp under `progress.eta`. The
+browser anchors the visible countdown locally from the absolute timestamp and reported remaining
+duration, so client/server clock skew does not require timer-only server events. That client anchor
+is bounded and keyed by generation plus ETA update time, so unrelated rerenders and stale snapshots
+cannot restart or extend the countdown. A genuinely newer progress snapshot replaces the estimate. History-backed terminal
+reconciliation clears the whole active progress snapshot, including ETA, for every terminal outcome.
+
 ## Result normalization and files
 
 History normalization persists the complete bounded JSON-safe entry and raw ComfyUI status/error messages. The owner-facing API removes top-level submitted `prompt` and `extra_data` graph envelopes but leaves actual node results, arbitrary JSON-safe custom UI fields, publisher metadata, status/messages/errors, and execution metadata intact. For each native output node:

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -270,6 +271,7 @@ class Generation(Base):
     __table_args__ = (
         Index("ix_generations_owner_created", "owner_id", "accepted_at", "id"),
         Index("ix_generations_queue", "status", "queue_seq"),
+        Index("ix_generations_timing_audit", "status", "completed_at", "id"),
         Index("ix_generations_prompt_id", "comfyui_prompt_id"),
     )
 
@@ -448,6 +450,49 @@ class GenerationEvent(Base):
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GenerationTimingProfile(Base):
+    """Bounded, content-free timing statistics used for generation ETA lookup."""
+
+    __tablename__ = "generation_timing_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "feature_version",
+            "scope",
+            "scope_key",
+            name="uq_generation_timing_profile_scope",
+        ),
+        Index("ix_generation_timing_profiles_lookup", "feature_version", "scope", "scope_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    feature_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    scope: Mapped[str] = mapped_column(String(40), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    samples_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    median_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    lower_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    upper_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class GenerationTimingAuditState(Base):
+    """Single bounded cursor for idle timing-profile maintenance."""
+
+    __tablename__ = "generation_timing_audit_state"
+
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    feature_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    cursor_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cursor_generation_id: Mapped[str | None] = mapped_column(String(36))
+    backfill_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class SchedulerState(Base):

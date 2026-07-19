@@ -16,6 +16,9 @@ import {
   validTimelineMonth,
 } from "./lib.mjs";
 
+const MAX_GENERATION_ETA_ANCHORS = 256;
+const generationEtaAnchors = new Map();
+
 export function loginMarkup(appTitle) {
   return `
     <main class="auth-page">
@@ -1164,14 +1167,16 @@ export function galleryCardMarkup(generation) {
   </article>`;
 }
 
-export function generationProgressMarkup(generation) {
+export function generationProgressMarkup(generation, { now = Date.now() } = {}) {
   const progress = activeGenerationProgress(generation);
   if (!progress) return "";
   const label = String(progress.label || "Processing");
+  const eta = activeGenerationEta(generation, now);
+  const copy = generationProgressCopyMarkup(label, eta);
   const determinate = progress.kind === "node";
   if (!determinate) {
     return `<div class="generation-progress generation-progress-indeterminate">
-      <strong class="generation-progress-label">${escapeHtml(label)}</strong>
+      ${copy}
       <div class="progress-bar progress-bar-indeterminate" role="progressbar" aria-label="${escapeHtml(`${label} progress`)}">
         <span class="progress-bar-fill" aria-hidden="true"></span>
       </div>
@@ -1181,28 +1186,126 @@ export function generationProgressMarkup(generation) {
   const maximum = finiteProgressNumber(progress.maximum);
   const fraction = Math.max(0, Math.min(1, Number(progress.fraction) || 0));
   if (value === null || maximum === null || maximum <= 0) {
-    return generationProgressMarkup({
-      ...generation,
-      progress: { ...progress, kind: "indeterminate", value: null, maximum: null, fraction: null },
-    });
+    return generationProgressMarkup(
+      {
+        ...generation,
+        progress: { ...progress, kind: "indeterminate", value: null, maximum: null, fraction: null },
+      },
+      { now },
+    );
   }
   const displayValue = Math.max(0, Math.min(maximum, value));
   const valueLabel = formatProgressNumber(displayValue);
   const maximumLabel = formatProgressNumber(maximum);
+  const valueText = `${valueLabel} of ${maximumLabel} for ${label}`;
+  const accessibleValueText = eta ? `${valueText}, ${eta.accessibleText}` : valueText;
   return `<div class="generation-progress generation-progress-determinate">
-    <strong class="generation-progress-label">${escapeHtml(label)}</strong>
-    <div class="progress-bar progress-bar-determinate" role="progressbar" aria-label="${escapeHtml(`${label} progress`)}" aria-valuemin="0" aria-valuemax="${escapeHtml(maximum)}" aria-valuenow="${escapeHtml(displayValue)}" aria-valuetext="${escapeHtml(`${valueLabel} of ${maximumLabel} for ${label}`)}" style="--progress-value: ${escapeHtml((fraction * 100).toFixed(2))}%">
+    ${copy}
+    <div class="progress-bar progress-bar-determinate" role="progressbar" aria-label="${escapeHtml(`${label} progress`)}" aria-valuemin="0" aria-valuemax="${escapeHtml(maximum)}" aria-valuenow="${escapeHtml(displayValue)}" aria-valuetext="${escapeHtml(accessibleValueText)}" data-progress-valuetext-base="${escapeHtml(valueText)}" style="--progress-value: ${escapeHtml((fraction * 100).toFixed(2))}%">
       <span class="progress-bar-fill" aria-hidden="true"></span>
     </div>
   </div>`;
 }
 
+function generationProgressCopyMarkup(label, eta) {
+  const completion = eta && eta.completionTimestamp !== null
+    ? ` data-generation-eta-completion="${escapeHtml(eta.completionTimestamp)}"`
+    : "";
+  const etaMarkup = eta
+    ? `<span class="generation-progress-eta" data-generation-eta${completion}>${escapeHtml(eta.text)}</span>`
+    : "";
+  return `<div class="generation-progress-copy"><strong class="generation-progress-label">${escapeHtml(label)}</strong>${etaMarkup}</div>`;
+}
+
+function activeGenerationEta(generation, now) {
+  if (!generation || !["dispatching", "running"].includes(generation.status)) return null;
+  const eta = generation.progress?.eta;
+  if (!eta || typeof eta !== "object" || Array.isArray(eta)) return null;
+  const serverCompletionTimestamp = etaCompletionTimestamp(eta.completion_at);
+  const reportedRemainingSeconds = nonnegativeFiniteNumber(eta.remaining_seconds);
+  const reportedOrAbsoluteRemainingSeconds =
+    reportedRemainingSeconds ??
+    (serverCompletionTimestamp === null ? null : (serverCompletionTimestamp - now) / 1000);
+  if (reportedOrAbsoluteRemainingSeconds === null) return null;
+  const completionTimestamp = anchoredEtaCompletionTimestamp(
+    generation,
+    eta,
+    serverCompletionTimestamp,
+    reportedRemainingSeconds,
+    now,
+  );
+  const remainingSeconds =
+    completionTimestamp !== null && reportedRemainingSeconds !== null
+      ? (completionTimestamp - now) / 1000
+      : reportedOrAbsoluteRemainingSeconds;
+  const text = formatGenerationEta(remainingSeconds);
+  if (!text) return null;
+  return {
+    text,
+    accessibleText: generationEtaAccessibleText(text),
+    completionTimestamp,
+  };
+}
+
+function anchoredEtaCompletionTimestamp(
+  generation,
+  eta,
+  serverCompletionTimestamp,
+  reportedRemainingSeconds,
+  now,
+) {
+  if (serverCompletionTimestamp === null) return null;
+  if (reportedRemainingSeconds === null) return serverCompletionTimestamp;
+
+  const generationId = typeof generation.id === "string" ? generation.id.trim() : "";
+  const etaUpdatedAt = typeof eta.updated_at === "string" ? eta.updated_at.trim() : "";
+  const etaUpdatedTimestamp = etaCompletionTimestamp(etaUpdatedAt);
+  if (!generationId || !etaUpdatedAt || etaUpdatedTimestamp === null) {
+    return now + reportedRemainingSeconds * 1_000;
+  }
+
+  const cached = generationEtaAnchors.get(generationId);
+  if (cached && etaUpdatedTimestamp <= cached.etaUpdatedTimestamp) {
+    generationEtaAnchors.delete(generationId);
+    generationEtaAnchors.set(generationId, cached);
+    return cached.completionTimestamp;
+  }
+
+  const completionTimestamp = now + reportedRemainingSeconds * 1_000;
+  generationEtaAnchors.delete(generationId);
+  generationEtaAnchors.set(generationId, {
+    etaUpdatedAt,
+    etaUpdatedTimestamp,
+    completionTimestamp,
+  });
+  while (generationEtaAnchors.size > MAX_GENERATION_ETA_ANCHORS) {
+    generationEtaAnchors.delete(generationEtaAnchors.keys().next().value);
+  }
+  return completionTimestamp;
+}
+
+function etaCompletionTimestamp(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function nonnegativeFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function generationEtaAccessibleText(text) {
+  return text === "Finishing…" ? "finishing" : text.replace(/^About/, "about");
+}
+
 function activeGenerationProgress(generation) {
   if (!generation || !["dispatching", "running", "cancel_requested"].includes(generation.status)) return null;
+  if (generation.status === "cancel_requested") {
+    return { kind: "indeterminate", label: "Stopping generation" };
+  }
   const progress = generation.progress;
   if (progress && ["node", "indeterminate"].includes(progress.kind)) return progress;
   if (generation.status === "dispatching") return { kind: "indeterminate", label: "Starting generation" };
-  if (generation.status === "cancel_requested") return { kind: "indeterminate", label: "Stopping generation" };
   return {
     kind: "indeterminate",
     label: generation.current_stage_label || "Processing",
@@ -1272,6 +1375,12 @@ export function formatGenerationDuration(value) {
   const minutes = Math.floor(roundedSeconds / 60);
   const remainingSeconds = roundedSeconds % 60;
   return minutes ? `${minutes}m ${remainingSeconds}s` : `${remainingSeconds}s`;
+}
+
+export function formatGenerationEta(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value <= 0) return "Finishing…";
+  return `About ${formatGenerationDuration(Math.ceil(value))} left`;
 }
 
 export function photoViewerMarkup(

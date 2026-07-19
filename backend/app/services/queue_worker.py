@@ -42,6 +42,7 @@ from .assets import AssetStore, StoredImage
 from .comfyui import ComfyUIAdapter
 from .event_broker import EventBroker
 from .events import add_generation_event, event_payload, publish_event
+from .generation_eta import GenerationEtaEstimator
 from .generations import GenerationService
 from .ollama import OllamaAdapter
 
@@ -101,6 +102,7 @@ class QueueWorker:
         assets: AssetStore,
         broker: EventBroker,
         generations: GenerationService,
+        generation_eta: GenerationEtaEstimator,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -109,6 +111,7 @@ class QueueWorker:
         self.assets = assets
         self.broker = broker
         self.generations = generations
+        self.generation_eta = generation_eta
         self._stop = asyncio.Event()
         self._main_task: asyncio.Task[None] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
@@ -684,6 +687,19 @@ class QueueWorker:
             else:
                 generation.status = GenerationStatus.RUNNING
                 generation.started_at = datetime.now(UTC)
+                progress = _progress_snapshot(
+                    kind="indeterminate",
+                    label="Starting workflow",
+                    identities={},
+                )
+                estimate = self.generation_eta.estimate(
+                    generation,
+                    progress=progress,
+                    now=generation.started_at,
+                )
+                if estimate is not None:
+                    progress["eta"] = estimate
+                generation.progress_json = progress
                 event = add_generation_event(
                     session,
                     generation,
@@ -1199,6 +1215,11 @@ class QueueWorker:
             generation = session.get(Generation, generation_id)
             if generation is None or generation.status in TERMINAL_STATUSES:
                 return
+            estimate = self.generation_eta.estimate(generation, progress=stored_snapshot)
+            if estimate is not None:
+                stored_snapshot["eta"] = estimate
+            else:
+                stored_snapshot.pop("eta", None)
             generation.progress_json = stored_snapshot
             owner_id = generation.owner_id
             tracker = self._progress_tracker(generation_id)
@@ -1778,6 +1799,7 @@ class QueueWorker:
             return
         event, pending_delete, owner_id = committed
         await self._publish_event_best_effort(event, generation_id=generation_id)
+        self.generation_eta.notify()
         if pending_delete:
             await _run_blocking(self._delete_terminal_if_present, generation_id)
             await self._publish_broker_best_effort(

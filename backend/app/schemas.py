@@ -205,6 +205,22 @@ class DeclaredOutputSummary(APIModel):
     artifacts: list[DeclaredArtifactReference] = Field(default_factory=list)
 
 
+class GenerationEta(APIModel):
+    remaining_seconds: float = Field(ge=0)
+    completion_at: datetime
+    lower_seconds: float = Field(ge=0)
+    upper_seconds: float = Field(ge=0)
+    confidence: Literal["low", "medium", "high"]
+    basis: str = Field(min_length=1, max_length=100)
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> GenerationEta:
+        if not self.lower_seconds <= self.remaining_seconds <= self.upper_seconds:
+            raise ValueError("ETA interval must contain the point estimate")
+        return self
+
+
 class GenerationProgress(APIModel):
     kind: Literal["indeterminate", "node"]
     node_id: str | None = None
@@ -215,6 +231,7 @@ class GenerationProgress(APIModel):
     value: int | float | None = None
     maximum: int | float | None = None
     fraction: float | None = Field(default=None, ge=0, le=1)
+    eta: GenerationEta | None = None
     updated_at: datetime
 
 

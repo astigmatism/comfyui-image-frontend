@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from app.main import create_app
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from tests.conftest import csrf
 from tests.fake_services import make_png
 from tests.helpers import (
@@ -419,6 +422,79 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         thumbnail = client.get(artifact["thumbnail_url"])
         assert content.status_code == 200 and content.headers["content-type"] == "image/png"
         assert thumbnail.status_code == 200 and thumbnail.headers["content-type"] == "image/webp"
+
+
+def test_idle_timing_audit_learns_matching_generation_eta(settings_factory, fake_state) -> None:
+    from app.models import GenerationTimingAuditState, GenerationTimingProfile
+
+    fake_state.initial_event_delay = 0
+    fake_state.default_stage_delay = 0.5
+    settings = settings_factory(enable_background_worker=True)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="eta.learning")
+        learned = create_generation(client, "first private calibration prompt", seed=7101)
+        learned_complete = wait_for_status(client, learned["id"], "succeeded", timeout=10)
+        assert learned_complete["progress"] is None
+
+        container = client.app.state.container
+        learned_duration = None
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            with container.db.session_factory() as session:
+                state = session.get(GenerationTimingAuditState, "generation_eta")
+                profile_durations = list(
+                    session.scalars(select(GenerationTimingProfile.median_seconds))
+                )
+                if (
+                    state is not None
+                    and state.cursor_generation_id == learned["id"]
+                    and profile_durations
+                    and container.generation_eta._profiles
+                ):
+                    learned_duration = max(profile_durations)
+                    break
+            time.sleep(0.02)
+        assert learned_duration is not None
+        assert learned_duration >= 0.4
+
+        predicted = create_generation(
+            client,
+            "different private subject and composition",
+            seed=9823,
+        )
+        running = wait_for_generation(
+            client,
+            predicted["id"],
+            lambda detail: (
+                detail["status"] == "running"
+                and detail.get("progress") is not None
+                and detail["progress"].get("eta") is not None
+            ),
+            timeout=6,
+        )
+        eta = running["progress"]["eta"]
+        assert set(eta) == {
+            "remaining_seconds",
+            "completion_at",
+            "lower_seconds",
+            "upper_seconds",
+            "confidence",
+            "basis",
+            "updated_at",
+        }
+        assert 0 <= eta["lower_seconds"] <= eta["remaining_seconds"] <= eta["upper_seconds"]
+        assert eta["confidence"] == "low"
+        assert eta["basis"] in {"historical_exact", "progress_landmark"}
+
+        completion_at = datetime.fromisoformat(eta["completion_at"])
+        updated_at = datetime.fromisoformat(eta["updated_at"])
+        assert completion_at.tzinfo is not None and completion_at.utcoffset() is not None
+        assert updated_at.tzinfo is not None and updated_at.utcoffset() is not None
+        assert completion_at >= updated_at
+        assert abs((completion_at - updated_at).total_seconds() - eta["remaining_seconds"]) < 0.01
+
+        predicted_complete = wait_for_status(client, predicted["id"], "succeeded", timeout=10)
+        assert predicted_complete["progress"] is None
 
 
 def test_websocket_setup_failure_falls_back_to_history_without_stranding_generation(

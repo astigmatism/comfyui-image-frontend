@@ -7,6 +7,7 @@ import {
   detailMarkup,
   favoritesMarkup,
   formatGenerationDuration,
+  formatGenerationEta,
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
@@ -264,6 +265,162 @@ test("running generation renders an accessible compact linear progress bar", () 
   assert.match(html, /class="progress-bar-fill"/);
   assert.doesNotMatch(html, /Current operation/);
   assert.doesNotMatch(html, /media-status/);
+});
+
+test("running progress presents a compact ETA and includes it in determinate accessibility text", () => {
+  const now = Date.parse("2026-07-17T12:00:00Z");
+  const completion = "2026-07-17T12:01:30Z";
+  const html = generationProgressMarkup(
+    {
+      id: "generation-eta",
+      status: "running",
+      progress: {
+        kind: "node",
+        label: "Main sampling",
+        value: 12,
+        maximum: 24,
+        fraction: 0.5,
+        updated_at: "2026-07-17T12:00:00Z",
+        eta: {
+          remaining_seconds: 90,
+          completion_at: completion,
+          lower_seconds: 75,
+          upper_seconds: 110,
+          confidence: "high",
+          basis: "source_resolution_history",
+          updated_at: "2026-07-17T12:00:00Z",
+        },
+      },
+    },
+    { now },
+  );
+
+  assert.match(html, /class="generation-progress-copy"/);
+  assert.match(html, /class="generation-progress-eta"[^>]*>About 1m 30s left<\/span>/);
+  assert.match(html, new RegExp(`data-generation-eta-completion="${Date.parse(completion)}"`));
+  assert.match(
+    html,
+    /aria-valuetext="12 of 24 for Main sampling, about 1m 30s left"/,
+  );
+  assert.match(html, /data-progress-valuetext-base="12 of 24 for Main sampling"/);
+
+  const skewedClientNow = now + 60 * 60 * 1_000;
+  const skewed = generationProgressMarkup(
+    {
+      status: "running",
+      progress: {
+        kind: "indeterminate",
+        label: "Main sampling",
+        eta: { remaining_seconds: 90, completion_at: completion },
+      },
+    },
+    { now: skewedClientNow },
+  );
+  assert.match(skewed, /About 1m 30s left/);
+  assert.match(
+    skewed,
+    new RegExp(`data-generation-eta-completion="${skewedClientNow + 90_000}"`),
+  );
+});
+
+test("rerendered ETA snapshots keep aging until a genuinely newer estimate arrives", () => {
+  const initialNow = Date.parse("2026-07-17T14:00:00Z");
+  const initialEta = {
+    remaining_seconds: 90,
+    completion_at: "2026-07-17T14:01:30Z",
+    updated_at: "2026-07-17T14:00:00Z",
+  };
+  const generation = {
+    id: "generation-eta-rerender-aging",
+    status: "running",
+    progress: {
+      kind: "indeterminate",
+      label: "Main sampling",
+      updated_at: initialEta.updated_at,
+      eta: initialEta,
+    },
+  };
+
+  const initial = generationProgressMarkup(generation, { now: initialNow });
+  assert.match(initial, /About 1m 30s left/);
+  assert.match(initial, new RegExp(`data-generation-eta-completion="${initialNow + 90_000}"`));
+
+  const agedNow = initialNow + 30_000;
+  const aged = generationProgressMarkup(generation, { now: agedNow });
+  assert.match(aged, /About 1m 0s left/);
+  assert.match(aged, new RegExp(`data-generation-eta-completion="${initialNow + 90_000}"`));
+
+  const refreshedNow = initialNow + 40_000;
+  const refreshed = generationProgressMarkup(
+    {
+      ...generation,
+      progress: {
+        ...generation.progress,
+        updated_at: "2026-07-17T14:00:35Z",
+        eta: {
+          remaining_seconds: 80,
+          completion_at: "2026-07-17T14:01:55Z",
+          updated_at: "2026-07-17T14:00:35Z",
+        },
+      },
+    },
+    { now: refreshedNow },
+  );
+  assert.match(refreshed, /About 1m 20s left/);
+  assert.match(
+    refreshed,
+    new RegExp(`data-generation-eta-completion="${refreshedNow + 80_000}"`),
+  );
+
+  const staleRerender = generationProgressMarkup(generation, { now: initialNow + 50_000 });
+  assert.match(staleRerender, /About 1m 10s left/);
+  assert.match(
+    staleRerender,
+    new RegExp(`data-generation-eta-completion="${refreshedNow + 80_000}"`),
+  );
+});
+
+test("ETA presentation supports dispatching and hides cancelled, terminal, and invalid estimates", () => {
+  const now = Date.parse("2026-07-17T12:00:00Z");
+  const progress = {
+    kind: "indeterminate",
+    label: "Loading model",
+    updated_at: "2026-07-17T12:00:00Z",
+    eta: { remaining_seconds: 12 },
+  };
+  const dispatching = generationProgressMarkup(
+    { id: "generation-dispatching", status: "dispatching", progress },
+    { now },
+  );
+  assert.match(dispatching, /progress-bar-indeterminate/);
+  assert.match(dispatching, /About 12s left/);
+  assert.doesNotMatch(dispatching, /data-generation-eta-completion=/);
+
+  const cancelled = generationProgressMarkup(
+    { id: "generation-cancelled", status: "cancel_requested", progress },
+    { now },
+  );
+  assert.match(cancelled, /Stopping generation/);
+  assert.doesNotMatch(cancelled, /generation-progress-eta|About 12s left/);
+
+  const terminal = generationProgressMarkup(
+    { id: "generation-complete", status: "succeeded", progress },
+    { now },
+  );
+  assert.equal(terminal, "");
+
+  const invalid = generationProgressMarkup(
+    {
+      id: "generation-invalid-eta",
+      status: "running",
+      progress: {
+        ...progress,
+        eta: { remaining_seconds: -1, completion_at: "not-a-timestamp" },
+      },
+    },
+    { now },
+  );
+  assert.doesNotMatch(invalid, /generation-progress-eta|About|Finishing/);
 });
 
 test("indeterminate linear progress omits aria-valuenow and queued cards keep queue copy", () => {
@@ -828,6 +985,15 @@ test("generation duration uses only whole minutes and seconds", () => {
   assert.equal(formatGenerationDuration(3661), "61m 1s");
   assert.equal(formatGenerationDuration(null), null);
   assert.equal(formatGenerationDuration(-1), null);
+});
+
+test("generation ETA rounds up while active and becomes finishing at zero", () => {
+  assert.equal(formatGenerationEta(29.1), "About 30s left");
+  assert.equal(formatGenerationEta(90), "About 1m 30s left");
+  assert.equal(formatGenerationEta(0), "Finishing…");
+  assert.equal(formatGenerationEta(-0.1), "Finishing…");
+  assert.equal(formatGenerationEta(null), null);
+  assert.equal(formatGenerationEta(Number.NaN), null);
 });
 
 test("Favorites modal renders a thumbnail, generation details, recall, and delete", () => {

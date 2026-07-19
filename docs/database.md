@@ -15,8 +15,13 @@ A successful authoritative publication refresh marks embedded-contract profiles 
 
 Migration `4f2a8c1d9e70_add_generation_progress_snapshot.py` adds nullable
 `generations.progress_json`. Existing and terminal generations remain null. While a request is
-active, the column contains only the latest safe node-local progress snapshot; it is cleared when
-the request is requeued or reaches its history-backed terminal state.
+active, the column contains only the latest safe node-local progress snapshot and, when historical
+evidence is sufficient, its nested cached ETA. It is cleared when the request is requeued or reaches
+its history-backed terminal state.
+
+Migration `a8d4e6f2c901_add_generation_timing_profiles.py` adds bounded timing profiles, a small
+versioned audit cursor, and the successful-run audit index. It performs no synchronous history
+backfill; the estimator incorporates eligible legacy rows later in idle-only batches.
 
 ## Main tables
 
@@ -73,9 +78,36 @@ After ComfyUI history reconciliation, these columns retain the result without fl
 | `result_warnings_json` | Publication and normalization warnings |
 | `result_errors_json` | Safe execution/publisher/normalization errors |
 | `comfyui_status_json` | Native bounded status/error metadata |
-| `progress_json` | Coalesced active current-operation label, safe node identity, counter/fraction, and timestamp; never a workflow-wide percentage |
+| `progress_json` | Coalesced active current-operation label, safe node identity, counter/fraction, timestamp, and optional nested ETA; never a workflow-wide percentage |
 
 The existing `comfyui_prompt_id` stores the native prompt ID. `artifacts` remains the retrievable binary index: every successfully archived image reference in declared and unmapped results has its own row, including batch siblings. Logical publisher references remain in `declared_outputs_json` even when `/view` retrieval fails, so normalization is not reduced to the set of locally stored binaries. `canonical` / `best_available` and generation artifact pointers remain presentation/legacy lifecycle aids; they do not rewrite the declared/unmapped/raw result structures.
+
+## Completion timing profiles
+
+Completion estimates are learned passively from successful generations after their history-backed
+terminal commit. Training uses the already retained source revision, requested/effective technical
+controls, resolution, and `started_at`/`completed_at` interval. Cancelled, failed, and interrupted
+runs do not become successful-completion samples. Prompt text, seeds, user identity, upload names or
+contents, executable graphs, and result payloads are never copied into timing profiles.
+
+The estimator retains bounded, privacy-safe robust profiles and loads them into an in-process lookup
+cache. Profiles contain only normalized technical cohort keys, capped timing observations or
+statistics, confidence inputs, and maintenance timestamps. Point estimates and intervals are based
+on robust distributions so one unusually cold or stalled run cannot dominate later estimates. The
+cache may back off from an exact source revision and control cohort to broader compatible cohorts
+when evidence is sparse; that fallback is reflected by lower confidence and a safe `basis` string.
+Total-duration and progress-landmark rows have independent fixed quotas so high-cardinality node
+history cannot evict all useful source fallbacks.
+
+Normal request acceptance and generation start never scan historical generations or aggregate
+timings. They perform only a lookup against the prepared cache. A bounded legacy audit can seed or
+repair profiles from older successful rows, but runs only while generation work is idle and uses
+scalar lifecycle/source/control projections rather than compiled graphs, raw history, or results.
+One versioned completion-time/ID cursor advances transactionally with each batch; the database does
+not accumulate a per-generation training marker. Progress-event reads are capped independently for
+each generation, and maintenance uses a short time/lock budget plus cooperative shutdown.
+Completing a generation clears `progress_json` and its ETA; the successful lifecycle interval can
+still be incorporated into a later profile update.
 
 ## Files and deletion
 
@@ -85,7 +117,9 @@ Removing a favorite deletes only its bookmark. Generation deletion removes exclu
 
 ## Time, indexes, and operations
 
-UTC timestamps are returned as timezone-aware ISO values. Indexes cover owner/newest pagination, queue status/order, native prompt ID recovery, artifact timelines, events, sessions, and publication instance/source/revision lookup.
+UTC timestamps are returned as timezone-aware ISO values. Indexes cover owner/newest pagination,
+queue status/order, native prompt ID recovery, artifact timelines, events, sessions, publication
+instance/source/revision lookup, and bounded successful-run timing maintenance.
 
 Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation.
 

@@ -259,8 +259,9 @@ Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_ou
 A summary contains lifecycle status, source display name, acceptance/stage state, one optional
 active `progress` snapshot, total artifact count, image count, final-image count, one optional
 `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native
-`prompt_id`, `source_key`, and `publication_id`. The display artifact is a gallery convenience
-selected from the workflow-authored final when available.
+`prompt_id`, `source_key`, and `publication_id`. The active snapshot may include a cached completion
+estimate under `progress.eta`. The display artifact is a gallery convenience selected from the
+workflow-authored final when available.
 
 Determinate progress is explicitly local to the current ComfyUI node:
 
@@ -276,14 +277,39 @@ Determinate progress is explicitly local to the current ComfyUI node:
     "value": 12,
     "maximum": 24,
     "fraction": 0.5,
+    "eta": {
+      "remaining_seconds": 18.4,
+      "completion_at": "2026-07-17T12:35:15.189Z",
+      "lower_seconds": 14.2,
+      "upper_seconds": 25.8,
+      "confidence": "high",
+      "basis": "progress_landmark",
+      "updated_at": "2026-07-17T12:34:56.789Z"
+    },
     "updated_at": "2026-07-17T12:34:56.789Z"
   }
 }
 ```
 
 Nodes without a valid positive maximum use `kind: "indeterminate"` with null numeric fields.
-`progress` is null for fair-queued and terminal generations. Counter resets across nodes must not
-be interpreted as workflow-wide completion.
+`eta` is independently optional: a running generation can have node progress without enough safe
+historical evidence for a completion estimate. `remaining_seconds` is the point estimate at
+`eta.updated_at`; `lower_seconds` and `upper_seconds` are the estimated remaining-time interval at
+that same instant and bound the point estimate. `completion_at` is the corresponding absolute
+timestamp, `confidence` is `low`, `medium`, or `high`, and `basis` is a safe diagnostic label for
+the historical fallback selected by the estimator. `basis` values are additive diagnostic text;
+clients must not branch on exact strings.
+
+Confidence reflects both sample strength and cohort compatibility. Exact technical matches and
+exact node landmarks may reach `high`; revision-and-resolution matches are capped at `medium`; and
+broader revision, source, or instance fallbacks remain `low` even with many samples.
+
+Clients anchor the local countdown from the `completion_at` / `remaining_seconds` pair and replace
+it when a newer ETA arrives; this avoids requiring synchronized browser and server clocks. The
+server does not write or broadcast timer-only ticks. Node counters and fractions remain local
+to the current ComfyUI node and must never be promoted into a workflow-wide percentage or used by
+the client to extrapolate its own completion time. `progress` is null for fair-queued and terminal
+generations, so every terminal outcome clears both progress and its nested ETA.
 
 List and favorites pages are bounded summary projections. They do not fetch generation compiled/submitted graphs, raw history, full result diagnostics, or full workflow-profile JSON. Related artifact, image-count, favorite, exact-revision, dependency-health data is resolved in a low constant number of batched statements while preserving owner and cursor ordering.
 
@@ -437,4 +463,6 @@ cancellation/reconciliation, terminal completion/error, requeue, and deletion. C
 `generation.progress` events include the safe current snapshot under `payload.progress` and update
 the affected card directly. Node transitions/final counters are durable replay events; intermediate
 ticks may be live-only because the same latest snapshot is durable on the generation. Other
-lifecycle and artifact events continue to trigger a single-generation fetch.
+lifecycle and artifact events continue to trigger a single-generation fetch. When present, the
+nested ETA travels with that same coalesced snapshot; a local countdown does not create additional
+SSE traffic.

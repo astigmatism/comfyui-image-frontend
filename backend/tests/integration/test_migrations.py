@@ -10,16 +10,18 @@ from app.models import (
     Favorite,
     Generation,
     GenerationStatus,
+    GenerationTimingAuditState,
+    GenerationTimingProfile,
     User,
     UserPreference,
     WorkflowProfile,
 )
-from sqlalchemy import MetaData, create_engine, inspect, select, text
+from sqlalchemy import MetaData, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "4f2a8c1d9e70"
+HEAD_REVISION = "a8d4e6f2c901"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -248,6 +250,8 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert generation.result_errors_json == []
         assert generation.comfyui_status_json == {}
         assert generation.progress_json is None
+        assert session.scalar(select(func.count()).select_from(GenerationTimingProfile)) == 0
+        assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 0
 
         assert artifact is not None
         assert artifact.generation_id == generation.id
@@ -331,12 +335,17 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "users",
         "user_preferences",
         "generations",
+        "generation_timing_audit_state",
+        "generation_timing_profiles",
         "artifacts",
         "workflow_profiles",
         "favorites",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
+    assert "ix_generations_timing_audit" in {
+        index["name"] for index in inspect(engine).get_indexes("generations")
     }
 
     command.downgrade(config, "base")
@@ -380,6 +389,8 @@ def test_populated_legacy_database_survives_publication_migration_round_trip(
     assert "generation_source_json" not in {
         column["name"] for column in inspect(engine).get_columns("generations")
     }
+    assert "generation_timing_profiles" not in inspect(engine).get_table_names()
+    assert "generation_timing_audit_state" not in inspect(engine).get_table_names()
     _assert_populated_legacy_rows(engine)
     engine.dispose()
 

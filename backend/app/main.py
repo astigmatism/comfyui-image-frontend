@@ -214,10 +214,11 @@ def create_app(
         configure_logging(settings.log_level)
         with container.db.session_factory() as session:
             container.auth.ensure_bootstrap_admin(session)
-        container.start_workflow_discovery()
-        if settings.enable_background_worker:
-            await container.worker.start()
         try:
+            await container.generation_eta.start()
+            container.start_workflow_discovery()
+            if settings.enable_background_worker:
+                await container.worker.start()
             yield
         finally:
             await container.close()

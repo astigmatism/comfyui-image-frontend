@@ -13,6 +13,7 @@ from .services.assets import AssetStore
 from .services.auth import AuthService
 from .services.comfyui import ComfyUIAdapter
 from .services.event_broker import EventBroker
+from .services.generation_eta import GenerationEtaEstimator
 from .services.generations import GenerationService
 from .services.ollama import OllamaAdapter
 from .services.queue_worker import QueueWorker
@@ -45,6 +46,7 @@ class AppContainer:
         )
         self.registry = WorkflowRegistry(self.db.session_factory, self.comfyui)
         self.compiler = WorkflowCompiler()
+        self.generation_eta = GenerationEtaEstimator(self.db.session_factory)
         self.generations = GenerationService(
             session_factory=self.db.session_factory,
             registry=self.registry,
@@ -67,6 +69,7 @@ class AppContainer:
             assets=self.assets,
             broker=self.broker,
             generations=self.generations,
+            generation_eta=self.generation_eta,
         )
         self._startup_discovery_task: asyncio.Task[None] | None = None
         self._observed_startup_discovery_tasks: set[asyncio.Future[None]] = set()
@@ -148,6 +151,8 @@ class AppContainer:
         logger.info("application_shutdown_started")
         await self.worker.stop()
         logger.info("worker_cancellation_complete")
+        await self.generation_eta.stop()
+        logger.info("generation_eta_maintenance_stopped")
         await self._stop_startup_discovery()
         logger.info("startup_discovery_cancellation_complete")
         await asyncio.gather(

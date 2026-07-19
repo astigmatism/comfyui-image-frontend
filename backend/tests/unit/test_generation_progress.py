@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 import pytest
+from app.schemas import GenerationProgress
 from app.services.queue_worker import (
     QueueWorker,
     _finite_number,
@@ -12,6 +13,27 @@ from app.services.queue_worker import (
     _runtime_node_identities,
     _safe_progress_label,
 )
+
+
+def test_progress_eta_requires_an_ordered_interval() -> None:
+    payload = {
+        "kind": "indeterminate",
+        "label": "Loading model",
+        "updated_at": "2026-07-18T12:00:00Z",
+        "eta": {
+            "remaining_seconds": 12,
+            "completion_at": "2026-07-18T12:00:12Z",
+            "lower_seconds": 8,
+            "upper_seconds": 20,
+            "confidence": "low",
+            "basis": "historical_exact",
+            "updated_at": "2026-07-18T12:00:00Z",
+        },
+    }
+    assert GenerationProgress.model_validate(payload).eta is not None
+    payload["eta"] = {**payload["eta"], "lower_seconds": 13}
+    with pytest.raises(ValueError, match="ETA interval"):
+        GenerationProgress.model_validate(payload)
 
 
 def test_progress_value_and_label_boundaries_reject_unsafe_values() -> None:
