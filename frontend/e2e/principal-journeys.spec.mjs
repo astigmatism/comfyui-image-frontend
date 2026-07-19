@@ -98,8 +98,8 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   const liveProgress = page.locator(".gallery-card").getByRole("progressbar");
   await expect(liveProgress).toBeVisible();
   await expect(liveProgress).toHaveAttribute("aria-valuetext", /of .* for Processing/);
-  await expect(page.locator(".gallery-card .generation-progress-copy")).toContainText(
-    "Current operation",
+  await expect(page.locator(".gallery-card .generation-progress-label")).toContainText(
+    "Processing",
   );
   await expect(page.locator(".gallery-card .card-media img")).toBeVisible();
   await expect(page.locator(".gallery-card")).toHaveClass(/status-(running|succeeded)/);

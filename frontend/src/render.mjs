@@ -1171,10 +1171,10 @@ export function generationProgressMarkup(generation) {
   const determinate = progress.kind === "node";
   if (!determinate) {
     return `<div class="generation-progress generation-progress-indeterminate">
-      <div class="progress-ring progress-ring-indeterminate" role="progressbar" aria-label="${escapeHtml(`${label}, current operation`)}">
-        <span class="progress-ring-pulse" aria-hidden="true"></span>
+      <strong class="generation-progress-label">${escapeHtml(label)}</strong>
+      <div class="progress-bar progress-bar-indeterminate" role="progressbar" aria-label="${escapeHtml(`${label} progress`)}">
+        <span class="progress-bar-fill" aria-hidden="true"></span>
       </div>
-      <div class="generation-progress-copy"><span>Current operation</span><strong>${escapeHtml(label)}</strong></div>
     </div>`;
   }
   const value = finiteProgressNumber(progress.value);
@@ -1190,10 +1190,10 @@ export function generationProgressMarkup(generation) {
   const valueLabel = formatProgressNumber(displayValue);
   const maximumLabel = formatProgressNumber(maximum);
   return `<div class="generation-progress generation-progress-determinate">
-    <div class="progress-ring progress-ring-determinate" role="progressbar" aria-label="${escapeHtml(`${label}, current operation`)}" aria-valuemin="0" aria-valuemax="${escapeHtml(maximum)}" aria-valuenow="${escapeHtml(displayValue)}" aria-valuetext="${escapeHtml(`${valueLabel} of ${maximumLabel} for ${label}`)}" style="--progress-value: ${escapeHtml((fraction * 100).toFixed(2))}%">
-      <strong>${escapeHtml(valueLabel)}</strong><span>of ${escapeHtml(maximumLabel)}</span>
+    <strong class="generation-progress-label">${escapeHtml(label)}</strong>
+    <div class="progress-bar progress-bar-determinate" role="progressbar" aria-label="${escapeHtml(`${label} progress`)}" aria-valuemin="0" aria-valuemax="${escapeHtml(maximum)}" aria-valuenow="${escapeHtml(displayValue)}" aria-valuetext="${escapeHtml(`${valueLabel} of ${maximumLabel} for ${label}`)}" style="--progress-value: ${escapeHtml((fraction * 100).toFixed(2))}%">
+      <span class="progress-bar-fill" aria-hidden="true"></span>
     </div>
-    <div class="generation-progress-copy"><span>Current operation</span><strong>${escapeHtml(label)}</strong></div>
   </div>`;
 }
 

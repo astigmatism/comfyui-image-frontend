@@ -238,7 +238,7 @@ test("gallery cards expose only the opaque artifact id as drag data metadata", (
   assert.doesNotMatch(html, /data-gallery-artifact-url/);
 });
 
-test("running generation renders an accessible node-local circular progress ring", () => {
+test("running generation renders an accessible compact linear progress bar", () => {
   const generation = {
     id: "generation-progress",
     status: "running",
@@ -253,19 +253,20 @@ test("running generation renders an accessible node-local circular progress ring
     },
   };
   const html = galleryCardMarkup(generation);
-  assert.match(html, /class="progress-ring progress-ring-determinate"/);
+  assert.match(html, /class="progress-bar progress-bar-determinate"/);
+  assert.match(html, /class="generation-progress-label">Main sampling/);
   assert.match(html, /role="progressbar"/);
   assert.match(html, /aria-valuemin="0"/);
   assert.match(html, /aria-valuemax="24"/);
   assert.match(html, /aria-valuenow="12"/);
   assert.match(html, /aria-valuetext="12 of 24 for Main sampling"/);
   assert.match(html, /style="--progress-value: 50\.00%"/);
-  assert.match(html, /<strong>12<\/strong><span>of 24<\/span>/);
-  assert.match(html, /Current operation/);
+  assert.match(html, /class="progress-bar-fill"/);
+  assert.doesNotMatch(html, /Current operation/);
   assert.doesNotMatch(html, /media-status/);
 });
 
-test("indeterminate circular progress omits aria-valuenow and queued cards keep queue copy", () => {
+test("indeterminate linear progress omits aria-valuenow and queued cards keep queue copy", () => {
   const indeterminate = generationProgressMarkup({
     id: "generation-loading",
     status: "running",
@@ -275,7 +276,7 @@ test("indeterminate circular progress omits aria-valuenow and queued cards keep 
       updated_at: "2026-07-17T12:00:00Z",
     },
   });
-  assert.match(indeterminate, /progress-ring-indeterminate/);
+  assert.match(indeterminate, /progress-bar-indeterminate/);
   assert.match(indeterminate, /role="progressbar"/);
   assert.match(indeterminate, /Loading model/);
   assert.doesNotMatch(indeterminate, /aria-valuenow|aria-valuemax/);
@@ -286,7 +287,7 @@ test("indeterminate circular progress omits aria-valuenow and queued cards keep 
     workflow_display_name: "Portrait",
   });
   assert.match(queued, /Waiting for a fair queue slot/);
-  assert.doesNotMatch(queued, /generation-progress-indeterminate/);
+  assert.doesNotMatch(queued, /progress-bar-indeterminate/);
 });
 
 const loraChoice = {
