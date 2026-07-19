@@ -1990,7 +1990,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   });
 });
 
-test("auto-generate applies each Creative Direction draft once and queues only when idle", async ({
+test("auto-generate applies Creative Direction before every generation and queues only when idle", async ({
   page,
 }) => {
   test.setTimeout(60_000);
@@ -2118,17 +2118,18 @@ test("auto-generate applies each Creative Direction draft once and queues only w
   );
   await autoGenerate.uncheck();
 
-  expect(sequence.slice(0, 5)).toEqual([
+  expect(sequence.slice(0, 6)).toEqual([
     "compose",
     "generate",
     "compose",
     "generate",
+    "compose",
     "generate",
   ]);
   expect(thirdRequest.postDataJSON().parameters.prompt).toBe(
-    "slow updated auto controls, cinematic blue hour",
+    "slow updated auto controls, cinematic blue hour, cinematic blue hour",
   );
-  expect(thirdRequest.postDataJSON().prompt_assistant_run_id).toBeUndefined();
+  expect(thirdRequest.postDataJSON().prompt_assistant_run_id).toBeTruthy();
   await page.waitForTimeout(500);
   expect(generationRequests).toHaveLength(3);
   await expect(generate).toBeEnabled();
@@ -2181,4 +2182,127 @@ test("auto-generate applies a Creative Direction restored without an input event
     "background lighthouse, cinematic dusk",
   );
   expect(request.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+});
+
+test("a manual Creative Direction composition can prepare the next automatic generation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const applyCreativeDirection = page.locator(
+    '#prompt-assistant [data-action="compose-prompt"]',
+  );
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const sequence = [];
+  let releaseComposition;
+  const compositionGate = new Promise((resolve) => {
+    releaseComposition = resolve;
+  });
+
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/prompt-assistant/compose" && request.method() === "POST") {
+      sequence.push("compose");
+    }
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      sequence.push("generate");
+    }
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await compositionGate;
+    await route.continue();
+  });
+
+  await prompt.fill("manual preparation lighthouse");
+  await direction.fill("storm-lit horizon");
+  const compositionRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST",
+  );
+  await applyCreativeDirection.click();
+  await compositionRequest;
+  await autoGenerate.check();
+  const generationRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  releaseComposition();
+
+  const request = await generationRequest;
+  await autoGenerate.uncheck();
+
+  expect(sequence.slice(0, 2)).toEqual(["compose", "generate"]);
+  expect(request.postDataJSON().parameters.prompt).toBe(
+    "manual preparation lighthouse, storm-lit horizon",
+  );
+  expect(request.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+  await page.unroute("**/api/prompt-assistant/compose");
+});
+
+test("auto-generate reevaluates controls changed while Creative Direction is composing", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const sequence = [];
+  let releaseComposition;
+  const compositionGate = new Promise((resolve) => {
+    releaseComposition = resolve;
+  });
+
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/prompt-assistant/compose" && request.method() === "POST") {
+      sequence.push("compose");
+    }
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      sequence.push("generate");
+    }
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await compositionGate;
+    await route.continue();
+  });
+
+  await prompt.fill("live control lighthouse");
+  await direction.fill("temporary blue hour");
+  const compositionRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST",
+  );
+  await autoGenerate.check();
+  await compositionRequest;
+  await direction.fill("");
+  const generationRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  releaseComposition();
+
+  const request = await generationRequest;
+  await autoGenerate.uncheck();
+
+  expect(sequence.slice(0, 2)).toEqual(["compose", "generate"]);
+  expect(request.postDataJSON().parameters.prompt).toBe("live control lighthouse");
+  expect(request.postDataJSON().prompt_assistant_run_id).toBeUndefined();
+  await page.unroute("**/api/prompt-assistant/compose");
 });

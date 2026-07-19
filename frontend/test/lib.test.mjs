@@ -223,7 +223,7 @@ test("active generation detection covers every non-terminal generation phase", (
   assert.equal(hasActiveGeneration([]), false);
 });
 
-test("auto-generation fingerprints only non-empty unapplied Prompt Assistant drafts", () => {
+test("auto-generation fingerprints non-empty Prompt Assistant input for one prepared cycle", () => {
   const refine = autoGenerationPromptAssistantFingerprint({
     sourceKey: "landscape",
     mode: "refine",

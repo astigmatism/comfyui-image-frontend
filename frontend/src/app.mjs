@@ -126,7 +126,8 @@ let servicePollingController = null;
 let startupGalleryBoundary = null;
 let autoGenerateScheduled = false;
 let autoGenerateCycleRunning = false;
-let autoGenerateAssistantFingerprint = null;
+let autoGenerateRescheduleRequested = false;
+let preparedAutoGenerateAssistantFingerprint = null;
 let promptCompositionRequests = 0;
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
@@ -311,7 +312,7 @@ async function handleChange(event) {
   const element = event.target;
   if (element.id === "auto-generate") {
     state.autoGenerate = element.checked;
-    autoGenerateAssistantFingerprint = null;
+    preparedAutoGenerateAssistantFingerprint = null;
     syncGenerationSubmissionState();
     scheduleAutoGenerate();
     return;
@@ -640,13 +641,13 @@ function handleInput(event) {
   }
   if (element.id === "creative-direction") {
     state.promptAssistant.creativeDirection = element.value;
-    autoGenerateAssistantFingerprint = null;
+    preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
   if (element.name === "assistant-mode") {
     state.promptAssistant.mode = element.value;
-    autoGenerateAssistantFingerprint = null;
+    preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
@@ -726,12 +727,12 @@ function applyPromptEditor() {
   state.formError = null;
   state.promptAssistant.creativeDirection = creativeDirection?.value || "";
   state.promptAssistant.mode = assistantMode?.value === "create" ? "create" : "refine";
-  autoGenerateAssistantFingerprint = null;
+  preparedAutoGenerateAssistantFingerprint = null;
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
     state.promptAssistant.historicalModel = dialog.dataset.promptAssistantModel || null;
     if (state.autoGenerate) {
-      autoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
+      preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }
   }
   persistActiveParameterState();
@@ -1403,7 +1404,7 @@ function syncNumberControlPair(element) {
   slider.value = element.value;
 }
 
-function syncParameterValidation(controlId) {
+function syncParameterValidation(controlId, { scheduleAutomaticGeneration = true } = {}) {
   const contract = sourceInterface(state.activeSource);
   const errors = {
     ...clientValidate(contract, state.parameters),
@@ -1429,7 +1430,7 @@ function syncParameterValidation(controlId) {
       errors,
     );
   }
-  scheduleAutoGenerate();
+  if (scheduleAutomaticGeneration) scheduleAutoGenerate();
 }
 
 function syncFieldError(block, controlId, message) {
@@ -2027,7 +2028,7 @@ function syncPromptAssistantDraftFromPanel() {
     nextDirection !== state.promptAssistant.creativeDirection ||
     nextMode !== state.promptAssistant.mode
   ) {
-    autoGenerateAssistantFingerprint = null;
+    preparedAutoGenerateAssistantFingerprint = null;
   }
   state.promptAssistant.creativeDirection = nextDirection;
   state.promptAssistant.mode = nextMode;
@@ -2169,7 +2170,12 @@ function syncGenerationSubmissionState() {
 }
 
 function scheduleAutoGenerate() {
-  if (!state.autoGenerate || autoGenerateScheduled || autoGenerateCycleRunning) return;
+  if (!state.autoGenerate) return;
+  if (autoGenerateCycleRunning) {
+    autoGenerateRescheduleRequested = true;
+    return;
+  }
+  if (autoGenerateScheduled) return;
   autoGenerateScheduled = true;
   queueMicrotask(() => {
     autoGenerateScheduled = false;
@@ -2194,7 +2200,7 @@ function currentAutoGenerateAssistantFingerprint() {
 
 function autoGenerationNeedsPromptAssistant() {
   const fingerprint = currentAutoGenerateAssistantFingerprint();
-  return Boolean(fingerprint && fingerprint !== autoGenerateAssistantFingerprint);
+  return Boolean(fingerprint && fingerprint !== preparedAutoGenerateAssistantFingerprint);
 }
 
 function autoGenerationReady() {
@@ -2244,9 +2250,12 @@ async function runAutoGenerateCycle() {
     queued = await generate({ automatic: true });
   } finally {
     autoGenerateCycleRunning = false;
+    const rescheduleRequested = autoGenerateRescheduleRequested;
+    autoGenerateRescheduleRequested = false;
     if (
       state.autoGenerate &&
-      (state.activeSourceKey !== requestSourceKey ||
+      (rescheduleRequested ||
+        state.activeSourceKey !== requestSourceKey ||
         (autoGenerationNeedsPromptAssistant() &&
           currentAutoGenerateAssistantFingerprint() !== requestAssistantFingerprint) ||
         (queued && !hasActiveGeneration(state.generations)))
@@ -2314,6 +2323,7 @@ async function generateSingleSource() {
       state.compositionId === requestCompositionId
     ) {
       state.compositionId = null;
+      if (requestCompositionId) preparedAutoGenerateAssistantFingerprint = null;
     }
     upsertGalleryCard(current || generation);
     toast("Generation queued.", "success");
@@ -2463,6 +2473,7 @@ async function generateSelectedSources() {
       state.compositionId === requestCompositionId
     ) {
       state.compositionId = null;
+      if (requestCompositionId) preparedAutoGenerateAssistantFingerprint = null;
     }
 
     if (failures.length) {
@@ -2556,13 +2567,15 @@ async function composePrompt(button, { automatic = false } = {}) {
       state.promptAssistant.mode === requestMode &&
       state.promptAssistant.creativeDirection === requestDirection
     ) {
-      autoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
+      preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }
     const prompt = document.querySelector(
       `[data-control-id="${CSS.escape(promptInput.id)}"]`,
     );
     if (prompt) prompt.value = result.prompt;
-    syncParameterValidation(promptInput.id);
+    syncParameterValidation(promptInput.id, {
+      scheduleAutomaticGeneration: !automatic,
+    });
     if (!automatic) {
       prompt?.focus();
       toast("Creative direction applied to the editable Prompt field.", "success");
