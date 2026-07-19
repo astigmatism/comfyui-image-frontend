@@ -2221,6 +2221,10 @@ function autoGenerationReady() {
 }
 
 async function runAutoGenerateCycle() {
+  // Browsers can restore form values without dispatching input events, especially after a
+  // background tab is discarded. Always reconcile the live assistant draft before deciding
+  // whether generation must wait for prompt composition.
+  syncPromptAssistantDraftFromPanel();
   if (!autoGenerationReady()) return;
   const requestSourceKey = state.activeSourceKey;
   const requestAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
@@ -2254,6 +2258,12 @@ async function runAutoGenerateCycle() {
 
 async function generate({ automatic = false } = {}) {
   if (state.autoGenerate && !automatic) return;
+  if (automatic) {
+    // Keep the ordering invariant at the submission boundary as well as at cycle startup.
+    // A draft restored while composition was in flight must start another cycle, not queue.
+    syncPromptAssistantDraftFromPanel();
+    if (autoGenerationNeedsPromptAssistant()) return false;
+  }
   if (hasComparisonSources()) return generateSelectedSources();
   return generateSingleSource();
 }

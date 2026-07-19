@@ -2135,3 +2135,50 @@ test("auto-generate applies each Creative Direction draft once and queues only w
   await page.unroute("**/api/prompt-assistant/compose");
   await page.unroute("**/api/generations");
 });
+
+test("auto-generate applies a Creative Direction restored without an input event before queueing", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("background lighthouse");
+
+  const sequence = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/prompt-assistant/compose" && request.method() === "POST") {
+      sequence.push("compose");
+    }
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      sequence.push("generate");
+    }
+  });
+  const generationRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+
+  await page.evaluate(() => {
+    const direction = document.querySelector("#creative-direction");
+    const autoGenerate = document.querySelector("#auto-generate");
+    direction.value = "cinematic dusk";
+    autoGenerate.checked = true;
+    autoGenerate.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  const request = await generationRequest;
+  await page.evaluate(() => {
+    const autoGenerate = document.querySelector("#auto-generate");
+    autoGenerate.checked = false;
+    autoGenerate.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  expect(sequence.slice(0, 2)).toEqual(["compose", "generate"]);
+  expect(request.postDataJSON().parameters.prompt).toBe(
+    "background lighthouse, cinematic dusk",
+  );
+  expect(request.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+});
