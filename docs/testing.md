@@ -146,7 +146,7 @@ Do not claim live end-to-end completion unless the exact latest publication was 
 
 ## Optional live Ollama verification
 
-The opt-in live suite exercises create, refine, and repeated-create behavior through the production `OllamaAdapter`. Every successful case requires nonempty thinking output from the live service, and create cases require the result to preserve the exact Creative Direction opening. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
+The opt-in live suite exercises create, refine, and repeated-create behavior through the production `OllamaAdapter`. Every successful case requires nonempty thinking output from the live service, and create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
 
 ```sh
 CIF_RUN_LIVE_OLLAMA_TESTS=1 \

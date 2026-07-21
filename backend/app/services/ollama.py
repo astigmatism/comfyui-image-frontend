@@ -162,10 +162,7 @@ class OllamaAdapter:
                     "response.",
                 )
             normalized_final = _normalize_prompt(final)
-            if mode != "create" or (
-                _starts_with_creative_direction(final, direction)
-                and normalized_final not in excluded
-            ):
+            if mode != "create" or normalized_final not in excluded:
                 raw_response = (
                     data
                     if len(responses) == 1
@@ -180,7 +177,7 @@ class OllamaAdapter:
             excluded.setdefault(normalized_final, final.strip())
         raise AppError(
             "ollama_invalid_response",
-            "Prompt Assistant could not produce a valid, distinct new prompt after retrying.",
+            "Prompt Assistant could not produce a distinct new prompt after retrying.",
         )
 
 
@@ -252,11 +249,6 @@ def _same_prompt(first: str, second: str) -> bool:
 
 def _normalize_prompt(value: str) -> str:
     return " ".join(value.split()).casefold()
-
-
-def _starts_with_creative_direction(prompt: str, direction: str) -> bool:
-    required_opening = direction.strip()
-    return not required_opening or prompt.startswith(required_opening)
 
 
 def _distinct_prompts(prompts: Sequence[str]) -> dict[str, str]:

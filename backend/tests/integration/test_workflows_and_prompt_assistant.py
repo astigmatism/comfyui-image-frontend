@@ -497,7 +497,7 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
     assert "old prompt that create mode must replace" in retry_request["prompt"]
 
 
-def test_create_prompt_assistant_retries_a_paraphrased_creative_direction(
+def test_create_prompt_assistant_accepts_a_useful_paraphrase_without_retrying(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client, username="preserved.direction")
@@ -505,7 +505,6 @@ def test_create_prompt_assistant_retries_a_paraphrased_creative_direction(
     app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 850
     fake_state.ollama_response_prompts = [
         "A vibrant red fox stands beneath pines washed in moonlight.",
-        "a red fox beneath moonlit pines, alert among mossy roots in silver light",
     ]
 
     response = app_client.post(
@@ -519,14 +518,11 @@ def test_create_prompt_assistant_retries_a_paraphrased_creative_direction(
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["prompt"].startswith("a red fox beneath moonlit pines")
-    assert len(fake_state.ollama_calls) == 2
-    assert fake_state.ollama_calls[0]["think"] is True
-    assert fake_state.ollama_calls[1]["think"] is True
-    assert (
+    assert response.json()["prompt"] == (
         "A vibrant red fox stands beneath pines washed in moonlight."
-        in (fake_state.ollama_calls[1]["prompt"])
     )
+    assert len(fake_state.ollama_calls) == 1
+    assert fake_state.ollama_calls[0]["think"] is True
 
 
 def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
