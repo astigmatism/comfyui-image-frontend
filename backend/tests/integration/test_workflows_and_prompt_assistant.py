@@ -388,7 +388,7 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     assert "Apply the smallest possible set of edits" in request_payload["prompt"]
     assert "Preserve every existing detail" in request_payload["prompt"]
     assert "Do not add unsolicited visual details" in request_payload["prompt"]
-    assert composed["template_version"] == "v3"
+    assert composed["template_version"] == "v4"
     assert app_client.get("/api/generations").json()["items"] == before
 
     payload = generation_payload(app_client, composed["prompt"], seed=123)
@@ -427,6 +427,7 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
 ) -> None:
     provision_user(app_client, username="creative.prompt")
     _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 700
 
     response = app_client.post(
         "/api/prompt-assistant/compose",
@@ -454,8 +455,8 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     assert "subject and defining attributes; action or pose; setting and environment" in instruction
     assert "old prompt that create mode must ignore" not in instruction
     assert request_payload["think"] is True
-    assert request_payload["options"] == {"temperature": 0.5, "seed": 0, "num_predict": 512}
-    assert response.json()["template_version"] == "v3"
+    assert request_payload["options"] == {"temperature": 0.5, "seed": 700, "num_predict": 512}
+    assert response.json()["template_version"] == "v4"
 
 
 def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
@@ -463,6 +464,7 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
 ) -> None:
     provision_user(app_client, username="unchanged.prompt")
     _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 800
     fake_state.ollama_response_prompts = [
         "  OLD   PROMPT that create mode must replace  ",
         "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise",
@@ -482,17 +484,72 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
     assert response.json()["prompt"] == (
         "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
     )
-    assert response.json()["template_version"] == "v3"
+    assert response.json()["template_version"] == "v4"
     assert len(fake_state.ollama_calls) == 2
     first_request, retry_request = fake_state.ollama_calls
-    assert first_request["options"] == {"temperature": 0.5, "seed": 0, "num_predict": 512}
+    assert first_request["options"] == {"temperature": 0.5, "seed": 800, "num_predict": 512}
     assert retry_request["options"] == {
         "temperature": 0.7,
-        "seed": 1,
+        "seed": 801,
         "num_predict": 512,
     }
     assert "Distinct-result requirement" in retry_request["prompt"]
-    assert "OLD   PROMPT that create mode must replace" in retry_request["prompt"]
+    assert "old prompt that create mode must replace" in retry_request["prompt"]
+
+
+def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="distinct.sequence")
+    _cache_ollama_health(app_client, available=True)
+    base_seeds = iter([100, 200, 300, 400])
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: next(base_seeds)
+    prompts = {
+        "a": "a fox standing among moonlit pines",
+        "b": "a fox leaping across a snowy ravine",
+        "c": "a fox drinking beside a silver woodland pool",
+        "d": "a fox resting beneath wind-bent mountain pines",
+    }
+    fake_state.ollama_response_prompts = [
+        prompts["a"],
+        prompts["b"],
+        prompts["a"],
+        prompts["c"],
+        prompts["b"],
+        prompts["d"],
+    ]
+
+    current = "an unrelated starting prompt"
+    composed_prompts = []
+    for _ in range(4):
+        response = app_client.post(
+            "/api/prompt-assistant/compose",
+            headers={"X-CSRF-Token": csrf(app_client)},
+            json={
+                "mode": "create",
+                "prompt": current,
+                "creative_direction": "a red fox beneath moonlit pines",
+            },
+        )
+        assert response.status_code == 200, response.text
+        current = response.json()["prompt"]
+        composed_prompts.append(current)
+
+    assert composed_prompts == [prompts["a"], prompts["b"], prompts["c"], prompts["d"]]
+    assert [call["options"]["seed"] for call in fake_state.ollama_calls] == [
+        100,
+        200,
+        300,
+        301,
+        400,
+        401,
+    ]
+    third_retry = fake_state.ollama_calls[3]["prompt"]
+    fourth_retry = fake_state.ollama_calls[5]["prompt"]
+    for excluded in (prompts["a"], prompts["b"]):
+        assert excluded in third_retry
+        assert excluded in fourth_retry
+    assert prompts["c"] in fourth_retry
 
 
 def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(

@@ -59,25 +59,28 @@ async def test_live_refine_applies_the_requested_change() -> None:
     assert "soft overcast light" in normalized
 
 
-async def test_live_repeated_create_returns_a_distinct_second_prompt() -> None:
+async def test_live_repeated_create_returns_four_distinct_prompts() -> None:
     adapter = _adapter()
     direction = "a red fox beneath moonlit pines"
+    current = "an unrelated starting prompt"
+    prompts: list[str] = []
     try:
-        first = await adapter.compose(
-            mode="create",
-            prompt="an unrelated starting prompt",
-            direction=direction,
-        )
-        second = await adapter.compose(
-            mode="create",
-            prompt=first.prompt,
-            direction=direction,
-        )
+        for _ in range(4):
+            result = await adapter.compose(
+                mode="create",
+                prompt=current,
+                direction=direction,
+                excluded_prompts=prompts,
+            )
+            prompts.append(result.prompt)
+            current = result.prompt
     finally:
         await adapter.close()
 
-    assert first.prompt != second.prompt
-    assert direction in first.prompt.casefold()
-    assert direction in second.prompt.casefold()
-    assert len(first.prompt.split()) >= 70
-    assert len(second.prompt.split()) >= 70
+    assert len(set(prompts)) == 4
+    for prompt in prompts:
+        normalized = prompt.casefold()
+        assert "red fox" in normalized
+        assert "moonlit" in normalized
+        assert "pine" in normalized
+        assert len(prompt.split()) >= 70

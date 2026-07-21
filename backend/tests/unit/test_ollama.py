@@ -73,18 +73,23 @@ def test_extract_prompt_supports_structured_and_plain_text_responses() -> None:
 
 
 def test_duplicate_create_retry_requires_a_distinct_result_and_changes_sampling() -> None:
-    previous = "A ceramic robot waving in a bright studio."
+    previous = [
+        "A ceramic robot waving in a bright studio.",
+        "A ceramic robot painting beside a rainy window.",
+    ]
     instruction = _distinct_create_instruction(
         direction="a ceramic robot",
-        previous_prompt=previous,
+        previous_prompts=previous,
     )
-    payload = _generate_payload(mode="create", instruction=instruction, attempt=1)
+    payload = _generate_payload(mode="create", instruction=instruction, attempt=1, seed=90210)
 
     assert "Distinct-result requirement" in instruction
     assert "Do not repeat, paraphrase, or lightly edit" in instruction
-    assert f"Previous attempt that must not be returned:\n{previous}" in instruction
+    assert "Previous prompts that must not be returned" in instruction
+    assert f"1. {previous[0]}" in instruction
+    assert f"2. {previous[1]}" in instruction
     assert payload["prompt"] == instruction
-    assert payload["options"] == {"temperature": 0.7, "seed": 1, "num_predict": 512}
+    assert payload["options"] == {"temperature": 0.7, "seed": 90210, "num_predict": 512}
     assert payload["think"] is True
 
 

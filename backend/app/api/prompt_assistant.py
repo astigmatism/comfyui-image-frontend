@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..dependencies import (
@@ -16,8 +17,10 @@ from ..dependencies import (
 from ..errors import AppError
 from ..models import PromptAssistantRun, ServiceHealth
 from ..schemas import PromptAssistantStatus, PromptComposeRequest, PromptComposeResponse
+from ..services.ollama import MAX_CREATE_EXCLUSIONS
 
 router = APIRouter(prefix="/api/prompt-assistant", tags=["prompt-assistant"])
+PROMPT_HISTORY_SCAN_LIMIT = 64
 
 
 @router.get("/status", response_model=PromptAssistantStatus)
@@ -84,11 +87,31 @@ async def compose(
             fields={"creative_direction": "Describe the intended image."},
         )
     container = get_container(request)
+    excluded_prompts: list[str] = []
+    if payload.mode == "create":
+        with container.db.session_factory() as history_session:
+            recent_runs = history_session.scalars(
+                select(PromptAssistantRun)
+                .where(
+                    PromptAssistantRun.owner_id == context.user.id,
+                    PromptAssistantRun.ollama_output.is_not(None),
+                )
+                .order_by(PromptAssistantRun.created_at.desc(), PromptAssistantRun.id.desc())
+                .limit(PROMPT_HISTORY_SCAN_LIMIT)
+            ).all()
+        excluded_prompts = [
+            run.ollama_output
+            for run in recent_runs
+            if run.mode == "create"
+            and run.creative_direction == payload.creative_direction
+            and run.ollama_output
+        ][:MAX_CREATE_EXCLUSIONS]
     try:
         result = await container.ollama.compose(
             mode=payload.mode,
             prompt=payload.prompt,
             direction=payload.creative_direction,
+            excluded_prompts=excluded_prompts,
         )
     except AppError as exc:
         session.add(
