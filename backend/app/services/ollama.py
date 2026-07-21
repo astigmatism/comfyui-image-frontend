@@ -144,6 +144,11 @@ class OllamaAdapter:
                 ) from exc
             data = received if isinstance(received, dict) else {}
             responses.append(data)
+            if not _has_thinking_output(data):
+                raise AppError(
+                    "ollama_invalid_response",
+                    "Prompt Assistant did not return thinking output.",
+                )
             final = _response_prompt(data)
             if not final:
                 raise AppError(
@@ -157,7 +162,10 @@ class OllamaAdapter:
                     "response.",
                 )
             normalized_final = _normalize_prompt(final)
-            if mode != "create" or normalized_final not in excluded:
+            if mode != "create" or (
+                _starts_with_creative_direction(final, direction)
+                and normalized_final not in excluded
+            ):
                 raw_response = (
                     data
                     if len(responses) == 1
@@ -172,7 +180,7 @@ class OllamaAdapter:
             excluded.setdefault(normalized_final, final.strip())
         raise AppError(
             "ollama_invalid_response",
-            "Prompt Assistant could not produce a distinct new prompt after retrying.",
+            "Prompt Assistant could not produce a valid, distinct new prompt after retrying.",
         )
 
 
@@ -246,6 +254,11 @@ def _normalize_prompt(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _starts_with_creative_direction(prompt: str, direction: str) -> bool:
+    required_opening = direction.strip()
+    return not required_opening or prompt.startswith(required_opening)
+
+
 def _distinct_prompts(prompts: Sequence[str]) -> dict[str, str]:
     distinct: dict[str, str] = {}
     for prompt in prompts:
@@ -300,6 +313,11 @@ def _response_prompt(data: dict[str, Any]) -> str:
     # that field so internal reasoning can never become the visible image prompt.
     thinking_text = data.get("thinking")
     return _extract_structured_prompt(thinking_text) if isinstance(thinking_text, str) else ""
+
+
+def _has_thinking_output(data: dict[str, Any]) -> bool:
+    thinking_text = data.get("thinking")
+    return isinstance(thinking_text, str) and bool(thinking_text.strip())
 
 
 def _distinct_create_instruction(*, direction: str, previous_prompts: Sequence[str]) -> str:

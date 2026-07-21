@@ -497,6 +497,38 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
     assert "old prompt that create mode must replace" in retry_request["prompt"]
 
 
+def test_create_prompt_assistant_retries_a_paraphrased_creative_direction(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="preserved.direction")
+    _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 850
+    fake_state.ollama_response_prompts = [
+        "A vibrant red fox stands beneath pines washed in moonlight.",
+        "a red fox beneath moonlit pines, alert among mossy roots in silver light",
+    ]
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "",
+            "creative_direction": "a red fox beneath moonlit pines",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"].startswith("a red fox beneath moonlit pines")
+    assert len(fake_state.ollama_calls) == 2
+    assert fake_state.ollama_calls[0]["think"] is True
+    assert fake_state.ollama_calls[1]["think"] is True
+    assert (
+        "A vibrant red fox stands beneath pines washed in moonlight."
+        in (fake_state.ollama_calls[1]["prompt"])
+    )
+
+
 def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
     app_client: TestClient, fake_state
 ) -> None:
@@ -505,10 +537,10 @@ def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
     base_seeds = iter([100, 200, 300, 400])
     app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: next(base_seeds)
     prompts = {
-        "a": "a fox standing among moonlit pines",
-        "b": "a fox leaping across a snowy ravine",
-        "c": "a fox drinking beside a silver woodland pool",
-        "d": "a fox resting beneath wind-bent mountain pines",
+        "a": "a red fox beneath moonlit pines, standing among moss-covered roots",
+        "b": "a red fox beneath moonlit pines, leaping across a snowy ravine",
+        "c": "a red fox beneath moonlit pines, drinking beside a silver woodland pool",
+        "d": "a red fox beneath moonlit pines, resting under wind-bent mountain branches",
     }
     fake_state.ollama_response_prompts = [
         prompts["a"],
@@ -571,6 +603,32 @@ def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
 
     assert response.status_code == 200, response.text
     assert response.json()["prompt"] == "a red fox"
+    assert fake_state.ollama_calls[-1]["think"] is True
+
+
+def test_prompt_assistant_rejects_a_response_without_thinking_output(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="missing.thinking")
+    _cache_ollama_health(app_client, available=True)
+    fake_state.ollama_include_thinking = False
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "a portrait in cool light",
+            "creative_direction": "make the light warmer",
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "ollama_invalid_response"
+    assert error["message"] == "Prompt Assistant did not return thinking output."
+    assert error["fields"] == {}
+    assert error["details"] == {}
     assert fake_state.ollama_calls[-1]["think"] is True
 
 

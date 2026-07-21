@@ -6,7 +6,9 @@ from app.services.ollama import (
     _distinct_create_instruction,
     _extract_prompt,
     _generate_payload,
+    _has_thinking_output,
     _instruction,
+    _starts_with_creative_direction,
 )
 
 
@@ -70,6 +72,21 @@ def test_extract_prompt_supports_structured_and_plain_text_responses() -> None:
     assert _extract_prompt(json.dumps({"prompt": "  a detailed scene  "})) == "a detailed scene"
     assert _extract_prompt('```json\n{"prompt": "a fenced response"}\n```') == ("a fenced response")
     assert _extract_prompt("  a plain response  ") == "a plain response"
+
+
+def test_thinking_output_must_be_a_nonempty_string() -> None:
+    assert _has_thinking_output({"thinking": "considered the constraints"}) is True
+    assert _has_thinking_output({"thinking": "  "}) is False
+    assert _has_thinking_output({"response": '{"prompt":"portrait"}'}) is False
+
+
+def test_create_result_must_start_with_the_exact_creative_direction() -> None:
+    direction = "a red fox beneath moonlit pines"
+
+    assert _starts_with_creative_direction(f"{direction}, low-angle photograph", direction)
+    assert not _starts_with_creative_direction(
+        "A vibrant red fox beneath pines washed in moonlight.", direction
+    )
 
 
 def test_duplicate_create_retry_requires_a_distinct_result_and_changes_sampling() -> None:
