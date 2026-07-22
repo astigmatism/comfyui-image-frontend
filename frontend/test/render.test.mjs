@@ -609,7 +609,11 @@ test("generation panel places the source dialog launcher before generated contro
       sourceIndex < promptIndex,
   );
   assert.match(html, /id="auto-generate"[^>]*role="switch"/);
-  assert.match(html, /id="auto-generate-creative-direction"[^>]*role="switch"/);
+  const creativeDirectionControl =
+    html.match(/<input id="auto-generate-creative-direction"[^>]*>/)?.[0] || "";
+  assert.match(creativeDirectionControl, /type="checkbox"/);
+  assert.match(creativeDirectionControl, /aria-label="Use Creative Direction"/);
+  assert.doesNotMatch(creativeDirectionControl, /role="switch"/);
   assert.match(html, /<em>Auto-generate<\/em>/);
   assert.match(html, /<em>Creative Direction<\/em>/);
   assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /aria-haspopup="dialog"/);

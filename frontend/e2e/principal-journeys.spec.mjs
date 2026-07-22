@@ -2004,8 +2004,8 @@ test("auto-generate applies enabled Creative Direction before every generation a
     exact: true,
   });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
-  const useCreativeDirection = page.getByRole("switch", {
-    name: "Creative Direction",
+  const useCreativeDirection = page.getByRole("checkbox", {
+    name: "Use Creative Direction",
   });
   const generate = page.locator("#generate-button");
   const applyCreativeDirection = page.locator(
@@ -2014,7 +2014,9 @@ test("auto-generate applies enabled Creative Direction before every generation a
   const automaticControlLayout = await page
     .locator(".auto-generation-options")
     .evaluate((row) => {
-      const controls = row.querySelectorAll(".auto-generation-switch");
+      const controls = row.querySelectorAll(
+        ".auto-generation-switch, .auto-generation-checkbox",
+      );
       const rectangles = [...controls].map((control) => {
         const bounds = control.getBoundingClientRect();
         return { left: bounds.left, top: bounds.top, width: bounds.width };
@@ -2171,8 +2173,8 @@ test("auto-generate leaves a populated Creative Direction unused when its contro
     exact: true,
   });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
-  const useCreativeDirection = page.getByRole("switch", {
-    name: "Creative Direction",
+  const useCreativeDirection = page.getByRole("checkbox", {
+    name: "Use Creative Direction",
   });
   const sequence = [];
   page.on("request", (request) => {
@@ -2211,8 +2213,8 @@ test("auto-generate skips an empty enabled Creative Direction without clearing t
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
-  const useCreativeDirection = page.getByRole("switch", {
-    name: "Creative Direction",
+  const useCreativeDirection = page.getByRole("checkbox", {
+    name: "Use Creative Direction",
   });
   const sequence = [];
   page.on("request", (request) => {
@@ -2370,8 +2372,8 @@ test("auto-generate reevaluates controls changed while Creative Direction is com
     exact: true,
   });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
-  const useCreativeDirection = page.getByRole("switch", {
-    name: "Creative Direction",
+  const useCreativeDirection = page.getByRole("checkbox", {
+    name: "Use Creative Direction",
   });
   const sequence = [];
   let releaseComposition;

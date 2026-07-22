@@ -127,9 +127,8 @@ export function generationPanelMarkup(state, profile, contract) {
               <span aria-hidden="true"></span>
               <em>Auto-generate</em>
             </label>
-            <label class="switch auto-generation-switch" for="auto-generate-creative-direction">
-              <input id="auto-generate-creative-direction" type="checkbox" role="switch" ${state.autoGenerateCreativeDirection ? "checked" : ""} />
-              <span aria-hidden="true"></span>
+            <label class="auto-generation-checkbox" for="auto-generate-creative-direction">
+              <input id="auto-generate-creative-direction" type="checkbox" aria-label="Use Creative Direction" ${state.autoGenerateCreativeDirection ? "checked" : ""} />
               <em>Creative Direction</em>
             </label>
           </div>

@@ -298,22 +298,36 @@ code {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
   margin-left: 2px;
 }
 
 .auto-generation-switch {
-  gap: 4px;
+  gap: 7px;
 }
 
-.auto-generation-switch input,
-.auto-generation-switch > span {
-  width: 36px;
+.auto-generation-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  cursor: pointer;
 }
 
-.auto-generation-switch em {
+.auto-generation-checkbox input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  accent-color: #4d89d3;
+  cursor: pointer;
+}
+
+.auto-generation-switch em,
+.auto-generation-checkbox em {
   color: var(--text-soft);
-  font-size: 0.75rem;
+  font-style: normal;
+  font-size: 0.78rem;
   font-weight: 600;
   white-space: nowrap;
 }
