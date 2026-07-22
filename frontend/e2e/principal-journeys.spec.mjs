@@ -2011,6 +2011,22 @@ test("auto-generate applies enabled Creative Direction before every generation a
   const applyCreativeDirection = page.locator(
     '#prompt-assistant [data-action="compose-prompt"]',
   );
+  const automaticControlLayout = await page
+    .locator(".auto-generation-options")
+    .evaluate((row) => {
+      const controls = row.querySelectorAll(".auto-generation-switch");
+      const rectangles = [...controls].map((control) => {
+        const bounds = control.getBoundingClientRect();
+        return { left: bounds.left, top: bounds.top, width: bounds.width };
+      });
+      return {
+        controls: rectangles,
+        rowWidth: row.getBoundingClientRect().width,
+        sameRow:
+          rectangles.length === 2 && Math.abs(rectangles[0].top - rectangles[1].top) < 2,
+      };
+    });
+  expect(automaticControlLayout).toMatchObject({ sameRow: true });
   const sequence = [];
   const generationRequests = [];
   let releaseFirstComposition;

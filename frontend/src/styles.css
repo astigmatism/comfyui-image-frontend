@@ -296,19 +296,24 @@ code {
 
 .auto-generation-options {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 8px 14px;
+  gap: 6px;
   margin-left: 2px;
 }
 
 .auto-generation-switch {
-  gap: 7px;
+  gap: 4px;
+}
+
+.auto-generation-switch input,
+.auto-generation-switch > span {
+  width: 36px;
 }
 
 .auto-generation-switch em {
   color: var(--text-soft);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -3423,6 +3428,10 @@ tr:last-child td {
 }
 
 @media (max-width: 360px) {
+  .auto-generation-options {
+    flex-wrap: wrap;
+  }
+
   .photo-viewer-toolbar {
     top: 66px;
     right: 12px;
