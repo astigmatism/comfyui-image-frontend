@@ -156,9 +156,6 @@ class AuthService:
             stored.revoked_at = now
             session.commit()
             return None
-        if now - _as_utc(stored.last_seen_at) > timedelta(minutes=5):
-            stored.last_seen_at = now
-            session.commit()
         return user, stored
 
     def logout(self, session: Session, raw_token: str | None) -> None:

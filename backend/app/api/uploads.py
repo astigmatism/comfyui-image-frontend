@@ -242,8 +242,10 @@ def upload_content(
     if upload is None:
         raise AppError("not_found", "Upload was not found.", status_code=404)
     path = get_container(request).assets.open(upload.storage_path)
+    media_type = upload.mime_type
+    session.close()
     return FileResponse(
         path,
-        media_type=upload.mime_type,
+        media_type=media_type,
         headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
     )

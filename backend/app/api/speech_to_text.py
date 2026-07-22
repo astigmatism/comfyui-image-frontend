@@ -3,8 +3,15 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
+from sqlalchemy.orm import Session
 
-from ..dependencies import AuthContext, get_container, require_ready_csrf, require_ready_user
+from ..dependencies import (
+    AuthContext,
+    get_container,
+    get_db,
+    require_ready_csrf,
+    require_ready_user,
+)
 from ..errors import AppError
 from ..schemas import SpeechToTextStatus, TranscriptionResponse
 
@@ -24,6 +31,7 @@ def status(
 async def transcribe(
     request: Request,
     file: Annotated[UploadFile, File()],
+    session: Annotated[Session, Depends(get_db)],
     _: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> TranscriptionResponse:
     content_type = (file.content_type or "").split(";", 1)[0].strip().casefold()
@@ -35,6 +43,10 @@ async def transcribe(
         )
     container = get_container(request)
     maximum = container.settings.speech_to_text_max_bytes
+
+    # Authentication is complete and this route performs no database writes.
+    # Do not retain a pooled connection while reading or transcribing the upload.
+    session.close()
     audio = await file.read(maximum + 1)
     if not audio:
         raise AppError("speech_audio_empty", "The recording was empty.", status_code=422)

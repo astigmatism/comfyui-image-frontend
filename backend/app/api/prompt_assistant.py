@@ -87,13 +87,14 @@ async def compose(
             fields={"creative_direction": "Describe the intended image."},
         )
     container = get_container(request)
+    owner_id = context.user.id
     excluded_prompts: list[str] = []
     if payload.mode == "create":
         with container.db.session_factory() as history_session:
             recent_runs = history_session.scalars(
                 select(PromptAssistantRun)
                 .where(
-                    PromptAssistantRun.owner_id == context.user.id,
+                    PromptAssistantRun.owner_id == owner_id,
                     PromptAssistantRun.ollama_output.is_not(None),
                 )
                 .order_by(PromptAssistantRun.created_at.desc(), PromptAssistantRun.id.desc())
@@ -106,6 +107,11 @@ async def compose(
             and run.creative_direction == payload.creative_direction
             and run.ollama_output
         ][:MAX_CREATE_EXCLUSIONS]
+
+    # Authentication and prompt-history reads are complete. Release their pooled
+    # connection before waiting on the external model; this Session can be reused
+    # afterward to record the result.
+    session.close()
     try:
         result = await container.ollama.compose(
             mode=payload.mode,
@@ -116,7 +122,7 @@ async def compose(
     except AppError as exc:
         session.add(
             PromptAssistantRun(
-                owner_id=context.user.id,
+                owner_id=owner_id,
                 mode=payload.mode,
                 prompt_before=payload.prompt,
                 creative_direction=payload.creative_direction,
@@ -128,7 +134,7 @@ async def compose(
         session.commit()
         raise
     run = PromptAssistantRun(
-        owner_id=context.user.id,
+        owner_id=owner_id,
         mode=payload.mode,
         prompt_before=payload.prompt,
         creative_direction=payload.creative_direction,

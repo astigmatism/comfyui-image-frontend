@@ -4,11 +4,15 @@ import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from app.api import uploads as uploads_api
 from app.api.events import events
 from app.main import create_app
+from app.models import Session as UserSession
+from app.security import keyed_hash
 from app.services import queue_worker as queue_worker_module
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
@@ -28,6 +32,128 @@ def _health_completes_while_storage_is_blocked(client: TestClient) -> None:
         raise AssertionError("health request stalled behind blocking image storage") from exc
     executor.shutdown(wait=True)
     assert response.status_code == 200, response.text
+
+
+def test_session_lookup_stays_read_only_while_a_database_writer_is_busy(
+    app_client: TestClient,
+) -> None:
+    _, raw_token = provision_user(app_client, username="session.reader")
+    container = app_client.app.state.container
+    stale_seen_at = datetime.now(UTC) - timedelta(minutes=10)
+    with container.db.session_factory() as session:
+        stored = session.get(UserSession, keyed_hash(raw_token, container.settings))
+        assert stored is not None
+        stored.last_seen_at = stale_seen_at
+        session.commit()
+
+    writer = container.db.engine.raw_connection()
+    cursor = writer.cursor()
+    cursor.execute("BEGIN IMMEDIATE")
+    executor = ThreadPoolExecutor(max_workers=1)
+    request = executor.submit(app_client.get, "/api/auth/session")
+    try:
+        response = request.result(timeout=2)
+    except FutureTimeoutError as exc:
+        raise AssertionError("session lookup stalled behind an unrelated SQLite writer") from exc
+    finally:
+        writer.rollback()
+        cursor.close()
+        writer.close()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["authenticated"] is True
+    with container.db.session_factory() as session:
+        stored = session.get(UserSession, keyed_hash(raw_token, container.settings))
+        assert stored is not None
+        assert stored.last_seen_at < datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=5)
+
+
+def test_slow_prompt_composition_does_not_retain_its_authentication_connection(
+    app_client: TestClient,
+    fake_state,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provision_user(app_client, username="assistant.pool")
+    container = app_client.app.state.container
+    original_compose = container.ollama.compose
+    composition_started = threading.Event()
+    release_composition = threading.Event()
+
+    async def blocking_compose(*args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        composition_started.set()
+        released = await asyncio.to_thread(release_composition.wait, 5)
+        if not released:
+            raise TimeoutError("test did not release Prompt Assistant composition")
+        return await original_compose(*args, **kwargs)
+
+    monkeypatch.setattr(container.ollama, "compose", blocking_compose)
+    fake_state.ollama_response_prompts = ["a patient fox beneath a silver moon"]
+    headers = {"X-CSRF-Token": csrf(app_client)}
+    executor = ThreadPoolExecutor(max_workers=1)
+    composition = executor.submit(
+        app_client.post,
+        "/api/prompt-assistant/compose",
+        headers=headers,
+        json={
+            "mode": "create",
+            "prompt": "",
+            "creative_direction": "a patient fox beneath a silver moon",
+        },
+    )
+    assert composition_started.wait(timeout=2)
+    try:
+        assert container.db.engine.pool.checkedout() == 0
+        session_response = app_client.get("/api/auth/session")
+        assert session_response.status_code == 200, session_response.text
+    finally:
+        release_composition.set()
+        compose_response = composition.result(timeout=5)
+        executor.shutdown(wait=True, cancel_futures=True)
+    assert compose_response.status_code == 200, compose_response.text
+
+
+def test_authenticated_file_stream_releases_metadata_connection_before_streaming(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provision_user(app_client, username="stream.pool")
+    upload = app_client.post(
+        "/api/uploads/images",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        files={"file": ("source.png", make_png("stream pool"), "image/png")},
+    )
+    assert upload.status_code == 200, upload.text
+    preview_url = upload.json()["preview_url"]
+    stream_started = threading.Event()
+    release_stream = threading.Event()
+
+    def blocking_file_response(*_args: Any, **_kwargs: Any) -> StreamingResponse:
+        async def body():  # type: ignore[no-untyped-def]
+            stream_started.set()
+            yield b"stream-start"
+            released = await asyncio.to_thread(release_stream.wait, 5)
+            if not released:
+                raise TimeoutError("test did not release authenticated file stream")
+            yield b"stream-end"
+
+        return StreamingResponse(body(), media_type="application/octet-stream")
+
+    monkeypatch.setattr(uploads_api, "FileResponse", blocking_file_response)
+    container = app_client.app.state.container
+    executor = ThreadPoolExecutor(max_workers=1)
+    download = executor.submit(app_client.get, preview_url)
+    assert stream_started.wait(timeout=2)
+    try:
+        assert container.db.engine.pool.checkedout() == 0
+        session_response = app_client.get("/api/auth/session")
+        assert session_response.status_code == 200, session_response.text
+    finally:
+        release_stream.set()
+        download_response = download.result(timeout=5)
+        executor.shutdown(wait=True, cancel_futures=True)
+    assert download_response.status_code == 200
+    assert download_response.content == b"stream-startstream-end"
 
 
 def test_blocking_artifact_storage_does_not_stall_unrelated_http_requests(

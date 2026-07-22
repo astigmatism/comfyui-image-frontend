@@ -88,19 +88,22 @@ def reset_password(
 async def delete_user(
     user_id: str,
     request: Request,
+    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(_admin_csrf)],
 ) -> None:
-    await get_container(request).user_deletion.delete_user(
-        actor_id=context.user.id, target_id=user_id
-    )
+    actor_id = context.user.id
+    session.close()
+    await get_container(request).user_deletion.delete_user(actor_id=actor_id, target_id=user_id)
 
 
 @router.post("/workflows/refresh", response_model=list[AdminDiagnostic])
 async def refresh_workflows(
     request: Request,
+    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(_admin_csrf)],
 ) -> list[AdminDiagnostic]:
     del context
+    session.close()
     diagnostics = await get_container(request).registry.refresh()
     return [
         AdminDiagnostic(

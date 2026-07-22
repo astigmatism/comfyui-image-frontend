@@ -306,7 +306,7 @@ def create_app(
         )
 
     @app.get("/api/health", tags=["operations"])
-    async def health() -> JSONResponse:
+    def health() -> JSONResponse:
         database_healthy = container.db.healthcheck()
         worker = container.worker.health_snapshot()
         healthy = database_healthy and bool(worker["ready"])

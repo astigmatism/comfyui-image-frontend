@@ -145,9 +145,11 @@ def artifact_content(
     if artifact is None:
         raise AppError("not_found", "Artifact was not found.", status_code=404)
     path = get_container(request).assets.open(artifact.storage_path)
+    media_type = artifact.mime_type
+    session.close()
     return FileResponse(
         path,
-        media_type=artifact.mime_type,
+        media_type=media_type,
         headers={
             "Cache-Control": "private, max-age=86400, immutable",
             "X-Content-Type-Options": "nosniff",
@@ -171,6 +173,7 @@ def artifact_thumbnail(
     if artifact is None or not artifact.thumbnail_path:
         raise AppError("not_found", "Thumbnail was not found.", status_code=404)
     path = get_container(request).assets.open(artifact.thumbnail_path)
+    session.close()
     return FileResponse(
         path,
         media_type="image/webp",
