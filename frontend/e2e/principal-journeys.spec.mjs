@@ -1990,7 +1990,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   });
 });
 
-test("auto-generate applies Creative Direction before every generation and queues only when idle", async ({
+test("auto-generate applies enabled Creative Direction before every generation and queues only when idle", async ({
   page,
 }) => {
   test.setTimeout(60_000);
@@ -2004,6 +2004,9 @@ test("auto-generate applies Creative Direction before every generation and queue
     exact: true,
   });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const useCreativeDirection = page.getByRole("switch", {
+    name: "Creative Direction",
+  });
   const generate = page.locator("#generate-button");
   const applyCreativeDirection = page.locator(
     '#prompt-assistant [data-action="compose-prompt"]',
@@ -2058,6 +2061,7 @@ test("auto-generate applies Creative Direction before every generation and queue
       new URL(request.url()).pathname === "/api/generations" &&
       request.method() === "POST",
   );
+  await useCreativeDirection.check();
   await autoGenerate.check();
   await firstCompositionPromise;
 
@@ -2073,6 +2077,7 @@ test("auto-generate applies Creative Direction before every generation and queue
   const firstRequest = await firstRequestPromise;
 
   await expect(autoGenerate).toBeChecked();
+  await expect(useCreativeDirection).toBeChecked();
   await expect(generate).toBeDisabled();
   await expect(applyCreativeDirection).toBeEnabled();
   await expect(applyCreativeDirection).toHaveText("Apply Creative Direction");
@@ -2137,6 +2142,90 @@ test("auto-generate applies Creative Direction before every generation and queue
   await page.unroute("**/api/generations");
 });
 
+test("auto-generate leaves a populated Creative Direction unused when its control is disabled", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const useCreativeDirection = page.getByRole("switch", {
+    name: "Creative Direction",
+  });
+  const sequence = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/prompt-assistant/compose" && request.method() === "POST") {
+      sequence.push("compose");
+    }
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      sequence.push("generate");
+    }
+  });
+
+  await prompt.fill("unmodified lighthouse prompt");
+  await direction.fill("this direction must be ignored");
+  await expect(useCreativeDirection).not.toBeChecked();
+  const generationRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  await autoGenerate.check();
+  const request = await generationRequest;
+  await autoGenerate.uncheck();
+
+  expect(sequence).toEqual(["generate"]);
+  expect(request.postDataJSON().parameters.prompt).toBe("unmodified lighthouse prompt");
+  expect(request.postDataJSON().prompt_assistant_run_id).toBeUndefined();
+});
+
+test("auto-generate skips an empty enabled Creative Direction without clearing the control", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const useCreativeDirection = page.getByRole("switch", {
+    name: "Creative Direction",
+  });
+  const sequence = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/prompt-assistant/compose" && request.method() === "POST") {
+      sequence.push("compose");
+    }
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      sequence.push("generate");
+    }
+  });
+
+  await prompt.fill("plain empty-direction prompt");
+  await useCreativeDirection.check();
+  const generationRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  await autoGenerate.check();
+  const request = await generationRequest;
+  await autoGenerate.uncheck();
+
+  expect(sequence).toEqual(["generate"]);
+  expect(request.postDataJSON().parameters.prompt).toBe("plain empty-direction prompt");
+  expect(request.postDataJSON().prompt_assistant_run_id).toBeUndefined();
+  await expect(useCreativeDirection).toBeChecked();
+});
+
 test("auto-generate applies a Creative Direction restored without an input event before queueing", async ({
   page,
 }) => {
@@ -2165,7 +2254,11 @@ test("auto-generate applies a Creative Direction restored without an input event
   await page.evaluate(() => {
     const direction = document.querySelector("#creative-direction");
     const autoGenerate = document.querySelector("#auto-generate");
+    const useCreativeDirection = document.querySelector(
+      "#auto-generate-creative-direction",
+    );
     direction.value = "cinematic dusk";
+    useCreativeDirection.checked = true;
     autoGenerate.checked = true;
     autoGenerate.dispatchEvent(new Event("change", { bubbles: true }));
   });
@@ -2184,7 +2277,7 @@ test("auto-generate applies a Creative Direction restored without an input event
   expect(request.postDataJSON().prompt_assistant_run_id).toBeTruthy();
 });
 
-test("a manual Creative Direction composition can prepare the next automatic generation", async ({
+test("a manual Creative Direction composition can prepare the next auto-generate request", async ({
   page,
 }) => {
   await page.goto("/");
@@ -2261,6 +2354,9 @@ test("auto-generate reevaluates controls changed while Creative Direction is com
     exact: true,
   });
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const useCreativeDirection = page.getByRole("switch", {
+    name: "Creative Direction",
+  });
   const sequence = [];
   let releaseComposition;
   const compositionGate = new Promise((resolve) => {
@@ -2288,6 +2384,7 @@ test("auto-generate reevaluates controls changed while Creative Direction is com
       new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
       request.method() === "POST",
   );
+  await useCreativeDirection.check();
   await autoGenerate.check();
   await compositionRequest;
   await direction.fill("");

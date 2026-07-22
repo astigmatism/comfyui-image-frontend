@@ -121,11 +121,18 @@ export function generationPanelMarkup(state, profile, contract) {
       <div class="panel-fixed">
         <div class="generation-actions">
           <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (sharedSourceCount ? `Queueing ${selectedSourceCount}…` : "Queueing…") : "Generate"}</button>
-          <label class="switch auto-generate-switch" for="auto-generate">
-            <input id="auto-generate" type="checkbox" role="switch" ${state.autoGenerate ? "checked" : ""} />
-            <span aria-hidden="true"></span>
-            <em>Auto-generate</em>
-          </label>
+          <div class="auto-generation-options">
+            <label class="switch auto-generation-switch" for="auto-generate">
+              <input id="auto-generate" type="checkbox" role="switch" ${state.autoGenerate ? "checked" : ""} />
+              <span aria-hidden="true"></span>
+              <em>Auto-generate</em>
+            </label>
+            <label class="switch auto-generation-switch" for="auto-generate-creative-direction">
+              <input id="auto-generate-creative-direction" type="checkbox" role="switch" ${state.autoGenerateCreativeDirection ? "checked" : ""} />
+              <span aria-hidden="true"></span>
+              <em>Creative Direction</em>
+            </label>
+          </div>
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}

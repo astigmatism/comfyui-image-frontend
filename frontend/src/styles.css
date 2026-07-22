@@ -294,14 +294,23 @@ code {
   gap: 9px;
 }
 
-.auto-generate-switch {
+.auto-generation-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
   margin-left: 2px;
 }
 
-.auto-generate-switch em {
+.auto-generation-switch {
+  gap: 7px;
+}
+
+.auto-generation-switch em {
   color: var(--text-soft);
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .panel-scroll {

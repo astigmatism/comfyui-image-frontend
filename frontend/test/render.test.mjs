@@ -598,16 +598,20 @@ test("generation panel places the source dialog launcher before generated contro
   const html = generationPanelMarkup(state, state.workflows[0], contract);
   const generateIndex = html.indexOf('id="generate-button"');
   const autoGenerateIndex = html.indexOf('id="auto-generate"');
+  const creativeDirectionIndex = html.indexOf('id="auto-generate-creative-direction"');
   const sourceIndex = html.indexOf('id="workflow-source"');
   const promptIndex = html.indexOf('data-control-block="prompt.text"');
   assert.ok(
     generateIndex >= 0 &&
       generateIndex < autoGenerateIndex &&
-      autoGenerateIndex < sourceIndex &&
+      autoGenerateIndex < creativeDirectionIndex &&
+      creativeDirectionIndex < sourceIndex &&
       sourceIndex < promptIndex,
   );
   assert.match(html, /id="auto-generate"[^>]*role="switch"/);
+  assert.match(html, /id="auto-generate-creative-direction"[^>]*role="switch"/);
   assert.match(html, /<em>Auto-generate<\/em>/);
+  assert.match(html, /<em>Creative Direction<\/em>/);
   assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /aria-haspopup="dialog"/);
   assert.match(html, /data-action="open-generation-source-dialog"/);
   assert.doesNotMatch(html, /<select id="workflow-source"/);
@@ -623,6 +627,7 @@ test("auto-generate disables only manual generation while queueing", () => {
   const state = {
     submitting: true,
     autoGenerate: true,
+    autoGenerateCreativeDirection: true,
     services: [{ service: "comfyui", available: true }],
     workflows: [{ profile_id: "p1", display_name: "Portrait" }],
     activeProfileId: "p1",
@@ -632,11 +637,14 @@ test("auto-generate disables only manual generation while queueing", () => {
   const html = generationPanelMarkup(state, state.workflows[0], contract);
   const generate = html.match(/<button id="generate-button"[^>]*>/)?.[0] || "";
   const autoGenerate = html.match(/<input id="auto-generate"[^>]*>/)?.[0] || "";
+  const creativeDirection =
+    html.match(/<input id="auto-generate-creative-direction"[^>]*>/)?.[0] || "";
   const source = html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "";
   const prompt = html.match(/<textarea[^>]*data-control-id="prompt.text"[^>]*>/)?.[0] || "";
 
   assert.match(generate, /disabled/);
   assert.match(autoGenerate, /checked/);
+  assert.match(creativeDirection, /checked/);
   assert.doesNotMatch(source, /disabled/);
   assert.doesNotMatch(prompt, /disabled/);
 });

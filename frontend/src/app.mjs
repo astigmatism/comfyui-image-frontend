@@ -88,6 +88,7 @@ const state = {
   galleryMessage: null,
   submitting: false,
   autoGenerate: false,
+  autoGenerateCreativeDirection: false,
   imageUploadsPending: 0,
   serverFieldErrors: {},
   formError: null,
@@ -316,6 +317,12 @@ async function handleChange(event) {
     state.autoGenerate = element.checked;
     preparedAutoGenerateAssistantFingerprint = null;
     syncGenerationSubmissionState();
+    scheduleAutoGenerate();
+    return;
+  }
+  if (element.id === "auto-generate-creative-direction") {
+    state.autoGenerateCreativeDirection = element.checked;
+    preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
@@ -733,7 +740,7 @@ function applyPromptEditor() {
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
     state.promptAssistant.historicalModel = dialog.dataset.promptAssistantModel || null;
-    if (state.autoGenerate) {
+    if (state.autoGenerate && state.autoGenerateCreativeDirection) {
       preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }
   }
@@ -1549,6 +1556,7 @@ async function logout() {
   state.galleryStatus = "idle";
   state.galleryMessage = null;
   state.autoGenerate = false;
+  state.autoGenerateCreativeDirection = false;
   const session = await api("/api/auth/session", {
     operation: "Session request",
     deadlineMs: STARTUP_DEADLINES.session,
@@ -1587,6 +1595,7 @@ async function enterApplication() {
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
+  state.autoGenerateCreativeDirection = false;
   state.favorites = [];
   state.favoritesNextCursor = null;
   state.sourceRatings = {};
@@ -2024,16 +2033,23 @@ function syncPromptAssistantDraftFromPanel() {
   if (!assistant) return;
   const direction = assistant.querySelector("#creative-direction");
   const mode = assistant.querySelector('[name="assistant-mode"]:checked');
+  const automaticCreativeDirection = document.querySelector(
+    "#auto-generate-creative-direction",
+  );
   const nextDirection = direction?.value ?? state.promptAssistant.creativeDirection ?? "";
   const nextMode = mode?.value === "create" ? "create" : "refine";
+  const nextAutomaticCreativeDirection =
+    automaticCreativeDirection?.checked ?? state.autoGenerateCreativeDirection;
   if (
     nextDirection !== state.promptAssistant.creativeDirection ||
-    nextMode !== state.promptAssistant.mode
+    nextMode !== state.promptAssistant.mode ||
+    nextAutomaticCreativeDirection !== state.autoGenerateCreativeDirection
   ) {
     preparedAutoGenerateAssistantFingerprint = null;
   }
   state.promptAssistant.creativeDirection = nextDirection;
   state.promptAssistant.mode = nextMode;
+  state.autoGenerateCreativeDirection = nextAutomaticCreativeDirection;
 }
 
 function capturePanelView(panel) {
@@ -2188,6 +2204,7 @@ function scheduleAutoGenerate() {
 }
 
 function currentAutoGenerateAssistantFingerprint() {
+  if (!state.autoGenerateCreativeDirection) return null;
   const contract = sourceInterface(state.activeSource);
   const promptInput =
     positivePromptInput(contract) ||
@@ -2550,6 +2567,7 @@ async function composePrompt(button, { automatic = false } = {}) {
       !sourceContextIsCurrent(requestSourceKey, requestRevision) ||
       (automatic &&
         (!state.autoGenerate ||
+          !state.autoGenerateCreativeDirection ||
           (state.parameters[promptInput.id] || "") !== requestPrompt ||
           state.promptAssistant.mode !== requestMode ||
           state.promptAssistant.creativeDirection !== requestDirection))
@@ -2566,6 +2584,7 @@ async function composePrompt(button, { automatic = false } = {}) {
     state.promptAssistant.historicalModel = result.model;
     if (
       state.autoGenerate &&
+      state.autoGenerateCreativeDirection &&
       state.promptAssistant.mode === requestMode &&
       state.promptAssistant.creativeDirection === requestDirection
     ) {
