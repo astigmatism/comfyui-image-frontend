@@ -119,13 +119,7 @@ class OllamaAdapter:
             ):
                 raise RuntimeError("create seed resolver returned an out-of-range value")
         for attempt in range(maximum_attempts):
-            if attempt == 0:
-                instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
-            else:
-                instruction = _distinct_create_instruction(
-                    direction=direction,
-                    previous_prompts=list(excluded.values())[:MAX_CREATE_EXCLUSIONS],
-                )
+            instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
             payload = _generate_payload(
                 mode=mode,
                 instruction=instruction,
@@ -184,56 +178,14 @@ class OllamaAdapter:
 def _instruction(*, mode: str, prompt: str, direction: str) -> str:
     if mode == "refine":
         return (
-            "You are a precise editor of prompts for modern text-to-image models. Revise the "
-            "Current prompt only as requested by the Creative direction.\n\n"
-            "Editing rules:\n"
-            "- Treat the Current prompt as the source of truth.\n"
-            "- Apply the smallest possible set of edits that satisfies the Creative direction.\n"
-            "- Preserve every existing detail, constraint, relationship, count, negation, subject, "
-            "action, setting, composition, camera detail, lighting choice, color, material, and "
-            "style that the Creative direction does not explicitly change or necessarily imply "
-            "changing.\n"
-            "- Do not omit, generalize, contradict, embellish, or invent content that is unrelated "
-            "to the Creative direction. Do not add unsolicited visual details.\n"
-            "- If the Creative direction is empty or already satisfied, return the Current prompt "
-            "unchanged.\n"
-            "- Return the finalized prompt only: valid JSON with exactly one string field named "
-            '"prompt" and no commentary, preface, markdown, or alternatives.\n\n'
+            "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
+            "Refine the current prompt according to the creative direction.\n\n"
             f"Current prompt:\n{prompt}\n\nCreative direction:\n{direction}"
         )
     return (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. Create "
-        "one complete, polished, directly usable image prompt from the Creative direction. This "
-        "mode is intentionally creative.\n\n"
-        "Composition rules:\n"
-        "- First copy the complete Creative direction exactly as the user wrote it into the start "
-        "of the finalized prompt, without adding a label or wrapping it in quotation marks. Copy "
-        "through its final character before generating any new words. Do not paraphrase, reorder, "
-        "correct, or omit any part of that opening.\n"
-        "- Always continue after that exact opening and expand it into a cohesive prompt of "
-        "roughly 70 to 160 words. Never return the Creative direction alone, even when it already "
-        "specifies many details. Add coherent visual specificity without contradicting or "
-        "repeating the opening.\n"
-        "- Never contradict the Creative direction. Treat every subject, attribute, action, "
-        "setting, count, relationship, exclusion, exact quoted text, medium, named style or mood, "
-        "palette, composition, and camera choice in it as mandatory.\n"
-        "- Keep inline exclusions such as 'no people' explicit in the final prompt. The rule "
-        "against a negative-prompt section does not permit dropping a user-specified exclusion.\n"
-        "- Creatively invent coherent, visually specific missing details. In particular, when the "
-        "user supplies only a subject or otherwise leaves gaps, invent an action or pose, a rich "
-        "setting, a purposeful composition, and concrete camera details rather than leaving those "
-        "parts unspecified.\n"
-        "- Organize the prompt naturally in this order: subject and defining attributes; action or "
-        "pose; setting and environment; composition and camera details such as shot type, "
-        "viewpoint, lens, and depth of field; then lighting, color, atmosphere, and visual style.\n"
-        "- Use fluent, descriptive natural language suited to a modern prompt-understanding model. "
-        "Do not use legacy keyword spam, token weights, model parameters, a negative-prompt "
-        "section, or empty quality claims.\n"
-        "- Commit to one cohesive visual concept. Do not offer alternatives, explain your choices, "
-        "or mention Krea 2, the Creative direction, or these rules in the result.\n"
-        "- Return the finalized prompt only: valid JSON with exactly one string field named "
-        '"prompt" and no commentary, preface, markdown, or alternatives.\n\n'
-        f"Creative direction:\n{direction}"
+        "one complete, polished, directly usable image prompt from this creative direction:\n\n"
+        f"{direction}"
     )
 
 
@@ -310,21 +262,6 @@ def _response_prompt(data: dict[str, Any]) -> str:
 def _has_thinking_output(data: dict[str, Any]) -> bool:
     thinking_text = data.get("thinking")
     return isinstance(thinking_text, str) and bool(thinking_text.strip())
-
-
-def _distinct_create_instruction(*, direction: str, previous_prompts: Sequence[str]) -> str:
-    exclusions = "\n\n".join(
-        f"{index}. {prompt}" for index, prompt in enumerate(previous_prompts, start=1)
-    )
-    return (
-        _instruction(mode="create", prompt="", direction=direction)
-        + "\n\nDistinct-result requirement:\n"
-        "Previous attempts produced the prompts below. Create a substantively different "
-        "realization of the Creative direction. Do not repeat, paraphrase, or lightly edit that "
-        "prior material; choose different invented details, composition, camera, lighting, and "
-        "atmosphere while preserving every requirement in the Creative direction.\n\n"
-        "Previous prompts that must not be returned:\n" + exclusions
-    )
 
 
 def _extract_structured_prompt(raw_text: str) -> str:

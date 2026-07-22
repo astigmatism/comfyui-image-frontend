@@ -717,7 +717,6 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         payload = await request.json()
         state.ollama_calls.append(copy.deepcopy(payload))
         instruction = str(payload.get("prompt", ""))
-        direction = instruction.split("Creative direction:\n", 1)[-1].strip()
         current = ""
         if "Current prompt:\n" in instruction:
             current = (
@@ -725,6 +724,9 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 .split("\n\nCreative direction:", 1)[0]
                 .strip()
             )
+            direction = instruction.split("Creative direction:\n", 1)[-1].strip()
+        else:
+            direction = instruction.rsplit(":\n\n", 1)[-1].strip()
         if state.ollama_response_prompts:
             composed = state.ollama_response_prompts.pop(0)
         elif state.ollama_response_prompt is not None:

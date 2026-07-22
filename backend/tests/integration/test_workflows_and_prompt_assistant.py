@@ -385,10 +385,12 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
         "additionalProperties": False,
     }
     assert request_payload["options"] == {"temperature": 0.1, "seed": 0, "num_predict": 512}
-    assert "Apply the smallest possible set of edits" in request_payload["prompt"]
-    assert "Preserve every existing detail" in request_payload["prompt"]
-    assert "Do not add unsolicited visual details" in request_payload["prompt"]
-    assert composed["template_version"] == "v4"
+    assert request_payload["prompt"] == (
+        "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
+        "Refine the current prompt according to the creative direction.\n\n"
+        "Current prompt:\nportrait\n\nCreative direction:\nsoft window light"
+    )
+    assert composed["template_version"] == "v5"
     assert app_client.get("/api/generations").json()["items"] == before
 
     payload = generation_payload(app_client, composed["prompt"], seed=123)
@@ -442,21 +444,14 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     assert response.status_code == 200, response.text
     request_payload = fake_state.ollama_calls[-1]
     instruction = request_payload["prompt"]
-    assert "expert prompt writer for Krea 2" in instruction
-    assert "This mode is intentionally creative" in instruction
-    assert "copy the complete Creative direction exactly as the user wrote it" in instruction
-    assert "Copy through its final character before generating any new words" in instruction
-    assert "Do not paraphrase, reorder, correct, or omit" in instruction
-    assert "Never return the Creative direction alone" in instruction
-    assert "Keep inline exclusions such as 'no people' explicit" in instruction
-    assert "invent an action or pose" in instruction
-    assert "setting and environment" in instruction
-    assert "composition and camera details" in instruction
-    assert "subject and defining attributes; action or pose; setting and environment" in instruction
-    assert "old prompt that create mode must ignore" not in instruction
+    assert instruction == (
+        "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
+        "Create one complete, polished, directly usable image prompt from this creative "
+        "direction:\n\na red fox"
+    )
     assert request_payload["think"] is True
     assert request_payload["options"] == {"temperature": 0.5, "seed": 700, "num_predict": 512}
-    assert response.json()["template_version"] == "v4"
+    assert response.json()["template_version"] == "v5"
 
 
 def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
@@ -484,7 +479,7 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
     assert response.json()["prompt"] == (
         "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
     )
-    assert response.json()["template_version"] == "v4"
+    assert response.json()["template_version"] == "v5"
     assert len(fake_state.ollama_calls) == 2
     first_request, retry_request = fake_state.ollama_calls
     assert first_request["options"] == {"temperature": 0.5, "seed": 800, "num_predict": 512}
@@ -493,8 +488,8 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
         "seed": 801,
         "num_predict": 512,
     }
-    assert "Distinct-result requirement" in retry_request["prompt"]
-    assert "old prompt that create mode must replace" in retry_request["prompt"]
+    assert retry_request["prompt"] == first_request["prompt"]
+    assert retry_request["prompt"].endswith("from this creative direction:\n\na red fox")
 
 
 def test_create_prompt_assistant_accepts_a_useful_paraphrase_without_retrying(
@@ -572,12 +567,12 @@ def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
         400,
         401,
     ]
-    third_retry = fake_state.ollama_calls[3]["prompt"]
-    fourth_retry = fake_state.ollama_calls[5]["prompt"]
-    for excluded in (prompts["a"], prompts["b"]):
-        assert excluded in third_retry
-        assert excluded in fourth_retry
-    assert prompts["c"] in fourth_retry
+    expected_instruction = (
+        "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
+        "Create one complete, polished, directly usable image prompt from this creative "
+        "direction:\n\na red fox beneath moonlit pines"
+    )
+    assert {call["prompt"] for call in fake_state.ollama_calls} == {expected_instruction}
 
 
 def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(

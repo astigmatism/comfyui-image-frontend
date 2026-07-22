@@ -33,7 +33,7 @@ def _assert_thinking_used(result: ComposeResult) -> None:
         assert thinking.strip()
 
 
-async def test_live_create_returns_an_expanded_new_prompt() -> None:
+async def test_live_create_returns_a_new_prompt_from_the_direction() -> None:
     adapter = _adapter()
     try:
         result = await adapter.compose(
@@ -45,7 +45,6 @@ async def test_live_create_returns_an_expanded_new_prompt() -> None:
         await adapter.close()
 
     assert "an astronaut tending a greenhouse on mars" in result.prompt.casefold()
-    assert len(result.prompt.split()) >= 70
     assert "ceramic vase" not in result.prompt.casefold()
     _assert_thinking_used(result)
 
