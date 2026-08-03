@@ -673,7 +673,14 @@ test("generation panel promotes Moody checkpoint checkboxes directly beneath the
     source_key: "moody",
     display_name: "Moody Krea 2 Mix V4",
     available: true,
-    interface: moodyInterface,
+    model_selectors: [
+      {
+        parameter_id: "stale_model",
+        label: "Stale model selector",
+        default: "stale",
+        choices: [{ value: "stale", label: "Stale" }],
+      },
+    ],
   };
   const state = {
     submitting: false,

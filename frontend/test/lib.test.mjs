@@ -117,6 +117,26 @@ test("source model selectors normalize one published fanout parameter into scala
 
 test("source model selectors derive directly from a canonical checkpoint detail", () => {
   const source = {
+    model_selectors: [
+      {
+        parameter_id: "stale_model",
+        label: "Stale model selector",
+        default: "stale",
+        choices: [{ value: "stale", label: "Stale" }],
+      },
+      {
+        parameter_id: "checkpoint",
+        label: "Projected checkpoint label",
+        default: "v4_int8",
+        choices: [
+          {
+            value: "v4_int8",
+            label: "Projected V4 label",
+            released_month: "2026-07",
+          },
+        ],
+      },
+    ],
     interface: {
       inputs: [
         {
@@ -143,11 +163,36 @@ test("source model selectors derive directly from a canonical checkpoint detail"
       description: "Selects the Moody Krea 2 diffusion checkpoint.",
       default: "v4_int8",
       choices: [
-        { value: "v4_int8", label: "Moody Krea 2 V4 INT8 ConvRot" },
+        {
+          value: "v4_int8",
+          label: "Moody Krea 2 V4 INT8 ConvRot",
+          released_month: "2026-07",
+        },
         { value: "v5_bf16", label: "Moody Krea 2 V5 BF16" },
       ],
     },
   ]);
+});
+
+test("source model selectors ignore projected metadata when detail has no model input", () => {
+  assert.deepEqual(
+    sourceModelSelectors({
+      model_selectors: [
+        {
+          parameter_id: "stale_model",
+          label: "Stale model selector",
+          default: "stale",
+          choices: [{ value: "stale", label: "Stale" }],
+        },
+      ],
+      interface: {
+        inputs: [
+          { id: "sampler", type: "choice", label: "Sampler", default: "euler", choices: [] },
+        ],
+      },
+    }),
+    [],
+  );
 });
 
 test("voice transcripts insert at or replace the saved text selection", () => {

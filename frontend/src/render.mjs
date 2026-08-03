@@ -113,8 +113,12 @@ export function generationPanelMarkup(state, profile, contract) {
   const selectedTargetCount = Number(state.selectedGenerationTargetCount) || selectedSourceCount;
   const values = state.parameters || state.controls || {};
   const declaredInputs = sortInterfaceInputs(interfaceInputs(contract));
+  const modelSource = contract
+    ? { ...(profile || {}), interface: contract }
+    : profile;
+  const modelSelectors = sourceModelSelectors(modelSource);
   const promotedModelInputIds = new Set(
-    sourceModelSelectors(profile)
+    modelSelectors
       .filter((selector) =>
         declaredInputs.some(
           (input) => input.id === selector.parameter_id && input.type === "choice",
@@ -149,10 +153,10 @@ export function generationPanelMarkup(state, profile, contract) {
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}
         ${activeSourceModelChoicesMarkup(
-          profile,
+          modelSource,
           state.activeModelSelections || {},
           state.fieldErrors || {},
-          state.sourceDetailLoading || state.submitting || profile?.available === false,
+          state.sourceDetailLoading || state.submitting || modelSource?.available === false,
           promotedModelInputIds,
         )}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}

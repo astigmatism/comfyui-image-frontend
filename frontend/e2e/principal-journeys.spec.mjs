@@ -794,8 +794,29 @@ test("checked generation sources reuse compatible settings without blocking part
 test("Moody checkpoint choices are prominent, shared with the modal, and fan out", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 326, height: 1265 });
+  await page.route("**/api/workflows/*", async (route) => {
+    const response = await route.fetch();
+    const detail = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        model_selectors: [
+          {
+            parameter_id: "stale_model",
+            label: "Stale model selector",
+            default: "stale",
+            choices: [{ value: "stale", label: "Stale" }],
+          },
+        ],
+      },
+    });
+  });
+
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
+  await page.getByRole("button", { name: "Open generation controls", exact: true }).click();
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })

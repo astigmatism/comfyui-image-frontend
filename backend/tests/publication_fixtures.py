@@ -649,10 +649,7 @@ def _moody_krea_documents(
         group="Advanced",
         order=60,
         default="v4_int8",
-        choices=[
-            {"value": value, "label": label}
-            for value, label, _ in MOODY_KREA_CHECKPOINTS
-        ],
+        choices=[{"value": value, "label": label} for value, label, _ in MOODY_KREA_CHECKPOINTS],
     )
     guidance = next(item for item in inputs if item["id"] == "lora_strength")
     guidance.update(
@@ -664,8 +661,7 @@ def _moody_krea_documents(
     )
 
     artifacts = [
-        private_binding.rsplit("/", 1)[-1]
-        for _, _, private_binding in MOODY_KREA_CHECKPOINTS
+        private_binding.rsplit("/", 1)[-1] for _, _, private_binding in MOODY_KREA_CHECKPOINTS
     ]
     manifest["generation_source"]["summary"] = (
         "Prompt-guided image generation with a selectable Moody Krea 2 checkpoint."

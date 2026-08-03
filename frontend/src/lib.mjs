@@ -43,23 +43,48 @@ export function sourceModelSelectors(source) {
   const projected = Array.isArray(source?.model_selectors)
     ? source.model_selectors
     : [];
-  const detailInputs = interfaceInputs(source?.interface || source?.contract).filter(
+  const detail = source?.interface || source?.contract;
+  const projectedParameterIds = new Set(
+    projected
+      .map((candidate) =>
+        typeof candidate?.parameter_id === "string"
+          ? candidate.parameter_id.trim()
+          : "",
+      )
+      .filter(Boolean),
+  );
+  const detailInputs = interfaceInputs(detail).filter(
     (input) =>
       input?.type === "choice" &&
       (input.semantic_role === "model" ||
         input.semantic_role === "checkpoint" ||
-        input.id === "checkpoint"),
+        input.id === "checkpoint" ||
+        projectedParameterIds.has(input.id)),
   );
-  const candidates = [
-    ...projected,
-    ...detailInputs.map((input) => ({
-      parameter_id: input.id,
-      label: input.label,
-      description: input.description,
-      default: input.default,
-      choices: input.choices,
-    })),
-  ];
+  const candidates = detail
+    ? detailInputs.map((input) => {
+        const projection = projected.find(
+          (candidate) => candidate?.parameter_id === input.id,
+        );
+        const projectedChoices = new Map(
+          (Array.isArray(projection?.choices) ? projection.choices : [])
+            .filter((choice) => typeof choice?.value === "string")
+            .map((choice) => [choice.value, choice]),
+        );
+        return {
+          parameter_id: input.id,
+          label: input.label,
+          description: input.description,
+          default: input.default,
+          choices: (Array.isArray(input.choices) ? input.choices : []).map((choice) => {
+            const releasedMonth = projectedChoices.get(choice?.value)?.released_month;
+            return typeof releasedMonth === "string"
+              ? { ...choice, released_month: releasedMonth }
+              : choice;
+          }),
+        };
+      })
+    : projected;
   const selectors = [];
   for (const candidate of candidates) {
     const parameterId =
