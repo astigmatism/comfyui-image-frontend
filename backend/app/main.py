@@ -40,6 +40,7 @@ from .errors import AppError
 
 logger = logging.getLogger(__name__)
 _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z")
+_VERSIONED_FRONTEND_ASSET = re.compile(r"/assets/[0-9a-f]{64}/[^/]+\Z")
 
 
 class JsonFormatter(logging.Formatter):
@@ -164,6 +165,13 @@ class RequestContextMiddleware:
                     "style-src 'self' 'unsafe-inline'; script-src 'self'; "
                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
                 )
+                request_path = str(scope.get("path", ""))
+                if status_code in {200, 206, 304} and _VERSIONED_FRONTEND_ASSET.fullmatch(
+                    request_path
+                ):
+                    headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                elif request_path != "/api" and not request_path.startswith("/api/"):
+                    headers["Cache-Control"] = "no-cache, must-revalidate"
             try:
                 await send(message)
             except OSError:

@@ -69,6 +69,48 @@ async function generateAndExpectAccepted(page) {
   return response;
 }
 
+test("frontend document loads one content-addressed module graph", async ({ page }) => {
+  const assetResponses = [];
+  page.on("response", (response) => {
+    const path = new URL(response.url()).pathname;
+    if (/^\/assets\/[0-9a-f]{64}\//u.test(path)) assetResponses.push(response);
+  });
+
+  const documentResponse = await page.goto("/");
+  expect((await documentResponse.allHeaders())["cache-control"]).toBe(
+    "no-cache, must-revalidate",
+  );
+  const appPath = await page.locator('script[type="module"]').getAttribute("src");
+  const stylePath = await page.locator('link[rel="stylesheet"]').getAttribute("href");
+  expect(appPath).toMatch(/^\/assets\/[0-9a-f]{64}\/app\.mjs$/u);
+  expect(stylePath).toMatch(/^\/assets\/[0-9a-f]{64}\/styles\.css$/u);
+  const assetVersion = appPath.match(/^\/assets\/([0-9a-f]{64})\//u)?.[1];
+  expect(stylePath).toContain(`/assets/${assetVersion}/`);
+
+  const paths = assetResponses.map((response) => new URL(response.url()).pathname);
+  expect(paths).toEqual(
+    expect.arrayContaining([
+      `/assets/${assetVersion}/app.mjs`,
+      `/assets/${assetVersion}/api.mjs`,
+      `/assets/${assetVersion}/lib.mjs`,
+      `/assets/${assetVersion}/render.mjs`,
+      `/assets/${assetVersion}/styles.css`,
+    ]),
+  );
+  for (const response of assetResponses) {
+    expect((await response.allHeaders())["cache-control"]).toBe(
+      "public, max-age=31536000, immutable",
+    );
+  }
+
+  const reloadResponse = await page.reload();
+  expect((await reloadResponse.allHeaders())["cache-control"]).toBe(
+    "no-cache, must-revalidate",
+  );
+  await expect(page.getByRole("heading", { name: "E2E Image Appliance" })).toBeVisible();
+  await expect(page.locator('script[type="module"]')).toHaveAttribute("src", appPath);
+});
+
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
   test.setTimeout(90_000);
   await page.goto("/");
