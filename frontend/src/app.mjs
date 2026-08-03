@@ -3,6 +3,7 @@ import {
   applyChoiceStrengthDefaults,
   autoGenerationPromptAssistantFingerprint,
   clientValidate,
+  choiceOptions,
   choiceStrengthCompanion,
   comparisonInputs,
   comparisonParametersForRequest,
@@ -13,6 +14,7 @@ import {
   insertTranscription,
   latestCompletedImageGeneration,
   migrateInterfaceState,
+  normalizeSourceModelSelections,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -24,6 +26,8 @@ import {
   seedFormValue,
   snapResolutionValue,
   sortGenerationsNewestFirst,
+  sourceModelParameterVariants,
+  sourceModelSelectors,
 } from "./lib.mjs";
 import {
   detailMarkup,
@@ -65,6 +69,8 @@ const state = {
   sourcePickerSortKey: "display_name",
   sourcePickerSortDirection: "ascending",
   sourceRatings: {},
+  modelSelectionsBySourceRevision: new Map(),
+  selectedGenerationTargetCount: 0,
   controlSectionOpen: {},
   parameters: {},
   explicitParameterIds: new Set(),
@@ -334,6 +340,15 @@ async function handleChange(event) {
     updateSourcePickerDraftPrimary(element.dataset.sourcePrimaryKey);
     return;
   }
+  if (element.matches("[data-source-model-choice]")) {
+    updateSourcePickerDraftModelSelection(
+      element.dataset.sourceModelSourceKey,
+      element.dataset.sourceModelParameterId,
+      element.dataset.sourceModelValue,
+      element.checked,
+    );
+    return;
+  }
   if (element.matches("[data-source-generation-type-filter]")) {
     updateSourcePickerGenerationTypeFilter(
       element.dataset.sourceGenerationTypeFilter,
@@ -373,6 +388,14 @@ async function handleChange(event) {
     syncParameterValidation(element.dataset.controlId);
     const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
     if (control?.type === "choice" && companion) syncParameterValidation(companion.id);
+    if (
+      control?.type === "choice" &&
+      sourceModelSelectors(state.activeSource).some(
+        (selector) => selector.parameter_id === control.id,
+      )
+    ) {
+      renderPanel();
+    }
   }
 }
 
@@ -395,6 +418,12 @@ function openSourcePickerDialog(button) {
   state.sourcePickerDraft = {
     primaryKey: state.activeSourceKey,
     selectedKeys: new Set([state.activeSourceKey, ...selectedComparisonSourceKeys()]),
+    modelSelectionsBySource: Object.fromEntries(
+      state.sources.map((source) => [
+        sourceKey(source),
+        structuredClone(modelSelectionsForSource(source)),
+      ]),
+    ),
     generationTypeFilters: new Set(
       state.sources.map((source) => sourceGenerationTypeKey(source)),
     ),
@@ -420,6 +449,7 @@ function renderSourcePickerDialog() {
     sortKey: state.sourcePickerSortKey,
     sortDirection: state.sourcePickerSortDirection,
     generationTypeFilters: draft.generationTypeFilters,
+    modelSelectionsBySource: draft.modelSelectionsBySource,
   });
   const scroller = dialog.querySelector(".source-picker-table-wrap");
   if (scroller) {
@@ -476,6 +506,47 @@ function updateSourcePickerDraftPrimary(key) {
   queueMicrotask(() => {
     document
       .querySelector(`#source-picker-dialog [data-source-primary-key="${CSS.escape(key)}"]`)
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function updateSourcePickerDraftModelSelection(
+  key,
+  parameterId,
+  value,
+  checked,
+) {
+  const draft = state.sourcePickerDraft;
+  const source = state.sources.find((item) => sourceKey(item) === key);
+  const selector = sourceModelSelectors(source).find(
+    (item) => item.parameter_id === parameterId,
+  );
+  if (
+    !draft ||
+    !source ||
+    source.available === false ||
+    !selector ||
+    !selector.choices.some((choice) => choice.value === value)
+  ) {
+    return;
+  }
+  const normalized = normalizeSourceModelSelections(
+    source,
+    draft.modelSelectionsBySource?.[key] || {},
+  );
+  const selected = new Set(normalized[parameterId] || []);
+  if (checked) selected.add(value);
+  else if (selected.size > 1) selected.delete(value);
+  draft.modelSelectionsBySource[key] = normalizeSourceModelSelections(source, {
+    ...normalized,
+    [parameterId]: [...selected],
+  });
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    document
+      .querySelector(
+        `#source-picker-dialog [data-source-model-choice][data-source-model-source-key="${CSS.escape(key)}"][data-source-model-parameter-id="${CSS.escape(parameterId)}"][data-source-model-value="${CSS.escape(value)}"]`,
+      )
       ?.focus({ preventScroll: true });
   });
 }
@@ -597,12 +668,19 @@ async function applySourcePickerDialog() {
     ),
   );
   const primaryChanged = draft.primaryKey !== state.activeSourceKey;
+  for (const source of state.sources) {
+    setModelSelectionsForSource(
+      source,
+      draft.modelSelectionsBySource?.[sourceKey(source)] || {},
+    );
+  }
   closeSourcePickerDialog("apply", { flushDeferredUpdates: false });
   state.comparisonSourceKeys = comparisonKeys;
   state.serverFieldErrors = {};
   state.formError = null;
   if (primaryChanged) await selectSource(draft.primaryKey, { summary: primary });
-  else renderPanel();
+  applyStoredModelSelectionsToActiveParameters();
+  renderPanel();
   await flushDeferredSourcePickerUpdates({ panelAlreadyRendered: true });
 }
 
@@ -1370,6 +1448,7 @@ function updateControlFromElement(element) {
     if (companion && !state.explicitParameterIds.has(companion.id)) {
       delete state.serverFieldErrors[companion.id];
     }
+    collapseActiveModelSelection(control.id, state.parameters[id]);
   }
   delete state.serverFieldErrors[id];
   state.formError = null;
@@ -1537,6 +1616,8 @@ async function logout() {
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.sourceRatings = {};
+  state.modelSelectionsBySourceRevision = new Map();
+  state.selectedGenerationTargetCount = 0;
   sourceRatingsRevision += 1;
   state.parameters = {};
   state.explicitParameterIds = new Set();
@@ -1816,6 +1897,160 @@ function revisionsMatch(first, second) {
   );
 }
 
+function modelSelectionStoreKey(source) {
+  const key = sourceKey(source);
+  const revision = sourceRevision(source);
+  if (!key || !revision) return null;
+  return JSON.stringify([
+    key,
+    revision.publication_id || "",
+    revision.workflow_sha256 || "",
+    revision.api_sha256 || "",
+    revision.manifest_sha256 || "",
+  ]);
+}
+
+function modelSelectionsForSource(source) {
+  const storeKey = modelSelectionStoreKey(source);
+  const stored = storeKey ? state.modelSelectionsBySourceRevision.get(storeKey) : undefined;
+  const activeFallback =
+    stored === undefined &&
+    sourceKey(source) === state.activeSourceKey &&
+    state.activeSource &&
+    revisionsMatch(source, state.activeSource)
+      ? state.parameters
+      : {};
+  return normalizeSourceModelSelections(source, stored || {}, activeFallback);
+}
+
+function setModelSelectionsForSource(source, selections) {
+  const storeKey = modelSelectionStoreKey(source);
+  const normalized = normalizeSourceModelSelections(source, selections);
+  if (storeKey) {
+    state.modelSelectionsBySourceRevision.set(storeKey, structuredClone(normalized));
+  }
+  return normalized;
+}
+
+function collapseActiveModelSelectionsFromParameters() {
+  const source = state.activeSource;
+  if (!source || !sourceModelSelectors(source).length) return;
+  const selections = Object.fromEntries(
+    sourceModelSelectors(source).map((selector) => [
+      selector.parameter_id,
+      typeof state.parameters[selector.parameter_id] === "string"
+        ? [state.parameters[selector.parameter_id]]
+        : [],
+    ]),
+  );
+  setModelSelectionsForSource(source, selections);
+}
+
+function collapseActiveModelSelection(parameterId, value) {
+  const source = state.activeSource;
+  if (
+    !sourceModelSelectors(source).some(
+      (selector) => selector.parameter_id === parameterId,
+    ) ||
+    typeof value !== "string"
+  ) {
+    return false;
+  }
+  const current = modelSelectionsForSource(source);
+  setModelSelectionsForSource(source, { ...current, [parameterId]: [value] });
+  return true;
+}
+
+function applyStoredModelSelectionsToActiveParameters() {
+  const source = state.activeSource;
+  const contract = sourceInterface(source);
+  if (!source || !contract) return;
+  const selections = modelSelectionsForSource(source);
+  let changed = false;
+  for (const selector of sourceModelSelectors(source)) {
+    const input = interfaceInputs(contract).find(
+      (candidate) =>
+        candidate.id === selector.parameter_id && candidate.type === "choice",
+    );
+    if (!input) continue;
+    const allowed = new Set(choiceOptions(input).map((choice) => choice.value));
+    const selected = (selections[selector.parameter_id] || []).filter((value) =>
+      allowed.has(value),
+    );
+    if (!selected.length) continue;
+    const current = state.parameters[selector.parameter_id];
+    const canonical = selected.includes(current) ? current : selected[0];
+    state.parameters[selector.parameter_id] = canonical;
+    state.explicitParameterIds.add(selector.parameter_id);
+    delete state.serverFieldErrors[selector.parameter_id];
+    if (canonical !== current) {
+      state.parameters = applyChoiceStrengthDefaults(
+        contract,
+        state.parameters,
+        state.explicitParameterIds,
+        selector.parameter_id,
+      );
+      changed = true;
+    }
+  }
+  if (changed || sourceModelSelectors(source).length) persistActiveParameterState();
+}
+
+function pruneModelSelectionsForCurrentSources() {
+  const currentKeys = new Set(
+    state.sources.map(modelSelectionStoreKey).filter(Boolean),
+  );
+  for (const key of state.modelSelectionsBySourceRevision.keys()) {
+    if (!currentKeys.has(key)) state.modelSelectionsBySourceRevision.delete(key);
+  }
+}
+
+function modelParameterVariantsForSource(source, contract = null) {
+  const variants = sourceModelParameterVariants(source, modelSelectionsForSource(source));
+  if (!contract || !sourceModelSelectors(source).length) return variants;
+  const inputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
+  for (const variant of variants) {
+    for (const [parameterId, value] of Object.entries(variant)) {
+      const input = inputs.get(parameterId);
+      if (
+        input?.type !== "choice" ||
+        !choiceOptions(input).some((choice) => choice.value === value)
+      ) {
+        throw new Error(
+          `${source.display_name || "Generation source"} has model choices that no longer match its published interface. Refresh generation sources and choose again.`,
+        );
+      }
+    }
+  }
+  return variants;
+}
+
+function orderedModelParameterVariants(source, contract, preferredValues = {}) {
+  const variants = modelParameterVariantsForSource(source, contract);
+  const parameterId = sourceModelSelectors(source)[0]?.parameter_id;
+  const preferred = parameterId ? preferredValues?.[parameterId] : undefined;
+  if (typeof preferred !== "string") return variants;
+  return [...variants].sort(
+    (first, second) =>
+      Number(second[parameterId] === preferred) - Number(first[parameterId] === preferred),
+  );
+}
+
+function selectedGenerationSources() {
+  const keys = selectedComparisonSourceKeys();
+  if (state.activeSourceKey) keys.add(state.activeSourceKey);
+  return state.sources.filter(
+    (source) => source.available !== false && keys.has(sourceKey(source)),
+  );
+}
+
+function plannedGenerationTargetCount() {
+  return selectedGenerationSources().reduce(
+    (count, source) => count + modelParameterVariantsForSource(source).length,
+    0,
+  );
+}
+
 function sourceContextIsCurrent(key, revision) {
   return Boolean(
     key &&
@@ -1854,6 +2089,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
         });
     if (signal?.aborted || catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
+    pruneModelSelectionsForCurrentSources();
     const availableKeys = new Set(
       state.sources
         .filter((item) => item.available !== false)
@@ -1959,6 +2195,13 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
     );
     state.parameters = migrated.values;
     state.explicitParameterIds = new Set(migrated.explicitInputIds);
+    const selectionKey = modelSelectionStoreKey(state.activeSource);
+    if (selectionKey && !state.modelSelectionsBySourceRevision.has(selectionKey)) {
+      setModelSelectionsForSource(
+        state.activeSource,
+        normalizeSourceModelSelections(state.activeSource, {}, state.parameters),
+      );
+    }
     state.pendingSourceMigration = null;
     state.sourceDetailError = null;
     persistActiveParameterState();
@@ -1992,6 +2235,7 @@ function applyPreset(presetId) {
   );
   state.serverFieldErrors = {};
   state.formError = null;
+  collapseActiveModelSelectionsFromParameters();
   persistActiveParameterState();
   renderPanel();
 }
@@ -1999,6 +2243,7 @@ function applyPreset(presetId) {
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
+  state.selectedGenerationTargetCount = plannedGenerationTargetCount();
   const panelView = capturePanelView(panel);
   const contract = sourceInterface(state.activeSource);
   const clientErrors = clientValidate(contract, state.parameters);
@@ -2133,6 +2378,7 @@ function syncGenerationSubmissionState() {
     ...withoutNulls(state.serverFieldErrors),
   };
   state.fieldErrors = errors;
+  state.selectedGenerationTargetCount = plannedGenerationTargetCount();
   for (const control of interfaceInputs(contract)) {
     const block = panel.querySelector(
       `[data-control-block="${CSS.escape(control.id)}"]`,
@@ -2164,10 +2410,6 @@ function syncGenerationSubmissionState() {
     state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
   const generateButton = panel.querySelector("#generate-button");
   if (generateButton) {
-    const comparisonKeys = selectedComparisonSourceKeys();
-    const comparisonCount = state.sources.filter(
-      (source) => source.available !== false && comparisonKeys.has(sourceKey(source)),
-    ).length;
     generateButton.disabled = generationSubmissionDisabled(
       state,
       selected,
@@ -2175,8 +2417,8 @@ function syncGenerationSubmissionState() {
       errors,
     );
     generateButton.textContent = state.submitting
-      ? comparisonCount
-        ? `Queueing ${comparisonCount + 1}…`
+      ? state.selectedGenerationTargetCount > 1
+        ? `Queueing ${state.selectedGenerationTargetCount}…`
         : "Queueing…"
       : "Generate";
   }
@@ -2292,7 +2534,9 @@ async function generate({ automatic = false } = {}) {
     syncPromptAssistantDraftFromPanel();
     if (autoGenerationNeedsPromptAssistant()) return false;
   }
-  if (hasComparisonSources()) return generateSelectedSources();
+  if (hasComparisonSources() || plannedGenerationTargetCount() > 1) {
+    return generateSelectedSources();
+  }
   return generateSingleSource();
 }
 
@@ -2322,10 +2566,17 @@ async function generateSingleSource() {
   syncGenerationSubmissionState();
   let focusErrors = false;
   try {
+    const [modelParameters] = modelParameterVariantsForSource(
+      state.activeSource,
+      contract,
+    );
     const payload = {
       source_key: requestSourceKey,
       revision: requestRevision,
-      parameters: parametersForRequest(contract, state.parameters),
+      parameters: {
+        ...parametersForRequest(contract, state.parameters),
+        ...modelParameters,
+      },
     };
     if (requestCompositionId) payload.prompt_assistant_run_id = requestCompositionId;
     const generation = await api("/api/generations", {
@@ -2403,7 +2654,15 @@ async function generateSelectedSources() {
   syncGenerationSubmissionState();
   let focusErrors = false;
   try {
-    const primaryParameters = parametersForRequest(contract, requestParameters);
+    const primaryModelVariants = orderedModelParameterVariants(
+      state.activeSource,
+      contract,
+      requestParameters,
+    );
+    const primaryParameters = {
+      ...parametersForRequest(contract, requestParameters),
+      ...primaryModelVariants[0],
+    };
     const validation = await api("/api/generations/validate", {
       method: "POST",
       body: JSON.stringify({
@@ -2412,10 +2671,20 @@ async function generateSelectedSources() {
         parameters: primaryParameters,
       }),
     });
+    const primaryInputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
+    for (const [parameterId, value] of Object.entries(validation.resolved_seeds || {})) {
+      if (primaryInputs.get(parameterId)?.type === "seed") {
+        primaryParameters[parameterId] = String(value);
+      }
+    }
     const seedInput = comparisonInputs(contract).find(
       (input) => input.semantic_role === "seed",
     );
     const resolvedSeed = seedInput ? validation.resolved_seeds?.[seedInput.id] : undefined;
+    const plannedTargetCount = sources.reduce(
+      (count, source) => count + modelParameterVariantsForSource(source).length,
+      0,
+    );
 
     const detailResults = await Promise.allSettled(
       sources.map(async (summary) => {
@@ -2432,6 +2701,7 @@ async function generateSelectedSources() {
     );
     const queueTargets = [];
     const failures = [];
+    let promptAssistantAssigned = false;
     for (let index = 0; index < detailResults.length; index += 1) {
       const result = detailResults[index];
       const summary = sources[index];
@@ -2440,29 +2710,56 @@ async function generateSelectedSources() {
         continue;
       }
       const detail = result.value;
+      if (!revisionsMatch(summary, detail)) {
+        const error = new Error(
+          `${summary.display_name || "A selected generation source"} was republished after it was selected. Review its model choices and generate again.`,
+        );
+        error.code = "source_republished";
+        failures.push({ source: summary, error });
+        continue;
+      }
       const targetContract = sourceInterface(detail);
       if (!targetContract) {
         failures.push({ source: summary, error: new Error("No public interface is available.") });
         continue;
       }
       const targetKey = sourceKey(detail);
-      const payload = {
-        source_key: targetKey,
-        revision: structuredClone(sourceRevision(detail)),
-        parameters:
+      let modelVariants;
+      try {
+        modelVariants =
           targetKey === requestSourceKey
-            ? primaryParameters
-            : comparisonParametersForRequest(
-                contract,
-                requestParameters,
-                targetContract,
-                resolvedSeed,
-              ),
-      };
-      if (payload.source_key === requestSourceKey && requestCompositionId) {
-        payload.prompt_assistant_run_id = requestCompositionId;
+            ? orderedModelParameterVariants(detail, targetContract, requestParameters)
+            : modelParameterVariantsForSource(detail, targetContract);
+      } catch (error) {
+        failures.push({ source: summary, error });
+        continue;
       }
-      queueTargets.push({ source: summary, payload });
+      const sharedParameters =
+        targetKey === requestSourceKey
+          ? primaryParameters
+          : comparisonParametersForRequest(
+              contract,
+              requestParameters,
+              targetContract,
+              resolvedSeed,
+            );
+      for (const modelParameters of modelVariants) {
+        const payload = {
+          source_key: targetKey,
+          revision: structuredClone(sourceRevision(detail)),
+          parameters: { ...sharedParameters, ...modelParameters },
+        };
+        const usesPromptAssistant = Boolean(
+          targetKey === requestSourceKey &&
+            requestCompositionId &&
+            !promptAssistantAssigned,
+        );
+        if (usesPromptAssistant) {
+          payload.prompt_assistant_run_id = requestCompositionId;
+          promptAssistantAssigned = true;
+        }
+        queueTargets.push({ source: summary, payload, usesPromptAssistant });
+      }
     }
 
     const queueResults = await Promise.allSettled(
@@ -2471,10 +2768,16 @@ async function generateSelectedSources() {
       ),
     );
     const queued = [];
+    let primaryQueued = false;
+    let promptAssistantQueued = false;
     for (let index = 0; index < queueResults.length; index += 1) {
       const result = queueResults[index];
-      if (result.status === "fulfilled") queued.push(result.value);
-      else failures.push({ source: queueTargets[index].source, error: result.reason });
+      const target = queueTargets[index];
+      if (result.status === "fulfilled") {
+        queued.push(result.value);
+        if (target.payload.source_key === requestSourceKey) primaryQueued = true;
+        if (target.usesPromptAssistant) promptAssistantQueued = true;
+      } else failures.push({ source: target.source, error: result.reason });
     }
 
     if (queued.length) {
@@ -2487,7 +2790,7 @@ async function generateSelectedSources() {
       renderGallery();
     }
     if (
-      queued.some((generation) => generation.source_key === requestSourceKey) &&
+      (requestCompositionId ? promptAssistantQueued : primaryQueued) &&
       sourceContextIsCurrent(requestSourceKey, requestRevision) &&
       state.compositionId === requestCompositionId
     ) {
@@ -2501,17 +2804,32 @@ async function generateSelectedSources() {
         .map(({ source, error }) => `${source.display_name}: ${error.message}`)
         .join(" ");
       const omitted = failures.length > 3 ? ` ${failures.length - 3} more failed.` : "";
-      state.formError = `Queued ${queued.length} of ${sources.length} selected generation sources. ${failureSummary}${omitted}`;
+      state.formError = `Queued ${queued.length} of ${plannedTargetCount} planned generation${plannedTargetCount === 1 ? "" : "s"}. ${failureSummary}${omitted}`;
       const activeFailure = failures.find(({ source }) => sourceKey(source) === requestSourceKey);
       if (activeFailure) {
         state.serverFieldErrors = normalizeParameterErrors(activeFailure.error.fields);
         focusErrors = Object.keys(state.serverFieldErrors).length > 0;
       }
       toast(state.formError, "error");
+      if (
+        failures.some(({ error }) =>
+          ["source_republished", "source_unavailable"].includes(error?.code),
+        )
+      ) {
+        const message = state.formError;
+        await loadSources();
+        if (state.activeSourceKey === requestSourceKey) {
+          state.formError = message;
+          renderPanel();
+        }
+      }
     } else {
-      toast(`${queued.length} generations queued across ${sources.length} selected sources.`, "success");
+      toast(
+        `${queued.length} generation${queued.length === 1 ? "" : "s"} queued across ${sources.length} selected source${sources.length === 1 ? "" : "s"}.`,
+        "success",
+      );
     }
-    return queued.length > 0 && failures.length === 0;
+    return queued.length > 0 && failures.length === 0 && queued.length === plannedTargetCount;
   } catch (error) {
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       toast(`Comparison request for the previous source failed: ${error.message}`, "error");
@@ -2969,6 +3287,7 @@ async function recall(id) {
     return;
   }
   const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
+  state.modelSelectionsBySourceRevision = new Map();
   if (recalled.source_available === false) {
     state.parameters = recalledState.parameters;
     state.explicitParameterIds = recalledState.explicitParameterIds;
@@ -2977,6 +3296,7 @@ async function recall(id) {
     state.serverFieldErrors = {};
     state.formError = null;
     state.selectedPreset = null;
+    collapseActiveModelSelectionsFromParameters();
     persistActiveParameterState();
     renderPanel();
     closePanel(false);
@@ -3009,6 +3329,7 @@ async function recall(id) {
   state.serverFieldErrors = {};
   state.formError = null;
   state.selectedPreset = null;
+  collapseActiveModelSelectionsFromParameters();
   persistActiveParameterState();
   renderPanel();
   closePanel(false);

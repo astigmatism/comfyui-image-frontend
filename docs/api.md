@@ -59,6 +59,18 @@ The historical route name `workflows` is retained, but objects now represent del
     "api_sha256": "...",
     "manifest_sha256": "..."
   },
+  "model_selectors": [
+    {
+      "parameter_id": "checkpoint",
+      "label": "Checkpoint",
+      "description": "Selects the model checkpoint for this source.",
+      "default": "model_v4",
+      "choices": [
+        {"value": "model_v4", "label": "Model V4", "released_month": null},
+        {"value": "model_v5", "label": "Model V5", "released_month": "2026-07"}
+      ]
+    }
+  ],
   "generation_source": {
     "schema_version": "comfyui-image-frontend.generation-source/v1",
     "inference_method": "deterministic_graph_analysis",
@@ -118,6 +130,8 @@ The historical route name `workflows` is retained, but objects now represent del
 `readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. Cached/offline entries remain useful for history/source display but have `available: false`, so new submission is disabled.
 
 Recognized v1 `generation_source` and `technical_inventory` objects are typed, additive, and returned on both summary and detail responses so clients can plan later catalog/dropdown behavior without refetching every source. Older manifests and unrecognized/malformed section schemas return `null` for that section while the raw manifest remains retained server-side. Unknown v1 values, array entries, warning strings, and extra fields are preserved. Artifact basenames, class types, and counts are descriptive only and are never accepted as request selectors. `output_reachable + compiled_orphans = compiled_api` and the accepted API count are checked diagnostically, not as queue gates.
+
+`model_selectors` is an additive, safe projection of executable public choice inputs for source-picker use. It is derived after publication and is not an authored manifest section. A choice with canonical `semantic_role: "model"` is included; `semantic_role: "checkpoint"`, the exact historical parameter ID `checkpoint`, and an exact timeline `(parameter_id, value)` match are compatibility signals. The validated interface remains authoritative for selector IDs, labels, defaults, ordering, and the complete option inventory. Timeline metadata may add only a matching option's `released_month`; it never creates, removes, renames, or rebinds an option. Bindings, filenames, paths, `options_json`, node IDs, and timeline-only values are excluded. Sources without a recognized selector return an empty list, including older publications. Unavailable dependency-backed catalog entries retain this safe projection so the picker can explain their published options without making them executable.
 
 The optional `generation_source.base_model.timeline` keeps three clocks distinct. `architecture.introduced_month` is the base architecture's `YYYY-MM` introduction, `default_model.released_month` is the exact fixed/default model release when known, and top-level `published_at` is the workflow-bundle publication time. Timeline dates include inert provenance objects that are returned losslessly and are never fetched during discovery. `model_variants` identify selectable releases only by public `parameter_id` plus `value`; they do not expose or require a private filename, binding, node ID, or filesystem path. A malformed timeline makes generation-source metadata unavailable with a nonfatal diagnostic, but does not reject or disable the executable source.
 
@@ -221,6 +235,8 @@ Canonical request:
 `revision` is optional for a fresh caller but recommended for a UI selection. If the selected source was republished, a mismatch returns HTTP 409 with `source_republished`; the backend never compiles against a silently changed graph.
 
 `parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Optional choices treat omission or `null` as default selection, but reject empty strings, labels, private filenames, and values absent from the current publication. If a companion strength is omitted, the selected option's `default_strength` wins before the numeric input's ordinary default; an explicit non-null numeric value always wins. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings. A required image parameter is `{ "asset_id": "opaque-owner-scoped-id" }`; missing assets, unauthorized assets, paths, URLs, and ComfyUI locators fail validation.
+
+A generation accepts one scalar value for each model selector. The current source picker checkbox-fans only the first recognized selector per source; later model choices remain ordinary scalar Advanced controls, avoiding an implicit cross-product. Selecting several checkpoints queues one generation request per selected source/checkpoint pair. Same-source requests clone all other parameters, resolve a Random seed once, and reuse that concrete seed so only the checkpoint value changes. Timeline arrays and request arrays are not multi-checkpoint execution inputs.
 
 Successful validation:
 

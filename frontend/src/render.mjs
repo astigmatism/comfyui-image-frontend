@@ -5,6 +5,7 @@ import {
   formatLocalDate,
   interfaceInputs,
   isAdvancedInput,
+  normalizeSourceModelSelections,
   resolutionConstraints,
   resolutionGridConstraints,
   resolutionSummary,
@@ -12,6 +13,8 @@ import {
   seedFormValue,
   sortGenerationsNewestFirst,
   sortInterfaceInputs,
+  sourceModelParameterVariants,
+  sourceModelSelectors,
   statusLabel,
   validTimelineMonth,
 } from "./lib.mjs";
@@ -107,6 +110,7 @@ export function generationPanelMarkup(state, profile, contract) {
     (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
   ).length;
   const selectedSourceCount = activeKey ? sharedSourceCount + 1 : sharedSourceCount;
+  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || selectedSourceCount;
   const values = state.parameters || state.controls || {};
   const inputs = sortInterfaceInputs(interfaceInputs(contract));
   const basic = inputs.filter((item) => !isAdvancedInput(item));
@@ -120,7 +124,7 @@ export function generationPanelMarkup(state, profile, contract) {
     <div class="panel-layout">
       <div class="panel-fixed">
         <div class="generation-actions">
-          <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (sharedSourceCount ? `Queueing ${selectedSourceCount}…` : "Queueing…") : "Generate"}</button>
+          <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (selectedTargetCount > 1 ? `Queueing ${selectedTargetCount}…` : "Queueing…") : "Generate"}</button>
           <div class="auto-generation-options">
             <label class="switch auto-generation-switch" for="auto-generate">
               <input id="auto-generate" type="checkbox" role="switch" ${state.autoGenerate ? "checked" : ""} />
@@ -217,13 +221,22 @@ function sourcePickerMarkup(
   const sharedCount = sources.filter(
     (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
   ).length;
-  const sourceCountCopy = sharedCount ? `${sharedCount + 1} sources selected` : "";
+  const selectedSourceCount = activeKey ? sharedCount + 1 : sharedCount;
+  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || selectedSourceCount;
+  const selectionCopy = [
+    sharedCount ? `${selectedSourceCount} sources selected` : "",
+    selectedTargetCount > selectedSourceCount
+      ? `${selectedTargetCount} generations planned`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return `
     <div class="field compact source-picker-field">
       <span id="generation-source-label">Generation source</span>
       <div class="source-picker">
         <button id="workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
-          <span class="source-picker-current"><strong id="generation-source-value">${escapeHtml(activeName)}</strong>${sourceCountCopy ? `<small>${escapeHtml(sourceCountCopy)}</small>` : ""}</span>
+          <span class="source-picker-current"><strong id="generation-source-value">${escapeHtml(activeName)}</strong>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
           <svg class="source-picker-launch-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h12M4 14.5h12" /><circle cx="7" cy="5.5" r="1.5" /><circle cx="13" cy="10" r="1.5" /><circle cx="9" cy="14.5" r="1.5" /></svg>
         </button>
       </div>
@@ -247,6 +260,7 @@ export function sourcePickerDialogMarkup(
     sortKey = "display_name",
     sortDirection = "ascending",
     generationTypeFilters = null,
+    modelSelectionsBySource = {},
   } = {},
 ) {
   const selected = selectedKeys instanceof Set ? selectedKeys : new Set(selectedKeys || []);
@@ -261,6 +275,17 @@ export function sourcePickerDialogMarkup(
         : new Set(generationTypeFilters || []);
   const availableSources = sources.filter((source) => source.available !== false);
   const selectedCount = availableSources.filter((source) => selected.has(sourceKey(source))).length;
+  const selectedTargetCount = availableSources
+    .filter((source) => selected.has(sourceKey(source)))
+    .reduce(
+      (count, source) =>
+        count +
+        sourceModelParameterVariants(
+          source,
+          modelSelectionsBySource?.[sourceKey(source)] || {},
+        ).length,
+      0,
+    );
   const visibleSources = sources.filter((source) =>
     activeGenerationTypes.has(sourceGenerationTypeKey(source)),
   );
@@ -289,17 +314,25 @@ export function sourcePickerDialogMarkup(
     });
   });
   const rows = sortedSources
-    .map((source) => sourcePickerRowMarkup(source, primaryKey, selected, sourceRatings))
+    .map((source) =>
+      sourcePickerRowMarkup(
+        source,
+        primaryKey,
+        selected,
+        sourceRatings,
+        modelSelectionsBySource?.[sourceKey(source)] || {},
+      ),
+    )
     .join("");
   const generationTypeFiltersMarkup = generationTypes
     .map(
       (item) => `<label class="source-filter-chip"><input type="checkbox" data-source-generation-type-filter="${escapeHtml(item.key)}" aria-label="Show ${escapeHtml(item.label)}" ${activeGenerationTypes.has(item.key) ? "checked" : ""} /><span>${escapeHtml(item.label)}<small>${item.count}</small></span></label>`,
     )
     .join("");
-  const countCopy = `${selectedCount} of ${availableSources.length} available source${availableSources.length === 1 ? "" : "s"} selected`;
+  const countCopy = `${selectedCount} of ${availableSources.length} available source${availableSources.length === 1 ? "" : "s"} selected · ${selectedTargetCount} generation${selectedTargetCount === 1 ? "" : "s"} planned`;
   return `<form class="dialog-frame source-picker-dialog-frame" method="dialog">
     <header class="dialog-header source-picker-dialog-header">
-      <div><h2 id="source-picker-title">Generation sources</h2><p>Choose one primary source and optionally include others in the same generation.</p></div>
+      <div><h2 id="source-picker-title">Generation sources</h2><p>Choose one primary source and optional additional sources. Each checked model choice queues a separate generation.</p></div>
       <button type="button" class="icon-button source-picker-dialog-close" data-action="cancel-generation-source-dialog" aria-label="Cancel source selection" title="Cancel source selection"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
     </header>
     <div class="source-picker-dialog-content">
@@ -319,16 +352,17 @@ export function sourcePickerDialogMarkup(
             <th class="source-picker-include-column" scope="col">Include</th>
             <th class="source-picker-primary-column" scope="col">Primary</th>
             ${sourceSortHeading("display_name", "Source", normalizedSortKey, normalizedDirection)}
+            <th class="source-picker-model-column" scope="col"><span class="source-column-heading">Model choices</span></th>
             ${sourceSortHeading("rating", "Rating", normalizedSortKey, normalizedDirection, "source-picker-rating-column")}
             ${sourceSortHeading("architecture", "Architecture", normalizedSortKey, normalizedDirection)}
             ${sourceSortHeading("introduced", "Introduced", normalizedSortKey, normalizedDirection)}
             ${sourceSortHeading("generation_type", "Generation type", normalizedSortKey, normalizedDirection)}
             <th scope="col"><span class="source-column-heading">Technologies</span></th>
           </tr></thead>
-          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="8">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="9">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
         </table>
       </div>
-      <p class="source-picker-dialog-help">The primary source provides the control values. Additional sources reuse compatible prompt, resolution, and seed settings when available.</p>
+      <p class="source-picker-dialog-help">Each selected source and model choice is queued separately. The primary source provides the control values; additional sources reuse compatible prompt, resolution, and seed settings when available.</p>
     </div>
     <footer class="dialog-actions">
       <button type="button" class="button secondary" data-action="cancel-generation-source-dialog">Cancel</button>
@@ -348,7 +382,13 @@ function sourceSortHeading(key, label, activeKey, direction, className = "") {
   return `<th${className ? ` class="${escapeHtml(className)}"` : ""} scope="col" ${active ? `aria-sort="${direction}"` : ""}><button type="button" class="source-sort-button" data-action="sort-generation-sources" data-source-sort-key="${escapeHtml(key)}" data-source-sort-direction="${nextDirection}"><span>${escapeHtml(label)}</span>${indicator}</button></th>`;
 }
 
-function sourcePickerRowMarkup(source, primaryKey, selectedKeys, sourceRatings) {
+function sourcePickerRowMarkup(
+  source,
+  primaryKey,
+  selectedKeys,
+  sourceRatings,
+  modelSelections,
+) {
   const key = sourceKey(source);
   const primary = key === primaryKey;
   const selected = selectedKeys.has(key) || primary;
@@ -359,12 +399,42 @@ function sourcePickerRowMarkup(source, primaryKey, selectedKeys, sourceRatings) 
     <td class="source-picker-include-column"><label class="source-dialog-choice" title="${escapeHtml(primary ? `${source.display_name} is always included as the primary source` : `Include ${source.display_name}`)}"><input type="checkbox" data-source-draft-key="${escapeHtml(key)}" aria-label="Include ${escapeHtml(source.display_name)}" ${selected ? "checked" : ""} ${primary || unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
     <td class="source-picker-primary-column"><label class="source-dialog-primary" title="Make ${escapeHtml(source.display_name)} the primary source"><input type="radio" name="source-picker-primary" data-source-primary-key="${escapeHtml(key)}" aria-label="Make ${escapeHtml(source.display_name)} the primary source" ${primary ? "checked" : ""} ${unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
     <th class="source-picker-name-cell" scope="row"><strong>${escapeHtml(sourceDisplayName(source))}</strong><small>${escapeHtml(status)}</small></th>
+    <td class="source-picker-model-column">${sourceModelChoicesMarkup(source, modelSelections, unavailable || !selected)}</td>
     <td class="source-picker-rating-column">${sourceRatingMarkup(source, sourceRatings)}</td>
     <td>${escapeHtml(metadata.architecture)}</td>
     <td>${escapeHtml(metadata.introduced)}</td>
     <td>${escapeHtml(metadata.generationType)}</td>
     <td class="source-picker-technologies-cell">${escapeHtml(metadata.technologies)}</td>
   </tr>`;
+}
+
+function sourceModelChoicesMarkup(source, modelSelections, sourceDisabled) {
+  const selectors = sourceModelSelectors(source);
+  if (!selectors.length) return '<span class="source-model-empty">—</span>';
+  const normalized = normalizeSourceModelSelections(source, modelSelections);
+  return selectors
+    .map((selector) => {
+      const selected = new Set(normalized[selector.parameter_id] || []);
+      const choices = selector.choices
+        .map((choice) => {
+          const checked = selected.has(choice.value);
+          const onlyChoice = selector.choices.length === 1;
+          const requiredSelection = checked && selected.size === 1;
+          const disabled = sourceDisabled || onlyChoice || requiredSelection;
+          const month = validTimelineMonth(choice.released_month);
+          const metadata = [
+            month ? formatTimelineMonth(month) : "",
+            onlyChoice ? "Only option" : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          const accessibleName = `Generate ${source.display_name} with ${selector.label}: ${choice.label}`;
+          return `<label class="source-model-choice${checked ? " is-selected" : ""}"><input type="checkbox" data-source-model-choice data-source-model-source-key="${escapeHtml(sourceKey(source))}" data-source-model-parameter-id="${escapeHtml(selector.parameter_id)}" data-source-model-value="${escapeHtml(choice.value)}" aria-label="${escapeHtml(accessibleName)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><span><strong>${escapeHtml(choice.label)}</strong>${metadata ? `<small>${escapeHtml(metadata)}</small>` : ""}</span></label>`;
+        })
+        .join("");
+      return `<fieldset class="source-model-selector"><legend>${escapeHtml(selector.label)}</legend>${selector.description ? `<p>${escapeHtml(selector.description)}</p>` : ""}<div class="source-model-choice-list">${choices}</div></fieldset>`;
+    })
+    .join("");
 }
 
 function sourceRatingMarkup(source, sourceRatings) {

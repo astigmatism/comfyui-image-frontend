@@ -39,6 +39,97 @@ export function generationSourceModelVariant(generationSource, parameterId, valu
   );
 }
 
+export function sourceModelSelectors(source) {
+  if (!Array.isArray(source?.model_selectors)) return [];
+  const selectors = [];
+  for (const candidate of source.model_selectors) {
+    const parameterId =
+      typeof candidate?.parameter_id === "string" ? candidate.parameter_id.trim() : "";
+    if (!parameterId || !Array.isArray(candidate.choices)) {
+      continue;
+    }
+    const values = new Set();
+    const choices = [];
+    for (const option of candidate.choices) {
+      if (!option || typeof option !== "object" || typeof option.value !== "string") continue;
+      const value = option.value.trim();
+      if (!value || values.has(value)) continue;
+      values.add(value);
+      choices.push({
+        ...option,
+        value,
+        label:
+          typeof option.label === "string" && option.label.trim()
+            ? option.label.trim()
+            : value,
+      });
+    }
+    if (!choices.length) continue;
+    const declaredDefault =
+      typeof candidate.default === "string" ? candidate.default.trim() : "";
+    selectors.push({
+      ...candidate,
+      parameter_id: parameterId,
+      label:
+        typeof candidate.label === "string" && candidate.label.trim()
+          ? candidate.label.trim()
+          : "Model checkpoint",
+      description:
+        typeof candidate.description === "string" ? candidate.description.trim() : "",
+      default: values.has(declaredDefault) ? declaredDefault : choices[0].value,
+      choices,
+    });
+    break;
+  }
+  return selectors;
+}
+
+export function normalizeSourceModelSelections(source, selections = {}, fallbackValues = {}) {
+  const result = {};
+  for (const selector of sourceModelSelectors(source)) {
+    const raw = selections?.[selector.parameter_id];
+    const requested =
+      raw instanceof Set
+        ? [...raw]
+        : Array.isArray(raw)
+          ? raw
+          : typeof raw === "string"
+            ? [raw]
+            : [];
+    const requestedValues = new Set(
+      requested.filter((value) => typeof value === "string"),
+    );
+    let selected = selector.choices
+      .filter((choice) => requestedValues.has(choice.value))
+      .map((choice) => choice.value);
+    const fallback = fallbackValues?.[selector.parameter_id];
+    if (!selected.length && typeof fallback === "string") {
+      selected = selector.choices
+        .filter((choice) => choice.value === fallback)
+        .map((choice) => choice.value);
+    }
+    if (!selected.length) selected = [selector.default];
+    result[selector.parameter_id] = selected;
+  }
+  return result;
+}
+
+export function sourceModelParameterVariants(source, selections = {}, fallbackValues = {}) {
+  const selectors = sourceModelSelectors(source);
+  if (!selectors.length) return [{}];
+  const normalized = normalizeSourceModelSelections(source, selections, fallbackValues);
+  let variants = [{}];
+  for (const selector of selectors) {
+    variants = variants.flatMap((variant) =>
+      normalized[selector.parameter_id].map((value) => ({
+        ...variant,
+        [selector.parameter_id]: value,
+      })),
+    );
+  }
+  return variants;
+}
+
 export function insertTranscription(value, transcript, selectionStart, selectionEnd) {
   const source = String(value ?? "");
   const spoken = String(transcript ?? "").trim();

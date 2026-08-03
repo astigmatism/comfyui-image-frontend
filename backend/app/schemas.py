@@ -103,6 +103,23 @@ class SourceRevision(APIModel):
     manifest_sha256: str
 
 
+class ModelSelectorChoice(APIModel):
+    value: str
+    label: str
+    released_month: str | None = Field(
+        default=None,
+        pattern=r"^(19|20|21)\d{2}-(0[1-9]|1[0-2])$",
+    )
+
+
+class ModelSelector(APIModel):
+    parameter_id: str
+    label: str
+    description: str
+    default: str
+    choices: list[ModelSelectorChoice]
+
+
 class WorkflowSummary(APIModel):
     source_key: str
     display_name: str
@@ -115,6 +132,7 @@ class WorkflowSummary(APIModel):
     revision: SourceRevision
     generation_source: GenerationSourceMetadata | None = None
     technical_inventory: TechnicalInventoryMetadata | None = None
+    model_selectors: list[ModelSelector] = Field(default_factory=list)
     profile_id: str | None = None
     workflow_id: str | None = None
     workflow_version: str | None = None

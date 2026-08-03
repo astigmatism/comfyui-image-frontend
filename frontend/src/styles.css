@@ -2318,7 +2318,7 @@ dialog::backdrop {
 
 .source-picker-table {
   width: 100%;
-  min-width: 1100px;
+  min-width: 1400px;
   border-spacing: 0;
   table-layout: fixed;
 }
@@ -2391,9 +2391,103 @@ dialog::backdrop {
   width: 142px;
 }
 
+.source-picker-table .source-picker-model-column {
+  width: 300px;
+}
+
 .source-picker-name-cell strong,
 .source-picker-name-cell small {
   display: block;
+}
+
+.source-model-empty {
+  color: var(--muted);
+}
+
+.source-model-selector {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.source-model-selector + .source-model-selector {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.source-model-selector legend {
+  padding: 0;
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.source-model-selector > p {
+  margin: 2px 0 7px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.source-model-choice-list {
+  display: grid;
+  gap: 5px;
+}
+
+.source-model-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgb(12 19 28 / 72%);
+  cursor: pointer;
+}
+
+.source-model-choice.is-selected {
+  border-color: #426f9f;
+  background: rgb(37 78 120 / 35%);
+}
+
+.source-model-choice input {
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+
+.source-model-choice:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.source-model-choice:has(input:disabled) {
+  cursor: default;
+}
+
+.source-model-choice span,
+.source-model-choice strong,
+.source-model-choice small {
+  display: block;
+  min-width: 0;
+}
+
+.source-model-choice strong {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.source-model-choice small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 500;
 }
 
 .source-picker-name-cell strong {

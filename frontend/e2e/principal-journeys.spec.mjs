@@ -791,6 +791,152 @@ test("checked generation sources reuse compatible settings without blocking part
   ).toBeVisible();
 });
 
+test("checked checkpoint choices fan out scalar requests with one resolved seed", async ({
+  page,
+}) => {
+  const checkpointSelector = {
+    parameter_id: "lora",
+    label: "Model checkpoint",
+    description: "Select one or more checkpoints to compare.",
+    default: "knp_v4_1",
+    choices: [
+      { value: "knp_v4_1", label: "KNP v4.1", released_month: null },
+      { value: "knp_v3_1", label: "KNP v3.1", released_month: "2026-07" },
+      { value: "knp_v2", label: "KNP v2", released_month: null },
+      {
+        value: "mysticxxx_krea2_v1",
+        label: "MysticXXX Krea2 v1",
+        released_month: null,
+      },
+    ],
+  };
+  const exposeCheckpointSelector = (source) =>
+    source?.display_name === "Krea 2 NSFW V4"
+      ? { ...source, model_selectors: [checkpointSelector] }
+      : source;
+
+  await page.route("**/api/workflows", async (route) => {
+    const response = await route.fetch();
+    const sources = await response.json();
+    await route.fulfill({ response, json: sources.map(exposeCheckpointSelector) });
+  });
+  await page.route("**/api/workflows/*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.json();
+    await route.fulfill({ response, json: exposeCheckpointSelector(source) });
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("checkpoint comparison lighthouse");
+
+  const generationRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      generationRequests.push(request.postDataJSON());
+    }
+  });
+
+  await page.locator("#workflow-source").click();
+  const sourceDialog = page.locator("#source-picker-dialog");
+  const v3Checkpoint = () =>
+    sourceDialog.getByLabel(
+      "Generate Krea 2 NSFW V4 with Model checkpoint: KNP v3.1",
+      { exact: true },
+    );
+  await v3Checkpoint().check();
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("#workflow-source")).not.toContainText("2 generations planned");
+
+  await page.locator("#workflow-source").click();
+  await expect(v3Checkpoint()).not.toBeChecked();
+  await v3Checkpoint().check();
+  await expect(sourceDialog.locator("[data-source-selection-count]")).toContainText(
+    "2 generations planned",
+  );
+  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.locator("#workflow-source")).toContainText("2 generations planned");
+
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect(page.locator("#toast-region")).toContainText(
+    "2 generations queued across 1 selected source.",
+  );
+  await expect.poll(() => generationRequests.length).toBe(2);
+
+  generationRequests.sort((first, second) =>
+    first.parameters.lora.localeCompare(second.parameters.lora),
+  );
+  expect(generationRequests.map((request) => request.parameters.lora)).toEqual([
+    "knp_v3_1",
+    "knp_v4_1",
+  ]);
+  const [first, second] = generationRequests;
+  expect(first.parameters.seed).toMatch(/^\d+$/);
+  expect(second.parameters.seed).toBe(first.parameters.seed);
+  expect(first.parameters.lora).not.toEqual(second.parameters.lora);
+  expect({ ...first.parameters, lora: undefined }).toEqual({
+    ...second.parameters,
+    lora: undefined,
+  });
+  expect(Array.isArray(first.parameters.lora)).toBe(false);
+  expect(Array.isArray(second.parameters.lora)).toBe(false);
+
+  const advanced = page.getByRole("button", { name: "Advanced", exact: true });
+  if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
+  await page.getByRole("combobox", { name: "LoRA", exact: true }).selectOption("knp_v2");
+  await expect(page.locator("#workflow-source")).not.toContainText("generations planned");
+});
+
+test("comparison fanout rejects a secondary source that was republished after selection", async ({
+  page,
+}) => {
+  await page.route("**/api/workflows/*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.json();
+    if (source?.display_name === "Generic Landscape") {
+      source.revision = {
+        ...source.revision,
+        publication_id: `${source.revision.publication_id}-republished`,
+      };
+    }
+    await route.fulfill({ response, json: source });
+  });
+
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("revision-safe comparison lighthouse");
+
+  await page.locator("#workflow-source").click();
+  const sourceDialog = page.locator("#source-picker-dialog");
+  await sourceDialog.getByLabel("Include Generic Landscape", { exact: true }).check();
+  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.locator("#workflow-source")).toContainText("2 sources selected");
+
+  const generationRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/generations" && request.method() === "POST") {
+      generationRequests.push(request.postDataJSON());
+    }
+  });
+
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect(page.locator("#toast-region")).toContainText(
+    "Generic Landscape was republished after it was selected",
+  );
+  await expect.poll(() => generationRequests.length).toBe(1);
+  expect(generationRequests[0].source_key).toBe(
+    await page.locator("#workflow-source").getAttribute("data-source-key"),
+  );
+});
+
 test("generation source ratings persist and sort in both directions", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);

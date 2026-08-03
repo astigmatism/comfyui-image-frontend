@@ -398,6 +398,56 @@ binding must still be admitted by every connected destination at publication
 time. If a model or LoRA is missing from the installed destination choices,
 report it and do not publish the declaration as valid.
 
+#### Checkpoint-capable workflows
+
+Treat a selectable base-model checkpoint as a model choice, not as an
+unrestricted filename field or a special multi-value parameter. Locate the real
+loader input, such as the installed equivalent of
+`CheckpointLoaderSimple.ckpt_name`, read its current choices from `/object_info`,
+and connect one root-level `CIFChoiceParameter` to that input. For a new or
+republished declaration, use:
+
+- `parameter_id`: a stable public ID, normally `checkpoint`;
+- `label`: `Model checkpoint` or another concise workflow-specific label;
+- `semantic_role`: `model`;
+- `required`: `false` when the saved workflow has a valid default;
+- `advanced`: `true`;
+- `group`: `Advanced`.
+
+The application recognizes the older semantic role `checkpoint` when
+discovering selector-capable publications, but it is a compatibility alias, not
+the authoring value for new work. Normalize new declarations to `model`.
+Do not author `model_selectors` in the manifest. Save & Publish validates the
+root choice declaration, and the Image Frontend backend derives that safe source
+response projection. Publish one batchable base-model selector per source; any
+additional model choices stay ordinary scalar Advanced inputs in the current UI.
+
+Give every checkpoint a stable public option ID and human-readable label. Keep
+the exact installed checkpoint filename only in the private `binding` member of
+`options_json`. Filenames, directory components, node IDs, loader inputs, and
+bindings must not appear in `interface.inputs[].choices`. A renamed or relocated
+private model can therefore be republished with the same public ID when its
+meaning has not changed.
+
+A validated model choice may also appear beside its generation source in the
+Image Frontend source picker. That is a second presentation of the same public
+choice, not an inventory inferred from the loader or filesystem. The picker may
+let a user check several public checkpoint values; the application then queues
+one generation per checked value, with one scalar choice ID in each request. It
+clones every other input unchanged and, when Seed is Random, resolves one
+concrete seed for the entire same-source fan-out. It must never send an array to
+one `CIFChoiceParameter` or patch several checkpoint filenames into one prompt
+graph.
+
+Optional `generation_source.base_model.timeline.model_variants` entries retain
+descriptive release metadata by matching the public `parameter_id` and `value`;
+the derived `model_selectors` response currently adds only the exact matching
+`released_month`. Author checkbox labels in the `CIFChoiceParameter` choices:
+timeline labels and provenance never replace them. An exact match may act as a
+legacy discovery hint, but it does not create or remove choices. The published
+choice declaration remains authoritative even when timeline metadata is absent,
+incomplete, or newer than the installed model inventory.
+
 The runtime node deliberately emits `*`: legacy ComfyUI combo inputs are typed
 as their literal option arrays rather than a portable symbolic `COMBO` type.
 This wildcard is safe only because publication validates the finite mapping
@@ -546,6 +596,9 @@ For each `CIFChoiceParameter`, perform these steps in order:
    - `required`: `false`;
    - `advanced`: `true`;
    - `group`: `Advanced`.
+   For a base-model checkpoint selector, use `parameter_id: checkpoint`, a
+   workflow-appropriate label, and `semantic_role: model`, with the same normal
+   optional/advanced placement unless the workflow requires otherwise.
 7. Convert the destination widget to an input through ComfyUI when possible,
    then connect the choice output to it. In structured JSON, preserve the
    destination widget metadata and add the normal reciprocal link references.
@@ -591,6 +644,29 @@ trusted frozen API graph retains `options_json` because the runtime choice node
 needs the private mapping. The public caller may patch only the choice node's
 declared `value`, never `options_json`, the destination widget, a private
 filename, or an arbitrary node path.
+
+A checkpoint declaration uses the same public shape without a strength hint:
+
+```json
+{
+  "id": "checkpoint",
+  "type": "choice",
+  "default": "moody_mix_v4",
+  "label": "Model checkpoint",
+  "semantic_role": "model",
+  "required": false,
+  "advanced": true,
+  "group": "Advanced",
+  "choices": [
+    {"value": "moody_mix_v4", "label": "Moody Mix V4"},
+    {"value": "moody_mix_v7", "label": "Moody Mix V7"}
+  ]
+}
+```
+
+The corresponding private `options_json` may bind those IDs to exact installed
+filenames, but the filenames remain frozen inside the compiled API graph and are
+never copied into this public array.
 
 ## Phase 7: discover candidate image outputs
 
@@ -824,6 +900,10 @@ Validate the modified duplicate without running an expensive generation.
   current installed `/object_info` choice list.
 - Choice outputs connect only to validated finite destination inputs; wildcard
   transport is not treated as general `ANY` wiring.
+- A base-model checkpoint choice uses semantic role `model`; `checkpoint` is
+  accepted only as an application compatibility alias for an older publication.
+- Public checkpoint options contain stable IDs and labels only; private model
+  filenames remain exclusively in the frozen choice mapping.
 - A choice paired with a strength parameter feeds the same loader or processing
   node, and the strength metadata is selection-neutral.
 - Opaque multi-toggle extension widgets have not been misclassified as one
@@ -1032,6 +1112,8 @@ items pass.
       workflow's effective default.
 - [ ] Every private binding is accepted by every connected installed
       destination and is absent from the public manifest choice array.
+- [ ] Every new checkpoint selector uses semantic role `model`, stable public
+      IDs and labels, and private filenames only in frozen `options_json`.
 - [ ] Choice and companion strength feed the same processing node, with explicit
       and omitted-strength behavior documented.
 - [ ] Custom multi-toggle widgets were not mistaken for one combo input.

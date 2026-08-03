@@ -20,6 +20,7 @@ import {
   latestCompletedImageGeneration,
   migrateInterfaceState,
   missingComparisonRoles,
+  normalizeSourceModelSelections,
   normalizeInputValue,
   overwriteWithRecall,
   parametersForRequest,
@@ -34,6 +35,8 @@ import {
   snapResolutionValue,
   sortGenerationsNewestFirst,
   sortInterfaceInputs,
+  sourceModelParameterVariants,
+  sourceModelSelectors,
   validTimelineMonth,
 } from "../src/lib.mjs";
 
@@ -69,6 +72,47 @@ test("model variants match only the public parameter id and value", () => {
   assert.equal(generationSourceModelVariant(generationSource, "unknown", "v4_int8"), null);
   assert.equal(generationSourceModelVariant(generationSource, "secondary_checkpoint", "v4_int8")?.parameter_id, "secondary_checkpoint");
   assert.doesNotMatch(JSON.stringify(first), /binding|filename|path|safetensors/);
+});
+
+test("source model selectors normalize one published fanout parameter into scalar variants", () => {
+  const source = {
+    model_selectors: [
+      {
+        parameter_id: "checkpoint",
+        label: "Checkpoint",
+        default: "v2",
+        choices: [
+          { value: "v1", label: "Version 1", released_month: "2026-01" },
+          { value: "v2", label: "Version 2" },
+          { value: "v2", label: "Duplicate ignored" },
+        ],
+      },
+      {
+        parameter_id: "refiner",
+        label: "Refiner",
+        default: "r1",
+        choices: [{ value: "r1", label: "Refiner 1" }],
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    sourceModelSelectors(source).map((selector) => selector.parameter_id),
+    ["checkpoint"],
+  );
+  assert.deepEqual(normalizeSourceModelSelections(source), { checkpoint: ["v2"] });
+  assert.deepEqual(
+    normalizeSourceModelSelections(source, { checkpoint: ["missing"] }, { checkpoint: "v1" }),
+    { checkpoint: ["v1"] },
+  );
+  assert.deepEqual(
+    sourceModelParameterVariants(source, { checkpoint: ["v2", "v1"] }),
+    [{ checkpoint: "v1" }, { checkpoint: "v2" }],
+  );
+  assert.equal(
+    Array.isArray(sourceModelParameterVariants(source, { checkpoint: ["v1", "v2"] })[0].checkpoint),
+    false,
+  );
 });
 
 test("voice transcripts insert at or replace the saved text selection", () => {

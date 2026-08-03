@@ -50,6 +50,42 @@ def _contains_private_graph_key(value: Any) -> bool:
     return False
 
 
+def _checkpoint_selector_bundle():  # type: ignore[no-untyped-def]
+    timeline = generation_source_timeline_fixture()
+    timeline["model_variants"] = [
+        {
+            "parameter_id": "checkpoint",
+            "value": "knp_v3_1",
+            "label": "Timeline label is descriptive only",
+            "released_month": "2026-07",
+            "source": {
+                "source_type": "creator_release",
+                "publisher": "Fixture Creator",
+                "title": "Fixture checkpoint release",
+                "url": "https://models.invalid/checkpoint-release",
+            },
+        }
+    ]
+
+    def expose_checkpoint(manifest) -> None:  # type: ignore[no-untyped-def]
+        checkpoint = next(item for item in manifest["interface"]["inputs"] if item["id"] == "lora")
+        checkpoint.update(
+            id="checkpoint",
+            label="Checkpoint",
+            description="Selects the model checkpoint for this source.",
+            semantic_role="model",
+        )
+        manifest["generation_source"]["base_model"]["timeline"] = timeline
+        public_lora = next(
+            item
+            for item in manifest["technical_inventory"]["loras"]
+            if item.get("usage") == "public_choice"
+        )
+        public_lora["parameter_id"] = "checkpoint"
+
+    return build_publication_bundle("krea", mutate_manifest=expose_checkpoint)
+
+
 def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     fake_state, app_client: TestClient
 ) -> None:
@@ -66,6 +102,7 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     assert profile["generation_source"]["generation_type"] == "text_to_image"
     assert profile["generation_source"]["base_model"]["architecture"] == "krea2"
     assert "timeline" not in profile["generation_source"]["base_model"]
+    assert profile["model_selectors"] == []
     counts = profile["technical_inventory"]["node_counts"]
     assert set(counts) == {
         "editable_root",
@@ -88,6 +125,7 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     )
     assert older_source["generation_source"] is None
     assert older_source["technical_inventory"] is None
+    assert older_source["model_selectors"] == []
 
     detail = app_client.get(f"/api/workflows/{profile['source_key']}")
     assert detail.status_code == 200
@@ -162,6 +200,81 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     assert all(
         b"%2F" in path and b"/workflows/" not in path for path in fake_state.userdata_raw_paths
     )
+
+
+def test_source_summary_and_detail_project_authoritative_checkpoint_selector(
+    fake_state, settings_factory
+) -> None:
+    bundle = _checkpoint_selector_bundle()
+    fake_state.workflow_files = dict(bundle.files)
+
+    with TestClient(create_app(settings_factory())) as client:
+        provision_user(client, username="checkpoint.selector")
+        summaries = client.get("/api/workflows")
+        assert summaries.status_code == 200
+        summary = summaries.json()[0]
+        selector = summary["model_selectors"][0]
+
+        assert selector == {
+            "parameter_id": "checkpoint",
+            "label": "Checkpoint",
+            "description": "Selects the model checkpoint for this source.",
+            "default": "knp_v4_1",
+            "choices": [
+                {"value": "knp_v4_1", "label": "KNP v4.1", "released_month": None},
+                {
+                    "value": "knp_v3_1",
+                    "label": "KNP v3.1",
+                    "released_month": "2026-07",
+                },
+                {"value": "knp_v2", "label": "KNP v2", "released_month": None},
+                {
+                    "value": "mysticxxx_krea2_v1",
+                    "label": "MysticXXX Krea2 v1",
+                    "released_month": None,
+                },
+            ],
+        }
+        assert "safetensors" not in str(selector)
+        assert "options_json" not in str(selector)
+        assert "Timeline label" not in str(selector)
+
+        detail_response = client.get(f"/api/workflows/{summary['source_key']}")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["model_selectors"] == summary["model_selectors"]
+        interface_checkpoint = next(
+            item for item in detail["interface"]["inputs"] if item["id"] == "checkpoint"
+        )
+        assert selector["default"] == interface_checkpoint["default"]
+        assert [item["value"] for item in selector["choices"]] == [
+            item["value"] for item in interface_checkpoint["choices"]
+        ]
+
+
+def test_dependency_unavailable_catalog_keeps_safe_checkpoint_selector(
+    fake_state, settings_factory
+) -> None:
+    bundle = _checkpoint_selector_bundle()
+    fake_state.workflow_files = dict(bundle.files)
+    fake_state.object_info.pop("CIFChoiceParameter")
+
+    with TestClient(create_app(settings_factory())) as client:
+        provision_user(client, username="checkpoint.unavailable")
+        response = client.get("/api/workflows")
+        assert response.status_code == 200
+        source = response.json()[0]
+
+        assert source["available"] is False
+        assert source["readiness"] == "dependency_missing"
+        assert source["model_selectors"][0]["parameter_id"] == "checkpoint"
+        assert source["model_selectors"][0]["choices"][1] == {
+            "value": "knp_v3_1",
+            "label": "KNP v3.1",
+            "released_month": "2026-07",
+        }
+        assert "safetensors" not in str(source["model_selectors"])
+        assert client.get(f"/api/workflows/{source['source_key']}").status_code == 409
 
 
 def test_discovery_uses_recursive_fallback_with_headers_and_encoded_artifacts(

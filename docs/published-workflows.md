@@ -114,6 +114,8 @@ Bindings, node IDs, artifact filesystem paths, and executable graphs are private
 
 `base_model.timeline` is an optional additive v1 object. Its `architecture.introduced_month` is an exact, lexicographically sortable `YYYY-MM` architecture introduction date. `default_model.released_month` describes the exact fixed/default model instead, and optional `model_variants` associate distinct releases with public selector choices by `parameter_id` plus `value`. Each date carries an inert provenance `source` (`source_type`, `publisher`, `title`, and direct `url`). The application preserves this metadata without fetching provenance URLs, using dates as discovery gates, or treating architecture, default-model, and top-level publication times as fallbacks for one another. Unknown timeline fields remain lossless; malformed known month fields are diagnosed nonfatally and omit the recognized generation-source section under the same policy as other malformed v1 metadata.
 
+`model_variants` is optional display enrichment, never executable option inventory. A canonical `semantic_role: model` choice—and the narrow legacy role/ID aliases—remains source-picker selectable without timeline metadata. For compatibility with older declarations, an exact timeline `(parameter_id, value)` match may identify an existing public choice as the model selector. It still cannot create, remove, rename, or rebind a choice, and a timeline-only value never becomes a request parameter. Private filenames, paths, bindings, and node IDs are forbidden from variant metadata and remain frozen inside the executable graph.
+
 The source picker reads the canonical architecture month before legacy introduction aliases, sorts by the raw `YYYY-MM`, renders it as a localized month and year, and keeps missing dates after known dates in both directions. It never substitutes `default_model.released_month` for the architecture introduction.
 
 `technical_inventory` uses schema `comfyui-image-frontend.technical-inventory/v1`. It preserves six distinct node counts (`editable_root`, `subgraph_definitions`, `editable_subgraph_nodes`, `compiled_api`, `output_reachable`, and `compiled_orphans`), models, LoRAs, encoders, VAEs, upscalers, detectors, samplers, technologies, reachable/orphan class types, unclassified loaders, and warning strings. The application checks these relationships diagnostically:
@@ -133,9 +135,40 @@ Publication v1 supports `string`, `integer`, `number`, `boolean`, `seed`, `choic
 
 An `image` input has semantic role `reference_image`, binds only to `CIFImageParameter.image`, and declares trusted media metadata: `/upload/image`, storage type `input`, a nonempty subset of PNG/JPEG/WebP MIME types, positive byte/width/height limits, `animated: false`, and a Boolean `returns_mask`. Its limits must match the frozen CIF node. The public request carries only an application-owned opaque asset ID.
 
-A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. The frontend renders a single select and sends only the public value. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
+A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. The ordinary parameter control, including the Advanced control for a model checkpoint, is a scalar single select and sends only the public value. Source-picker checkboxes described below are client-side fan-out over that unchanged scalar contract. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
 
 When a choice has a companion number named `<choice-id>_strength`—or exactly one numeric input shares its semantic role—an explicit non-null number wins. Otherwise the selected option's `default_strength` applies, falling back to the number input's ordinary default. Both concrete public values are returned in effective parameters and patched only through their trusted declaration-node `value` bindings.
+
+#### Model-checkpoint choices
+
+A workflow with a finite selectable model-checkpoint input publishes that input through a root-level `CIFChoiceParameter`. New and republished declarations use semantic role `model`; the application also recognizes `checkpoint` as a legacy application-side discovery alias so an older valid publication does not have to be rewritten merely to appear in selector-aware UI. Publication authors must use `model` for new declarations. The parameter ID is a stable public identifier, commonly `checkpoint`, and is independent of the private model filename. `model_selectors` is derived by the application after Save & Publish; it is not an authored manifest section.
+
+The public interface shape is an ordinary scalar choice:
+
+```json
+{
+  "id": "checkpoint",
+  "type": "choice",
+  "default": "moody_mix_v4",
+  "label": "Model checkpoint",
+  "description": "Selects the base model checkpoint used for this generation.",
+  "semantic_role": "model",
+  "required": false,
+  "advanced": true,
+  "group": "Advanced",
+  "order": 55,
+  "choices": [
+    {"value": "moody_mix_v4", "label": "Moody Mix V4"},
+    {"value": "moody_mix_v7", "label": "Moody Mix V7"}
+  ]
+}
+```
+
+The public values and labels are the only selector inventory. The frozen `CIFChoiceParameter.options_json` maps those values to installed private filenames and stays unchanged in every request-local graph; callers never submit a filename, path, binding, `options_json`, or loader input.
+
+The application may surface a validated model choice in the generation-source picker in addition to the source's Advanced controls. That picker is another view of the same published declaration, not a separate model catalog. Publish one batchable base-model selector per source: the current picker batches the first recognized selector, while any later model choices remain ordinary scalar Advanced controls. This avoids an implicit Cartesian product.
+
+One ComfyUI prompt still receives exactly one scalar public choice. If a user checks several checkpoint options for one source, the application fans the selection out into one independently validated generation request per checked value. Every request clones the same remaining effective inputs; when Seed is Random, the client resolves it once and sends that same concrete seed to every fan-out member. Only the checkpoint value differs. The client must not submit an array, patch several model files into one graph, or reinterpret `model_variants` as executable choices.
 
 Exactly one input must have semantic role `positive_prompt`. The frontend orders non-advanced inputs before advanced inputs, then uses `order`, `group`, and `id` as deterministic fallbacks. The backend remains authoritative for all types, ranges, steps, defaults, and required fields.
 
@@ -248,13 +281,16 @@ The current public request is a source reference plus public parameters:
     "prompt": "mist over a mountain lake",
     "width": 1024,
     "height": 1024,
-    "seed": "1125899906842624"
+    "seed": "1125899906842624",
+    "checkpoint": "moody_mix_v7"
   },
   "prompt_assistant_run_id": null
 }
 ```
 
 The backend rejects unknown IDs and private graph/binding/path fields, applies manifest and choice-specific defaults, resolves seeds and authorized image assets, deep-clones the accepted frozen graph, and patches only manifest-trusted bindings. A choice binding receives its stable public ID; the frozen `CIFChoiceParameter` resolves the private destination while `options_json` and downstream loader inputs remain unchanged. An image asset is decoded and validated, uploaded to an adapter-owned per-job ComfyUI input namespace, and patched only into `CIFImageParameter.image`. The compiler verifies that the cached graph was not mutated. When the publication runtime flag requires it, submission includes the accepted editable snapshot at `extra_data.extra_pnginfo.workflow`; this metadata never replaces or patches the verified frozen API graph. ComfyUI receives a request-specific client ID and returns the native `prompt_id`.
+
+Multi-source and multi-checkpoint comparison behavior is client orchestration over this unchanged request contract. Each queued request has one `source_key`, one immutable revision, and at most one scalar value for each published choice. When several checkpoint values are checked, every fan-out member is separately validated, accepted, persisted, and displayed as its own generation; a partial failure cannot turn the remaining requests into one combined graph.
 
 `POST /api/generations/validate` performs the same compilation checks without queuing. `POST /api/generations` commits the immutable source revision, requested/effective parameters, resolved seeds, and compiled graph before the durable queue accepts the job.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping
 from typing import Annotated, Any
 
@@ -8,11 +9,21 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, get_container, get_db, require_ready_user
-from ..domain.source_metadata import recognize_source_metadata
+from ..domain.source_metadata import TIMELINE_MONTH_PATTERN, recognize_source_metadata
 from ..models import ServiceHealth
-from ..schemas import ServiceStatus, SourceRevision, WorkflowDetail, WorkflowSummary
+from ..schemas import (
+    ModelSelector,
+    ModelSelectorChoice,
+    ServiceStatus,
+    SourceRevision,
+    WorkflowDetail,
+    WorkflowSummary,
+)
 
 router = APIRouter(prefix="/api", tags=["generation-sources"])
+MODEL_SELECTOR_ROLES = frozenset({"model", "checkpoint"})
+LEGACY_CHECKPOINT_PARAMETER_ID = "checkpoint"
+TIMELINE_MONTH_RE = re.compile(TIMELINE_MONTH_PATTERN)
 
 
 @router.get("/workflows", response_model=list[WorkflowSummary])
@@ -32,6 +43,7 @@ def list_workflows(
         revision = raw.get("revision")
         if not isinstance(revision, Mapping):
             continue
+        generation_source = raw.get("generation_source")
         result.append(
             WorkflowSummary(
                 source_key=source_key,
@@ -48,8 +60,9 @@ def list_workflows(
                     api_sha256=str(revision.get("api_sha256", "")),
                     manifest_sha256=str(revision.get("manifest_sha256", "")),
                 ),
-                generation_source=raw.get("generation_source"),
+                generation_source=generation_source,
                 technical_inventory=raw.get("technical_inventory"),
+                model_selectors=_model_selectors(raw.get("interface"), generation_source),
             )
         )
     return sorted(result, key=lambda item: (item.display_name.casefold(), item.source_key))
@@ -140,6 +153,10 @@ def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
         ),
         generation_source=source_metadata.generation_source,
         technical_inventory=source_metadata.technical_inventory,
+        model_selectors=_model_selectors(
+            profile.resolved_contract_json,
+            source_metadata.generation_source,
+        ),
         profile_id=profile.id,
         workflow_id=profile.workflow_id,
         workflow_version=profile.workflow_version,
@@ -215,3 +232,89 @@ def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
         "outputs": outputs,
         "unmapped_outputs_policy": contract.get("unmapped_outputs_policy", "collect"),
     }
+
+
+def _model_selectors(
+    contract: Any,
+    generation_source: Any,
+) -> list[ModelSelector]:
+    """Project authoritative public model choices with optional inert release metadata."""
+
+    if not isinstance(contract, Mapping):
+        return []
+    timeline_references, release_months = _timeline_model_variant_index(generation_source)
+    selectors: list[ModelSelector] = []
+    for raw_input in _public_interface(contract).get("inputs", []):
+        if not isinstance(raw_input, Mapping) or raw_input.get("type") != "choice":
+            continue
+        parameter_id = raw_input.get("id")
+        semantic_role = raw_input.get("semantic_role")
+        if not isinstance(parameter_id, str):
+            continue
+        label = raw_input.get("label")
+        description = raw_input.get("description", "")
+        default = raw_input.get("default")
+        if not all(isinstance(value, str) for value in (label, description, default)):
+            continue
+        choices: list[ModelSelectorChoice] = []
+        for raw_choice in raw_input.get("choices", []):
+            if not isinstance(raw_choice, Mapping):
+                continue
+            value = raw_choice.get("value")
+            choice_label = raw_choice.get("label")
+            if not isinstance(value, str) or not isinstance(choice_label, str):
+                continue
+            choices.append(
+                ModelSelectorChoice(
+                    value=value,
+                    label=choice_label,
+                    released_month=release_months.get((parameter_id, value)),
+                )
+            )
+        if not choices or default not in {choice.value for choice in choices}:
+            continue
+        canonical_selector = (
+            semantic_role in MODEL_SELECTOR_ROLES or parameter_id == LEGACY_CHECKPOINT_PARAMETER_ID
+        )
+        timeline_selector = any(
+            (parameter_id, choice.value) in timeline_references for choice in choices
+        )
+        if not canonical_selector and not timeline_selector:
+            continue
+        selectors.append(
+            ModelSelector(
+                parameter_id=parameter_id,
+                label=label,
+                description=description,
+                default=default,
+                choices=choices,
+            )
+        )
+    return selectors
+
+
+def _timeline_model_variant_index(
+    generation_source: Any,
+) -> tuple[set[tuple[str, str]], dict[tuple[str, str], str]]:
+    references: set[tuple[str, str]] = set()
+    release_months: dict[tuple[str, str], str] = {}
+    if not isinstance(generation_source, Mapping):
+        return references, release_months
+    base_model = generation_source.get("base_model")
+    timeline = base_model.get("timeline") if isinstance(base_model, Mapping) else None
+    variants = timeline.get("model_variants") if isinstance(timeline, Mapping) else None
+    if not isinstance(variants, list):
+        return references, release_months
+    for raw_variant in variants:
+        if not isinstance(raw_variant, Mapping):
+            continue
+        parameter_id = raw_variant.get("parameter_id")
+        value = raw_variant.get("value")
+        if not isinstance(parameter_id, str) or not isinstance(value, str):
+            continue
+        reference = (parameter_id, value)
+        references.add(reference)
+        released_month = raw_variant.get("released_month")
+        if isinstance(released_month, str) and TIMELINE_MONTH_RE.fullmatch(released_month):
+            release_months.setdefault(reference, released_month)
+    return references, release_months

@@ -697,14 +697,62 @@ test("source picker launcher shows the selected queue count while submitting", (
       { source_key: "offline", display_name: "Offline", available: false },
     ],
     activeSourceKey: "one",
+    selectedGenerationTargetCount: 4,
     parameters: { "prompt.text": "hello" },
     fieldErrors: {},
   };
   const html = generationPanelMarkup(state, state.sources[0], publishedInterface);
   assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /disabled/);
-  assert.match(html, /Queueing 2…/);
+  assert.match(html, /Queueing 4…/);
   assert.match(html, /2 sources selected/);
+  assert.match(html, /4 generations planned/);
   assert.doesNotMatch(html, /data-source-draft-key|data-source-primary-key/);
+});
+
+test("source picker leaves ordinary sources as one planned generation without model controls", () => {
+  const html = sourcePickerDialogMarkup(
+    [{ source_key: "plain", display_name: "Plain", available: true }],
+    { primaryKey: "plain", selectedKeys: ["plain"] },
+  );
+
+  assert.match(html, /1 of 1 available source selected · 1 generation planned/);
+  assert.match(html, /class="source-model-empty">—/);
+  assert.doesNotMatch(html, /data-source-model-choice/);
+});
+
+test("source picker disables model choices until an additional source is included", () => {
+  const html = sourcePickerDialogMarkup(
+    [
+      { source_key: "primary", display_name: "Primary", available: true },
+      {
+        source_key: "extra",
+        display_name: "Extra",
+        available: true,
+        model_selectors: [
+          {
+            parameter_id: "checkpoint",
+            label: "Checkpoint",
+            default: "v1",
+            choices: [
+              { value: "v1", label: "Version 1" },
+              { value: "v2", label: "Version 2" },
+            ],
+          },
+        ],
+      },
+    ],
+    { primaryKey: "primary", selectedKeys: ["primary"] },
+  );
+
+  assert.match(
+    html,
+    /aria-label="Generate Extra with Checkpoint: Version 1"[^>]*disabled/,
+  );
+  assert.match(
+    html,
+    /aria-label="Generate Extra with Checkpoint: Version 2"[^>]*disabled/,
+  );
+  assert.match(html, /1 of 2 available sources selected · 1 generation planned/);
 });
 
 test("source picker dialog supports transactional primary and additional source selection", () => {
@@ -725,14 +773,43 @@ test("source picker dialog supports transactional primary and additional source 
         },
         technologies: [{ id: "controlnet", label: "ControlNet" }],
       },
+      model_selectors: [
+        {
+          parameter_id: "checkpoint",
+          label: "Checkpoint",
+          description: "Choose one or more model releases.",
+          default: "v1",
+          choices: [
+            { value: "v1", label: "Version 1", released_month: "2026-01" },
+            { value: "v2", label: "Version 2" },
+          ],
+        },
+      ],
     },
-    { source_key: "two", display_name: "Two", instance_id: "default", available: true },
+    {
+      source_key: "two",
+      display_name: "Two",
+      instance_id: "default",
+      available: true,
+      model_selectors: [
+        {
+          parameter_id: "checkpoint",
+          label: "Checkpoint",
+          default: "only",
+          choices: [{ value: "only", label: "Only model" }],
+        },
+      ],
+    },
     { source_key: "offline", display_name: "Offline", available: false },
   ];
   const html = sourcePickerDialogMarkup(sources, {
     primaryKey: "one",
     selectedKeys: new Set(["one", "two"]),
     sourceRatings: { one: 3 },
+    modelSelectionsBySource: {
+      one: { checkpoint: ["v1", "v2"] },
+      two: { checkpoint: ["only"] },
+    },
   });
 
   const primaryCheckbox = html.match(/<input[^>]*data-source-draft-key="one"[^>]*>/)?.[0] || "";
@@ -759,12 +836,32 @@ test("source picker dialog supports transactional primary and additional source 
   assert.match(html, /Show Text To Image/);
   assert.match(html, /Show Unknown/);
   assert.match(html, /2 of 2 available sources selected/);
+  assert.match(html, /3 generations planned/);
+  assert.match(html, />Model choices</);
+  assert.match(html, />Checkpoint</);
+  assert.match(html, /Choose one or more model releases/);
+  assert.match(html, /Version 1/);
+  assert.match(html, /January 2026/);
+  assert.match(
+    html,
+    /aria-label="Generate One with Checkpoint: Version 1"[^>]*checked/,
+  );
+  assert.match(
+    html,
+    /aria-label="Generate One with Checkpoint: Version 2"[^>]*checked/,
+  );
+  assert.match(
+    html,
+    /aria-label="Generate Two with Checkpoint: Only model"[^>]*checked[^>]*disabled/,
+  );
+  assert.match(html, /Only option/);
   assert.match(html, /data-action="select-all-generation-sources"/);
   assert.match(html, /data-action="deselect-all-generation-sources"/);
   assert.match(html, /data-action="cancel-generation-source-dialog">Cancel/);
   assert.match(html, /data-action="apply-generation-source-dialog"[^>]*>Apply/);
   assert.match(html, /source-picker-dialog-close[\s\S]*?<svg[^>]*>[\s\S]*?<path/);
   assert.doesNotMatch(html, /data-source-sort-key="technologies"/);
+  assert.match(html, /Each checked model choice queues a separate generation/);
   assert.match(html, /reuse compatible prompt, resolution, and seed settings when available/);
 
   const primaryRow = html.match(/<tr[^>]*data-source-row-key="one"[\s\S]*?<\/tr>/)?.[0] || "";
