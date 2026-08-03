@@ -112,7 +112,17 @@ export function generationPanelMarkup(state, profile, contract) {
   const selectedSourceCount = activeKey ? sharedSourceCount + 1 : sharedSourceCount;
   const selectedTargetCount = Number(state.selectedGenerationTargetCount) || selectedSourceCount;
   const values = state.parameters || state.controls || {};
-  const inputs = sortInterfaceInputs(interfaceInputs(contract));
+  const declaredInputs = sortInterfaceInputs(interfaceInputs(contract));
+  const promotedModelInputIds = new Set(
+    sourceModelSelectors(profile)
+      .filter((selector) =>
+        declaredInputs.some(
+          (input) => input.id === selector.parameter_id && input.type === "choice",
+        ),
+      )
+      .map((selector) => selector.parameter_id),
+  );
+  const inputs = declaredInputs.filter((input) => !promotedModelInputIds.has(input.id));
   const basic = inputs.filter((item) => !isAdvancedInput(item));
   const advanced = inputs.filter((item) => isAdvancedInput(item));
   const advancedHasError = advanced.some((item) => clientErrors[item.id]);
@@ -138,6 +148,13 @@ export function generationPanelMarkup(state, profile, contract) {
           </div>
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}
+        ${activeSourceModelChoicesMarkup(
+          profile,
+          state.activeModelSelections || {},
+          state.fieldErrors || {},
+          state.sourceDetailLoading || state.submitting || profile?.available === false,
+          promotedModelInputIds,
+        )}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
         ${sourceStateMarkup(state, profile)}
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
@@ -241,6 +258,44 @@ function sourcePickerMarkup(
         </button>
       </div>
     </div>`;
+}
+
+function activeSourceModelChoicesMarkup(
+  source,
+  modelSelections,
+  errors,
+  disabled,
+  promotedInputIds,
+) {
+  const selectors = sourceModelSelectors(source).filter((selector) =>
+    promotedInputIds.has(selector.parameter_id),
+  );
+  if (!selectors.length) return "";
+  const normalized = normalizeSourceModelSelections(source, modelSelections);
+  return selectors
+    .map((selector) => {
+      const selected = new Set(normalized[selector.parameter_id] || []);
+      const error = errors?.[selector.parameter_id];
+      const errorId = `control-${selector.parameter_id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}-error`;
+      const choices = selector.choices
+        .map((choice) => {
+          const checked = selected.has(choice.value);
+          const onlyChoice = selector.choices.length === 1;
+          const requiredSelection = checked && selected.size === 1;
+          const choiceDisabled = disabled || onlyChoice || requiredSelection;
+          const month = validTimelineMonth(choice.released_month);
+          const metadata = [
+            month ? formatTimelineMonth(month) : "",
+            onlyChoice ? "Only option" : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return `<label class="source-model-choice${checked ? " is-selected" : ""}"><input id="active-model-${escapeHtml(selector.parameter_id)}-${escapeHtml(choice.value)}" type="checkbox" data-active-source-model-choice data-source-model-parameter-id="${escapeHtml(selector.parameter_id)}" data-source-model-value="${escapeHtml(choice.value)}" aria-label="${escapeHtml(choice.label)}" ${error ? `aria-invalid="true" aria-describedby="${escapeHtml(errorId)}"` : ""} ${checked ? "checked" : ""} ${choiceDisabled ? "disabled" : ""} /><span><strong>${escapeHtml(choice.label)}</strong>${metadata ? `<small>${escapeHtml(metadata)}</small>` : ""}</span></label>`;
+        })
+        .join("");
+      return `<div class="active-source-model-control" data-control-block="${escapeHtml(selector.parameter_id)}"><fieldset class="source-model-selector"><legend>${escapeHtml(selector.label)}</legend>${selector.description ? `<p>${escapeHtml(selector.description)}</p>` : ""}<div class="source-model-choice-list">${choices}</div></fieldset>${error ? `<p class="field-error" id="${escapeHtml(errorId)}" role="alert">${escapeHtml(error)}</p>` : ""}</div>`;
+    })
+    .join("");
 }
 
 const SOURCE_SORT_KEYS = new Set([

@@ -419,8 +419,10 @@ discovering selector-capable publications, but it is a compatibility alias, not
 the authoring value for new work. Normalize new declarations to `model`.
 Do not author `model_selectors` in the manifest. Save & Publish validates the
 root choice declaration, and the Image Frontend backend derives that safe source
-response projection. Publish one batchable base-model selector per source; any
-additional model choices stay ordinary scalar Advanced inputs in the current UI.
+response projection. The first model selector is promoted to checkboxes directly
+beneath **Generation source** and mirrored in the source picker instead of being
+duplicated under Advanced. Publish one batchable base-model selector per source;
+any additional model choices stay ordinary scalar Advanced inputs.
 
 Give every checkpoint a stable public option ID and human-readable label. Keep
 the exact installed checkpoint filename only in the private `binding` member of
@@ -429,11 +431,12 @@ bindings must not appear in `interface.inputs[].choices`. A renamed or relocated
 private model can therefore be republished with the same public ID when its
 meaning has not changed.
 
-A validated model choice may also appear beside its generation source in the
-Image Frontend source picker. That is a second presentation of the same public
-choice, not an inventory inferred from the loader or filesystem. The picker may
-let a user check several public checkpoint values; the application then queues
-one generation per checked value, with one scalar choice ID in each request. It
+A validated model choice appears immediately beneath its selected generation
+source and beside that source in the Image Frontend source picker. Those are two
+presentations of the same public choice and selection state, not an inventory
+inferred from the loader or filesystem. The UI may let a user check several
+public checkpoint values; the application then queues one generation per checked
+value, with one scalar choice ID in each request. It
 clones every other input unchanged and, when Seed is Random, resolves one
 concrete seed for the entire same-source fan-out. It must never send an array to
 one `CIFChoiceParameter` or patch several checkpoint filenames into one prompt
@@ -651,15 +654,20 @@ A checkpoint declaration uses the same public shape without a strength hint:
 {
   "id": "checkpoint",
   "type": "choice",
-  "default": "moody_mix_v4",
-  "label": "Model checkpoint",
+  "default": "v4_int8",
+  "label": "Checkpoint",
+  "description": "Selects the Moody Krea 2 diffusion checkpoint. V4 INT8 remains the default; V5 BF16 is the highest-precision V5 option and is substantially heavier on VRAM/RAM.",
   "semantic_role": "model",
   "required": false,
   "advanced": true,
   "group": "Advanced",
+  "order": 60,
   "choices": [
-    {"value": "moody_mix_v4", "label": "Moody Mix V4"},
-    {"value": "moody_mix_v7", "label": "Moody Mix V7"}
+    {"value": "v4_int8", "label": "Moody Krea 2 V4 INT8 ConvRot"},
+    {"value": "tyjr_mxfp8", "label": "Moody Krea 2 TYJR MXFP8"},
+    {"value": "v4_bf16", "label": "Moody Krea 2 V4 BF16"},
+    {"value": "cutie_x_int8", "label": "Moody Krea 2 Cutie X INT8"},
+    {"value": "v5_bf16", "label": "Moody Krea 2 V5 BF16"}
   ]
 }
 ```

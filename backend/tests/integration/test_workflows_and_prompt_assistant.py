@@ -50,42 +50,6 @@ def _contains_private_graph_key(value: Any) -> bool:
     return False
 
 
-def _checkpoint_selector_bundle():  # type: ignore[no-untyped-def]
-    timeline = generation_source_timeline_fixture()
-    timeline["model_variants"] = [
-        {
-            "parameter_id": "checkpoint",
-            "value": "knp_v3_1",
-            "label": "Timeline label is descriptive only",
-            "released_month": "2026-07",
-            "source": {
-                "source_type": "creator_release",
-                "publisher": "Fixture Creator",
-                "title": "Fixture checkpoint release",
-                "url": "https://models.invalid/checkpoint-release",
-            },
-        }
-    ]
-
-    def expose_checkpoint(manifest) -> None:  # type: ignore[no-untyped-def]
-        checkpoint = next(item for item in manifest["interface"]["inputs"] if item["id"] == "lora")
-        checkpoint.update(
-            id="checkpoint",
-            label="Checkpoint",
-            description="Selects the model checkpoint for this source.",
-            semantic_role="model",
-        )
-        manifest["generation_source"]["base_model"]["timeline"] = timeline
-        public_lora = next(
-            item
-            for item in manifest["technical_inventory"]["loras"]
-            if item.get("usage") == "public_choice"
-        )
-        public_lora["parameter_id"] = "checkpoint"
-
-    return build_publication_bundle("krea", mutate_manifest=expose_checkpoint)
-
-
 def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
     fake_state, app_client: TestClient
 ) -> None:
@@ -205,7 +169,7 @@ def test_discovery_registers_only_valid_pair_and_public_contract_is_semantic(
 def test_source_summary_and_detail_project_authoritative_checkpoint_selector(
     fake_state, settings_factory
 ) -> None:
-    bundle = _checkpoint_selector_bundle()
+    bundle = build_publication_bundle("moody")
     fake_state.workflow_files = dict(bundle.files)
 
     with TestClient(create_app(settings_factory())) as client:
@@ -213,31 +177,49 @@ def test_source_summary_and_detail_project_authoritative_checkpoint_selector(
         summaries = client.get("/api/workflows")
         assert summaries.status_code == 200
         summary = summaries.json()[0]
+        assert summary["display_name"] == "Moody Krea 2 Mix V4"
+        assert len(summary["model_selectors"]) == 1
         selector = summary["model_selectors"][0]
 
         assert selector == {
             "parameter_id": "checkpoint",
             "label": "Checkpoint",
-            "description": "Selects the model checkpoint for this source.",
-            "default": "knp_v4_1",
+            "description": (
+                "Selects the Moody Krea 2 diffusion checkpoint. V4 INT8 remains the default; "
+                "V5 BF16 is the highest-precision V5 option and is substantially heavier on "
+                "VRAM/RAM."
+            ),
+            "default": "v4_int8",
             "choices": [
-                {"value": "knp_v4_1", "label": "KNP v4.1", "released_month": None},
                 {
-                    "value": "knp_v3_1",
-                    "label": "KNP v3.1",
+                    "value": "v4_int8",
+                    "label": "Moody Krea 2 V4 INT8 ConvRot",
                     "released_month": "2026-07",
                 },
-                {"value": "knp_v2", "label": "KNP v2", "released_month": None},
                 {
-                    "value": "mysticxxx_krea2_v1",
-                    "label": "MysticXXX Krea2 v1",
+                    "value": "tyjr_mxfp8",
+                    "label": "Moody Krea 2 TYJR MXFP8",
+                    "released_month": "2026-07",
+                },
+                {
+                    "value": "v4_bf16",
+                    "label": "Moody Krea 2 V4 BF16",
+                    "released_month": "2026-07",
+                },
+                {
+                    "value": "cutie_x_int8",
+                    "label": "Moody Krea 2 Cutie X INT8",
+                    "released_month": "2026-07",
+                },
+                {
+                    "value": "v5_bf16",
+                    "label": "Moody Krea 2 V5 BF16",
                     "released_month": None,
                 },
             ],
         }
         assert "safetensors" not in str(selector)
         assert "options_json" not in str(selector)
-        assert "Timeline label" not in str(selector)
 
         detail_response = client.get(f"/api/workflows/{summary['source_key']}")
         assert detail_response.status_code == 200
@@ -246,16 +228,53 @@ def test_source_summary_and_detail_project_authoritative_checkpoint_selector(
         interface_checkpoint = next(
             item for item in detail["interface"]["inputs"] if item["id"] == "checkpoint"
         )
-        assert selector["default"] == interface_checkpoint["default"]
-        assert [item["value"] for item in selector["choices"]] == [
-            item["value"] for item in interface_checkpoint["choices"]
-        ]
+        assert interface_checkpoint == {
+            "id": "checkpoint",
+            "type": "choice",
+            "label": "Checkpoint",
+            "description": (
+                "Selects the Moody Krea 2 diffusion checkpoint. V4 INT8 remains the default; "
+                "V5 BF16 is the highest-precision V5 option and is substantially heavier on "
+                "VRAM/RAM."
+            ),
+            "semantic_role": "model",
+            "required": False,
+            "advanced": True,
+            "group": "Advanced",
+            "order": 60,
+            "default": "v4_int8",
+            "choices": [
+                {"value": "v4_int8", "label": "Moody Krea 2 V4 INT8 ConvRot"},
+                {"value": "tyjr_mxfp8", "label": "Moody Krea 2 TYJR MXFP8"},
+                {"value": "v4_bf16", "label": "Moody Krea 2 V4 BF16"},
+                {"value": "cutie_x_int8", "label": "Moody Krea 2 Cutie X INT8"},
+                {"value": "v5_bf16", "label": "Moody Krea 2 V5 BF16"},
+            ],
+        }
+        interface_guidance = next(
+            item for item in detail["interface"]["inputs"] if item["id"] == "guidance_strength"
+        )
+        assert interface_guidance == {
+            "id": "guidance_strength",
+            "type": "number",
+            "label": "Guidance strength",
+            "description": "Controls the guidance strength used by the Moody Krea 2 workflow.",
+            "semantic_role": "guidance",
+            "required": False,
+            "advanced": True,
+            "group": "Advanced",
+            "order": 70,
+            "default": 1.0,
+            "minimum": 0.0,
+            "maximum": 2.0,
+            "step": 0.05,
+        }
 
 
 def test_dependency_unavailable_catalog_keeps_safe_checkpoint_selector(
     fake_state, settings_factory
 ) -> None:
-    bundle = _checkpoint_selector_bundle()
+    bundle = build_publication_bundle("moody")
     fake_state.workflow_files = dict(bundle.files)
     fake_state.object_info.pop("CIFChoiceParameter")
 
@@ -269,8 +288,8 @@ def test_dependency_unavailable_catalog_keeps_safe_checkpoint_selector(
         assert source["readiness"] == "dependency_missing"
         assert source["model_selectors"][0]["parameter_id"] == "checkpoint"
         assert source["model_selectors"][0]["choices"][1] == {
-            "value": "knp_v3_1",
-            "label": "KNP v3.1",
+            "value": "tyjr_mxfp8",
+            "label": "Moody Krea 2 TYJR MXFP8",
             "released_month": "2026-07",
         }
         assert "safetensors" not in str(source["model_selectors"])

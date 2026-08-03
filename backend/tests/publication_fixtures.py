@@ -15,9 +15,22 @@ ManifestMutator = Callable[[JsonObject], None]
 KREA_STEM = "workflows/comfyui-image-frontend/Krea 2 NSFW V4"
 GENERIC_STEM = "workflows/comfyui-image-frontend/Generic Landscape"
 IMAGE_STEM = "workflows/comfyui-image-frontend/Moody Desire Image Input"
+MOODY_KREA_STEM = "workflows/comfyui-image-frontend/Moody Krea 2 Mix V4"
 KREA_PUBLICATION_ID = "11111111-1111-4111-8111-111111111111"
 GENERIC_PUBLICATION_ID = "22222222-2222-4222-8222-222222222222"
 IMAGE_PUBLICATION_ID = "33333333-3333-4333-8333-333333333333"
+MOODY_KREA_PUBLICATION_ID = "44444444-4444-4444-8444-444444444444"
+MOODY_KREA_CHECKPOINTS = (
+    (
+        "v4_int8",
+        "Moody Krea 2 V4 INT8 ConvRot",
+        "Krea2/Moody_Krea_2_V4_INT8_ConvRot.safetensors",
+    ),
+    ("tyjr_mxfp8", "Moody Krea 2 TYJR MXFP8", "Krea2/TYJR_MXFP8.safetensors"),
+    ("v4_bf16", "Moody Krea 2 V4 BF16", "Krea2/Moody_Krea_2_V4_BF16.safetensors"),
+    ("cutie_x_int8", "Moody Krea 2 Cutie X INT8", "Krea2/Cutie_X_INT8.safetensors"),
+    ("v5_bf16", "Moody Krea 2 V5 BF16", "Krea2/Moody_Krea_2_V5_BF16.safetensors"),
+)
 NO_PUBLISHER_WARNING = (
     "No CIF publisher output is declared; complete native history outputs are collected "
     "as unmapped outputs."
@@ -593,6 +606,96 @@ def _krea_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, J
     return stem, workflow, api, manifest
 
 
+def _moody_krea_documents(
+    publication_id: str,
+) -> tuple[str, JsonObject, JsonObject, JsonObject]:
+    """Build a published source with the model choice exposed by the live Moody contract."""
+
+    _, workflow, api, manifest = _krea_documents(publication_id)
+    stem = MOODY_KREA_STEM
+    private_choice_options = json.dumps(
+        [
+            {"value": value, "binding": private_binding}
+            for value, _, private_binding in MOODY_KREA_CHECKPOINTS
+        ],
+        separators=(",", ":"),
+    )
+
+    workflow["id"] = "fixture-moody-krea-editable"
+    choice_node = next(node for node in workflow["nodes"] if node.get("id") == 202)
+    choice_node["widgets_values"] = ["v4_int8", private_choice_options]
+    api["202"]["inputs"] = {
+        "value": "v4_int8",
+        "options_json": private_choice_options,
+    }
+
+    manifest["source_id"] = f"{stem}.json"
+    manifest["workflow"]["path"] = f"{stem}.json"
+    manifest["api"]["path"] = f"{stem}.api.json"
+    manifest["manifest"]["path"] = f"{stem}.interface.json"
+    manifest["published_at"] = "2026-07-16T20:04:04Z"
+
+    inputs = manifest["interface"]["inputs"]
+    checkpoint = next(item for item in inputs if item["id"] == "lora")
+    checkpoint.update(
+        id="checkpoint",
+        label="Checkpoint",
+        description=(
+            "Selects the Moody Krea 2 diffusion checkpoint. V4 INT8 remains the default; "
+            "V5 BF16 is the highest-precision V5 option and is substantially heavier on VRAM/RAM."
+        ),
+        semantic_role="model",
+        advanced=True,
+        group="Advanced",
+        order=60,
+        default="v4_int8",
+        choices=[
+            {"value": value, "label": label}
+            for value, label, _ in MOODY_KREA_CHECKPOINTS
+        ],
+    )
+    guidance = next(item for item in inputs if item["id"] == "lora_strength")
+    guidance.update(
+        id="guidance_strength",
+        label="Guidance strength",
+        description="Controls the guidance strength used by the Moody Krea 2 workflow.",
+        semantic_role="guidance",
+        order=70,
+    )
+
+    artifacts = [
+        private_binding.rsplit("/", 1)[-1]
+        for _, _, private_binding in MOODY_KREA_CHECKPOINTS
+    ]
+    manifest["generation_source"]["summary"] = (
+        "Prompt-guided image generation with a selectable Moody Krea 2 checkpoint."
+    )
+    manifest["generation_source"]["base_model"]["primary_artifacts"] = artifacts
+    manifest["generation_source"]["base_model"]["timeline"] = {
+        "model_variants": [
+            {
+                "parameter_id": "checkpoint",
+                "value": value,
+                "label": label,
+                "released_month": "2026-07",
+                "source": {
+                    "source_type": "creator_release",
+                    "publisher": "Fixture Creator",
+                    "title": f"{label} fixture release",
+                    "url": f"https://models.invalid/{value}",
+                },
+            }
+            for value, label, _ in MOODY_KREA_CHECKPOINTS[:4]
+        ]
+    }
+    manifest["technical_inventory"]["models"] = [
+        {"kind": "checkpoint", "artifact": artifact, "usage": "public_choice"}
+        for artifact in artifacts
+    ]
+    manifest["technical_inventory"]["loras"] = []
+    return stem, workflow, api, manifest
+
+
 def _generic_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
     stem = GENERIC_STEM
     workflow: JsonObject = {
@@ -732,6 +835,10 @@ def build_publication_bundle(
         stem, workflow, api, manifest = _generic_documents(publication_id or GENERIC_PUBLICATION_ID)
     elif kind == "image":
         stem, workflow, api, manifest = _image_documents(publication_id or IMAGE_PUBLICATION_ID)
+    elif kind == "moody":
+        stem, workflow, api, manifest = _moody_krea_documents(
+            publication_id or MOODY_KREA_PUBLICATION_ID
+        )
     else:
         raise ValueError(f"unknown fixture publication kind: {kind}")
     workflow = copy.deepcopy(workflow)

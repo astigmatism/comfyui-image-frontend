@@ -627,6 +627,98 @@ test("generation panel places the source dialog launcher before generated contro
   assert.doesNotMatch(html, /<details class="advanced-group"/);
 });
 
+test("generation panel promotes Moody checkpoint checkboxes directly beneath the source", () => {
+  const moodyInterface = {
+    inputs: [
+      {
+        id: "prompt",
+        type: "string",
+        label: "Prompt",
+        semantic_role: "positive_prompt",
+        default: "",
+        advanced: false,
+        group: "Basic",
+        order: 10,
+      },
+      {
+        id: "checkpoint",
+        type: "choice",
+        label: "Checkpoint",
+        description: "Selects the Moody Krea 2 diffusion checkpoint.",
+        semantic_role: "model",
+        default: "v4_int8",
+        advanced: true,
+        group: "Advanced",
+        order: 60,
+        choices: [
+          { value: "v4_int8", label: "Moody Krea 2 V4 INT8 ConvRot" },
+          { value: "v5_bf16", label: "Moody Krea 2 V5 BF16" },
+        ],
+      },
+      {
+        id: "cfg",
+        type: "number",
+        label: "CFG",
+        default: 4,
+        minimum: 1,
+        maximum: 10,
+        step: 0.5,
+        advanced: true,
+        group: "Advanced",
+        order: 70,
+      },
+    ],
+  };
+  const moody = {
+    source_key: "moody",
+    display_name: "Moody Krea 2 Mix V4",
+    available: true,
+    interface: moodyInterface,
+  };
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [moody],
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    activeSourceKey: "moody",
+    parameters: { prompt: "portrait", checkpoint: "v4_int8", cfg: 4 },
+    activeModelSelections: { checkpoint: ["v4_int8", "v5_bf16"] },
+    fieldErrors: {},
+    formError: null,
+  };
+
+  const html = generationPanelMarkup(state, moody, moodyInterface);
+  const sourceIndex = html.indexOf('id="workflow-source"');
+  const checkpointIndex = html.indexOf('data-control-block="checkpoint"');
+  const scrollIndex = html.indexOf('id="panel-scroll"');
+
+  assert.ok(sourceIndex >= 0 && sourceIndex < checkpointIndex && checkpointIndex < scrollIndex);
+  assert.equal((html.match(/data-control-block="checkpoint"/g) || []).length, 1);
+  assert.equal((html.match(/data-active-source-model-choice/g) || []).length, 2);
+  assert.match(
+    html,
+    /aria-label="Moody Krea 2 V4 INT8 ConvRot"[^>]*checked/,
+  );
+  assert.match(html, /aria-label="Moody Krea 2 V5 BF16"[^>]*checked/);
+  assert.doesNotMatch(html, /data-control-id="checkpoint"/);
+  assert.match(html, /data-control-section="advanced"[\s\S]*data-control-id="cfg"/);
+
+  const invalidHtml = generationPanelMarkup(
+    { ...state, fieldErrors: { checkpoint: "Choose at least one checkpoint." } },
+    moody,
+    moodyInterface,
+  );
+  assert.match(
+    invalidHtml,
+    /data-active-source-model-choice[^>]*aria-invalid="true"[^>]*aria-describedby="control-checkpoint-error"/,
+  );
+  assert.match(
+    invalidHtml,
+    /<p class="field-error" id="control-checkpoint-error" role="alert">Choose at least one checkpoint\.<\/p>/,
+  );
+});
+
 test("auto-generate disables only manual generation while queueing", () => {
   const state = {
     submitting: true,

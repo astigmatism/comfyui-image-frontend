@@ -115,6 +115,41 @@ test("source model selectors normalize one published fanout parameter into scala
   );
 });
 
+test("source model selectors derive directly from a canonical checkpoint detail", () => {
+  const source = {
+    interface: {
+      inputs: [
+        {
+          id: "checkpoint",
+          type: "choice",
+          label: "Checkpoint",
+          description: "Selects the Moody Krea 2 diffusion checkpoint.",
+          semantic_role: "model",
+          advanced: true,
+          default: "v4_int8",
+          choices: [
+            { value: "v4_int8", label: "Moody Krea 2 V4 INT8 ConvRot" },
+            { value: "v5_bf16", label: "Moody Krea 2 V5 BF16" },
+          ],
+        },
+      ],
+    },
+  };
+
+  assert.deepEqual(sourceModelSelectors(source), [
+    {
+      parameter_id: "checkpoint",
+      label: "Checkpoint",
+      description: "Selects the Moody Krea 2 diffusion checkpoint.",
+      default: "v4_int8",
+      choices: [
+        { value: "v4_int8", label: "Moody Krea 2 V4 INT8 ConvRot" },
+        { value: "v5_bf16", label: "Moody Krea 2 V5 BF16" },
+      ],
+    },
+  ]);
+});
+
 test("voice transcripts insert at or replace the saved text selection", () => {
   assert.deepEqual(insertTranscription("hello world", "brave", 5, 5), {
     value: "hello brave world",

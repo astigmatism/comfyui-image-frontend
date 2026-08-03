@@ -40,9 +40,28 @@ export function generationSourceModelVariant(generationSource, parameterId, valu
 }
 
 export function sourceModelSelectors(source) {
-  if (!Array.isArray(source?.model_selectors)) return [];
+  const projected = Array.isArray(source?.model_selectors)
+    ? source.model_selectors
+    : [];
+  const detailInputs = interfaceInputs(source?.interface || source?.contract).filter(
+    (input) =>
+      input?.type === "choice" &&
+      (input.semantic_role === "model" ||
+        input.semantic_role === "checkpoint" ||
+        input.id === "checkpoint"),
+  );
+  const candidates = [
+    ...projected,
+    ...detailInputs.map((input) => ({
+      parameter_id: input.id,
+      label: input.label,
+      description: input.description,
+      default: input.default,
+      choices: input.choices,
+    })),
+  ];
   const selectors = [];
-  for (const candidate of source.model_selectors) {
+  for (const candidate of candidates) {
     const parameterId =
       typeof candidate?.parameter_id === "string" ? candidate.parameter_id.trim() : "";
     if (!parameterId || !Array.isArray(candidate.choices)) {

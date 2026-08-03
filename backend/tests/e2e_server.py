@@ -16,6 +16,7 @@ from tests.publication_fixtures import build_publication_bundle
 def main() -> None:
     fake = LiveFakeServer()
     fake.state.workflow_files.update(build_publication_bundle("image").files)
+    fake.state.workflow_files.update(build_publication_bundle("moody").files)
     fake.state.slow_stage_delay = 2.0
     fake.start()
     configured_data = os.getenv("CIF_E2E_DATA_DIR")

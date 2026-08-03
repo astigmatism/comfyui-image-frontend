@@ -44,17 +44,19 @@ The historical route name `workflows` is retained, but objects now represent del
 
 ### Source summary
 
+The selector portion of this example uses the current Moody Krea 2 public values. Revision hashes and the remaining catalog/inventory fields are illustrative; clients must use the values returned by their own publication.
+
 ```json
 {
   "source_key": "<opaque-sha256>",
-  "display_name": "Krea 2 NSFW V4",
+  "display_name": "Moody Krea 2 Mix V4",
   "instance_id": "home",
   "readiness": "ready",
   "available": true,
   "cached": false,
   "warnings": [],
   "revision": {
-    "publication_id": "11111111-1111-4111-8111-111111111111",
+    "publication_id": "<publication-id>",
     "workflow_sha256": "...",
     "api_sha256": "...",
     "manifest_sha256": "..."
@@ -63,11 +65,14 @@ The historical route name `workflows` is retained, but objects now represent del
     {
       "parameter_id": "checkpoint",
       "label": "Checkpoint",
-      "description": "Selects the model checkpoint for this source.",
-      "default": "model_v4",
+      "description": "Selects the Moody Krea 2 diffusion checkpoint. V4 INT8 remains the default; V5 BF16 is the highest-precision V5 option and is substantially heavier on VRAM/RAM.",
+      "default": "v4_int8",
       "choices": [
-        {"value": "model_v4", "label": "Model V4", "released_month": null},
-        {"value": "model_v5", "label": "Model V5", "released_month": "2026-07"}
+        {"value": "v4_int8", "label": "Moody Krea 2 V4 INT8 ConvRot", "released_month": "2026-07"},
+        {"value": "tyjr_mxfp8", "label": "Moody Krea 2 TYJR MXFP8", "released_month": "2026-07"},
+        {"value": "v4_bf16", "label": "Moody Krea 2 V4 BF16", "released_month": "2026-07"},
+        {"value": "cutie_x_int8", "label": "Moody Krea 2 Cutie X INT8", "released_month": "2026-07"},
+        {"value": "v5_bf16", "label": "Moody Krea 2 V5 BF16", "released_month": null}
       ]
     }
   ],
@@ -88,14 +93,44 @@ The historical route name `workflows` is retained, but objects now represent del
       "primary_artifacts": ["model.safetensors"],
       "timeline": {
         "architecture": {
-          "introduced_month": "2026-01",
+          "introduced_month": "2026-05",
           "source": {
             "source_type": "official_announcement",
-            "publisher": "Model publisher",
-            "title": "Architecture announcement",
-            "url": "https://publisher.example/architecture"
+            "publisher": "Krea",
+            "title": "Introducing Krea 2",
+            "url": "https://www.krea.ai/blog/krea-2-image-model"
           }
-        }
+        },
+        "model_variants": [
+          {
+            "parameter_id": "checkpoint",
+            "value": "v4_int8",
+            "label": "Moody Krea 2 V4 INT8 ConvRot",
+            "released_month": "2026-07",
+            "source": {"source_type": "creator_release", "publisher": "Creator", "title": "V4 INT8 release", "url": "https://publisher.example/v4-int8"}
+          },
+          {
+            "parameter_id": "checkpoint",
+            "value": "tyjr_mxfp8",
+            "label": "Moody Krea 2 TYJR MXFP8",
+            "released_month": "2026-07",
+            "source": {"source_type": "creator_release", "publisher": "Creator", "title": "TYJR release", "url": "https://publisher.example/tyjr"}
+          },
+          {
+            "parameter_id": "checkpoint",
+            "value": "v4_bf16",
+            "label": "Moody Krea 2 V4 BF16",
+            "released_month": "2026-07",
+            "source": {"source_type": "creator_release", "publisher": "Creator", "title": "V4 BF16 release", "url": "https://publisher.example/v4-bf16"}
+          },
+          {
+            "parameter_id": "checkpoint",
+            "value": "cutie_x_int8",
+            "label": "Moody Krea 2 Cutie X INT8",
+            "released_month": "2026-07",
+            "source": {"source_type": "creator_release", "publisher": "Creator", "title": "Cutie X release", "url": "https://publisher.example/cutie-x"}
+          }
+        ]
       }
     },
     "technologies": [],
@@ -131,7 +166,7 @@ The historical route name `workflows` is retained, but objects now represent del
 
 Recognized v1 `generation_source` and `technical_inventory` objects are typed, additive, and returned on both summary and detail responses so clients can plan later catalog/dropdown behavior without refetching every source. Older manifests and unrecognized/malformed section schemas return `null` for that section while the raw manifest remains retained server-side. Unknown v1 values, array entries, warning strings, and extra fields are preserved. Artifact basenames, class types, and counts are descriptive only and are never accepted as request selectors. `output_reachable + compiled_orphans = compiled_api` and the accepted API count are checked diagnostically, not as queue gates.
 
-`model_selectors` is an additive, safe projection of executable public choice inputs for source-picker use. It is derived after publication and is not an authored manifest section. A choice with canonical `semantic_role: "model"` is included; `semantic_role: "checkpoint"`, the exact historical parameter ID `checkpoint`, and an exact timeline `(parameter_id, value)` match are compatibility signals. The validated interface remains authoritative for selector IDs, labels, defaults, ordering, and the complete option inventory. Timeline metadata may add only a matching option's `released_month`; it never creates, removes, renames, or rebinds an option. Bindings, filenames, paths, `options_json`, node IDs, and timeline-only values are excluded. Sources without a recognized selector return an empty list, including older publications. Unavailable dependency-backed catalog entries retain this safe projection so the picker can explain their published options without making them executable.
+`model_selectors` is an additive, safe projection of executable public choice inputs for the prominent checkpoint control and source-picker use. It is derived after publication and is not an authored manifest section. A choice with canonical `semantic_role: "model"` is included; `semantic_role: "checkpoint"`, the exact historical parameter ID `checkpoint`, and an exact timeline `(parameter_id, value)` match are compatibility signals. The validated interface remains authoritative for selector IDs, labels, defaults, ordering, and the complete option inventory. Timeline metadata may add only a matching option's `released_month`; it never creates, removes, renames, or rebinds an option. Bindings, filenames, paths, `options_json`, node IDs, and timeline-only values are excluded. Sources without a recognized selector return an empty list, including older publications. Unavailable dependency-backed catalog entries retain this safe projection so the picker can explain their published options without making them executable.
 
 The optional `generation_source.base_model.timeline` keeps three clocks distinct. `architecture.introduced_month` is the base architecture's `YYYY-MM` introduction, `default_model.released_month` is the exact fixed/default model release when known, and top-level `published_at` is the workflow-bundle publication time. Timeline dates include inert provenance objects that are returned losslessly and are never fetched during discovery. `model_variants` identify selectable releases only by public `parameter_id` plus `value`; they do not expose or require a private filename, binding, node ID, or filesystem path. A malformed timeline makes generation-source metadata unavailable with a nonfatal diagnostic, but does not reject or disable the executable source.
 
@@ -139,7 +174,7 @@ Ordinary source responses describe missing dependencies generically. `technical_
 
 During client migration, summaries also carry legacy `profile_id`, workflow/version/hash, contract-schema, and adapter fields. They are compatibility metadata, not the logical source/revision API; new clients use `source_key` and `revision`.
 
-A source detail adds only this public projection:
+A source detail adds only its public interface projection. The independent example below uses an ordinary LoRA choice to show that non-checkpoint choices remain scalar; it is not the Moody summary above:
 
 ```json
 {
@@ -209,13 +244,15 @@ Administrator refresh returns diagnostic records with `basename`, `accepted`, op
 | `POST` | `/api/generations/validate` | Validate parameters and compile a request without queuing |
 | `POST` | `/api/generations` | Durably accept and queue a generation |
 
+The independent request and validation examples below continue that ordinary LoRA source. A Moody checkpoint request has the same envelope but sends one scalar `checkpoint` value per fan-out request.
+
 Canonical request:
 
 ```json
 {
   "source_key": "<opaque-source-key>",
   "revision": {
-    "publication_id": "11111111-1111-4111-8111-111111111111",
+    "publication_id": "<publication-id>",
     "workflow_sha256": "...",
     "api_sha256": "...",
     "manifest_sha256": "..."
@@ -236,7 +273,7 @@ Canonical request:
 
 `parameters` accepts only IDs in the accepted public interface. Unknown parameters and arbitrary graph/binding/path payloads fail. Optional non-seed values use manifest defaults. Optional choices treat omission or `null` as default selection, but reject empty strings, labels, private filenames, and values absent from the current publication. If a companion strength is omitted, the selected option's `default_strength` wins before the numeric input's ordinary default; an explicit non-null numeric value always wins. Random seeds may be omitted, `null`, empty, or the string `random`; fixed seeds should be canonical decimal strings so the full declared integer range survives JavaScript serialization. Seeds are returned as strings. A required image parameter is `{ "asset_id": "opaque-owner-scoped-id" }`; missing assets, unauthorized assets, paths, URLs, and ComfyUI locators fail validation.
 
-A generation accepts one scalar value for each model selector. The current source picker checkbox-fans only the first recognized selector per source; later model choices remain ordinary scalar Advanced controls, avoiding an implicit cross-product. Selecting several checkpoints queues one generation request per selected source/checkpoint pair. Same-source requests clone all other parameters, resolve a Random seed once, and reuse that concrete seed so only the checkpoint value changes. Timeline arrays and request arrays are not multi-checkpoint execution inputs.
+A generation accepts one scalar value for each model selector. The first recognized selector per source is promoted to checkboxes immediately beneath **Generation source** and mirrored in the source-picker row; it is omitted from Advanced. Later model choices remain ordinary scalar Advanced controls, avoiding an implicit cross-product. Selecting several checkpoints queues one generation request per selected source/checkpoint pair. Same-source requests clone all other parameters, resolve a Random seed once, and reuse that concrete seed so only the checkpoint value changes. Timeline arrays and request arrays are not multi-checkpoint execution inputs.
 
 Successful validation:
 

@@ -791,47 +791,79 @@ test("checked generation sources reuse compatible settings without blocking part
   ).toBeVisible();
 });
 
-test("checked checkpoint choices fan out scalar requests with one resolved seed", async ({
+test("Moody checkpoint choices are prominent, shared with the modal, and fan out", async ({
   page,
 }) => {
-  const checkpointSelector = {
-    parameter_id: "lora",
-    label: "Model checkpoint",
-    description: "Select one or more checkpoints to compare.",
-    default: "knp_v4_1",
-    choices: [
-      { value: "knp_v4_1", label: "KNP v4.1", released_month: null },
-      { value: "knp_v3_1", label: "KNP v3.1", released_month: "2026-07" },
-      { value: "knp_v2", label: "KNP v2", released_month: null },
-      {
-        value: "mysticxxx_krea2_v1",
-        label: "MysticXXX Krea2 v1",
-        released_month: null,
-      },
-    ],
-  };
-  const exposeCheckpointSelector = (source) =>
-    source?.display_name === "Krea 2 NSFW V4"
-      ? { ...source, model_selectors: [checkpointSelector] }
-      : source;
-
-  await page.route("**/api/workflows", async (route) => {
-    const response = await route.fetch();
-    const sources = await response.json();
-    await route.fulfill({ response, json: sources.map(exposeCheckpointSelector) });
-  });
-  await page.route("**/api/workflows/*", async (route) => {
-    const response = await route.fetch();
-    const source = await response.json();
-    await route.fulfill({ response, json: exposeCheckpointSelector(source) });
-  });
-
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
-  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .fill("checkpoint comparison lighthouse");
+
+  const activeCheckpointGroup = page.locator(".active-source-model-control");
+  await expect(activeCheckpointGroup).toBeVisible();
+  await expect(activeCheckpointGroup.getByText("Checkpoint", { exact: true })).toBeVisible();
+  const v4Checkpoint = activeCheckpointGroup.getByRole("checkbox", {
+    name: "Moody Krea 2 V4 INT8 ConvRot",
+    exact: true,
+  });
+  const tyjrCheckpoint = activeCheckpointGroup.getByRole("checkbox", {
+    name: "Moody Krea 2 TYJR MXFP8",
+    exact: true,
+  });
+  const v5Checkpoint = activeCheckpointGroup.getByRole("checkbox", {
+    name: "Moody Krea 2 V5 BF16",
+    exact: true,
+  });
+  await expect(v4Checkpoint).toBeChecked();
+  await expect(v5Checkpoint).not.toBeChecked();
+  await v5Checkpoint.check();
+  await expect(page.locator("#workflow-source")).toContainText("2 generations planned");
+  await tyjrCheckpoint.check();
+  await expect(page.locator("#workflow-source")).toContainText("3 generations planned");
+
+  const advanced = page.getByRole("button", { name: "Advanced", exact: true });
+  if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
+  await expect(page.getByRole("combobox", { name: "Checkpoint", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("spinbutton", { name: "Guidance strength", exact: true }),
+  ).toBeVisible();
+
+  await page.locator("#workflow-source").click();
+  const sourceDialog = page.locator("#source-picker-dialog");
+  const moodyRow = sourceDialog
+    .locator('[data-source-row-key]')
+    .filter({ hasText: "Moody Krea 2 Mix V4" });
+  await expect(moodyRow).toHaveCount(1);
+  const modalV5Checkpoint = moodyRow.getByRole("checkbox", {
+    name: "Generate Moody Krea 2 Mix V4 with Checkpoint: Moody Krea 2 V5 BF16",
+    exact: true,
+  });
+  await expect(modalV5Checkpoint).toBeChecked();
+  const modalTyjrCheckpoint = moodyRow.getByRole("checkbox", {
+    name: "Generate Moody Krea 2 Mix V4 with Checkpoint: Moody Krea 2 TYJR MXFP8",
+    exact: true,
+  });
+  await expect(modalTyjrCheckpoint).toBeChecked();
+  await modalV5Checkpoint.uncheck();
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(v5Checkpoint).toBeChecked();
+
+  await page.locator("#workflow-source").click();
+  await expect(modalV5Checkpoint).toBeChecked();
+  await expect(modalTyjrCheckpoint).toBeChecked();
+  const genericRow = sourceDialog
+    .locator('[data-source-row-key]')
+    .filter({ hasText: "Generic Landscape" });
+  await expect(genericRow.locator(".source-model-empty")).toBeVisible();
+  await expect(sourceDialog.locator("[data-source-selection-count]")).toContainText(
+    "3 generations planned",
+  );
+  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(tyjrCheckpoint).toBeChecked();
+  await expect(v5Checkpoint).toBeChecked();
+  await expect(page.locator("#workflow-source")).toContainText("3 generations planned");
 
   const generationRequests = [];
   page.on("request", (request) => {
@@ -841,54 +873,53 @@ test("checked checkpoint choices fan out scalar requests with one resolved seed"
     }
   });
 
-  await page.locator("#workflow-source").click();
-  const sourceDialog = page.locator("#source-picker-dialog");
-  const v3Checkpoint = () =>
-    sourceDialog.getByLabel(
-      "Generate Krea 2 NSFW V4 with Model checkpoint: KNP v3.1",
-      { exact: true },
-    );
-  await v3Checkpoint().check();
-  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.locator("#workflow-source")).not.toContainText("2 generations planned");
-
-  await page.locator("#workflow-source").click();
-  await expect(v3Checkpoint()).not.toBeChecked();
-  await v3Checkpoint().check();
-  await expect(sourceDialog.locator("[data-source-selection-count]")).toContainText(
-    "2 generations planned",
-  );
-  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.locator("#workflow-source")).toContainText("2 generations planned");
-
+  let releaseValidation;
+  const validationGate = new Promise((resolve) => {
+    releaseValidation = resolve;
+  });
+  const holdValidation = async (route) => {
+    await validationGate;
+    await route.continue();
+  };
+  await page.route("**/api/generations/validate", holdValidation);
   await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect(v4Checkpoint).toBeDisabled();
+  await expect(tyjrCheckpoint).toBeDisabled();
+  await expect(v5Checkpoint).toBeDisabled();
+  releaseValidation();
   await expect(page.locator("#toast-region")).toContainText(
-    "2 generations queued across 1 selected source.",
+    "3 generations queued across 1 selected source.",
   );
-  await expect.poll(() => generationRequests.length).toBe(2);
+  await page.unroute("**/api/generations/validate", holdValidation);
+  await expect(tyjrCheckpoint).toBeEnabled();
+  await expect(v5Checkpoint).toBeEnabled();
+  await expect.poll(() => generationRequests.length).toBe(3);
 
   generationRequests.sort((first, second) =>
-    first.parameters.lora.localeCompare(second.parameters.lora),
+    first.parameters.checkpoint.localeCompare(second.parameters.checkpoint),
   );
-  expect(generationRequests.map((request) => request.parameters.lora)).toEqual([
-    "knp_v3_1",
-    "knp_v4_1",
+  expect(generationRequests.map((request) => request.parameters.checkpoint)).toEqual([
+    "tyjr_mxfp8",
+    "v4_int8",
+    "v5_bf16",
   ]);
-  const [first, second] = generationRequests;
-  expect(first.parameters.seed).toMatch(/^\d+$/);
-  expect(second.parameters.seed).toBe(first.parameters.seed);
-  expect(first.parameters.lora).not.toEqual(second.parameters.lora);
-  expect({ ...first.parameters, lora: undefined }).toEqual({
-    ...second.parameters,
-    lora: undefined,
-  });
-  expect(Array.isArray(first.parameters.lora)).toBe(false);
-  expect(Array.isArray(second.parameters.lora)).toBe(false);
-
-  const advanced = page.getByRole("button", { name: "Advanced", exact: true });
-  if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
-  await page.getByRole("combobox", { name: "LoRA", exact: true }).selectOption("knp_v2");
-  await expect(page.locator("#workflow-source")).not.toContainText("generations planned");
+  const seeds = new Set(generationRequests.map((request) => request.parameters.seed));
+  expect(seeds.size).toBe(1);
+  expect([...seeds][0]).toMatch(/^\d+$/);
+  expect(
+    generationRequests.every(
+      (request) =>
+        typeof request.parameters.checkpoint === "string" &&
+        !Array.isArray(request.parameters.checkpoint),
+    ),
+  ).toBe(true);
+  const sharedParameters = { ...generationRequests[0].parameters };
+  delete sharedParameters.checkpoint;
+  for (const request of generationRequests.slice(1)) {
+    const comparable = { ...request.parameters };
+    delete comparable.checkpoint;
+    expect(comparable).toEqual(sharedParameters);
+  }
 });
 
 test("comparison fanout rejects a secondary source that was republished after selection", async ({

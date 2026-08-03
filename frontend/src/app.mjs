@@ -70,6 +70,7 @@ const state = {
   sourcePickerSortDirection: "ascending",
   sourceRatings: {},
   modelSelectionsBySourceRevision: new Map(),
+  activeModelSelections: {},
   selectedGenerationTargetCount: 0,
   controlSectionOpen: {},
   parameters: {},
@@ -340,6 +341,14 @@ async function handleChange(event) {
     updateSourcePickerDraftPrimary(element.dataset.sourcePrimaryKey);
     return;
   }
+  if (element.matches("[data-active-source-model-choice]")) {
+    updateActiveSourceModelSelection(
+      element.dataset.sourceModelParameterId,
+      element.dataset.sourceModelValue,
+      element.checked,
+    );
+    return;
+  }
   if (element.matches("[data-source-model-choice]")) {
     updateSourcePickerDraftModelSelection(
       element.dataset.sourceModelSourceKey,
@@ -411,21 +420,82 @@ async function flushDeferredSourcePickerUpdates({ panelAlreadyRendered = false }
   }
 }
 
+function sourcesForPicker() {
+  return state.sources.map((source) =>
+    sourceKey(source) === state.activeSourceKey && state.activeSource
+      ? { ...source, ...state.activeSource }
+      : source,
+  );
+}
+
+function updateActiveSourceModelSelection(parameterId, value, checked) {
+  const source = state.activeSource;
+  const selector = sourceModelSelectors(source).find(
+    (item) => item.parameter_id === parameterId,
+  );
+  if (
+    !source ||
+    state.sourceDetailLoading ||
+    state.submitting ||
+    !selector ||
+    !selector.choices.some((choice) => choice.value === value)
+  ) {
+    syncActiveSourceModelControls();
+    return;
+  }
+  const normalized = modelSelectionsForSource(source);
+  const selected = new Set(normalized[parameterId] || []);
+  if (checked) selected.add(value);
+  else if (selected.size > 1) selected.delete(value);
+  setModelSelectionsForSource(source, {
+    ...normalized,
+    [parameterId]: [...selected],
+  });
+  state.formError = null;
+  applyStoredModelSelectionsToActiveParameters();
+  renderPanel();
+}
+
+function syncActiveSourceModelControls(panel = document.querySelector("#generation-panel")) {
+  const source = state.activeSource;
+  if (!panel || !source) return;
+  const selections = modelSelectionsForSource(source);
+  for (const selector of sourceModelSelectors(source)) {
+    const selected = new Set(selections[selector.parameter_id] || []);
+    const inputs = panel.querySelectorAll(
+      `[data-active-source-model-choice][data-source-model-parameter-id="${CSS.escape(selector.parameter_id)}"]`,
+    );
+    for (const input of inputs) {
+      const checked = selected.has(input.dataset.sourceModelValue);
+      input.checked = checked;
+      input.disabled = Boolean(
+        state.sourceDetailLoading ||
+          state.submitting ||
+          source.available === false ||
+          selector.choices.length === 1 ||
+          (checked && selected.size === 1),
+      );
+      input.closest(".source-model-choice")?.classList.toggle("is-selected", checked);
+    }
+  }
+}
+
 function openSourcePickerDialog(button) {
   const dialog = document.querySelector("#source-picker-dialog");
   if (!dialog || dialog.open || button.disabled || !state.activeSourceKey) return;
+  const sources = sourcesForPicker();
   sourcePickerReturnFocus = button;
   state.sourcePickerDraft = {
     primaryKey: state.activeSourceKey,
     selectedKeys: new Set([state.activeSourceKey, ...selectedComparisonSourceKeys()]),
     modelSelectionsBySource: Object.fromEntries(
-      state.sources.map((source) => [
+      sources.map((source) => [
         sourceKey(source),
         structuredClone(modelSelectionsForSource(source)),
       ]),
     ),
     generationTypeFilters: new Set(
-      state.sources.map((source) => sourceGenerationTypeKey(source)),
+      sources.map((source) => sourceGenerationTypeKey(source)),
     ),
   };
   state.sourcePickerDialogOpen = true;
@@ -442,7 +512,7 @@ function renderSourcePickerDialog() {
   if (!dialog || !draft) return;
   const scrollLeft = dialog.querySelector(".source-picker-table-wrap")?.scrollLeft || 0;
   const scrollTop = dialog.querySelector(".source-picker-table-wrap")?.scrollTop || 0;
-  dialog.innerHTML = sourcePickerDialogMarkup(state.sources, {
+  dialog.innerHTML = sourcePickerDialogMarkup(sourcesForPicker(), {
     primaryKey: draft.primaryKey,
     selectedKeys: draft.selectedKeys,
     sourceRatings: state.sourceRatings,
@@ -480,7 +550,7 @@ function updateSourcePickerGenerationTypeFilter(key, checked) {
 
 function updateSourcePickerDraftSelection(key, checked) {
   const draft = state.sourcePickerDraft;
-  const source = state.sources.find((item) => sourceKey(item) === key);
+  const source = sourcesForPicker().find((item) => sourceKey(item) === key);
   if (!draft || !key || key === draft.primaryKey || source?.available === false) return;
   if (checked) draft.selectedKeys.add(key);
   else draft.selectedKeys.delete(key);
@@ -494,7 +564,7 @@ function updateSourcePickerDraftSelection(key, checked) {
 
 function updateSourcePickerDraftPrimary(key) {
   const draft = state.sourcePickerDraft;
-  const source = state.sources.find((item) => sourceKey(item) === key);
+  const source = sourcesForPicker().find((item) => sourceKey(item) === key);
   if (!draft || !key || source?.available === false) return;
   const previousPrimaryKey = draft.primaryKey;
   draft.primaryKey = key;
@@ -517,7 +587,7 @@ function updateSourcePickerDraftModelSelection(
   checked,
 ) {
   const draft = state.sourcePickerDraft;
-  const source = state.sources.find((item) => sourceKey(item) === key);
+  const source = sourcesForPicker().find((item) => sourceKey(item) === key);
   const selector = sourceModelSelectors(source).find(
     (item) => item.parameter_id === parameterId,
   );
@@ -554,7 +624,7 @@ function updateSourcePickerDraftModelSelection(
 function selectAllSourcePickerDraft() {
   const draft = state.sourcePickerDraft;
   if (!draft) return;
-  for (const source of state.sources) {
+  for (const source of sourcesForPicker()) {
     if (
       source.available !== false &&
       draft.generationTypeFilters.has(sourceGenerationTypeKey(source))
@@ -573,7 +643,7 @@ function selectAllSourcePickerDraft() {
 function deselectAllSourcePickerDraft() {
   const draft = state.sourcePickerDraft;
   if (!draft) return;
-  for (const source of state.sources) {
+  for (const source of sourcesForPicker()) {
     const key = sourceKey(source);
     if (
       key !== draft.primaryKey &&
@@ -653,12 +723,13 @@ function closeSourcePickerDialog(returnValue, { flushDeferredUpdates = true } = 
 
 async function applySourcePickerDialog() {
   const draft = state.sourcePickerDraft;
-  const primary = state.sources.find(
+  const sources = sourcesForPicker();
+  const primary = sources.find(
     (source) => sourceKey(source) === draft?.primaryKey && source.available !== false,
   );
   if (!draft || !primary) return;
   const availableKeys = new Set(
-    state.sources
+    sources
       .filter((source) => source.available !== false)
       .map((source) => sourceKey(source)),
   );
@@ -668,7 +739,7 @@ async function applySourcePickerDialog() {
     ),
   );
   const primaryChanged = draft.primaryKey !== state.activeSourceKey;
-  for (const source of state.sources) {
+  for (const source of sources) {
     setModelSelectionsForSource(
       source,
       draft.modelSelectionsBySource?.[sourceKey(source)] || {},
@@ -1537,7 +1608,9 @@ function syncFieldError(block, controlId, message) {
     error?.remove();
   }
 
-  for (const element of block.querySelectorAll("[data-control-id]:not([data-resolution-grid])")) {
+  for (const element of block.querySelectorAll(
+    "[data-control-id]:not([data-resolution-grid]), [data-active-source-model-choice]",
+  )) {
     const describedBy = new Set((element.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
     describedBy.delete(errorId);
     if (message) {
@@ -1617,6 +1690,7 @@ async function logout() {
   state.sourcePickerDraft = null;
   state.sourceRatings = {};
   state.modelSelectionsBySourceRevision = new Map();
+  state.activeModelSelections = {};
   state.selectedGenerationTargetCount = 0;
   sourceRatingsRevision += 1;
   state.parameters = {};
@@ -2039,9 +2113,13 @@ function orderedModelParameterVariants(source, contract, preferredValues = {}) {
 function selectedGenerationSources() {
   const keys = selectedComparisonSourceKeys();
   if (state.activeSourceKey) keys.add(state.activeSourceKey);
-  return state.sources.filter(
-    (source) => source.available !== false && keys.has(sourceKey(source)),
-  );
+  return state.sources
+    .filter((source) => source.available !== false && keys.has(sourceKey(source)))
+    .map((source) =>
+      sourceKey(source) === state.activeSourceKey && state.activeSource
+        ? { ...source, ...state.activeSource }
+        : source,
+    );
 }
 
 function plannedGenerationTargetCount() {
@@ -2249,6 +2327,7 @@ function renderPanel() {
   const clientErrors = clientValidate(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
   const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+  state.activeModelSelections = selected ? modelSelectionsForSource(selected) : {};
   panel.innerHTML = generationPanelMarkup(state, selected, contract);
   const assistant = panel.querySelector("#prompt-assistant");
   if (assistant) {
@@ -2427,6 +2506,7 @@ function syncGenerationSubmissionState() {
     sourcePicker.disabled =
       !state.sources.length || (state.submitting && !state.autoGenerate);
   }
+  syncActiveSourceModelControls(panel);
 }
 
 function scheduleAutoGenerate() {
@@ -2625,11 +2705,7 @@ async function generateSelectedSources() {
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const requestCompositionId = state.compositionId;
   const requestParameters = structuredClone(state.parameters);
-  const selectedKeys = selectedComparisonSourceKeys();
-  selectedKeys.add(requestSourceKey);
-  const sources = state.sources.filter(
-    (source) => source.available !== false && selectedKeys.has(sourceKey(source)),
-  );
+  const sources = selectedGenerationSources();
   if (
     !requestSourceKey ||
     !state.activeSource ||
@@ -3288,6 +3364,7 @@ async function recall(id) {
   }
   const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
   state.modelSelectionsBySourceRevision = new Map();
+  state.activeModelSelections = {};
   if (recalled.source_available === false) {
     state.parameters = recalledState.parameters;
     state.explicitParameterIds = recalledState.explicitParameterIds;

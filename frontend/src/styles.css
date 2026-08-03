@@ -282,7 +282,10 @@ code {
 .panel-fixed {
   display: grid;
   gap: var(--space-3);
+  max-height: 72vh;
   padding: var(--space-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-bottom: 1px solid var(--border);
   background: #0e151f;
   box-shadow: 0 5px 15px rgb(0 0 0 / 12%);
@@ -1203,6 +1206,39 @@ code {
 
 .source-picker-field {
   min-width: 0;
+}
+
+.active-source-model-control {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(135deg, rgb(91 156 245 / 7%), transparent 58%), #0b1119;
+}
+
+.active-source-model-control .source-model-selector legend {
+  font-size: 0.78rem;
+}
+
+.active-source-model-control .source-model-selector > p {
+  margin-bottom: 8px;
+}
+
+.active-source-model-control .source-model-choice-list {
+  gap: 6px;
+  max-height: min(220px, 30vh);
+  padding-right: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.active-source-model-control .source-model-choice {
+  padding: 7px 8px;
+}
+
+.active-source-model-control .source-model-choice strong {
+  font-size: 0.74rem;
 }
 
 .source-picker {

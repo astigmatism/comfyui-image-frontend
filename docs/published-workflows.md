@@ -135,7 +135,7 @@ Publication v1 supports `string`, `integer`, `number`, `boolean`, `seed`, `choic
 
 An `image` input has semantic role `reference_image`, binds only to `CIFImageParameter.image`, and declares trusted media metadata: `/upload/image`, storage type `input`, a nonempty subset of PNG/JPEG/WebP MIME types, positive byte/width/height limits, `animated: false`, and a Boolean `returns_mask`. Its limits must match the frozen CIF node. The public request carries only an application-owned opaque asset ID.
 
-A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. The ordinary parameter control, including the Advanced control for a model checkpoint, is a scalar single select and sends only the public value. Source-picker checkboxes described below are client-side fan-out over that unchanged scalar contract. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
+A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. Ordinary choice controls are scalar single selects. The first recognized model-checkpoint choice is instead promoted out of Advanced into a checkbox group immediately beneath **Generation source** and mirrored in the source picker. Those checkboxes are client-side fan-out over the unchanged scalar request contract. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
 
 When a choice has a companion number named `<choice-id>_strength`—or exactly one numeric input shares its semantic role—an explicit non-null number wins. Otherwise the selected option's `default_strength` applies, falling back to the number input's ordinary default. Both concrete public values are returned in effective parameters and patched only through their trusted declaration-node `value` bindings.
 
@@ -149,24 +149,27 @@ The public interface shape is an ordinary scalar choice:
 {
   "id": "checkpoint",
   "type": "choice",
-  "default": "moody_mix_v4",
-  "label": "Model checkpoint",
-  "description": "Selects the base model checkpoint used for this generation.",
+  "default": "v4_int8",
+  "label": "Checkpoint",
+  "description": "Selects the Moody Krea 2 diffusion checkpoint. V4 INT8 remains the default; V5 BF16 is the highest-precision V5 option and is substantially heavier on VRAM/RAM.",
   "semantic_role": "model",
   "required": false,
   "advanced": true,
   "group": "Advanced",
-  "order": 55,
+  "order": 60,
   "choices": [
-    {"value": "moody_mix_v4", "label": "Moody Mix V4"},
-    {"value": "moody_mix_v7", "label": "Moody Mix V7"}
+    {"value": "v4_int8", "label": "Moody Krea 2 V4 INT8 ConvRot"},
+    {"value": "tyjr_mxfp8", "label": "Moody Krea 2 TYJR MXFP8"},
+    {"value": "v4_bf16", "label": "Moody Krea 2 V4 BF16"},
+    {"value": "cutie_x_int8", "label": "Moody Krea 2 Cutie X INT8"},
+    {"value": "v5_bf16", "label": "Moody Krea 2 V5 BF16"}
   ]
 }
 ```
 
 The public values and labels are the only selector inventory. The frozen `CIFChoiceParameter.options_json` maps those values to installed private filenames and stays unchanged in every request-local graph; callers never submit a filename, path, binding, `options_json`, or loader input.
 
-The application may surface a validated model choice in the generation-source picker in addition to the source's Advanced controls. That picker is another view of the same published declaration, not a separate model catalog. Publish one batchable base-model selector per source: the current picker batches the first recognized selector, while any later model choices remain ordinary scalar Advanced controls. This avoids an implicit Cartesian product.
+The application surfaces the first validated model choice as checkboxes immediately beneath the selected generation source and in that source's row inside the generation-source picker. Both views edit the same revision-scoped selection. The promoted choice is omitted from Advanced so it is neither buried nor duplicated. This is another presentation of the same published declaration, not a separate model catalog. Publish one batchable base-model selector per source; any later model choices remain ordinary scalar Advanced controls, avoiding an implicit Cartesian product.
 
 One ComfyUI prompt still receives exactly one scalar public choice. If a user checks several checkpoint options for one source, the application fans the selection out into one independently validated generation request per checked value. Every request clones the same remaining effective inputs; when Seed is Random, the client resolves it once and sends that same concrete seed to every fan-out member. Only the checkpoint value differs. The client must not submit an array, patch several model files into one graph, or reinterpret `model_variants` as executable choices.
 
@@ -282,7 +285,7 @@ The current public request is a source reference plus public parameters:
     "width": 1024,
     "height": 1024,
     "seed": "1125899906842624",
-    "checkpoint": "moody_mix_v7"
+    "checkpoint": "v5_bf16"
   },
   "prompt_assistant_run_id": null
 }
