@@ -309,7 +309,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
   await expect(footer.locator(".card-metadata")).toHaveText(
-    /^Generic Landscape · (?:\d+m )?\d+s$/,
+    /^Generic Landscape · default · (?:\d+m )?\d+s$/,
   );
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
@@ -527,13 +527,13 @@ test("progressive bootstrap renders while optional status is delayed and localiz
 
   await expect(page.locator(".gallery-viewport")).toBeVisible({ timeout: 2_000 });
   await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
-  await expect(page.locator("#service-banner")).toContainText("Checking generation service");
+  await expect(page.locator("#service-banner")).toContainText("Checking ComfyUI runtimes");
   const generateButton = page.getByRole("button", { name: "Generate" });
-  await expect(generateButton).toBeDisabled();
+  await expect(generateButton).toBeEnabled();
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .fill("service status is still pending");
-  await expect(generateButton).toBeDisabled();
+  await expect(generateButton).toBeEnabled();
 
   releaseServices();
   await expect(page.locator("#assistant-message")).toHaveCount(0);
@@ -1439,7 +1439,7 @@ test("background service polling does not interrupt focused generation controls"
   );
   await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await deferredCatalogRefresh;
-  await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
   await page.unrouteAll({ behavior: "wait" });
 });
 

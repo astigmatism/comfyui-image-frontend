@@ -244,6 +244,8 @@ test("running generation renders an accessible compact linear progress bar", () 
     id: "generation-progress",
     status: "running",
     workflow_display_name: "Portrait",
+    comfyui_instance_id: "primary",
+    comfyui_instance_label: "Primary · RTX 3090",
     progress: {
       kind: "node",
       label: "Main sampling",
@@ -256,11 +258,12 @@ test("running generation renders an accessible compact linear progress bar", () 
   const html = galleryCardMarkup(generation);
   assert.match(html, /class="progress-bar progress-bar-determinate"/);
   assert.match(html, /class="generation-progress-label">Main sampling/);
+  assert.match(html, /class="generation-progress-runtime">Primary · RTX 3090/);
   assert.match(html, /role="progressbar"/);
   assert.match(html, /aria-valuemin="0"/);
   assert.match(html, /aria-valuemax="24"/);
   assert.match(html, /aria-valuenow="12"/);
-  assert.match(html, /aria-valuetext="12 of 24 for Main sampling"/);
+  assert.match(html, /aria-valuetext="12 of 24 for Main sampling on Primary · RTX 3090"/);
   assert.match(html, /style="--progress-value: 50\.00%"/);
   assert.match(html, /class="progress-bar-fill"/);
   assert.doesNotMatch(html, /Current operation/);
@@ -442,8 +445,11 @@ test("indeterminate linear progress omits aria-valuenow and queued cards keep qu
     id: "generation-queued",
     status: "queued",
     workflow_display_name: "Portrait",
+    comfyui_instance_id: "worker-2",
+    comfyui_instance_label: "Worker 2 · RTX 3080",
   });
   assert.match(queued, /Waiting for a fair queue slot/);
+  assert.match(queued, /class="status-runtime">Worker 2 · RTX 3080/);
   assert.doesNotMatch(queued, /progress-bar-indeterminate/);
 });
 
@@ -523,6 +529,45 @@ test("gallery and service regions render independent progressive startup states"
     serviceBannerMarkup([], "error", "Service status timed out after 8 seconds."),
     /Service status timed out after 8 seconds/,
   );
+  const runtimeBanner = serviceBannerMarkup([], "ready", null, {
+    status: "ready",
+    selectedInstanceId: "primary",
+    instances: [
+      { id: "primary", label: "Primary ComfyUI", available: true },
+      {
+        id: "worker-2",
+        label: "Worker 2",
+        available: false,
+        message: "Worker health check failed.",
+      },
+    ],
+  });
+  assert.match(runtimeBanner, /Worker 2 unavailable/);
+  assert.match(runtimeBanner, /selected runtime remains available/);
+
+  const selectedRuntimeBanner = serviceBannerMarkup([], "ready", null, {
+    status: "ready",
+    selectedInstanceId: "worker-2",
+    instances: [
+      { id: "primary", label: "Primary ComfyUI", available: true },
+      {
+        id: "worker-2",
+        label: "Worker 2",
+        available: false,
+        message: "Worker health check failed.",
+      },
+    ],
+  });
+  assert.match(selectedRuntimeBanner, /Worker 2 unavailable/);
+  assert.match(selectedRuntimeBanner, /Worker health check failed/);
+
+  const removedSelectionBanner = serviceBannerMarkup([], "ready", null, {
+    status: "ready",
+    selectedInstanceId: "removed-runtime",
+    instances: [{ id: "primary", label: "Primary ComfyUI", available: true }],
+  });
+  assert.match(removedSelectionBanner, /Choose a ComfyUI runtime/);
+  assert.doesNotMatch(removedSelectionBanner, /selected runtime remains available/);
 });
 
 test("password change fields allow eight-character passwords", () => {
@@ -584,10 +629,30 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
 
-test("generation panel places the source dialog launcher before generated controls", () => {
+test("generation panel places the configured ComfyUI runtime immediately above Generate", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
+    comfyuiInstancesStatus: "ready",
+    comfyuiInstances: [
+      {
+        id: "primary",
+        label: "Primary ComfyUI",
+        description: "RTX 3090 · 24 GB VRAM",
+        is_default: true,
+        available: true,
+        base_url: "http://private-primary:8188",
+      },
+      {
+        id: "worker-2",
+        label: "Worker 2",
+        description: "RTX 3080 · 10 GB VRAM",
+        is_default: false,
+        available: true,
+        base_url: "http://private-worker:8188",
+      },
+    ],
+    selectedComfyuiInstanceId: "primary",
     workflows: [{ profile_id: "p1", display_name: "Portrait" }],
     activeProfileId: "p1",
     controls: { "prompt.text": "hello", "sampling.steps": 8 },
@@ -596,18 +661,24 @@ test("generation panel places the source dialog launcher before generated contro
     selectedPreset: null,
   };
   const html = generationPanelMarkup(state, state.workflows[0], contract);
+  const runtimeIndex = html.indexOf('id="comfyui-instance"');
   const generateIndex = html.indexOf('id="generate-button"');
   const autoGenerateIndex = html.indexOf('id="auto-generate"');
   const creativeDirectionIndex = html.indexOf('id="auto-generate-creative-direction"');
   const sourceIndex = html.indexOf('id="workflow-source"');
   const promptIndex = html.indexOf('data-control-block="prompt.text"');
   assert.ok(
-    generateIndex >= 0 &&
+    runtimeIndex >= 0 &&
+      runtimeIndex < generateIndex &&
       generateIndex < autoGenerateIndex &&
       autoGenerateIndex < creativeDirectionIndex &&
       creativeDirectionIndex < sourceIndex &&
       sourceIndex < promptIndex,
   );
+  assert.match(html, /<span>ComfyUI runtime<\/span>/);
+  assert.match(html, /value="primary" selected>Primary ComfyUI — RTX 3090 · 24 GB VRAM/);
+  assert.match(html, /value="worker-2" >Worker 2 — RTX 3080 · 10 GB VRAM/);
+  assert.doesNotMatch(html, /private-primary|private-worker|base_url|8188/);
   assert.match(html, /id="auto-generate"[^>]*role="switch"/);
   const creativeDirectionControl =
     html.match(/<input id="auto-generate-creative-direction"[^>]*>/)?.[0] || "";
@@ -625,6 +696,60 @@ test("generation panel places the source dialog launcher before generated contro
     /data-control-section="advanced"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
   );
   assert.doesNotMatch(html, /<details class="advanced-group"/);
+});
+
+test("only the selected unavailable ComfyUI runtime blocks generation", () => {
+  const instances = [
+    {
+      id: "primary",
+      label: "Primary ComfyUI",
+      description: "RTX 3090 · 24 GB VRAM",
+      is_default: true,
+      available: true,
+      message: "",
+    },
+    {
+      id: "worker-2",
+      label: "Worker 2",
+      description: "RTX 3080 · 10 GB VRAM",
+      is_default: false,
+      available: false,
+      message: "Worker 2 did not answer its health check.",
+    },
+  ];
+  const baseState = {
+    submitting: false,
+    comfyuiInstancesStatus: "ready",
+    comfyuiInstances: instances,
+    workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello", "sampling.steps": 8 },
+    fieldErrors: {},
+    formError: null,
+  };
+
+  const selectedUnavailable = generationPanelMarkup(
+    { ...baseState, selectedComfyuiInstanceId: "worker-2" },
+    baseState.workflows[0],
+    contract,
+  );
+  assert.match(selectedUnavailable, /Worker 2 — RTX 3080 · 10 GB VRAM — Unavailable/);
+  assert.match(selectedUnavailable, /Worker 2 did not answer its health check\./);
+  assert.match(
+    selectedUnavailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
+    /disabled/,
+  );
+
+  const selectedAvailable = generationPanelMarkup(
+    { ...baseState, selectedComfyuiInstanceId: "primary" },
+    baseState.workflows[0],
+    contract,
+  );
+  assert.match(selectedAvailable, /RTX 3090 · 24 GB VRAM · Available/);
+  assert.doesNotMatch(
+    selectedAvailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
+    /disabled/,
+  );
 });
 
 test("generation panel promotes Moody checkpoint checkboxes directly beneath the source", () => {
@@ -1142,6 +1267,8 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
+    comfyui_instance_id: "worker-2",
+    comfyui_instance_label: "Worker 2 · RTX 3080",
     accepted_at: "2026-07-12T12:00:00Z",
     generation_duration_seconds: 90,
     status: "failed_with_artifacts",
@@ -1155,7 +1282,8 @@ test("card footer groups generation actions and exposes permanent deletion", () 
     },
   };
   const html = cardFooterMarkup(generation);
-  assert.match(html, />Portrait Workflow · 1m 30s<\/button>/);
+  assert.match(html, />Portrait Workflow · Worker 2 · RTX 3080 · 1m 30s<\/button>/);
+  assert.match(html, /title="Open generation details for Portrait Workflow on Worker 2 · RTX 3080"/);
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
@@ -1213,6 +1341,8 @@ test("Favorites modal renders a thumbnail, generation details, recall, and delet
       generation: {
         id: "g1",
         workflow_display_name: "Portrait Workflow",
+        comfyui_instance_id: "primary",
+        comfyui_instance_label: "Primary · RTX 3090",
         accepted_at: "2026-07-12T12:00:00Z",
         status: "succeeded",
         recall_available: true,
@@ -1227,6 +1357,7 @@ test("Favorites modal renders a thumbnail, generation details, recall, and delet
   assert.match(html, /<h2>Favorites<\/h2>/);
   assert.match(html, /a1\/thumbnail/);
   assert.match(html, /Portrait Workflow/);
+  assert.match(html, /Primary · RTX 3090 · Generated/);
   assert.match(html, /lighthouse &lt;at dusk&gt;/);
   assert.match(html, /data-action="recall-favorite"/);
   assert.match(html, /data-action="delete-favorite"/);
@@ -1803,7 +1934,7 @@ test("source loading, empty catalog, and unavailable source states disable submi
     { ...publishedSource, cached: true },
     publishedInterface,
   );
-  assert.match(cachedOffline, /Krea 2 NSFW V4 · local — Cached/);
+  assert.match(cachedOffline, /Krea 2 NSFW V4 — Cached/);
   assert.match(cachedOffline.match(/<button id="generate-button"[^>]*>/)?.[0] || "", /disabled/);
 });
 
@@ -1811,6 +1942,8 @@ test("generation detail retains metadata and presents authored roles with every 
   const html = detailMarkup({
     id: "g-rich",
     status: "succeeded",
+    comfyui_instance_id: "worker-2",
+    comfyui_instance_label: "Worker 2 · RTX 3080",
     accepted_at: "2026-07-13T12:00:00Z",
     generation_source: { ...publishedSource, revision: publishedSource.revision },
     prompt_id: "native-prompt-123",
@@ -1867,6 +2000,9 @@ test("generation detail retains metadata and presents authored roles with every 
     delete_pending: false,
   });
   assert.match(html, /native-prompt-123/);
+  assert.match(html, /Complete · Worker 2 · RTX 3080/);
+  assert.match(html, /<dt>Execution runtime<\/dt><dd>Worker 2 · RTX 3080<\/dd>/);
+  assert.match(html, /<dt>Publication instance<\/dt><dd>local<\/dd>/);
   assert.match(html, /publication-1/);
   assert.match(html, /9223372036854775807/);
   assert.match(html, /Generation inputs/);

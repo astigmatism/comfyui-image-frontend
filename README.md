@@ -50,7 +50,7 @@ For production, Docker Compose is the recommended path.
 
    Put the value in `CIF_SESSION_SECRET`, replace the bootstrap password, configure ComfyUI, and never commit `.env`.
 
-2. Give the ComfyUI server a stable logical identity with `CIF_COMFYUI_INSTANCE_ID`. If it is a multi-user installation, also set `CIF_COMFYUI_USER`.
+2. Configure one or more ComfyUI execution targets with `CIF_COMFYUI_INSTANCES` and choose the publication/default target with `CIF_COMFYUI_DEFAULT_INSTANCE_ID`. Reuse the primary server's existing stable `CIF_COMFYUI_INSTANCE_ID` value as that entry's `id`; changing it changes every published source key. A legacy deployment may omit the list and continue using the single-instance variables.
 
 3. Build and start:
 
@@ -73,14 +73,17 @@ From a clean checkout with an upstream branch:
 
 The script gracefully stops the service, performs a fast-forward-only pull, rebuilds, restarts, and waits for health. It tries to restart the prior image if pull/build fails after shutdown. By default, Compose's `stop_grace_period` controls the stop deadline (30 seconds in the example); set `CIF_UPDATE_STOP_TIMEOUT` only for an exceptional explicit override. Override other defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, or `CIF_UPDATE_START_TIMEOUT`. Uvicorn cancels lingering request tasks after `CIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` (10 seconds by default), leaving the rest of the container grace period for lifespan cleanup.
 
+Application code and the built browser assets live in the frontend image, and `.env` is read when its container starts. Enabling or changing the instance list therefore requires rebuilding and recreating/restarting only `comfyui-image-frontend`. Never restart or recreate either ComfyUI container for this application update.
+
 ### Connecting to external services
 
-The example uses `host.docker.internal` plus a Linux `host-gateway` mapping. For services on the same Docker network, use service DNS names:
+`CIF_COMFYUI_INSTANCES` is a JSON array on one environment-variable line. Every entry requires a stable `id`, user-facing `label`, and credential-free HTTP(S) `base_url`. It may also include `description`, a credential-free `ws_url`, a ComfyUI multi-user `user`, and integer `concurrency` from 1 through 32. When `ws_url` is omitted, the application derives `/ws` from `base_url`; when per-instance `concurrency` is omitted, `CIF_COMFYUI_CONCURRENCY` supplies the same bounded fallback. IDs must be unique, start with an ASCII letter or digit, and contain 1–64 ASCII letters, digits, hyphens, or underscores. `CIF_COMFYUI_DEFAULT_INSTANCE_ID` must match one configured ID and defaults to the first array entry.
+
+For the two runtimes on the same Docker host, use the internal Docker URLs (keeping `home` only if that is the primary server's current stable ID):
 
 ```env
-CIF_COMFYUI_BASE_URL=http://comfyui:8188
-CIF_COMFYUI_WS_URL=ws://comfyui:8188/ws
-CIF_COMFYUI_INSTANCE_ID=home
+CIF_COMFYUI_INSTANCES=[{"id":"home","label":"RTX 3090","description":"Primary ComfyUI (24 GB VRAM)","base_url":"http://local-ai-comfyui:8188","concurrency":1},{"id":"worker-2","label":"RTX 3080","description":"Worker 2 (10 GB VRAM)","base_url":"http://local-ai-comfyui-worker-2:8188","concurrency":1}]
+CIF_COMFYUI_DEFAULT_INSTANCE_ID=home
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
 CIF_OLLAMA_BASE_URL=http://192.168.1.21:11434
 CIF_SPEECH_TO_TEXT_URL=http://192.168.1.22:9000/v1/audio/transcriptions
@@ -88,13 +91,71 @@ CIF_SPEECH_TO_TEXT_API_KEY=replace-with-whisper-api-key
 CIF_SPEECH_TO_TEXT_MODEL=whisper-1
 ```
 
+The default instance is both the initial selector choice and the publication-catalog adapter. Source discovery, workflow diagnostics, and publication refresh use only that adapter. Every configured instance remains an independent execution target with its own availability, capacity, native queue, inputs, outputs, temporary files, history, and cancellation channel. This arrangement assumes the configured runtimes expose compatible nodes and the publications/models needed by the compiled graph; it does not merge their ComfyUI queues or storage.
+
+When `CIF_COMFYUI_INSTANCES` is absent, the application constructs one compatible entry from `CIF_COMFYUI_BASE_URL`, optional `CIF_COMFYUI_WS_URL`, `CIF_COMFYUI_INSTANCE_ID`, optional `CIF_COMFYUI_USER`, and `CIF_COMFYUI_CONCURRENCY`. This preserves existing single-instance deployments. Do not set a list entry URL containing credentials; connection URLs and optional user selectors remain server-side and are never returned to the browser.
+
+Docker service names resolve only across a shared user-defined network. Inspect the existing runtime networks without printing container environments or secrets:
+
+```sh
+docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+  local-ai-comfyui local-ai-comfyui-worker-2
+```
+
+If the frontend is not already on a common network, add the existing network to its Compose service and declare it external; do not create replacement ComfyUI services:
+
+```yaml
+services:
+  comfyui-image-frontend:
+    networks:
+      - default
+      - comfyui-runtime-network
+
+networks:
+  comfyui-runtime-network:
+    external: true
+    name: replace-with-existing-network-name
+```
+
+After the frontend container has joined that network, verify both DNS names and the two read-only ComfyUI endpoints from inside it. This does not submit, cancel, or otherwise start generation work:
+
+```sh
+docker compose -f compose.example.yml exec -T comfyui-image-frontend python - <<'PY'
+import json
+import socket
+import urllib.request
+
+targets = {
+    "primary": ("local-ai-comfyui", "http://local-ai-comfyui:8188"),
+    "worker-2": ("local-ai-comfyui-worker-2", "http://local-ai-comfyui-worker-2:8188"),
+}
+for label, (host, base_url) in targets.items():
+    addresses = sorted(
+        {
+            item[4][0]
+            for item in socket.getaddrinfo(host, 8188, type=socket.SOCK_STREAM)
+        }
+    )
+    with urllib.request.urlopen(f"{base_url}/system_stats", timeout=5) as response:
+        system_stats = json.load(response)
+        assert response.status == 200
+    with urllib.request.urlopen(f"{base_url}/object_info", timeout=20) as response:
+        object_info = json.load(response)
+        assert response.status == 200 and isinstance(object_info, dict)
+    devices = [item.get("name", "unknown") for item in system_stats.get("devices", [])]
+    print(label, "dns=", ",".join(addresses), "nodes=", len(object_info), "devices=", devices)
+PY
+```
+
+The expected result is HTTP 200 from both endpoints, 2,659 node types from each runtime, and device names identifying the RTX 3090 and RTX 3080 respectively. Do not perform a live `/prompt`, upload, queue mutation, interrupt, cancellation, history retrieval, or output retrieval merely to verify the deployment.
+
 The Prompt Assistant uses the router's native Ollama API with no authentication, sends top-level `think: true` on every composition request, requires nonempty thinking output so the setting cannot be silently ignored, and does not use the OpenAI-compatible `/v1` API. Do not set `CIF_OLLAMA_MODEL`: the backend omits the model from `/api/generate`, allowing this active-only router to select `hauhau-qwen3.6-35b-a3b-aggressive-q4-k-m:qwen35-parser`, and records the effective model returned in the response. Create mode starts each composition with a fresh cryptographically random sampling seed, rejects recent results for the same user and Creative Direction, and retries a duplicate with a different seed while keeping the same minimal instruction. With Auto-generate enabled, every generation cycle with a nonempty Creative Direction waits for a fresh Prompt Assistant composition before queueing; a manual application may prepare the imminent cycle, and that preparation is consumed when its generation is accepted. The operator-only router dashboard is `http://192.168.1.21:11435/`; it is not exposed in the application UI. Keep both `/api/tags` and `/api/generate` routed through the router, never its private upstream Ollama container.
 
 Voice input records in the browser until the microphone button is pressed again, then sends the bounded audio upload to the application. The application adds `CIF_SPEECH_TO_TEXT_API_KEY` and forwards it to the configured OpenAI-compatible transcription endpoint with `model=whisper-1` and `response_format=json`. The recording is not retained. Browser microphone capture requires a secure context: use HTTPS for access by LAN hostname/IP (localhost is the browser-development exception).
 
-ComfyUI and the Ollama router may be unreachable during startup. Accounts and retained history remain available. A last-valid source catalog remains visible as cached/offline, but new dispatch waits for ComfyUI. Only Prompt Assistant depends on the Ollama router.
+ComfyUI and the Ollama router may be unreachable during startup. Accounts and retained history remain available. A last-valid source catalog remains visible as cached/offline, but new dispatch waits for its job's selected ComfyUI instance. Only Prompt Assistant depends on the Ollama router.
 
-Health monitoring reruns complete source discovery once ComfyUI transitions from offline to online, including recovery from an empty startup catalog. While the server stays online, bundles are refreshed only at startup or by the administrator action; there is no periodic publication refetch.
+Health monitoring probes every configured ComfyUI instance independently. It reruns complete source discovery when the default catalog instance transitions from offline to online, including recovery from an empty startup catalog. While that instance stays online, bundles are refreshed only at startup or by the administrator action; there is no periodic publication refetch.
 
 ## Local development
 
@@ -164,7 +225,11 @@ The Docker/host administrator is outside this application privacy boundary becau
 
 ## Queue, results, recovery, and cancellation
 
-Every valid request resolves defaults, finite choices, companion-strength hints, seeds, and authorized image assets; clones and compiles its accepted frozen graph; and commits an immutable generation plus queue entry before the browser receives it. Public choice IDs are patched only into their trusted declaration-node `value`; image bytes are uploaded under an adapter-owned per-job ComfyUI input namespace; private mappings, paths, and downstream loader inputs are never caller-controlled. The worker preserves FIFO order per user and dispatches round-robin across users. `CIF_COMFYUI_CONCURRENCY` defaults to one.
+Every valid request resolves defaults, finite choices, companion-strength hints, seeds, and authorized image assets; clones and compiles its accepted frozen graph; and commits an immutable generation plus queue entry before the browser receives it. Public choice IDs are patched only into their trusted declaration-node `value`; image bytes are uploaded under an adapter-owned per-job ComfyUI input namespace; private mappings, paths, and downstream loader inputs are never caller-controlled. The worker preserves FIFO order per user and dispatches round-robin across users within each runtime. The `CIF_COMFYUI_CONCURRENCY` per-entry fallback defaults to one.
+
+The ComfyUI runtime selector appears in the left control panel immediately above **Generate**. It shows the safe configured label, description, and current availability. The default runtime is selected initially. Submission snapshots the selected runtime ID and label into the generation before it enters that runtime's independent fair queue. Changing the selector afterward affects only later submissions: input upload, `/prompt`, WebSocket progress, queue/history reconciliation, `/view` result retrieval, interruption, cancellation, and error reporting for an accepted job continue through its pinned adapter. Cards, detail/status, events, and recall retain the runtime label; removing an ID from configuration does not rewrite historical identity.
+
+Each runtime admits up to its configured `concurrency` active application jobs and maintains a separate round-robin cursor. Capacity on one GPU never pulls from or combines the other ComfyUI queue. Keep an instance ID configured until all of its accepted work is terminal so startup recovery and cancellation can continue to reach the same runtime.
 
 When requested by the publication, the accepted editable snapshot is attached as `extra_data.extra_pnginfo.workflow`; its separately recorded observed hash may differ from the publication-time hash without changing the frozen executable revision. The native ComfyUI `prompt_id` is persisted. WebSocket events provide progress, while bounded `/history/{prompt_id}` reconciliation supplies terminal truth and recovery after cached or missed events.
 
@@ -174,7 +239,7 @@ Browser closure or sign-out does not cancel work. Queued jobs survive restarts, 
 
 ## Recall and reproducibility
 
-**Recall settings** replaces the selected source and public parameters with the historical effective values, including concrete seeds and final submitted prompt. It never queues automatically or invokes Ollama.
+**Recall settings** replaces the selected source and public parameters with the historical effective values, including concrete seeds and final submitted prompt, and reports the historical execution runtime. When that runtime remains configured, the selector can be restored to it; an unavailable or removed runtime is shown as a warning. Recall never queues automatically or invokes Ollama.
 
 Recall is enabled only when the exact publication ID plus workflow/API/manifest hashes remain registered and compile to the original graph. A newer publication is never silently substituted. Historical generations remain viewable even when exact recall is unavailable.
 
@@ -230,7 +295,7 @@ Focused commands and live integration guidance are in [`docs/testing.md`](docs/t
 
 ### No generation sources appear
 
-Open **Administration → Workflow diagnostics** and refresh. Confirm that publication used Save & Publish, all three adjacent files exist under `workflows/`, `CIF_COMFYUI_INSTANCE_ID` is stable, the optional `CIF_COMFYUI_USER` is correct, and every declared class exists in `/object_info`. Recorded/observed workflow or API hash differences are warnings and do not remove an otherwise valid source. Orphaned `.json` / `.api.json` files are intentionally ignored.
+Open **Administration → Workflow diagnostics** and refresh. Confirm that publication used Save & Publish, all three adjacent files exist under `workflows/`, the default `CIF_COMFYUI_INSTANCES` entry reuses the stable primary instance ID, its optional `user` is correct, and every declared class exists in `/object_info`. Legacy deployments should check `CIF_COMFYUI_INSTANCE_ID` and optional `CIF_COMFYUI_USER`. Recorded/observed workflow or API hash differences are warnings and do not remove an otherwise valid source. Orphaned `.json` / `.api.json` files are intentionally ignored.
 
 ### A source is ready with warnings
 
@@ -238,7 +303,7 @@ Warnings are nonfatal publication or runtime diagnostics. They include workflow/
 
 ### Sources are cached/offline or Generate is disabled
 
-Retained sources remain visible when discovery cannot contact/list ComfyUI, but submission is disabled. Verify `CIF_COMFYUI_BASE_URL`, optional WebSocket URL, `Comfy-User`, userdata endpoints, encoded nested-path routing, `/object_info`, and byte limits. A proxy that decodes `%2F` before routing can break nested artifact retrieval.
+Retained, fully validated sources remain usable from their frozen API graphs when discovery cannot contact/list the default catalog instance. Dispatch still requires the runtime selected above **Generate** to be healthy; an unavailable selected runtime disables submission without affecting a different runtime's queue. Verify the selected entry in `CIF_COMFYUI_INSTANCES`, Docker network/DNS reachability, its optional WebSocket URL and `user`, userdata endpoints, encoded nested-path routing, `/object_info`, and byte limits. `GET /api/comfyui-instances` distinguishes the selected execution runtime's availability from catalog health. A proxy that decodes `%2F` before routing can break nested artifact retrieval.
 
 ### A selected source was republished
 
@@ -246,7 +311,7 @@ The API returns `source_republished` when the selected revision no longer matche
 
 ### Startup configuration errors
 
-With no users, set both bootstrap variables and use a temporary password of at least 8 characters. `CIF_SESSION_SECRET` must contain at least 32 random characters. A ComfyUI instance ID must contain 1–64 letters, digits, hyphens, or underscores. Response-size limits must be at least 1024 bytes.
+With no users, set both bootstrap variables and use a temporary password of at least 8 characters. `CIF_SESSION_SECRET` must contain at least 32 random characters. `CIF_COMFYUI_INSTANCES` must be a nonempty JSON array with unique valid IDs, labels, credential-free URLs, and concurrency values from 1 through 32; `CIF_COMFYUI_DEFAULT_INSTANCE_ID` must name an entry. A ComfyUI instance ID must start with an ASCII letter or digit and contain 1–64 ASCII letters, digits, hyphens, or underscores. Response-size limits must be at least 1024 bytes.
 
 ### Prompt Assistant is unavailable
 

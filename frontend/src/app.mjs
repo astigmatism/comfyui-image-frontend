@@ -20,6 +20,7 @@ import {
   parametersForRequest,
   photoViewerImageLayout,
   positivePromptInput,
+  recalledComfyuiInstanceState,
   reconcileInterfaceValues,
   resolutionSummary,
   scaleToLayout,
@@ -52,6 +53,13 @@ const root = document.querySelector("#app");
 
 const state = {
   session: null,
+  comfyuiInstances: [],
+  comfyuiInstancesStatus: "idle",
+  comfyuiInstancesMessage: null,
+  selectedComfyuiInstanceId: null,
+  comfyuiInstanceSelectionInitialized: false,
+  comfyuiInstanceError: null,
+  comfyuiInstanceWarning: null,
   sources: [],
   sourceCatalogStatus: "idle",
   sourceCatalogMessage: null,
@@ -155,6 +163,7 @@ const STARTUP_DEADLINES = {
   session: 10_000,
   preferences: 5_000,
   services: 8_000,
+  comfyuiInstances: 8_000,
   gallery: 15_000,
   promptAssistant: 8_000,
   speechToText: 8_000,
@@ -320,6 +329,21 @@ async function handleClick(event) {
 
 async function handleChange(event) {
   const element = event.target;
+  if (element.id === "comfyui-instance") {
+    const selected = state.comfyuiInstances.find((item) => item.id === element.value);
+    if (!selected) {
+      element.value = state.selectedComfyuiInstanceId || "";
+      return;
+    }
+    state.selectedComfyuiInstanceId = selected.id;
+    state.comfyuiInstanceError = null;
+    state.comfyuiInstanceWarning = null;
+    state.formError = null;
+    renderPanel();
+    renderServiceBanner();
+    scheduleAutoGenerate();
+    return;
+  }
   if (element.id === "auto-generate") {
     state.autoGenerate = element.checked;
     preparedAutoGenerateAssistantFingerprint = null;
@@ -1682,6 +1706,13 @@ async function logout() {
   await api("/api/auth/logout", { method: "POST" });
   stopLiveUpdates();
   stopApplicationStartup();
+  state.comfyuiInstances = [];
+  state.comfyuiInstancesStatus = "idle";
+  state.comfyuiInstancesMessage = null;
+  state.selectedComfyuiInstanceId = null;
+  state.comfyuiInstanceSelectionInitialized = false;
+  state.comfyuiInstanceError = null;
+  state.comfyuiInstanceWarning = null;
   state.sources = [];
   state.activeSourceKey = null;
   state.activeSource = null;
@@ -1740,6 +1771,13 @@ async function enterApplication() {
   stopApplicationStartup();
   const controller = new AbortController();
   applicationStartupController = controller;
+  state.comfyuiInstances = [];
+  state.comfyuiInstancesStatus = "loading";
+  state.comfyuiInstancesMessage = null;
+  state.selectedComfyuiInstanceId = null;
+  state.comfyuiInstanceSelectionInitialized = false;
+  state.comfyuiInstanceError = null;
+  state.comfyuiInstanceWarning = null;
   state.sourceCatalogStatus = "loading";
   state.sourceCatalogMessage = null;
   state.services = [];
@@ -1789,6 +1827,7 @@ async function enterApplication() {
   const requests = [
     loadStartupPreferences(controller.signal),
     servicesRequest,
+    loadStartupComfyuiInstances(controller.signal),
     galleryRequest,
     loadStartupPromptAssistant(controller.signal),
     loadStartupSpeechToText(controller.signal),
@@ -1855,6 +1894,128 @@ async function loadStartupServices(signal = applicationStartupController?.signal
   }
   renderServiceBanner();
   renderPanel();
+}
+
+async function loadStartupComfyuiInstances(
+  signal = applicationStartupController?.signal,
+) {
+  return loadComfyuiInstances({ signal, diagnostic: true });
+}
+
+async function loadComfyuiInstances(
+  { signal, diagnostic = false, showLoading = true } = {},
+) {
+  const previousPanelState = comfyuiInstancePanelState();
+  if (showLoading) {
+    state.comfyuiInstancesStatus = "loading";
+    state.comfyuiInstancesMessage = null;
+    renderPanel();
+    renderServiceBanner();
+  }
+  try {
+    const options = {
+      operation: "ComfyUI runtime status",
+      deadlineMs: STARTUP_DEADLINES.comfyuiInstances,
+      signal,
+    };
+    const payload = diagnostic
+      ? await startupGet("/api/comfyui-instances", options)
+      : await api("/api/comfyui-instances", options);
+    if (signal?.aborted) return;
+    applyComfyuiInstanceCatalog(payload);
+    state.comfyuiInstancesStatus = "ready";
+    state.comfyuiInstancesMessage = null;
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    state.comfyuiInstancesStatus = "error";
+    state.comfyuiInstancesMessage =
+      error.message || "ComfyUI runtime status is temporarily unavailable.";
+  }
+  if (showLoading || previousPanelState !== comfyuiInstancePanelState()) {
+    if (state.sourcePickerDialogOpen) state.servicePanelRefreshPending = true;
+    else renderPanel();
+    renderServiceBanner();
+  }
+}
+
+function applyComfyuiInstanceCatalog(payload) {
+  const items = Array.isArray(payload?.items)
+    ? payload.items.map(normalizeComfyuiInstance).filter(Boolean)
+    : [];
+  const previousId = state.selectedComfyuiInstanceId;
+  state.comfyuiInstances = items;
+  if (!state.comfyuiInstanceSelectionInitialized) {
+    const requestedDefault =
+      typeof payload?.default_instance_id === "string"
+        ? payload.default_instance_id
+        : null;
+    const selected =
+      items.find((item) => item.id === requestedDefault) ||
+      items.find((item) => item.is_default) ||
+      items[0] ||
+      null;
+    state.selectedComfyuiInstanceId = selected?.id || null;
+    state.comfyuiInstanceSelectionInitialized = true;
+  } else if (previousId && !items.some((item) => item.id === previousId)) {
+    state.selectedComfyuiInstanceId = null;
+    state.comfyuiInstanceError = null;
+    state.comfyuiInstanceWarning =
+      state.comfyuiInstanceWarning ||
+      "The previously selected ComfyUI runtime is no longer configured. Choose a runtime before generating.";
+  }
+  const selected = selectedComfyuiInstance();
+  if (selected?.available) {
+    const previousInstanceError = state.comfyuiInstanceError;
+    state.comfyuiInstanceError = null;
+    state.comfyuiInstanceWarning = null;
+    if (previousInstanceError && state.formError === previousInstanceError) {
+      state.formError = null;
+    }
+  }
+}
+
+function normalizeComfyuiInstance(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id) return null;
+  const label = typeof value.label === "string" ? value.label.trim() : "";
+  return {
+    id,
+    label: label || id,
+    description:
+      typeof value.description === "string" ? value.description.trim() : "",
+    is_default: Boolean(value.is_default),
+    available: value.available === true,
+    message: typeof value.message === "string" ? value.message.trim() : "",
+    checked_at:
+      typeof value.checked_at === "string" ? value.checked_at : null,
+  };
+}
+
+function selectedComfyuiInstance() {
+  return (
+    state.comfyuiInstances.find(
+      (item) => item.id === state.selectedComfyuiInstanceId,
+    ) || null
+  );
+}
+
+function comfyuiInstancePanelState() {
+  return JSON.stringify({
+    status: state.comfyuiInstancesStatus,
+    message: state.comfyuiInstancesMessage,
+    selectedId: state.selectedComfyuiInstanceId,
+    error: state.comfyuiInstanceError,
+    warning: state.comfyuiInstanceWarning,
+    items: state.comfyuiInstances.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      available: item.available,
+      message: item.message,
+      isDefault: item.is_default,
+    })),
+  });
 }
 
 async function loadStartupGallery(signal = applicationStartupController?.signal) {
@@ -2136,6 +2297,33 @@ function sourceContextIsCurrent(key, revision) {
       state.activeSource &&
       revisionsMatch({ revision }, state.activeSource),
   );
+}
+
+function generationContextIsCurrent(key, revision, comfyuiInstanceId) {
+  return Boolean(
+    sourceContextIsCurrent(key, revision) &&
+      comfyuiInstanceId &&
+      state.selectedComfyuiInstanceId === comfyuiInstanceId,
+  );
+}
+
+function isComfyuiInstanceError(error) {
+  const code = String(error?.code || "");
+  return Boolean(
+    code === "instance_unavailable" ||
+      code.startsWith("comfyui_instance_") ||
+      error?.fields?.comfyui_instance_id,
+  );
+}
+
+async function refreshComfyuiInstancesAfterError(message, expectedInstanceId) {
+  await loadComfyuiInstances({ showLoading: false });
+  if (state.selectedComfyuiInstanceId !== expectedInstanceId) return;
+  state.comfyuiInstanceError =
+    message || "The selected ComfyUI runtime is unavailable.";
+  state.formError = state.comfyuiInstanceError;
+  renderPanel();
+  renderServiceBanner();
 }
 
 function persistActiveParameterState() {
@@ -2574,6 +2762,7 @@ async function runAutoGenerateCycle() {
   syncPromptAssistantDraftFromPanel();
   if (!autoGenerationReady()) return;
   const requestSourceKey = state.activeSourceKey;
+  const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
   let queued = false;
   autoGenerateCycleRunning = true;
@@ -2597,6 +2786,7 @@ async function runAutoGenerateCycle() {
       state.autoGenerate &&
       (rescheduleRequested ||
         state.activeSourceKey !== requestSourceKey ||
+        state.selectedComfyuiInstanceId !== requestComfyuiInstanceId ||
         (autoGenerationNeedsPromptAssistant() &&
           currentAutoGenerateAssistantFingerprint() !== requestAssistantFingerprint) ||
         (queued && !hasActiveGeneration(state.generations)))
@@ -2624,12 +2814,16 @@ async function generateSingleSource() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
+  const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestCompositionId = state.compositionId;
+  const requestComfyuiInstance = selectedComfyuiInstance();
   if (
     !requestSourceKey ||
     !state.activeSource ||
     !contract ||
-    state.activeSource.available === false
+    state.activeSource.available === false ||
+    !requestComfyuiInstanceId ||
+    requestComfyuiInstance?.available !== true
   )
     return false;
   const errors = clientValidate(contract, state.parameters);
@@ -2652,6 +2846,7 @@ async function generateSingleSource() {
     );
     const payload = {
       source_key: requestSourceKey,
+      comfyui_instance_id: requestComfyuiInstanceId,
       revision: requestRevision,
       parameters: {
         ...parametersForRequest(contract, state.parameters),
@@ -2679,13 +2874,28 @@ async function generateSingleSource() {
     toast("Generation queued.", "success");
     return true;
   } catch (error) {
-    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      toast(`Generation request for the previous source failed: ${error.message}`, "error");
+    if (
+      !generationContextIsCurrent(
+        requestSourceKey,
+        requestRevision,
+        requestComfyuiInstanceId,
+      )
+    ) {
+      toast(
+        `Generation request for the previous source or runtime failed: ${error.message}`,
+        "error",
+      );
       return false;
     }
     state.formError = error.message;
     state.serverFieldErrors = normalizeParameterErrors(error.fields);
     focusErrors = Object.keys(state.serverFieldErrors).length > 0;
+    if (isComfyuiInstanceError(error)) {
+      await refreshComfyuiInstancesAfterError(
+        error.message,
+        requestComfyuiInstanceId,
+      );
+    }
     if (["source_republished", "source_unavailable"].includes(error.code)) {
       const message = error.message;
       await loadSources();
@@ -2703,14 +2913,18 @@ async function generateSelectedSources() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
+  const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestCompositionId = state.compositionId;
   const requestParameters = structuredClone(state.parameters);
   const sources = selectedGenerationSources();
+  const requestComfyuiInstance = selectedComfyuiInstance();
   if (
     !requestSourceKey ||
     !state.activeSource ||
     !contract ||
     state.activeSource.available === false ||
+    !requestComfyuiInstanceId ||
+    requestComfyuiInstance?.available !== true ||
     !sources.length
   )
     return false;
@@ -2743,6 +2957,7 @@ async function generateSelectedSources() {
       method: "POST",
       body: JSON.stringify({
         source_key: requestSourceKey,
+        comfyui_instance_id: requestComfyuiInstanceId,
         revision: requestRevision,
         parameters: primaryParameters,
       }),
@@ -2822,6 +3037,7 @@ async function generateSelectedSources() {
       for (const modelParameters of modelVariants) {
         const payload = {
           source_key: targetKey,
+          comfyui_instance_id: requestComfyuiInstanceId,
           revision: structuredClone(sourceRevision(detail)),
           parameters: { ...sharedParameters, ...modelParameters },
         };
@@ -2899,6 +3115,22 @@ async function generateSelectedSources() {
           renderPanel();
         }
       }
+      const instanceFailure = failures.find(({ error }) =>
+        isComfyuiInstanceError(error),
+      );
+      if (
+        instanceFailure &&
+        generationContextIsCurrent(
+          requestSourceKey,
+          requestRevision,
+          requestComfyuiInstanceId,
+        )
+      ) {
+        await refreshComfyuiInstancesAfterError(
+          instanceFailure.error.message,
+          requestComfyuiInstanceId,
+        );
+      }
     } else {
       toast(
         `${queued.length} generation${queued.length === 1 ? "" : "s"} queued across ${sources.length} selected source${sources.length === 1 ? "" : "s"}.`,
@@ -2907,13 +3139,28 @@ async function generateSelectedSources() {
     }
     return queued.length > 0 && failures.length === 0 && queued.length === plannedTargetCount;
   } catch (error) {
-    if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      toast(`Comparison request for the previous source failed: ${error.message}`, "error");
+    if (
+      !generationContextIsCurrent(
+        requestSourceKey,
+        requestRevision,
+        requestComfyuiInstanceId,
+      )
+    ) {
+      toast(
+        `Comparison request for the previous source or runtime failed: ${error.message}`,
+        "error",
+      );
       return false;
     }
     state.formError = error.message;
     state.serverFieldErrors = normalizeParameterErrors(error.fields);
     focusErrors = Object.keys(state.serverFieldErrors).length > 0;
+    if (isComfyuiInstanceError(error)) {
+      await refreshComfyuiInstancesAfterError(
+        error.message,
+        requestComfyuiInstanceId,
+      );
+    }
     if (["source_republished", "source_unavailable"].includes(error.code)) {
       const message = error.message;
       await loadSources();
@@ -3362,6 +3609,7 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
+  const runtimeWarning = applyRecalledComfyuiInstance(recalled);
   const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
   state.modelSelectionsBySourceRevision = new Map();
   state.activeModelSelections = {};
@@ -3378,7 +3626,15 @@ async function recall(id) {
     renderPanel();
     closePanel(false);
     document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });
-    toast(recalled.reason || "Historical settings loaded into the current source.", "warning");
+    toast(
+      [
+        recalled.reason || "Historical settings loaded into the current source.",
+        runtimeWarning,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      "warning",
+    );
     return;
   }
   const key = recalled.source_key || recalled.profile_id;
@@ -3411,7 +3667,16 @@ async function recall(id) {
   renderPanel();
   closePanel(false);
   document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });
-  toast("Exact historical settings loaded. Press Generate when ready.", "success");
+  toast(
+    runtimeWarning || "Exact historical settings loaded. Press Generate when ready.",
+    runtimeWarning ? "warning" : "success",
+  );
+}
+
+function applyRecalledComfyuiInstance(recalled) {
+  const recalledState = recalledComfyuiInstanceState(state, recalled);
+  Object.assign(state, recalledState.state);
+  return recalledState.notice;
 }
 
 async function recallFavorite(id) {
@@ -4042,7 +4307,10 @@ function scheduleServicePoll(controller) {
   state.serviceTimer = window.setTimeout(async () => {
     state.serviceTimer = null;
     try {
-      await refreshServices(controller.signal);
+      await Promise.allSettled([
+        refreshServices(controller.signal),
+        loadComfyuiInstances({ signal: controller.signal, showLoading: false }),
+      ]);
     } finally {
       scheduleServicePoll(controller);
     }
@@ -4127,6 +4395,12 @@ function renderServiceBanner() {
       state.services,
       state.servicesStatus,
       state.servicesMessage,
+      {
+        instances: state.comfyuiInstances,
+        status: state.comfyuiInstancesStatus,
+        message: state.comfyuiInstancesMessage,
+        selectedInstanceId: state.selectedComfyuiInstanceId,
+      },
     );
   }
 }
@@ -4267,7 +4541,9 @@ function withoutNulls(value) {
 
 function normalizeParameterErrors(value) {
   return Object.fromEntries(
-    Object.entries(value || {}).map(([key, message]) => [key.replace(/^parameters\./, ""), message]),
+    Object.entries(value || {})
+      .map(([key, message]) => [key.replace(/^parameters\./, ""), message])
+      .filter(([key]) => key !== "comfyui_instance_id"),
   );
 }
 

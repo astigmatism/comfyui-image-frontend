@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .api import (
     admin,
     auth,
+    comfyui_instances,
     events,
     favorites,
     generations,
@@ -328,6 +329,7 @@ def create_app(
         )
 
     app.include_router(auth.router)
+    app.include_router(comfyui_instances.router)
     app.include_router(workflows.router)
     app.include_router(uploads.router)
     app.include_router(prompt_assistant.router)

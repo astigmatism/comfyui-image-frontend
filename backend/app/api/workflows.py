@@ -137,7 +137,10 @@ def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
         display_name=profile.display_name,
         instance_id=profile.instance_id or "default",
         readiness=readiness,
-        available=online and not dependency_unavailable and profile.state.value == "valid",
+        # A validated publication remains usable from its frozen API graph when the
+        # catalog/default runtime is offline. Dispatch availability is enforced
+        # independently for the runtime selected on each generation request.
+        available=not dependency_unavailable and profile.state.value == "valid",
         cached=cached,
         message=(
             "Required ComfyUI node classes are unavailable for this source."

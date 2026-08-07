@@ -44,6 +44,7 @@ def _generation(
     choice: str = "model-a",
     feature_enabled: bool = True,
     api_hash: str = "a" * 64,
+    instance_id: str = "test-instance",
     started_at: datetime | None = None,
     completed_at: datetime | None = None,
 ) -> Generation:
@@ -53,6 +54,8 @@ def _generation(
         owner_id=owner_id,
         status=status,
         queue_seq=1,
+        comfyui_instance_id=instance_id,
+        comfyui_instance_label=instance_id,
         workflow_profile_id="profile-a",
         workflow_id="source-a",
         workflow_display_name="Source A",
@@ -163,6 +166,11 @@ def test_timing_features_hash_compute_inputs_without_content_or_identity() -> No
 
     changed_revision = build_generation_timing_features(_generation(api_hash="e" * 64))
     assert changed_revision.revision_key != first_features.revision_key
+
+    changed_runtime = build_generation_timing_features(_generation(instance_id="worker-2"))
+    assert changed_runtime.instance_key != first_features.instance_key
+    assert changed_runtime.source_key != first_features.source_key
+    assert changed_runtime.revision_key != first_features.revision_key
 
     changed_outputs = _generation()
     changed_outputs.requested_outputs_json = ["preview"]

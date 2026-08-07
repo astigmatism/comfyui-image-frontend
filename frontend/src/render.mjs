@@ -138,6 +138,7 @@ export function generationPanelMarkup(state, profile, contract) {
     <div class="panel-layout">
       <div class="panel-fixed">
         <div class="generation-actions">
+          ${comfyuiInstanceSelectorMarkup(state)}
           <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (selectedTargetCount > 1 ? `Queueing ${selectedTargetCount}…` : "Queueing…") : "Generate"}</button>
           <div class="auto-generation-options">
             <label class="switch auto-generation-switch" for="auto-generate">
@@ -190,8 +191,18 @@ export function generationSubmissionDisabled(state, profile, contract, clientErr
 export function generationRequestBlocked(state, profile, contract, clientErrors = {}) {
   const services = state.services || [];
   const comfy = services.find((item) => item.service === "comfyui");
-  const serviceStateBlocksGeneration =
-    state.servicesStatus === undefined
+  const usesInstanceCatalog = state.comfyuiInstancesStatus !== undefined;
+  const selectedInstance = usesInstanceCatalog
+    ? (state.comfyuiInstances || []).find(
+        (item) => item.id === state.selectedComfyuiInstanceId,
+      )
+    : null;
+  const serviceStateBlocksGeneration = usesInstanceCatalog
+    ? state.comfyuiInstancesStatus !== "ready" ||
+      !selectedInstance ||
+      selectedInstance.available !== true ||
+      Boolean(state.comfyuiInstanceError)
+    : state.servicesStatus === undefined
       ? comfy?.available === false
       : state.servicesStatus !== "ready" || comfy?.available !== true;
   const sourceCatalogBlocksGeneration =
@@ -212,16 +223,85 @@ export function generationRequestBlocked(state, profile, contract, clientErrors 
   );
 }
 
+function comfyuiInstanceSelectorMarkup(state) {
+  if (state.comfyuiInstancesStatus === undefined) return "";
+  const instances = Array.isArray(state.comfyuiInstances)
+    ? state.comfyuiInstances
+    : [];
+  const selected = instances.find(
+    (item) => item.id === state.selectedComfyuiInstanceId,
+  );
+  const options = instances.length
+    ? `${selected ? "" : '<option value="" selected>Choose a runtime</option>'}${instances
+        .map((instance) => {
+          const details = String(instance.description || "").trim();
+          const availability = instance.available === true ? "" : " — Unavailable";
+          const copy = `${instance.label || instance.id}${details ? ` — ${details}` : ""}${availability}`;
+          return `<option value="${escapeHtml(instance.id)}" ${instance.id === state.selectedComfyuiInstanceId ? "selected" : ""}>${escapeHtml(copy)}</option>`;
+        })
+        .join("")}`
+    : `<option value="">${state.comfyuiInstancesStatus === "loading" ? "Loading runtimes…" : "No runtimes configured"}</option>`;
+  const status = comfyuiInstanceStatus(state, selected);
+  return `<label class="field compact comfyui-instance-field" for="comfyui-instance">
+    <span>ComfyUI runtime</span>
+    <select id="comfyui-instance" aria-describedby="comfyui-instance-status" ${instances.length ? "" : "disabled"}>${options}</select>
+    <small id="comfyui-instance-status" class="comfyui-instance-status ${status.kind}" ${status.role ? `role="${status.role}"` : ""}>${escapeHtml(status.message)}</small>
+  </label>`;
+}
+
+function comfyuiInstanceStatus(state, selected) {
+  if (state.comfyuiInstancesStatus === "loading") {
+    return { kind: "pending", role: "status", message: "Checking configured runtimes…" };
+  }
+  if (state.comfyuiInstanceError) {
+    return { kind: "error", role: "alert", message: state.comfyuiInstanceError };
+  }
+  if (state.comfyuiInstancesStatus === "error") {
+    return {
+      kind: "error",
+      role: "alert",
+      message:
+        state.comfyuiInstancesMessage ||
+        "ComfyUI runtime status is temporarily unavailable.",
+    };
+  }
+  if (!selected) {
+    return {
+      kind: "error",
+      role: "alert",
+      message: (state.comfyuiInstances || []).length
+        ? "Choose a configured runtime before generating."
+        : "No ComfyUI runtimes are configured.",
+    };
+  }
+  if (selected.available !== true) {
+    return {
+      kind: "error",
+      role: "alert",
+      message:
+        selected.message ||
+        `${selected.label || selected.id} is unavailable. Choose another runtime or try again later.`,
+    };
+  }
+  if (state.comfyuiInstanceWarning) {
+    return { kind: "warning", role: "status", message: state.comfyuiInstanceWarning };
+  }
+  const description = String(selected.description || "").trim();
+  return {
+    kind: "available",
+    role: "status",
+    message: description ? `${description} · Available` : "Available",
+  };
+}
+
 function sourceKey(source) {
   return source?.source_key || source?.profile_id || "";
 }
 
 function sourceDisplayName(source) {
   if (!source) return "";
-  const instanceId = String(source.instance_id || "").trim();
-  const instance = instanceId && instanceId.toLowerCase() !== "default" ? ` · ${instanceId}` : "";
   const suffix = source.available === false ? " — Unavailable" : source.cached ? " — Cached" : "";
-  return `${source.display_name}${instance}${suffix}`;
+  return `${source.display_name}${suffix}`;
 }
 
 function sourceSelectorLabel(state, sources) {
@@ -628,12 +708,13 @@ function warningText(warning) {
 
 function sourceStateMarkup(state, source) {
   const notices = [];
-  if (state.servicesStatus === "loading") {
+  const usesInstanceCatalog = state.comfyuiInstancesStatus !== undefined;
+  if (!usesInstanceCatalog && state.servicesStatus === "loading") {
     notices.push(
       '<div class="source-notice" role="status">Checking generation service availability…</div>',
     );
   }
-  if (state.servicesStatus === "error") {
+  if (!usesInstanceCatalog && state.servicesStatus === "error") {
     notices.push(
       `<div class="source-notice warning" role="status">${escapeHtml(state.servicesMessage || "Service status is temporarily unavailable; generation remains paused.")}</div>`,
     );
@@ -1277,9 +1358,11 @@ export function galleryCardMarkup(generation) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
   const sourceName = generationSourceName(generation);
+  const runtimeName = generationComfyuiInstanceName(generation);
+  const generationName = runtimeName ? `${sourceName}, ${runtimeName}` : sourceName;
   const stateClass = String(generation.status || "unknown").replaceAll("_", "-");
   const media = hasImage
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
+    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
     : statusPlaceholderMarkup(generation);
   const progress = generationProgressMarkup(generation);
   const statusOverlay = generation.status === "succeeded" || progress ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
@@ -1294,7 +1377,7 @@ export function galleryCardMarkup(generation) {
     : "";
   return `<article class="gallery-card status-${stateClass}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
-      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(sourceName)} image">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
+      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(generationName)} image">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
       <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
       ${cancel}
     </div>
@@ -1307,7 +1390,8 @@ export function generationProgressMarkup(generation, { now = Date.now() } = {}) 
   if (!progress) return "";
   const label = String(progress.label || "Processing");
   const eta = activeGenerationEta(generation, now);
-  const copy = generationProgressCopyMarkup(label, eta);
+  const runtimeName = generationComfyuiInstanceName(generation);
+  const copy = generationProgressCopyMarkup(label, eta, runtimeName);
   const determinate = progress.kind === "node";
   if (!determinate) {
     return `<div class="generation-progress generation-progress-indeterminate">
@@ -1332,7 +1416,7 @@ export function generationProgressMarkup(generation, { now = Date.now() } = {}) 
   const displayValue = Math.max(0, Math.min(maximum, value));
   const valueLabel = formatProgressNumber(displayValue);
   const maximumLabel = formatProgressNumber(maximum);
-  const valueText = `${valueLabel} of ${maximumLabel} for ${label}`;
+  const valueText = `${valueLabel} of ${maximumLabel} for ${label}${runtimeName ? ` on ${runtimeName}` : ""}`;
   const accessibleValueText = eta ? `${valueText}, ${eta.accessibleText}` : valueText;
   return `<div class="generation-progress generation-progress-determinate">
     ${copy}
@@ -1342,14 +1426,17 @@ export function generationProgressMarkup(generation, { now = Date.now() } = {}) 
   </div>`;
 }
 
-function generationProgressCopyMarkup(label, eta) {
+function generationProgressCopyMarkup(label, eta, runtimeName) {
   const completion = eta && eta.completionTimestamp !== null
     ? ` data-generation-eta-completion="${escapeHtml(eta.completionTimestamp)}"`
     : "";
   const etaMarkup = eta
     ? `<span class="generation-progress-eta" data-generation-eta${completion}>${escapeHtml(eta.text)}</span>`
     : "";
-  return `<div class="generation-progress-copy"><strong class="generation-progress-label">${escapeHtml(label)}</strong>${etaMarkup}</div>`;
+  const runtimeMarkup = runtimeName
+    ? `<span class="generation-progress-runtime">${escapeHtml(runtimeName)}</span>`
+    : "";
+  return `<div class="generation-progress-copy"><strong class="generation-progress-label">${escapeHtml(label)}</strong><span class="generation-progress-context">${runtimeMarkup}${etaMarkup}</span></div>`;
 }
 
 function activeGenerationEta(generation, now) {
@@ -1470,19 +1557,34 @@ function generationSourceName(generation) {
   );
 }
 
+function generationComfyuiInstanceName(generation) {
+  return (
+    String(
+      generation?.comfyui_instance_label ||
+        generation?.comfyui_instance_id ||
+        "",
+    ).trim() || null
+  );
+}
+
 function statusPlaceholderMarkup(generation) {
   let label = generation.current_stage_label || statusLabel(generation.status);
   if (generation.status.startsWith("cancelled_")) label = "Cancelled generation";
   else if (generation.status.startsWith("failed_")) label = "Generation failed";
   else if (generation.status === "interrupted") label = "Generation interrupted";
   const queueCopy = generation.status === "queued" ? "<span>Waiting for a fair queue slot</span>" : "";
-  return `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${queueCopy}</div>`;
+  const runtimeName = generationComfyuiInstanceName(generation);
+  const runtimeCopy = runtimeName
+    ? `<span class="status-runtime">${escapeHtml(runtimeName)}</span>`
+    : "";
+  return `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${runtimeCopy}${queueCopy}</div>`;
 }
 
 export function cardFooterMarkup(generation) {
   const sourceName = generationSourceName(generation);
+  const runtimeName = generationComfyuiInstanceName(generation);
   const duration = formatGenerationDuration(generation.generation_duration_seconds);
-  const metadata = duration ? `${sourceName} · ${duration}` : sourceName;
+  const metadata = [sourceName, runtimeName, duration].filter(Boolean).join(" · ");
   const artifact = generation.display_artifact;
   const deletePending = Boolean(generation.delete_pending);
   const download = artifact?.kind === "image"
@@ -1495,7 +1597,7 @@ export function cardFooterMarkup(generation) {
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}">${escapeHtml(metadata)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${runtimeName ? ` on ${escapeHtml(runtimeName)}` : ""}">${escapeHtml(metadata)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button><button type="button" class="delete-generation-button" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}" ${deletePending ? "disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
@@ -1526,13 +1628,14 @@ export function photoViewerMarkup(
 ) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
+  const runtimeName = generationComfyuiInstanceName(generation);
   const hasImage = artifact?.kind === "image";
   const viewMode = ["actual", "fit"].includes(requestedViewMode) ? requestedViewMode : "fill";
   const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";
   const active = ["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status);
   const status = generation?.progress?.label || generation?.current_stage_label || statusLabel(generation?.status);
   const media = hasImage
-    ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}, ${statusLabel(generation.status)}`)}" draggable="false" />`
+    ? `<img src="${escapeHtml(artifact.content_url)}" alt="${escapeHtml(`${sourceName}${runtimeName ? `, ${runtimeName}` : ""}, ${statusLabel(generation.status)}`)}" draggable="false" />`
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
@@ -1555,7 +1658,7 @@ export function photoViewerMarkup(
     <button type="button" class="photo-viewer-close photo-viewer-control" data-action="close-photo" aria-label="Close image viewer">×</button>
     ${navigation.hasNewer ? '<button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" aria-label="View newer generation">‹</button>' : ""}
     ${navigation.hasOlder ? '<button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" aria-label="View older generation">›</button>' : ""}
-    ${active ? `<div class="photo-viewer-status" role="status">${escapeHtml(status)}</div>` : ""}
+    ${active ? `<div class="photo-viewer-status" role="status">${escapeHtml(status)}${runtimeName ? ` · ${escapeHtml(runtimeName)}` : ""}</div>` : ""}
   </div>`;
 }
 
@@ -1582,6 +1685,7 @@ function favoriteItemMarkup(favorite) {
   const generation = favorite.generation;
   const artifact = generation.display_artifact;
   const sourceName = generationSourceName(generation);
+  const runtimeName = generationComfyuiInstanceName(generation);
   const media = artifact?.kind === "image"
     ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${sourceName}`)}" />`
     : `<div class="favorite-placeholder"><span aria-hidden="true">◇</span><strong>No retained image</strong></div>`;
@@ -1591,7 +1695,7 @@ function favoriteItemMarkup(favorite) {
   return `<article class="favorite-item" data-favorite-id="${escapeHtml(favorite.id)}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="favorite-thumbnail">${media}</div>
     <div class="favorite-details">
-      <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
+      <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>${runtimeName ? `${escapeHtml(runtimeName)} · ` : ""}Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
       <p class="favorite-prompt">${escapeHtml(favorite.final_prompt || "No prompt was retained.")}</p>
       <div class="favorite-actions">
         <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(recallTitle)}">Recall</button>
@@ -1612,8 +1716,9 @@ export function detailMarkup(detail) {
   const warnings = messageValues(detail.warnings);
   const errors = [...messageValues(detail.errors), ...(detail.error_message ? [detail.error_message] : [])];
   const sourceName = generationSourceName(detail);
+  const runtimeName = generationComfyuiInstanceName(detail);
   return `<form method="dialog" class="dialog-frame">
-    <header class="dialog-header"><div><h2>${escapeHtml(sourceName)}</h2><p>${escapeHtml(statusLabel(detail.status))}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
+    <header class="dialog-header"><div><h2>${escapeHtml(sourceName)}</h2><p>${escapeHtml(statusLabel(detail.status))}${runtimeName ? ` · ${escapeHtml(runtimeName)}` : ""}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
     <div class="detail-content">
       ${generationInputsMarkup(detail)}
       ${messageAlertMarkup("warning", warnings, "Generation warnings")}
@@ -1631,7 +1736,8 @@ export function detailMarkup(detail) {
       <section class="timeline"><h3>Artifact timeline</h3>${artifacts.length ? `<ol>${artifacts.map((artifact) => `<li><span class="timeline-dot state-${escapeHtml(artifact.state)}"></span><div><strong>${escapeHtml(artifact.role || artifact.output_id || "Output")}</strong><small>${escapeHtml(artifact.state || "available")} · sequence ${artifact.sequence ?? "—"}${Number.isInteger(artifact.batch_index) ? ` · batch ${artifact.batch_index + 1}` : ""}</small></div></li>`).join("")}</ol>` : '<p class="muted">No application-owned artifact timeline was recorded.</p>'}</section>
       <details class="provenance"><summary>Technical provenance</summary><dl>
         <dt>Source key</dt><dd><code>${escapeHtml(source.source_key || source.source_id || legacyWorkflow.workflow_id || "—")}</code></dd>
-        <dt>Instance</dt><dd>${escapeHtml(source.instance_id || "—")}</dd>
+        <dt>Execution runtime</dt><dd>${escapeHtml(runtimeName || "—")}</dd>
+        <dt>Publication instance</dt><dd>${escapeHtml(source.instance_id || "—")}</dd>
         <dt>Publication</dt><dd><code>${escapeHtml(revision.publication_id || legacyWorkflow.workflow_version || "—")}</code></dd>
         <dt>Workflow hash</dt><dd><code>${escapeHtml(revision.workflow_sha256 || legacyWorkflow.ui_graph_sha256 || "—")}</code></dd>
         <dt>API hash</dt><dd><code>${escapeHtml(revision.api_sha256 || legacyWorkflow.api_graph_sha256 || "—")}</code></dd>
@@ -1879,7 +1985,38 @@ function roleLabel(role) {
   }[role] || "Generated image";
 }
 
-export function serviceBannerMarkup(services, status = "ready", message = null) {
+export function serviceBannerMarkup(
+  services,
+  status = "ready",
+  message = null,
+  comfyuiInstances = null,
+) {
+  if (comfyuiInstances) {
+    const instances = Array.isArray(comfyuiInstances.instances)
+      ? comfyuiInstances.instances
+      : [];
+    if (comfyuiInstances.status === "loading") {
+      return '<div class="service-banner" role="status"><strong>Checking ComfyUI runtimes.</strong><span>Gallery history remains available while runtime status loads.</span></div>';
+    }
+    if (comfyuiInstances.status === "error") {
+      return `<div class="service-banner" role="status"><strong>Runtime status unavailable.</strong><span>${escapeHtml(comfyuiInstances.message || "Generation remains paused; history is still available.")}</span></div>`;
+    }
+    const selected = instances.find(
+      (item) => item.id === comfyuiInstances.selectedInstanceId,
+    );
+    if (!selected) {
+      return '<div class="service-banner" role="status"><strong>Choose a ComfyUI runtime.</strong><span>Select an available runtime before generating; history remains available.</span></div>';
+    }
+    if (selected?.available === false) {
+      return `<div class="service-banner" role="status"><strong>${escapeHtml(selected.label || selected.id)} unavailable.</strong><span>${escapeHtml(selected.message || "Choose another configured runtime to generate; history remains available.")}</span></div>`;
+    }
+    const unavailable = instances.filter((item) => item.available === false);
+    if (unavailable.length) {
+      const labels = unavailable.map((item) => item.label || item.id).join(", ");
+      return `<div class="service-banner" role="status"><strong>${escapeHtml(labels)} unavailable.</strong><span>The selected runtime remains available.</span></div>`;
+    }
+    return "";
+  }
   if (status === "loading") {
     return '<div class="service-banner" role="status"><strong>Checking generation service.</strong><span>Gallery history remains available while generation status loads.</span></div>';
   }

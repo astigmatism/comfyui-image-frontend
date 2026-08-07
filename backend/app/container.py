@@ -12,6 +12,7 @@ from .domain.compiler import WorkflowCompiler
 from .services.assets import AssetStore
 from .services.auth import AuthService
 from .services.comfyui import ComfyUIAdapter
+from .services.comfyui_instances import ComfyUIInstances
 from .services.event_broker import EventBroker
 from .services.generation_eta import GenerationEtaEstimator
 from .services.generations import GenerationService
@@ -38,7 +39,9 @@ class AppContainer:
         self.auth = AuthService(settings)
         self.assets = AssetStore(settings)
         self.broker = EventBroker()
-        self.comfyui = ComfyUIAdapter(settings, transport=comfy_transport)
+        self.comfyui_instances = ComfyUIInstances(settings, transport=comfy_transport)
+        # Compatibility alias for publication discovery and tests that exercise the default.
+        self.comfyui: ComfyUIAdapter = self.comfyui_instances.default_adapter
         self.ollama = OllamaAdapter(settings, transport=ollama_transport)
         self.speech_to_text = SpeechToTextAdapter(
             settings,
@@ -53,18 +56,21 @@ class AppContainer:
             compiler=self.compiler,
             assets=self.assets,
             comfyui=self.comfyui,
+            comfyui_instances=self.comfyui_instances,
             broker=self.broker,
         )
         self.user_deletion = UserDeletionService(
             session_factory=self.db.session_factory,
             auth=self.auth,
             comfyui=self.comfyui,
+            comfyui_instances=self.comfyui_instances,
             assets=self.assets,
         )
         self.worker = QueueWorker(
             settings=settings,
             session_factory=self.db.session_factory,
             comfyui=self.comfyui,
+            comfyui_instances=self.comfyui_instances,
             ollama=self.ollama,
             assets=self.assets,
             broker=self.broker,
@@ -156,7 +162,7 @@ class AppContainer:
         await self._stop_startup_discovery()
         logger.info("startup_discovery_cancellation_complete")
         await asyncio.gather(
-            self.comfyui.close(),
+            self.comfyui_instances.close(),
             self.ollama.close(),
             self.speech_to_text.close(),
         )

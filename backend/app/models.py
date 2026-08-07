@@ -223,6 +223,15 @@ class ServiceHealth(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ComfyUIInstanceHealth(Base):
+    __tablename__ = "comfyui_instance_health"
+
+    instance_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    message: Mapped[str | None] = mapped_column(Text)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Upload(Base):
     __tablename__ = "uploads"
     __table_args__ = (Index("ix_upload_owner_created", "owner_id", "created_at"),)
@@ -271,6 +280,12 @@ class Generation(Base):
     __table_args__ = (
         Index("ix_generations_owner_created", "owner_id", "accepted_at", "id"),
         Index("ix_generations_queue", "status", "queue_seq"),
+        Index(
+            "ix_generations_instance_queue",
+            "comfyui_instance_id",
+            "status",
+            "queue_seq",
+        ),
         Index("ix_generations_timing_audit", "status", "completed_at", "id"),
         Index("ix_generations_prompt_id", "comfyui_prompt_id"),
     )
@@ -286,6 +301,8 @@ class Generation(Base):
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=uuid_str)
     comfyui_client_id: Mapped[str] = mapped_column(String(64), nullable=False, default=uuid_str)
     comfyui_prompt_id: Mapped[str | None] = mapped_column(String(100))
+    comfyui_instance_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    comfyui_instance_label: Mapped[str] = mapped_column(String(120), nullable=False)
 
     workflow_profile_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workflow_profiles.id", ondelete="RESTRICT"), nullable=False

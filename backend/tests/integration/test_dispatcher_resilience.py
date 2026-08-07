@@ -115,14 +115,17 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
         requeued = create_generation(client, "projection requeue", seed=811)
         cancelled = create_generation(client, "projection cancellation", seed=812)
         monitored = create_generation(client, "projection monitor", seed=813)
+        orphaned = create_generation(client, "projection removed runtime", seed=814)
         container = client.app.state.container
         with container.db.session_factory() as session:
             requeued_row = session.get(Generation, requeued["id"])
             cancelled_row = session.get(Generation, cancelled["id"])
             monitored_row = session.get(Generation, monitored["id"])
+            orphaned_row = session.get(Generation, orphaned["id"])
             assert requeued_row is not None
             assert cancelled_row is not None
             assert monitored_row is not None
+            assert orphaned_row is not None
             requeued_row.status = GenerationStatus.DISPATCHING
             requeued_row.submitted_graph_json = {"large": "x" * 8192}
             requeued_row.submitted_graph_sha256 = "a" * 64
@@ -130,6 +133,8 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
             cancelled_row.status = GenerationStatus.CANCEL_REQUESTED
             monitored_row.status = GenerationStatus.RUNNING
             monitored_row.comfyui_prompt_id = "native-recovery-prompt"
+            orphaned_row.comfyui_instance_id = "removed-worker"
+            orphaned_row.comfyui_instance_label = "Removed Worker"
             session.commit()
 
         statements: list[str] = []
@@ -144,9 +149,11 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
         finally:
             event.remove(container.db.engine, "before_cursor_execute", capture_sql)
 
-        assert prompt_jobs == ((monitored["id"], "native-recovery-prompt"),)
-        assert len(notifications) == 1
-        owner_id, payload = notifications[0]
+        assert prompt_jobs == ((monitored["id"], "test-instance", "native-recovery-prompt"),)
+        assert len(notifications) == 2
+        owner_id, payload = next(
+            item for item in notifications if item[1]["type"] == "generation.requeued"
+        )
         assert owner_id
         assert payload["type"] == "generation.requeued"
         assert payload["generation_id"] == requeued["id"]
@@ -157,6 +164,7 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
             "generations.id",
             "generations.owner_id",
             "generations.status",
+            "generations.comfyui_instance_id",
             "generations.comfyui_prompt_id",
         ):
             assert selected_column in recovery_select
@@ -176,6 +184,11 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
             assert cancelled_row is not None
             assert cancelled_row.status == GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
             assert cancelled_row.completed_at is not None
+            orphaned_row = session.get(Generation, orphaned["id"])
+            assert orphaned_row is not None
+            assert orphaned_row.status == GenerationStatus.FAILED_WITHOUT_ARTIFACTS
+            assert orphaned_row.error_code == "comfyui_instance_unconfigured"
+            assert "not redirected" in str(orphaned_row.error_message)
             assert (
                 session.scalar(
                     select(GenerationEvent).where(
@@ -225,6 +238,60 @@ async def test_ollama_health_is_persisted_before_slow_catalog_recovery(monkeypat
     await asyncio.wait_for(health_loop, timeout=1)
 
 
+async def test_catalog_refresh_failure_does_not_mark_a_healthy_runtime_unavailable(
+    monkeypatch,
+) -> None:
+    worker = object.__new__(queue_worker_module.QueueWorker)
+    worker._stop = asyncio.Event()
+    worker.settings = SimpleNamespace(external_health_interval_seconds=60.0)
+    persisted_services: list[tuple[str, bool, str | None]] = []
+    persisted_instances: list[tuple[str, bool, str | None]] = []
+
+    class ComfyProbe:
+        async def health(self):
+            return True, None
+
+    class OllamaProbe:
+        async def status(self):
+            return True, None
+
+    class FailedRegistry:
+        async def refresh(self):
+            raise RuntimeError("sanitized catalog refresh failure")
+
+    def persist_service(service: str, available: bool, message: str | None) -> None:
+        persisted_services.append((service, available, message))
+        if service == "comfyui":
+            worker._stop.set()
+
+    worker.comfyui_instances = SimpleNamespace(
+        configs=(SimpleNamespace(id="primary"),),
+        default_id="primary",
+    )
+    worker.ollama = OllamaProbe()
+    worker.generations = SimpleNamespace(registry=FailedRegistry())
+    monkeypatch.setattr(worker, "_adapter_for_instance", lambda _instance_id: ComfyProbe())
+    monkeypatch.setattr(worker, "_persist_service_health", persist_service)
+    monkeypatch.setattr(
+        worker,
+        "_persist_instance_health",
+        lambda instance_id, available, message: persisted_instances.append(
+            (instance_id, available, message)
+        ),
+    )
+    monkeypatch.setattr(worker, "_comfy_recovery_state", lambda _available: (False, True))
+
+    await asyncio.wait_for(worker._health_loop(), timeout=1)
+
+    assert persisted_instances == [("primary", True, None)]
+    assert persisted_services[0] == ("ollama", True, None)
+    assert persisted_services[1] == (
+        "comfyui",
+        False,
+        "ComfyUI source discovery failed during recovery.",
+    )
+
+
 def test_transient_claim_failure_is_logged_and_later_generations_succeed(
     settings_factory, fake_state, monkeypatch, capsys
 ) -> None:
@@ -238,12 +305,12 @@ def test_transient_claim_failure_is_logged_and_later_generations_succeed(
         original_backoff = worker._dispatcher_backoff
         attempts = 0
 
-        def claim_with_one_failure():
+        def claim_with_one_failure(instance_id):
             nonlocal attempts
             attempts += 1
             if attempts == 1:
                 raise RuntimeError("sanitized injected claim failure")
-            return original_claim()
+            return original_claim(instance_id)
 
         monkeypatch.setattr(worker, "_claim_next", claim_with_one_failure)
         monkeypatch.setattr(
@@ -302,11 +369,11 @@ def test_repeated_claim_failures_back_off_without_a_busy_loop_and_recover(
         failure_times: list[float] = []
         backoffs: list[float] = []
 
-        def fail_three_times():
+        def fail_three_times(instance_id):
             if len(failure_times) < 3:
                 failure_times.append(time.monotonic())
                 raise RuntimeError("sanitized repeated claim failure")
-            return original_claim()
+            return original_claim(instance_id)
 
         def record_backoff(consecutive_failures: int) -> float:
             delay = original_backoff(consecutive_failures)
@@ -388,8 +455,8 @@ def test_generation_is_requeued_if_execution_task_cannot_be_scheduled(
         generation = create_generation(client, "dispatcher-schedule", seed=307)
         worker = client.app.state.container.worker
 
-        def reject_task(generation_id, coroutine, *, name) -> None:
-            del generation_id, name
+        def reject_task(generation_id, coroutine, *, name, instance_id=None) -> None:
+            del generation_id, name, instance_id
             coroutine.close()
             raise RuntimeError("sanitized task scheduling failure")
 

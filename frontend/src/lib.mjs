@@ -723,6 +723,76 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
   };
 }
 
+export function recalledComfyuiInstanceState(current, recall) {
+  const historicalId =
+    typeof recall?.comfyui_instance_id === "string"
+      ? recall.comfyui_instance_id.trim()
+      : "";
+  const backendWarning =
+    typeof recall?.comfyui_instance_warning === "string"
+      ? recall.comfyui_instance_warning.trim()
+      : "";
+  const currentItems = Array.isArray(current?.comfyuiInstances)
+    ? current.comfyuiInstances
+    : [];
+  if (!historicalId) {
+    return {
+      state: {},
+      notice: backendWarning || null,
+    };
+  }
+
+  const removedWarning =
+    backendWarning ||
+    "The historical ComfyUI runtime is no longer configured. The current runtime selection was preserved.";
+  let configured = currentItems.find((item) => item.id === historicalId) || null;
+  if (recall.comfyui_instance_configured === false) {
+    return {
+      state: { comfyuiInstanceWarning: removedWarning },
+      notice: removedWarning,
+    };
+  }
+
+  let items = currentItems;
+  if (!configured && recall.comfyui_instance_configured === true) {
+    configured = {
+      id: historicalId,
+      label: recall.comfyui_instance_label || historicalId,
+      description: "Historical runtime",
+      is_default: false,
+      available: recall.comfyui_instance_available === true,
+      message: backendWarning,
+      checked_at: null,
+    };
+    items = [...currentItems, configured];
+  }
+  if (!configured) {
+    return {
+      state: { comfyuiInstanceWarning: removedWarning },
+      notice: removedWarning,
+    };
+  }
+
+  const available = recall.comfyui_instance_available !== false;
+  items = items.map((item) =>
+    item.id === historicalId ? { ...item, available } : item,
+  );
+  const unavailableMessage = available
+    ? null
+    : backendWarning ||
+      `${configured.label || configured.id} is unavailable. Generation remains paused.`;
+  return {
+    state: {
+      comfyuiInstances: items,
+      selectedComfyuiInstanceId: historicalId,
+      comfyuiInstanceSelectionInitialized: true,
+      comfyuiInstanceWarning: backendWarning || null,
+      comfyuiInstanceError: unavailableMessage,
+    },
+    notice: unavailableMessage || backendWarning || null,
+  };
+}
+
 export function normalizeInputValue(control, raw) {
   switch (control.type) {
     case "integer": {

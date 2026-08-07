@@ -1,11 +1,94 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+COMFYUI_INSTANCE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+
+
+def _validate_comfyui_instance_id(value: str) -> str:
+    normalized = value.strip()
+    if re.fullmatch(COMFYUI_INSTANCE_ID_PATTERN, normalized) is None:
+        raise ValueError(
+            "ComfyUI instance ID must start with an ASCII letter or digit and contain "
+            "only 1 to 64 ASCII letters, digits, '-' and '_'"
+        )
+    return normalized
+
+
+def _validate_service_url(value: str, *, schemes: set[str], context: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if (
+        parsed.scheme not in schemes
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        allowed = " or ".join(sorted(schemes))
+        raise ValueError(f"{context} must be a credential-free {allowed} URL")
+    return normalized
+
+
+class ComfyUIInstanceConfig(BaseModel):
+    """One private execution target from server/deployment configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=240)
+    base_url: str
+    ws_url: str | None = None
+    user: str | None = Field(default=None, max_length=255)
+    concurrency: int | None = Field(default=None, ge=1, le=32)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return _validate_comfyui_instance_id(value)
+
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("ComfyUI instance label must not be empty")
+        return normalized
+
+    @field_validator("description", "user")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        normalized = value.strip() if value else None
+        return normalized or None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        return _validate_service_url(
+            value,
+            schemes={"http", "https"},
+            context="ComfyUI base_url",
+        )
+
+    @field_validator("ws_url")
+    @classmethod
+    def validate_ws_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_service_url(
+            value,
+            schemes={"ws", "wss"},
+            context="ComfyUI ws_url",
+        )
 
 
 class Settings(BaseSettings):
@@ -38,8 +121,10 @@ class Settings(BaseSettings):
     comfyui_ws_url: str | None = None
     comfyui_instance_id: str = "default"
     comfyui_user: str | None = None
+    comfyui_instances: list[ComfyUIInstanceConfig] | None = None
+    comfyui_default_instance_id: str | None = None
     comfyui_workflow_directory: str = "workflows"
-    comfyui_concurrency: int = 1
+    comfyui_concurrency: int = Field(default=1, ge=1, le=32)
     comfyui_listing_max_bytes: int = 4 * 1024 * 1024
     comfyui_object_info_max_bytes: int = 64 * 1024 * 1024
     comfyui_manifest_max_bytes: int = 1024 * 1024
@@ -98,12 +183,12 @@ class Settings(BaseSettings):
     @field_validator("comfyui_instance_id")
     @classmethod
     def validate_comfyui_instance_id(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or len(normalized) > 64:
-            raise ValueError("ComfyUI instance ID must contain 1 to 64 characters")
-        if not all(character.isalnum() or character in {"-", "_"} for character in normalized):
-            raise ValueError("ComfyUI instance ID may contain only letters, digits, '-' and '_'")
-        return normalized
+        return _validate_comfyui_instance_id(value)
+
+    @field_validator("comfyui_default_instance_id")
+    @classmethod
+    def validate_comfyui_default_instance_id(cls, value: str | None) -> str | None:
+        return _validate_comfyui_instance_id(value) if value is not None else None
 
     @field_validator("comfyui_user")
     @classmethod
@@ -118,6 +203,35 @@ class Settings(BaseSettings):
         self.frontend_dist = self.frontend_dist.resolve()
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
+        configured_instances = self.comfyui_instances
+        if configured_instances is None:
+            configured_instances = [
+                ComfyUIInstanceConfig(
+                    id=self.comfyui_instance_id,
+                    label=self.comfyui_instance_id,
+                    base_url=self.comfyui_base_url,
+                    ws_url=self.comfyui_ws_url,
+                    user=self.comfyui_user,
+                    concurrency=self.comfyui_concurrency,
+                )
+            ]
+        if not configured_instances:
+            raise ValueError("comfyui_instances must configure at least one instance")
+        instance_ids = [instance.id for instance in configured_instances]
+        if len(set(instance_ids)) != len(instance_ids):
+            raise ValueError("comfyui_instances must use unique instance IDs")
+        default_instance_id = self.comfyui_default_instance_id or instance_ids[0]
+        if default_instance_id not in instance_ids:
+            raise ValueError("comfyui_default_instance_id must match a configured instance")
+        self.comfyui_default_instance_id = default_instance_id
+        self.comfyui_instances = [
+            instance.model_copy(
+                update={
+                    "concurrency": instance.concurrency or self.comfyui_concurrency,
+                }
+            )
+            for instance in configured_instances
+        ]
         for field_name in (
             "comfyui_listing_max_bytes",
             "comfyui_object_info_max_bytes",
@@ -161,6 +275,20 @@ class Settings(BaseSettings):
     @property
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
+
+    @property
+    def configured_comfyui_instances(self) -> tuple[ComfyUIInstanceConfig, ...]:
+        assert self.comfyui_instances is not None
+        return tuple(self.comfyui_instances)
+
+    @property
+    def default_comfyui_instance(self) -> ComfyUIInstanceConfig:
+        assert self.comfyui_default_instance_id is not None
+        return next(
+            instance
+            for instance in self.configured_comfyui_instances
+            if instance.id == self.comfyui_default_instance_id
+        )
 
 
 @lru_cache(maxsize=1)

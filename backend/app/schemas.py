@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
+from .config import COMFYUI_INSTANCE_ID_PATTERN
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
 
 
@@ -147,11 +148,32 @@ class WorkflowDetail(WorkflowSummary):
     interface: dict[str, Any]
 
 
+class ComfyUIInstanceStatus(APIModel):
+    id: str
+    label: str
+    description: str | None = None
+    is_default: bool
+    available: bool
+    message: str | None = None
+    checked_at: datetime | None = None
+
+
+class ComfyUIInstanceList(APIModel):
+    default_instance_id: str
+    items: list[ComfyUIInstanceStatus]
+
+
 class GenerationCreate(APIModel):
     source_key: str | None = None
     parameters: dict[str, Any] | None = None
     revision: SourceRevision | None = None
     prompt_assistant_run_id: str | None = None
+    comfyui_instance_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=COMFYUI_INSTANCE_ID_PATTERN,
+    )
 
     # Temporary compatibility envelope for the pre-publication browser/API. It resolves only to
     # a current validated publication and never revives embedded-contract discovery.
@@ -257,6 +279,8 @@ class GenerationSummary(APIModel):
     id: str
     status: str
     workflow_display_name: str
+    comfyui_instance_id: str
+    comfyui_instance_label: str
     accepted_at: datetime
     generation_duration_seconds: float | None = None
     current_stage_id: str | None = None
@@ -321,6 +345,11 @@ class RecallResponse(APIModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     input_definitions: list[dict[str, Any]] = Field(default_factory=list)
     prompt_assistant: dict[str, Any] | None = None
+    comfyui_instance_id: str | None = None
+    comfyui_instance_label: str | None = None
+    comfyui_instance_configured: bool = False
+    comfyui_instance_available: bool = False
+    comfyui_instance_warning: str | None = None
 
 
 class FavoriteSummary(APIModel):

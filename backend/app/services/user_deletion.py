@@ -23,6 +23,7 @@ from ..models import (
 from .assets import AssetStore
 from .auth import AuthService
 from .comfyui import ComfyUIAdapter
+from .comfyui_instances import ComfyUIInstances
 
 
 class UserDeletionService:
@@ -32,15 +33,17 @@ class UserDeletionService:
         session_factory: sessionmaker[Session],
         auth: AuthService,
         comfyui: ComfyUIAdapter,
+        comfyui_instances: ComfyUIInstances,
         assets: AssetStore,
     ) -> None:
         self.session_factory = session_factory
         self.auth = auth
+        self.comfyui_instances = comfyui_instances
         self.comfyui = comfyui
         self.assets = assets
 
     async def delete_user(self, *, actor_id: str, target_id: str) -> None:
-        prompt_ids: list[str] = []
+        prompt_targets: list[tuple[str, str]] = []
         with self.session_factory() as session:
             actor = session.get(User, actor_id)
             target = session.get(User, target_id)
@@ -65,11 +68,16 @@ class UserDeletionService:
                     generation.status = GenerationStatus.CANCEL_REQUESTED
                     generation.cancel_requested_at = datetime.now(UTC)
                     if generation.comfyui_prompt_id:
-                        prompt_ids.append(generation.comfyui_prompt_id)
+                        prompt_targets.append(
+                            (
+                                generation.comfyui_instance_id,
+                                generation.comfyui_prompt_id,
+                            )
+                        )
             session.commit()
-        for prompt_id in prompt_ids:
+        for instance_id, prompt_id in prompt_targets:
             with suppress(Exception):
-                await self.comfyui.cancel(prompt_id, running=True)
+                await self.comfyui_instances.get(instance_id).cancel(prompt_id, running=True)
 
         for _ in range(20):
             with self.session_factory() as session:

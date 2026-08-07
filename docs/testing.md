@@ -46,6 +46,8 @@ The publication/registry/adapter/compiler/result tests cover:
 - strict JSON, schemas, size limits, safe `workflows/` paths, adjacent stems/source agreement, warning-only workflow/API byte drift, observed API revision identity, and fail-closed API graph node count/structure;
 - typed/lossless generation-source and technical-inventory recognition, legacy absence, open-ended values/entries/warnings/fields, six distinct node counts and diagnostic arithmetic, fixed/public-choice LoRAs, and non-executable artifact basenames;
 - recursive preferred/fallback userdata listing, `Comfy-User`, whole-path single-segment encoding, and bounded listing/object-info/artifact/history/output responses;
+- multi-instance JSON parsing, unique IDs, explicit/default selection, optional instance fields, global concurrency inheritance, and legacy single-instance synthesis;
+- adapter lookup by execution ID, refusal to fall back for an unknown pin, and public instance-status projection without private URLs/users/capacity;
 - empty and multiple-source catalogs, independent candidate failures, safe diagnostics, warning readiness, missing dependencies, last-valid cache, bad republish retention, and revision retirement;
 - all six v1 input types, finite choice membership/labels/default-strength hints, public IDs, defaults/ranges/steps, required/optional rules, one positive prompt, and trusted CIF binding/class matching;
 - unknown/private-field rejection, choice-specific companion-strength precedence, canonical large seed strings, random seed bounds, exact effective values, multi-binding patching, cached-graph immutability, and compilation isolation;
@@ -60,7 +62,9 @@ quotas, versioned cursor backfill and deletion survival, per-generation landmark
 rollback, and joining an in-flight audit during shutdown. Frontend unit/render tests cover source-driven control ordering and
 defaults, Advanced disclosure, all input types, finite single-select choices, stale-option
 reconciliation, absence of invented controls, BigInt-safe seed behavior, revision-aware request
-payloads, field errors, loading/ready/warning/offline/unavailable/empty states, multiple artifacts,
+payloads, runtime-selector placement/loading/default/availability/error states,
+pinned runtime labels in status/history/detail, field errors,
+loading/ready/warning/offline/unavailable/empty source states, multiple artifacts,
 unmapped output provenance, recall, favorites, accessible markup, nested ETA rendering, and a local
 absolute-timestamp countdown that does not require server timer ticks or restart on stale rerenders.
 
@@ -74,6 +78,8 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - revision mismatch and invalid republish behavior;
 - validate/accept with dynamic parameters, random/fixed maximum seed, workflow `extra_pnginfo`, and native prompt ID;
 - durable acceptance, rapid submissions, per-user FIFO and round-robin fairness;
+- default-adapter-only publication discovery with independent execution selection, per-instance health and lanes, and unavailable/unconfigured target rejection;
+- generation pinning across input upload, prompt submission, history monitoring, result retrieval, cancellation, and independent target outages;
 - pre-submission WebSocket readiness, structured node-local progress with legacy fallback,
   coalescing, prompt/client isolation, and delayed/missing-event history reconciliation;
 - passive successful-run ETA learning, profile persistence/reload, matching-cohort reuse,
@@ -81,8 +87,9 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - complete multiple-node/multiple-publisher/multiple-batch archive, ordinary publisher-image mirror de-duplication, untouched unmapped outputs, optional retrieval warnings, and partial/failure/interruption result retention;
 - restart/outage recovery and cached source availability;
 - automatic full catalog refresh on offline-to-online recovery, including empty-cache startup, without continuous online refetch;
+- last-valid cached catalog dispatch through a healthy selected runtime while an unavailable runtime remains blocked;
 - exact recall and unavailable/republished source behavior;
-- migration up/down/up with old rows/default result fields;
+- migration up/down/up with old rows, execution-ID/label backfill, per-instance health, and instance-queue indexes;
 - authentication, CSRF, IDOR/admin content denial, uploads, favorites/preferences, deletion, and Ollama provenance regressions.
 - progressive browser bootstrap with optional-service delay/failure, named safe-method deadlines, and mutation single-send behavior;
 - cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, and authoritative composition failure;
@@ -99,7 +106,7 @@ silently uses the fake service.
 
 ## Browser journeys
 
-`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection.
+`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
 Run browser tests alone:
 
@@ -111,12 +118,14 @@ npx playwright test
 ## Focused commands
 
 ```sh
+PYTHONPATH=backend pytest -q backend/tests/unit/test_comfyui_instances.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_comfyui_adapter.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_workflow_registry.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_compiler.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_results.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_workflows_and_prompt_assistant.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_generation_lifecycle.py
+PYTHONPATH=backend pytest -q backend/tests/integration/test_comfyui_instance_routing.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_queue_and_recovery.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_gallery_query_performance.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_storage_and_sse_responsiveness.py
@@ -129,20 +138,37 @@ python3 scripts/generate_traceability.py --check
 
 ## Optional live ComfyUI verification
 
-Automated tests never require household services. For a live check, configure `.env`, start the app, and use only ComfyUI network APIs—not the server filesystem:
+Automated tests never require household services. For this multi-runtime deployment, live verification is intentionally limited to `GET /system_stats` and `GET /object_info` from inside the frontend container. These calls verify Docker DNS, HTTP reachability, device identity, and compatible node counts without uploading inputs, submitting a prompt, inspecting or changing either queue, interrupting work, reading history, or retrieving outputs:
 
-1. Refresh **Administration → Workflow diagnostics** and record the accepted publication ID, recorded/observed hashes, metadata diagnostics, and warnings. If workflow or API bytes changed after publication, confirm an otherwise valid source remains accepted as `ready_with_warnings` and its revision API hash matches the observed graph.
-2. Confirm the source's public interface contains only manifest inputs and no bindings/node data.
-3. Queue a low-cost/base-path request with expensive optional branches disabled.
-4. Record the native `prompt_id`; wait for bounded history reconciliation.
-5. Inspect effective parameters/concrete seed, graph-envelope-safe raw history, raw ComfyUI status/error details, ordered declared output list, untouched unmapped output map, and every retained batch artifact; confirm top-level submitted prompt/extra-data graphs are absent but custom result fields remain.
-6. Replay the concrete seed only after the base path succeeds; compare within the limits of the pinned graph/models/runtime/hardware.
-7. After Krea has been republished, confirm `lora` exposes only the published option values/labels and that `knpv4_1_strength` is absent.
-8. With a concrete seed pinned, run the saved default choice and one nondefault choice; confirm effective public IDs, choice-specific/default or explicit `lora_strength`, and unchanged exhaustive output behavior.
-9. Run the Krea publication with `enable_seedvr2_upscale=true`; confirm the effective Boolean, native branch behavior, complete history outputs, and retained artifacts.
-10. Submit two deliberately different concurrent requests and confirm choices, strengths, graphs, prompt IDs, status, and files do not cross.
+```sh
+docker compose -f compose.example.yml exec -T comfyui-image-frontend python - <<'PY'
+import json
+import socket
+import urllib.request
 
-Do not claim live end-to-end completion unless the exact latest publication was discovered, queued through `/prompt`, reconciled through `/history/{prompt_id}`, and its `/view` assets were retained. Report the exact prompt ID and result. If the live server is unavailable, state that and report deterministic commands/results plus this remaining procedure.
+targets = {
+    "primary": ("local-ai-comfyui", "http://local-ai-comfyui:8188"),
+    "worker-2": ("local-ai-comfyui-worker-2", "http://local-ai-comfyui-worker-2:8188"),
+}
+for label, (host, base_url) in targets.items():
+    addresses = sorted(
+        {
+            item[4][0]
+            for item in socket.getaddrinfo(host, 8188, type=socket.SOCK_STREAM)
+        }
+    )
+    with urllib.request.urlopen(f"{base_url}/system_stats", timeout=5) as response:
+        system_stats = json.load(response)
+        assert response.status == 200
+    with urllib.request.urlopen(f"{base_url}/object_info", timeout=20) as response:
+        object_info = json.load(response)
+        assert response.status == 200 and isinstance(object_info, dict)
+    devices = [item.get("name", "unknown") for item in system_stats.get("devices", [])]
+    print(label, "dns=", ",".join(addresses), "nodes=", len(object_info), "devices=", devices)
+PY
+```
+
+Expect HTTP 200, 2,659 node types from each target, and device names identifying the RTX 3090 and RTX 3080. Report the exact command and result. A real generation requires separate explicit approval; do not use `/prompt` or any other generation, mutation, queue, history, or output endpoint as part of this verification.
 
 ## Optional live Ollama verification
 

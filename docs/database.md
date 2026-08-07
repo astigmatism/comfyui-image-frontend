@@ -23,6 +23,8 @@ Migration `a8d4e6f2c901_add_generation_timing_profiles.py` adds bounded timing p
 versioned audit cursor, and the successful-run audit index. It performs no synchronous history
 backfill; the estimator incorporates eligible legacy rows later in idle-only batches.
 
+Migration `d72f6a8c9e10_add_comfyui_execution_instances.py` adds independent execution routing without rewriting publication identity. It creates `comfyui_instance_health`, adds non-null `generations.comfyui_instance_id` and `generations.comfyui_instance_label`, and adds the instance/status/queue index. Existing rows derive the ID from the retained generation source, then workflow profile, then the legacy `default` fallback; their initial display label is that ID. The migration does not contact, restart, or mutate ComfyUI.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -34,6 +36,7 @@ backfill; the estimator incorporates eligible legacy rows later in idle-only bat
 | `workflow_profiles` | Immutable accepted publication revisions plus retained legacy snapshots |
 | `workflow_diagnostics` | Safe latest transport/candidate discovery diagnostics |
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |
+| `comfyui_instance_health` | Last bounded availability result for each configured ComfyUI execution ID |
 | `uploads` | Owner-scoped application source/mask metadata |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |
@@ -46,7 +49,7 @@ backfill; the estimator incorporates eligible legacy rows later in idle-only bat
 
 ## Published source rows
 
-For publication-based rows, `workflow_profiles` stores:
+For publication-based rows discovered through the configured default catalog adapter, `workflow_profiles` stores:
 
 - logical identity: `instance_id`, opaque `source_key`, private `source_id`;
 - revision identity: `publication_id`, the manifest-recorded editable-workflow SHA-256, exact observed API/manifest SHA-256 values, schema and publication time;
@@ -59,14 +62,14 @@ Private `source_id`, the raw manifest, graph, bindings, and runtime dependency s
 
 ## Generation snapshots and rich results
 
-At acceptance, a generation stores its profile foreign key, display/compatibility identity fields, resolved interface, requested/effective parameter maps, seed map, final prompt, compiled graph/hash, and a compact `generation_source_json` with:
+At acceptance, a generation stores its profile foreign key, display/compatibility identity fields, resolved interface, requested/effective parameter maps, seed map, final prompt, compiled graph/hash, selected `comfyui_instance_id`, and a snapshot of that target's safe `comfyui_instance_label`. It also stores a compact publication `generation_source_json` with:
 
 ```text
 source_key, instance_id, publication_id,
 workflow_sha256, api_sha256, manifest_sha256
 ```
 
-The source snapshot prevents later republishing from changing an in-flight or historical record. Seed values are stored as decimal strings in the public/effective maps to preserve integers beyond JavaScript's safe range.
+The publication `instance_id` inside `generation_source_json` identifies where the source catalog was discovered; it need not equal the selected execution ID. The separate execution columns are the durable adapter-routing key and historical display label. Together with `comfyui_prompt_id`, they ensure recovery, polling, retrieval, and cancellation return to the same independent ComfyUI queue even if a user changes the current selector. Removing an execution ID from deployment configuration never rewrites or redirects old rows. On startup, a never-submitted queued job pinned to a removed ID fails explicitly; an in-flight prompt without its exact adapter is marked interrupted because it cannot be safely recovered, but the application does not send a remote cancellation. The source snapshot prevents later republishing from changing an in-flight or historical record. Seed values are stored as decimal strings in the public/effective maps to preserve integers beyond JavaScript's safe integer range.
 
 After ComfyUI history reconciliation, these columns retain the result without flattening it into one image:
 
@@ -80,7 +83,7 @@ After ComfyUI history reconciliation, these columns retain the result without fl
 | `comfyui_status_json` | Native bounded status/error metadata |
 | `progress_json` | Coalesced active current-operation label, safe node identity, counter/fraction, timestamp, and optional nested ETA; never a workflow-wide percentage |
 
-The existing `comfyui_prompt_id` stores the native prompt ID. `artifacts` remains the retrievable binary index: every successfully archived image reference in declared and unmapped results has its own row, including batch siblings. Logical publisher references remain in `declared_outputs_json` even when `/view` retrieval fails, so normalization is not reduced to the set of locally stored binaries. `canonical` / `best_available` and generation artifact pointers remain presentation/legacy lifecycle aids; they do not rewrite the declared/unmapped/raw result structures.
+`comfyui_prompt_id` is meaningful only together with `comfyui_instance_id`; native prompt IDs and queues are not merged across instances. `artifacts` remains the retrievable binary index: every successfully archived image reference in declared and unmapped results has its own row, including batch siblings. Logical publisher references remain in `declared_outputs_json` even when `/view` retrieval fails, so normalization is not reduced to the set of locally stored binaries. `canonical` / `best_available` and generation artifact pointers remain presentation/legacy lifecycle aids; they do not rewrite the declared/unmapped/raw result structures.
 
 ## Completion timing profiles
 
@@ -118,7 +121,7 @@ Removing a favorite deletes only its bookmark. Generation deletion removes exclu
 ## Time, indexes, and operations
 
 UTC timestamps are returned as timezone-aware ISO values. Indexes cover owner/newest pagination,
-queue status/order, native prompt ID recovery, artifact timelines, events, sessions, publication
+queue status/order per execution instance, native prompt ID recovery, artifact timelines, events, sessions, publication
 instance/source/revision lookup, and bounded successful-run timing maintenance.
 
 Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation.

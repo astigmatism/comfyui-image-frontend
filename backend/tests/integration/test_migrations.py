@@ -21,7 +21,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "a8d4e6f2c901"
+HEAD_REVISION = "d72f6a8c9e10"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -250,6 +250,8 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert generation.result_errors_json == []
         assert generation.comfyui_status_json == {}
         assert generation.progress_json is None
+        assert generation.comfyui_instance_id == "default"
+        assert generation.comfyui_instance_label == "default"
         assert session.scalar(select(func.count()).select_from(GenerationTimingProfile)) == 0
         assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 0
 
@@ -337,6 +339,7 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "generations",
         "generation_timing_audit_state",
         "generation_timing_profiles",
+        "comfyui_instance_health",
         "artifacts",
         "workflow_profiles",
         "favorites",
@@ -345,6 +348,9 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }
     assert "ix_generations_timing_audit" in {
+        index["name"] for index in inspect(engine).get_indexes("generations")
+    }
+    assert "ix_generations_instance_queue" in {
         index["name"] for index in inspect(engine).get_indexes("generations")
     }
 

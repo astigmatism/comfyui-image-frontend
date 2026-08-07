@@ -254,7 +254,7 @@ The manifest hash is calculated from the exact downloaded manifest bytes. `workf
 
 Refresh behavior is deliberately conservative:
 
-- A transport/listing failure leaves the last valid catalog intact. Entries are reported as `cached_offline`, `cached: true`, `available: false`; retained history is still usable, but new submission is disabled while ComfyUI is offline.
+- A transport/listing failure leaves the last valid catalog intact. Entries are reported as `cached_offline`, `cached: true`, and remain available from their frozen, previously validated API graphs. New submission is disabled only when the selected execution runtime is unavailable (or no validated cached source exists), so a healthy secondary runtime can continue independently of the catalog adapter.
 - Offline-to-online recovery triggers a full atomic discovery automatically; an operator refresh is not required to recover an empty startup catalog.
 - A listed candidate whose replacement bundle is invalid keeps its previous accepted revision active.
 - Workflow/API byte drift alone does not make a candidate invalid: the source remains current and refresh updates its warning/readiness metadata; observed API changes receive a distinct immutable revision.

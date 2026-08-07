@@ -13,6 +13,7 @@ from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..config import ComfyUIInstanceConfig
 from ..domain.compiler import CompileResult, WorkflowCompiler
 from ..domain.results import project_public_declared_outputs, project_public_result
 from ..errors import AppError
@@ -23,6 +24,7 @@ from ..models import (
     Artifact,
     ArtifactState,
     AuditLog,
+    ComfyUIInstanceHealth,
     Favorite,
     Generation,
     GenerationEvent,
@@ -52,6 +54,7 @@ from ..schemas import (
 )
 from .assets import AssetStore
 from .comfyui import ComfyUIAdapter
+from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
 from .workflow_registry import WorkflowRegistry
@@ -67,6 +70,8 @@ class _GenerationSummaryRow:
     id: str
     status: GenerationStatus
     workflow_display_name: str
+    comfyui_instance_id: str
+    comfyui_instance_label: str
     accepted_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -125,6 +130,7 @@ class GenerationService:
         compiler: WorkflowCompiler,
         assets: AssetStore,
         comfyui: ComfyUIAdapter,
+        comfyui_instances: ComfyUIInstances,
         broker: EventBroker,
     ) -> None:
         self.session_factory = session_factory
@@ -132,11 +138,13 @@ class GenerationService:
         self.compiler = compiler
         self.assets = assets
         self.comfyui = comfyui
+        self.comfyui_instances = comfyui_instances
         self.broker = broker
 
     def validate(
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> ValidationResult:
+        self._instance_for_request(session, request, require_available=False)
         profile = self._profile_for_request(session, request)
         result = self._compile(session, user=user, profile=profile, request=request)
         return ValidationResult(
@@ -149,17 +157,7 @@ class GenerationService:
     async def accept(
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> GenerationSummary:
-        health = session.get(ServiceHealth, "comfyui")
-        if health is None or not health.available:
-            raise AppError(
-                "comfyui_unavailable",
-                (
-                    "ComfyUI source discovery is still loading."
-                    if health is None
-                    else "ComfyUI is unavailable. Existing history remains accessible."
-                ),
-                status_code=503,
-            )
+        instance = self._instance_for_request(session, request, require_available=True)
         profile = self._profile_for_request(session, request)
         compiled = self._compile(session, user=user, profile=profile, request=request)
         uploads = self._verify_uploads(session, user, profile, compiled)
@@ -169,6 +167,8 @@ class GenerationService:
             owner_id=user.id,
             status=GenerationStatus.QUEUED,
             queue_seq=queue_seq,
+            comfyui_instance_id=instance.id,
+            comfyui_instance_label=instance.label,
             workflow_profile_id=profile.id,
             workflow_id=profile.workflow_id,
             workflow_display_name=profile.display_name,
@@ -214,13 +214,54 @@ class GenerationService:
             session,
             generation,
             "generation.queued",
-            {"status": generation.status.value, "queue_seq": queue_seq},
+            {
+                "status": generation.status.value,
+                "queue_seq": queue_seq,
+                "comfyui_instance_id": instance.id,
+                "comfyui_instance_label": instance.label,
+            },
         )
         session.commit()
         await publish_event(self.broker, event)
         with self.session_factory() as fresh:
             stored = self.get_owned(fresh, user.id, generation.id)
             return self.summary(fresh, stored)
+
+    def _instance_for_request(
+        self,
+        session: Session,
+        request: GenerationCreate,
+        *,
+        require_available: bool,
+    ) -> ComfyUIInstanceConfig:
+        instance_id = request.comfyui_instance_id or self.comfyui_instances.default_id
+        instance = self.comfyui_instances.config(instance_id)
+        if instance is None:
+            raise AppError(
+                "comfyui_instance_unconfigured",
+                "The selected ComfyUI instance is not configured.",
+                status_code=422,
+                fields={"comfyui_instance_id": "Choose a configured ComfyUI instance."},
+            )
+        if not require_available:
+            return instance
+        health = session.get(ComfyUIInstanceHealth, instance.id)
+        if health is None and instance.id == self.comfyui_instances.default_id:
+            catalog_health = session.get(ServiceHealth, "comfyui")
+            available = bool(catalog_health and catalog_health.available)
+            message = catalog_health.message if catalog_health else None
+        else:
+            available = bool(health and health.available)
+            message = health.message if health else None
+        if not available:
+            suffix = message or "Its availability is still being checked."
+            raise AppError(
+                "comfyui_instance_unavailable",
+                f"{instance.label} is unavailable. {suffix}",
+                status_code=503,
+                details={"instance_id": instance.id},
+            )
+        return instance
 
     def _profile_for_request(self, session: Session, request: GenerationCreate) -> WorkflowProfile:
         if request.source_key:
@@ -683,6 +724,8 @@ class GenerationService:
             id=row.id,
             status=status,
             workflow_display_name=row.workflow_display_name,
+            comfyui_instance_id=row.comfyui_instance_id,
+            comfyui_instance_label=row.comfyui_instance_label,
             accepted_at=row.accepted_at,
             generation_duration_seconds=_generation_duration_seconds(
                 row.started_at, row.completed_at
@@ -775,6 +818,8 @@ class GenerationService:
             id=generation.id,
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
+            comfyui_instance_id=generation.comfyui_instance_id,
+            comfyui_instance_label=generation.comfyui_instance_label,
             accepted_at=generation.accepted_at,
             generation_duration_seconds=_generation_duration_seconds(
                 generation.started_at, generation.completed_at
@@ -1018,6 +1063,7 @@ class GenerationService:
                 "ollama_output": prompt_run.ollama_output,
                 "model": prompt_run.model_name,
             }
+        runtime = self._recall_runtime(session, generation)
         historical = {
             "identity": identity,
             "controls": candidate,
@@ -1026,6 +1072,7 @@ class GenerationService:
             "parameters": candidate,
             "input_definitions": self._input_definitions(generation),
             "prompt_assistant": assistant,
+            **runtime,
         }
         profile = self._exact_profile(session, generation)
         if profile is None or not profile.source_key or not profile.publication_id:
@@ -1040,6 +1087,7 @@ class GenerationService:
             return RecallResponse(
                 available=False,
                 reason="The generation owner is no longer available.",
+                **runtime,
             )
         revision = SourceRevision(
             publication_id=profile.publication_id,
@@ -1083,7 +1131,43 @@ class GenerationService:
             parameters=candidate,
             input_definitions=self._input_definitions(generation),
             prompt_assistant=assistant,
+            **runtime,
         )
+
+    def _recall_runtime(
+        self,
+        session: Session,
+        generation: Generation,
+    ) -> dict[str, Any]:
+        instance = self.comfyui_instances.config(generation.comfyui_instance_id)
+        if instance is None:
+            return {
+                "comfyui_instance_id": generation.comfyui_instance_id,
+                "comfyui_instance_label": generation.comfyui_instance_label,
+                "comfyui_instance_configured": False,
+                "comfyui_instance_available": False,
+                "comfyui_instance_warning": (
+                    f"{generation.comfyui_instance_label} is no longer configured. "
+                    "The current ComfyUI selection was preserved."
+                ),
+            }
+        health = session.get(ComfyUIInstanceHealth, instance.id)
+        if health is None and instance.id == self.comfyui_instances.default_id:
+            catalog_health = session.get(ServiceHealth, "comfyui")
+            available = bool(catalog_health and catalog_health.available)
+        else:
+            available = bool(health and health.available)
+        return {
+            "comfyui_instance_id": generation.comfyui_instance_id,
+            "comfyui_instance_label": generation.comfyui_instance_label,
+            "comfyui_instance_configured": True,
+            "comfyui_instance_available": available,
+            "comfyui_instance_warning": (
+                None
+                if available
+                else f"{generation.comfyui_instance_label} is currently unavailable."
+            ),
+        }
 
     def _exact_profile(self, session: Session, generation: Generation) -> WorkflowProfile | None:
         return self.registry.find_exact(
@@ -1133,7 +1217,10 @@ class GenerationService:
         await publish_event(self.broker, event)
         if prompt_id:
             with suppress(Exception):
-                await self.comfyui.cancel(prompt_id, running=True)
+                await self.comfyui_instances.get(generation.comfyui_instance_id).cancel(
+                    prompt_id,
+                    running=True,
+                )
         return self.summary(session, generation)
 
     async def request_delete(self, session: Session, generation: Generation) -> bool:
@@ -1255,6 +1342,8 @@ def _summary_projection() -> tuple[Any, ...]:
         Generation.id.label("id"),
         Generation.status.label("status"),
         Generation.workflow_display_name.label("workflow_display_name"),
+        Generation.comfyui_instance_id.label("comfyui_instance_id"),
+        Generation.comfyui_instance_label.label("comfyui_instance_label"),
         Generation.accepted_at.label("accepted_at"),
         Generation.started_at.label("started_at"),
         Generation.completed_at.label("completed_at"),
@@ -1296,6 +1385,8 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         id=str(values["id"]),
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),
+        comfyui_instance_id=str(values["comfyui_instance_id"]),
+        comfyui_instance_label=str(values["comfyui_instance_label"]),
         accepted_at=values["accepted_at"],
         started_at=values["started_at"],
         completed_at=values["completed_at"],

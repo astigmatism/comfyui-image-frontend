@@ -120,7 +120,10 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
     """Return only hashes; prompt, seed, owner, asset IDs, and other content are excluded."""
 
     source_data = _mapping(getattr(generation, "generation_source_json", None))
-    instance_id = _bounded_identity(source_data.get("instance_id"), fallback="unknown-instance")
+    instance_id = _bounded_identity(
+        getattr(generation, "comfyui_instance_id", None) or source_data.get("instance_id"),
+        fallback="unknown-instance",
+    )
     source_identity = _bounded_identity(
         source_data.get("source_key"),
         fallback=_bounded_identity(

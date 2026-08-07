@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import logging
 import math
 import re
@@ -29,6 +30,7 @@ from ..models import (
     TERMINAL_STATUSES,
     Artifact,
     ArtifactState,
+    ComfyUIInstanceHealth,
     Generation,
     GenerationEvent,
     GenerationStatus,
@@ -40,6 +42,7 @@ from ..models import (
 )
 from .assets import AssetStore, StoredImage
 from .comfyui import ComfyUIAdapter
+from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, event_payload, publish_event
 from .generation_eta import GenerationEtaEstimator
@@ -58,7 +61,7 @@ DispatcherState = Literal[
     "failed",
 ]
 RecoveryNotification = tuple[str, dict[str, Any]]
-RecoveryPlan = tuple[tuple[RecoveryNotification, ...], tuple[tuple[str, str], ...]]
+RecoveryPlan = tuple[tuple[RecoveryNotification, ...], tuple[tuple[str, str, str], ...]]
 _PROGRESS_WRITE_INTERVAL_SECONDS = 0.15
 _RUNTIME_READY_TIMEOUT_SECONDS = 3.25
 _RUNTIME_EVENT_BATCH_SIZE = 128
@@ -98,6 +101,7 @@ class QueueWorker:
         settings: Settings,
         session_factory: sessionmaker[Session],
         comfyui: ComfyUIAdapter,
+        comfyui_instances: ComfyUIInstances,
         ollama: OllamaAdapter,
         assets: AssetStore,
         broker: EventBroker,
@@ -106,6 +110,9 @@ class QueueWorker:
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
+        self.comfyui_instances = comfyui_instances
+        # Compatibility alias for focused tests and internal callers that inspect the catalog
+        # adapter. Production execution routing always resolves the generation's persisted pin.
         self.comfyui = comfyui
         self.ollama = ollama
         self.assets = assets
@@ -117,6 +124,7 @@ class QueueWorker:
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
         self._active: dict[str, asyncio.Task[None]] = {}
+        self._active_instance_ids: dict[str, str] = {}
         self._progress_trackers: dict[str, _ProgressTracker] = {}
         self._dispatcher_started = asyncio.Event()
         self._dispatcher_state: DispatcherState = "not_started"
@@ -162,6 +170,7 @@ class QueueWorker:
             task.cancel()
         await asyncio.gather(*tasks, *active_tasks, return_exceptions=True)
         self._active.clear()
+        getattr(self, "_active_instance_ids", {}).clear()
         self._main_task = None
         self._dispatcher_task = None
         self._health_task = None
@@ -290,25 +299,32 @@ class QueueWorker:
 
     async def _dispatch_iteration(self) -> None:
         self._reap_active_tasks()
-        available_slots = self.settings.comfyui_concurrency - len(self._active)
-        if available_slots <= 0 or not self._comfyui_available():
-            return
-        for _ in range(available_slots):
-            claim = self._claim_next()
-            if claim is None:
-                break
-            generation_id, event = claim
-            execution = self._execute(generation_id)
-            try:
-                self._start_generation_task(
-                    generation_id,
-                    execution,
-                    name=f"generation-{generation_id}",
-                )
-            except BaseException:
-                await self._requeue_unstarted_claim(generation_id)
-                raise
-            await self._publish_event_best_effort(event, generation_id=generation_id)
+        for config in self.comfyui_instances.configs:
+            instance_id = config.id
+            active_count = sum(
+                active_instance_id == instance_id
+                for active_instance_id in self._active_instance_ids.values()
+            )
+            available_slots = int(config.concurrency or 1) - active_count
+            if available_slots <= 0 or not self._comfyui_available(instance_id):
+                continue
+            for _ in range(available_slots):
+                claim = self._claim_next(instance_id)
+                if claim is None:
+                    break
+                generation_id, event = claim
+                execution = self._execute(generation_id)
+                try:
+                    self._start_generation_task(
+                        generation_id,
+                        execution,
+                        name=f"generation-{generation_id}",
+                        instance_id=instance_id,
+                    )
+                except BaseException:
+                    await self._requeue_unstarted_claim(generation_id)
+                    raise
+                await self._publish_event_best_effort(event, generation_id=generation_id)
 
     def _start_generation_task(
         self,
@@ -316,6 +332,7 @@ class QueueWorker:
         coroutine: Coroutine[Any, Any, None],
         *,
         name: str,
+        instance_id: str | None = None,
     ) -> None:
         existing = self._active.get(generation_id)
         if existing is not None:
@@ -332,6 +349,8 @@ class QueueWorker:
             coroutine.close()
             raise
         self._active[generation_id] = task
+        if instance_id is not None:
+            self._active_instance_ids[generation_id] = instance_id
 
         def task_done(completed: asyncio.Task[None]) -> None:
             self._generation_task_done(generation_id, completed)
@@ -346,6 +365,7 @@ class QueueWorker:
         if self._active.get(generation_id) is not task:
             return
         self._active.pop(generation_id, None)
+        getattr(self, "_active_instance_ids", {}).pop(generation_id, None)
         try:
             task.result()
         except asyncio.CancelledError:
@@ -357,6 +377,13 @@ class QueueWorker:
         for generation_id, task in list(self._active.items()):
             if task.done():
                 self._generation_task_done(generation_id, task)
+
+    def _adapter_for_instance(self, instance_id: str) -> ComfyUIAdapter:
+        if not hasattr(self, "comfyui_instances"):
+            # A handful of narrow unit tests construct QueueWorker without __init__ and replace
+            # the historical alias directly. Production workers always own ComfyUIInstances.
+            return self.comfyui
+        return self.comfyui_instances.get(instance_id)
 
     async def _requeue_unstarted_claim(self, generation_id: str) -> None:
         event = None
@@ -511,25 +538,38 @@ class QueueWorker:
                 },
             )
 
-    def _comfyui_available(self) -> bool:
+    def _comfyui_available(self, instance_id: str | None = None) -> bool:
+        target_id = instance_id or self.comfyui_instances.default_id
         with self.session_factory() as session:
-            health = session.get(ServiceHealth, "comfyui")
-            return bool(health and health.available)
+            health = session.get(ComfyUIInstanceHealth, target_id)
+            if health is not None:
+                return bool(health.available)
+            # Legacy/default fallback keeps startup discovery and old databases serviceable
+            # until the first per-instance health probe is durably recorded.
+            if target_id == self.comfyui_instances.default_id:
+                legacy_health = session.get(ServiceHealth, "comfyui")
+                return bool(legacy_health and legacy_health.available)
+            return False
 
-    def _claim_next(self) -> tuple[str, Any] | None:
+    def _claim_next(self, instance_id: str | None = None) -> tuple[str, Any] | None:
+        target_id = instance_id or self.comfyui_instances.default_id
         with self.session_factory() as session:
             rows = session.execute(
                 select(Generation.owner_id, func.min(Generation.queue_seq).label("first_seq"))
-                .where(Generation.status == GenerationStatus.QUEUED)
+                .where(
+                    Generation.status == GenerationStatus.QUEUED,
+                    Generation.comfyui_instance_id == target_id,
+                )
                 .group_by(Generation.owner_id)
                 .order_by("first_seq", Generation.owner_id)
             ).all()
             if not rows:
                 return None
             owner_ids = [str(row.owner_id) for row in rows]
-            state = session.get(SchedulerState, "round_robin")
+            scheduler_key = "instance:" + hashlib.sha256(target_id.encode()).hexdigest()[:40]
+            state = session.get(SchedulerState, scheduler_key)
             if state is None:
-                state = SchedulerState(key="round_robin")
+                state = SchedulerState(key=scheduler_key)
                 session.add(state)
                 session.flush()
             if state.last_user_id in owner_ids:
@@ -542,6 +582,7 @@ class QueueWorker:
                 .where(
                     Generation.owner_id == owner_id,
                     Generation.status == GenerationStatus.QUEUED,
+                    Generation.comfyui_instance_id == target_id,
                 )
                 .order_by(Generation.queue_seq)
                 .limit(1)
@@ -568,6 +609,7 @@ class QueueWorker:
             if generation.status == GenerationStatus.CANCEL_REQUESTED:
                 await self._finish_without_execution(generation_id, cancelled=True)
                 return
+            instance_id = generation.comfyui_instance_id
             graph = copy.deepcopy(generation.compiled_graph_json)
             profile = session.get(WorkflowProfile, generation.workflow_profile_id)
             attach_workflow = bool(
@@ -577,7 +619,12 @@ class QueueWorker:
             )
             editable_workflow = copy.deepcopy(profile.source_ui_json) if profile else None
         try:
-            materialized = await self._materialize_uploads(generation_id, graph)
+            comfyui = self._adapter_for_instance(instance_id)
+        except AppError as exc:
+            await self._fail_before_start(generation_id, exc)
+            return
+        try:
+            materialized = await self._materialize_uploads(generation_id, graph, comfyui=comfyui)
             with self.session_factory() as session:
                 generation = session.get(Generation, generation_id)
                 if generation is None:
@@ -607,6 +654,7 @@ class QueueWorker:
         runtime_channel = self._start_runtime_event_channel(
             generation_id,
             generation.comfyui_client_id,
+            comfyui=comfyui,
         )
         try:
             await self._wait_for_runtime_ready(runtime_channel)
@@ -619,6 +667,7 @@ class QueueWorker:
                     generation_id,
                     materialized,
                     generation.comfyui_client_id,
+                    comfyui=comfyui,
                     extra_data=extra_data,
                 ),
                 name=f"generation-submit-{generation_id}",
@@ -657,7 +706,12 @@ class QueueWorker:
         try:
             if event is not None:
                 await self._publish_event_best_effort(event, generation_id=generation_id)
-            await self._monitor(generation_id, prompt_id, runtime_channel=runtime_channel)
+            await self._monitor(
+                generation_id,
+                prompt_id,
+                comfyui=comfyui,
+                runtime_channel=runtime_channel,
+            )
         finally:
             await self._close_runtime_event_channel(runtime_channel)
 
@@ -667,9 +721,11 @@ class QueueWorker:
         materialized: dict[str, Any],
         client_id: str,
         *,
+        comfyui: ComfyUIAdapter | None = None,
         extra_data: dict[str, Any] | None,
     ) -> tuple[str, Any | None]:
-        prompt_id = await self.comfyui.submit_prompt(
+        adapter = comfyui or self.comfyui
+        prompt_id = await adapter.submit_prompt(
             materialized,
             client_id,
             extra_data=extra_data,
@@ -709,7 +765,7 @@ class QueueWorker:
             session.commit()
         if cancel_prompt:
             with suppress(Exception):
-                await self.comfyui.cancel(prompt_id, running=True)
+                await adapter.cancel(prompt_id, running=True)
         return prompt_id, event
 
     async def _fail_ambiguous_submission(self, generation_id: str, exc: Exception) -> None:
@@ -724,8 +780,13 @@ class QueueWorker:
         )
 
     async def _materialize_uploads(
-        self, generation_id: str, graph: dict[str, Any]
+        self,
+        generation_id: str,
+        graph: dict[str, Any],
+        *,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> dict[str, Any]:
+        adapter = comfyui or self.comfyui
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None:
@@ -751,7 +812,7 @@ class QueueWorker:
                         "image/jpeg": ".jpg",
                         "image/webp": ".webp",
                     }.get(upload.mime_type, ".png")
-                    cache[upload_id] = await self.comfyui.upload_image(
+                    cache[upload_id] = await adapter.upload_image(
                         content,
                         f"{upload.id}{extension}",
                         kind=upload.kind.value,
@@ -774,11 +835,20 @@ class QueueWorker:
         self,
         generation_id: str,
         client_id: str,
+        *,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> _RuntimeEventChannel:
+        adapter = comfyui or self.comfyui
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
         connected = asyncio.Event()
         pump = asyncio.create_task(
-            self._runtime_event_pump(generation_id, client_id, queue, connected),
+            self._runtime_event_pump(
+                generation_id,
+                client_id,
+                queue,
+                connected,
+                comfyui=adapter,
+            ),
             name=f"comfy-ws-{generation_id}",
         )
         return _RuntimeEventChannel(queue=queue, connected=connected, pump=pump)
@@ -804,11 +874,14 @@ class QueueWorker:
         client_id: str,
         queue: asyncio.Queue[dict[str, Any]],
         connected: asyncio.Event,
+        *,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> None:
+        adapter = comfyui or self.comfyui
         failures = 0
         while not self._stop.is_set():
             try:
-                async for event in self.comfyui.events(client_id, connected=connected):
+                async for event in adapter.events(client_id, connected=connected):
                     failures = 0
                     await queue.put(event)
             except asyncio.CancelledError:
@@ -831,15 +904,24 @@ class QueueWorker:
         generation_id: str,
         prompt_id: str,
         *,
+        comfyui: ComfyUIAdapter | None = None,
         runtime_channel: _RuntimeEventChannel | None = None,
     ) -> None:
+        adapter = comfyui
         if runtime_channel is None:
             with self.session_factory() as session:
                 generation = session.get(Generation, generation_id)
                 if generation is None:
                     return
                 client_id = generation.comfyui_client_id
-            runtime_channel = self._start_runtime_event_channel(generation_id, client_id)
+                instance_id = generation.comfyui_instance_id
+            adapter = adapter or self._adapter_for_instance(instance_id)
+            runtime_channel = self._start_runtime_event_channel(
+                generation_id,
+                client_id,
+                comfyui=adapter,
+            )
+        adapter = adapter or self.comfyui
         queue = runtime_channel.queue
         reconciliation_requested = False
         unknown_reachable_since: float | None = None
@@ -848,7 +930,12 @@ class QueueWorker:
             while not self._stop.is_set():
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=0.75)
-                    if await self._process_runtime_event(generation_id, prompt_id, event):
+                    if await self._process_runtime_event(
+                        generation_id,
+                        prompt_id,
+                        event,
+                        comfyui=adapter,
+                    ):
                         # WebSocket completion/error/cache messages are only wake-up hints.
                         # Native history remains authoritative for every terminal outcome.
                         reconciliation_requested = True
@@ -861,15 +948,20 @@ class QueueWorker:
                             generation_id,
                             prompt_id,
                             queued_event,
+                            comfyui=adapter,
                         ):
                             reconciliation_requested = True
                 except TimeoutError:
                     pass
                 await self._flush_pending_progress(generation_id)
-                await self._ensure_cancel_sent(generation_id, prompt_id)
+                await self._ensure_cancel_sent(
+                    generation_id,
+                    prompt_id,
+                    comfyui=adapter,
+                )
                 history = None
                 try:
-                    history = await self.comfyui.history(prompt_id)
+                    history = await adapter.history(prompt_id)
                 except AppError as exc:
                     await self._record_reconciliation_error(generation_id, exc)
                     reconciliation_requested = True
@@ -883,6 +975,7 @@ class QueueWorker:
                         generation_id,
                         history=history or {},
                         outcome=terminal,
+                        comfyui=adapter,
                     )
                     return
 
@@ -891,6 +984,7 @@ class QueueWorker:
                         prompt_id,
                         generation_id=generation_id,
                         initial_history=latest_history,
+                        comfyui=adapter,
                     )
                     if reconciled is not None:
                         latest_history = reconciled
@@ -901,6 +995,7 @@ class QueueWorker:
                             generation_id,
                             history=latest_history or {},
                             outcome=terminal,
+                            comfyui=adapter,
                         )
                         return
 
@@ -908,7 +1003,7 @@ class QueueWorker:
                 # external interruption or ComfyUI reset. Always reconcile it against the live
                 # queue so an orphaned prompt cannot retain an application concurrency slot.
                 try:
-                    queue_state = await self.comfyui.queue()
+                    queue_state = await adapter.queue()
                     present = prompt_id in _collect_prompt_ids(queue_state)
                 except AppError as exc:
                     await self._record_reconciliation_error(generation_id, exc)
@@ -932,6 +1027,7 @@ class QueueWorker:
                         prompt_id,
                         generation_id=generation_id,
                         initial_history=latest_history,
+                        comfyui=adapter,
                     )
                     if reconciled is not None:
                         latest_history = reconciled
@@ -940,6 +1036,7 @@ class QueueWorker:
                         generation_id,
                         history=latest_history or {},
                         outcome=terminal or "interrupted",
+                        comfyui=adapter,
                     )
                     return
         finally:
@@ -947,7 +1044,12 @@ class QueueWorker:
             self._progress_trackers.pop(generation_id, None)
 
     async def _process_runtime_event(
-        self, generation_id: str, prompt_id: str, event: Mapping[str, Any]
+        self,
+        generation_id: str,
+        prompt_id: str,
+        event: Mapping[str, Any],
+        *,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> bool:
         event_type = event.get("type")
         data = event.get("data", {})
@@ -979,7 +1081,12 @@ class QueueWorker:
             await self._flush_pending_progress(generation_id, force=True, audit=True)
             output = data.get("output", {})
             if isinstance(output, Mapping):
-                await self._process_node_output(generation_id, str(node_id), output)
+                await self._process_node_output(
+                    generation_id,
+                    str(node_id),
+                    output,
+                    comfyui=comfyui,
+                )
         elif event_type in {
             "execution_success",
             "execution_cached",
@@ -1279,6 +1386,7 @@ class QueueWorker:
             if generation is None:
                 return "Processing"
             graph = generation.compiled_graph_json
+            instance_id = generation.comfyui_instance_id
             profile = session.get(WorkflowProfile, generation.workflow_profile_id)
             editable = profile.source_ui_json if profile is not None else {}
         class_type = None
@@ -1308,7 +1416,7 @@ class QueueWorker:
                     label = _safe_progress_label(raw_node.get("title"))
                     if label is not None:
                         return label
-        object_info = self.comfyui.cached_object_info()
+        object_info = self._adapter_for_instance(instance_id).cached_object_info()
         raw_object = object_info.get(class_type) if class_type is not None else None
         if isinstance(raw_object, Mapping):
             for key in ("display_name", "name"):
@@ -1318,7 +1426,12 @@ class QueueWorker:
         return "Processing"
 
     async def _process_node_output(
-        self, generation_id: str, node_id: str, output_payload: Mapping[str, Any]
+        self,
+        generation_id: str,
+        node_id: str,
+        output_payload: Mapping[str, Any],
+        *,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> None:
         prepared = await _run_blocking(
             self._normalize_generation_history,
@@ -1331,7 +1444,7 @@ class QueueWorker:
             return
         normalized, _ = prepared
         for file_output in normalized.files:
-            await self._persist_native_file(generation_id, file_output)
+            await self._persist_native_file(generation_id, file_output, comfyui=comfyui)
 
     def _normalize_generation_history(
         self,
@@ -1359,7 +1472,14 @@ class QueueWorker:
         )
         return normalized, history_snapshot if retain_raw_history else None
 
-    async def _persist_native_file(self, generation_id: str, file_output: NativeFileOutput) -> None:
+    async def _persist_native_file(
+        self,
+        generation_id: str,
+        file_output: NativeFileOutput,
+        *,
+        comfyui: ComfyUIAdapter | None = None,
+    ) -> None:
+        adapter = comfyui or self.comfyui
         reference = file_output.reference
         with self.session_factory() as session:
             duplicate = session.scalar(
@@ -1379,7 +1499,7 @@ class QueueWorker:
         stored: StoredImage | None = None
         retained = False
         try:
-            content = await self.comfyui.retrieve_artifact(reference)
+            content = await adapter.retrieve_artifact(reference)
             stored = await self.assets.store_artifact_async(
                 content,
                 generation_id=generation_id,
@@ -1713,7 +1833,14 @@ class QueueWorker:
             session.commit()
         await self._publish_event_best_effort(event, generation_id=generation_id)
 
-    async def _ensure_cancel_sent(self, generation_id: str, prompt_id: str) -> None:
+    async def _ensure_cancel_sent(
+        self,
+        generation_id: str,
+        prompt_id: str,
+        *,
+        comfyui: ComfyUIAdapter | None = None,
+    ) -> None:
+        instance_id: str | None = None
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             should_cancel = bool(
@@ -1722,6 +1849,7 @@ class QueueWorker:
             diagnostics = dict(generation.internal_diagnostics_json or {}) if generation else {}
             sent = bool(diagnostics.get("cancel_sent"))
             if should_cancel and not sent and generation:
+                instance_id = generation.comfyui_instance_id
                 diagnostics["cancel_sent"] = True
                 generation.internal_diagnostics_json = diagnostics
                 session.commit()
@@ -1729,7 +1857,8 @@ class QueueWorker:
                 should_cancel = False
         if should_cancel:
             try:
-                await self.comfyui.cancel(prompt_id, running=True)
+                adapter = comfyui or self._adapter_for_instance(str(instance_id))
+                await adapter.cancel(prompt_id, running=True)
             except Exception:
                 with self.session_factory() as session:
                     generation = session.get(Generation, generation_id)
@@ -1746,7 +1875,9 @@ class QueueWorker:
         generation_id: str | None = None,
         initial_history: dict[str, Any] | None = None,
         raise_unreachable: bool = False,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> dict[str, Any] | None:
+        adapter = comfyui or self.comfyui
         grace = getattr(getattr(self, "settings", None), "reconciliation_grace_seconds", 1.0)
         delay = min(0.1, max(0.01, grace))
         maximum_delay = min(1.0, max(delay, grace))
@@ -1754,7 +1885,7 @@ class QueueWorker:
         recorded_error_codes: set[str] = set()
         for attempt in range(12):
             try:
-                history = await self.comfyui.history(prompt_id)
+                history = await adapter.history(prompt_id)
                 if history is not None:
                     latest_history = history
                     if _history_terminal(history):
@@ -1772,7 +1903,12 @@ class QueueWorker:
         return latest_history
 
     async def _finalize(
-        self, generation_id: str, *, history: Mapping[str, Any], outcome: str
+        self,
+        generation_id: str,
+        *,
+        history: Mapping[str, Any],
+        outcome: str,
+        comfyui: ComfyUIAdapter | None = None,
     ) -> None:
         prepared = await _run_blocking(
             self._normalize_generation_history,
@@ -1787,7 +1923,7 @@ class QueueWorker:
         if raw_history is None:
             raise RuntimeError("final history snapshot was not retained")
         for file_output in normalized.files:
-            await self._persist_native_file(generation_id, file_output)
+            await self._persist_native_file(generation_id, file_output, comfyui=comfyui)
         committed = await _run_blocking(
             self._commit_finalization,
             generation_id,
@@ -2005,6 +2141,7 @@ class QueueWorker:
             if generation.status == GenerationStatus.CANCEL_REQUESTED:
                 session.commit()
             else:
+                instance_id = generation.comfyui_instance_id
                 generation.status = GenerationStatus.QUEUED
                 generation.submitted_graph_json = None
                 generation.submitted_graph_sha256 = None
@@ -2015,7 +2152,14 @@ class QueueWorker:
                     "generation.requeued",
                     {"reason": "ComfyUI is temporarily unavailable."},
                 )
-                self._set_health(session, "comfyui", False, "ComfyUI is unreachable.")
+                self._set_instance_health(
+                    session,
+                    instance_id,
+                    False,
+                    "ComfyUI is unreachable.",
+                )
+                if instance_id == self.comfyui_instances.default_id:
+                    self._set_health(session, "comfyui", False, "ComfyUI is unreachable.")
                 session.commit()
                 await self._publish_event_best_effort(event, generation_id=generation_id)
                 return
@@ -2068,28 +2212,43 @@ class QueueWorker:
             )
 
     async def _reconcile_startup(self) -> None:
-        requeue_events, prompt_jobs = await _run_blocking(self._prepare_startup_recovery)
-        for owner_id, event in requeue_events:
+        notifications, prompt_jobs = await _run_blocking(self._prepare_startup_recovery)
+        for owner_id, event in notifications:
             generation_id = str(event["generation_id"])
             await self._publish_broker_best_effort(
                 owner_id,
                 event,
                 generation_id=generation_id,
             )
-        for generation_id, prompt_id in prompt_jobs:
+        for generation_id, instance_id, prompt_id in prompt_jobs:
+            try:
+                comfyui = self._adapter_for_instance(instance_id)
+            except AppError as exc:
+                await self._record_reconciliation_error(generation_id, exc)
+                await self._finalize(
+                    generation_id,
+                    history={},
+                    outcome="interrupted",
+                )
+                continue
             history = None
             history_reachable = True
             try:
-                history = await self.comfyui.history(prompt_id)
+                history = await comfyui.history(prompt_id)
             except Exception:
                 history_reachable = False
             terminal = _history_terminal(history)
             if terminal:
-                await self._finalize(generation_id, history=history or {}, outcome=terminal)
+                await self._finalize(
+                    generation_id,
+                    history=history or {},
+                    outcome=terminal,
+                    comfyui=comfyui,
+                )
                 continue
             queue_reachable = True
             try:
-                queue = await self.comfyui.queue()
+                queue = await comfyui.queue()
                 queued_ids = _collect_prompt_ids(queue)
             except Exception:
                 queue_reachable = False
@@ -2097,8 +2256,9 @@ class QueueWorker:
             if prompt_id in queued_ids or not (history_reachable and queue_reachable):
                 self._start_generation_task(
                     generation_id,
-                    self._monitor(generation_id, prompt_id),
+                    self._monitor(generation_id, prompt_id, comfyui=comfyui),
                     name=f"generation-recovered-{generation_id}",
+                    instance_id=instance_id,
                 )
                 continue
             await asyncio.sleep(self.settings.reconciliation_grace_seconds)
@@ -2108,8 +2268,9 @@ class QueueWorker:
                     generation_id=generation_id,
                     initial_history=history,
                     raise_unreachable=True,
+                    comfyui=comfyui,
                 )
-                queue = await self.comfyui.queue()
+                queue = await comfyui.queue()
                 queued_ids = _collect_prompt_ids(queue)
             except Exception as exc:
                 if isinstance(exc, AppError):
@@ -2118,32 +2279,97 @@ class QueueWorker:
                 # in-flight state and let the monitor reconcile after connectivity returns.
                 self._start_generation_task(
                     generation_id,
-                    self._monitor(generation_id, prompt_id),
+                    self._monitor(generation_id, prompt_id, comfyui=comfyui),
                     name=f"generation-recovered-{generation_id}",
+                    instance_id=instance_id,
                 )
                 continue
             terminal = _history_terminal(history)
             if terminal:
-                await self._finalize(generation_id, history=history or {}, outcome=terminal)
+                await self._finalize(
+                    generation_id,
+                    history=history or {},
+                    outcome=terminal,
+                    comfyui=comfyui,
+                )
             elif prompt_id in queued_ids:
                 self._start_generation_task(
                     generation_id,
-                    self._monitor(generation_id, prompt_id),
+                    self._monitor(generation_id, prompt_id, comfyui=comfyui),
                     name=f"generation-recovered-{generation_id}",
+                    instance_id=instance_id,
                 )
             else:
-                await self._finalize(generation_id, history=history or {}, outcome="interrupted")
+                await self._finalize(
+                    generation_id,
+                    history=history or {},
+                    outcome="interrupted",
+                    comfyui=comfyui,
+                )
 
     def _prepare_startup_recovery(self) -> RecoveryPlan:
         """Build a primitive recovery plan without loading generation JSON payloads."""
 
         with self.session_factory() as session:
+            notifications: list[RecoveryNotification] = []
+            configured_ids = tuple(self.comfyui_instances.configured_ids)
+            orphaned_queued = list(
+                session.execute(
+                    select(
+                        Generation.id,
+                        Generation.owner_id,
+                        Generation.comfyui_instance_label,
+                    ).where(
+                        Generation.status == GenerationStatus.QUEUED,
+                        Generation.comfyui_instance_id.not_in(configured_ids),
+                    )
+                )
+            )
+            for generation_id, owner_id, instance_label in orphaned_queued:
+                generation_id = str(generation_id)
+                owner_id = str(owner_id)
+                message = (
+                    f"{instance_label} is no longer configured. "
+                    "The generation was not redirected to another runtime."
+                )
+                session.execute(
+                    update(Generation)
+                    .where(Generation.id == generation_id)
+                    .values(
+                        status=GenerationStatus.FAILED_WITHOUT_ARTIFACTS,
+                        error_code="comfyui_instance_unconfigured",
+                        error_message=message,
+                        result_errors_json=[
+                            {
+                                "code": "comfyui_instance_unconfigured",
+                                "message": message,
+                            }
+                        ],
+                        completed_at=datetime.now(UTC),
+                        progress_json=None,
+                    )
+                )
+                event = GenerationEvent(
+                    generation_id=generation_id,
+                    owner_id=owner_id,
+                    event_type="generation.terminal",
+                    payload_json={
+                        "status": GenerationStatus.FAILED_WITHOUT_ARTIFACTS.value,
+                        "error": message,
+                    },
+                    created_at=datetime.now(UTC),
+                )
+                session.add(event)
+                session.flush()
+                notifications.append((owner_id, event_payload(event)))
+
             in_flight = list(
                 session.execute(
                     select(
                         Generation.id,
                         Generation.owner_id,
                         Generation.status,
+                        Generation.comfyui_instance_id,
                         Generation.comfyui_prompt_id,
                     ).where(
                         Generation.status.in_(
@@ -2156,9 +2382,8 @@ class QueueWorker:
                     )
                 )
             )
-            requeue_events: list[RecoveryNotification] = []
-            prompt_jobs: list[tuple[str, str]] = []
-            for generation_id, owner_id, status, prompt_id in in_flight:
+            prompt_jobs: list[tuple[str, str, str]] = []
+            for generation_id, owner_id, status, instance_id, prompt_id in in_flight:
                 generation_id = str(generation_id)
                 owner_id = str(owner_id)
                 if not prompt_id:
@@ -2191,41 +2416,104 @@ class QueueWorker:
                         )
                         session.add(event)
                         session.flush()
-                        requeue_events.append((owner_id, event_payload(event)))
+                        notifications.append((owner_id, event_payload(event)))
                 else:
-                    prompt_jobs.append((generation_id, str(prompt_id)))
+                    prompt_jobs.append((generation_id, str(instance_id), str(prompt_id)))
             session.commit()
-            return tuple(requeue_events), tuple(prompt_jobs)
+            return tuple(notifications), tuple(prompt_jobs)
 
     async def _health_loop(self) -> None:
         while not self._stop.is_set():
-            comfy_available, comfy_message = await self.comfyui.health()
-            ollama_available, ollama_message = await self.ollama.status()
+            instances = getattr(self, "comfyui_instances", None)
+            if instances is None:
+                # Compatibility for the isolated health-loop unit test that constructs a worker
+                # without __init__. Production always follows the per-instance path below.
+                comfy_available, comfy_message = await self.comfyui.health()
+                ollama_available, ollama_message = await self.ollama.status()
+                await _run_blocking(
+                    self._persist_service_health,
+                    "ollama",
+                    ollama_available,
+                    ollama_message,
+                )
+                catalog_loading, should_refresh_catalog = await _run_blocking(
+                    self._comfy_recovery_state,
+                    comfy_available,
+                )
+                catalog_refreshed = False
+                legacy_catalog_failure_message: str | None = None
+                if should_refresh_catalog:
+                    try:
+                        await self.generations.registry.refresh()
+                        catalog_refreshed = True
+                    except Exception:
+                        logger.exception("workflow_catalog_recovery_refresh_failed")
+                        legacy_catalog_failure_message = (
+                            "ComfyUI source discovery failed during recovery."
+                        )
+                if not catalog_refreshed and not catalog_loading:
+                    await _run_blocking(
+                        self._persist_service_health,
+                        "comfyui",
+                        False if legacy_catalog_failure_message else comfy_available,
+                        legacy_catalog_failure_message or comfy_message,
+                    )
+                if self._stop.is_set():
+                    return
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(),
+                        timeout=self.settings.external_health_interval_seconds,
+                    )
+                except TimeoutError:
+                    continue
+                continue
+
+            health_results = await asyncio.gather(
+                self.ollama.status(),
+                *(self._adapter_for_instance(config.id).health() for config in instances.configs),
+            )
+            ollama_available, ollama_message = health_results[0]
             await _run_blocking(
                 self._persist_service_health,
                 "ollama",
                 ollama_available,
                 ollama_message,
             )
+            comfy_health = {
+                config.id: health_results[index]
+                for index, config in enumerate(instances.configs, start=1)
+            }
+            for instance_id, (available, message) in comfy_health.items():
+                await _run_blocking(
+                    self._persist_instance_health,
+                    instance_id,
+                    available,
+                    message,
+                )
+            comfy_available, comfy_message = comfy_health[instances.default_id]
             catalog_loading, should_refresh_catalog = await _run_blocking(
                 self._comfy_recovery_state,
                 comfy_available,
             )
             catalog_refreshed = False
+            catalog_failure_message: str | None = None
             if should_refresh_catalog:
                 try:
                     await self.generations.registry.refresh()
                     catalog_refreshed = True
                 except Exception:
                     logger.exception("workflow_catalog_recovery_refresh_failed")
-                    comfy_available = False
-                    comfy_message = "ComfyUI source discovery failed during recovery."
+                    # Execution health is independent from publication discovery. Keep the
+                    # successful adapter probe available so a frozen cached graph can still
+                    # dispatch, while the catalog service reports its own refresh failure.
+                    catalog_failure_message = "ComfyUI source discovery failed during recovery."
             if not catalog_refreshed and not catalog_loading:
                 await _run_blocking(
                     self._persist_service_health,
                     "comfyui",
-                    comfy_available,
-                    comfy_message,
+                    False if catalog_failure_message else comfy_available,
+                    catalog_failure_message or comfy_message,
                 )
             try:
                 await asyncio.wait_for(
@@ -2265,6 +2553,33 @@ class QueueWorker:
         with self.session_factory() as session:
             self._set_health(session, service, available, message)
             session.commit()
+
+    def _persist_instance_health(
+        self,
+        instance_id: str,
+        available: bool,
+        message: str | None,
+    ) -> None:
+        """Persist one configured ComfyUI target's independent probe result."""
+
+        with self.session_factory() as session:
+            self._set_instance_health(session, instance_id, available, message)
+            session.commit()
+
+    @staticmethod
+    def _set_instance_health(
+        session: Session,
+        instance_id: str,
+        available: bool,
+        message: str | None,
+    ) -> None:
+        health = session.get(ComfyUIInstanceHealth, instance_id)
+        if health is None:
+            health = ComfyUIInstanceHealth(instance_id=instance_id)
+            session.add(health)
+        health.available = available
+        health.message = message
+        health.checked_at = datetime.now(UTC)
 
     @staticmethod
     def _set_health(session: Session, service: str, available: bool, message: str | None) -> None:

@@ -11,9 +11,11 @@ services:
       - .env
     volumes:
       - application-data:/data
-    # Allows the example URLs in .env.example to reach ComfyUI/Ollama running
-    # directly on the Docker host. Replace with service DNS names when all
-    # services share a user-defined Docker network.
+    # Allows host.docker.internal URLs to reach services running directly on
+    # the Docker host. The ComfyUI service DNS names in .env.example instead
+    # require this frontend service to join their existing user-defined Docker
+    # network. Add that network to this service/declaration without restarting
+    # or recreating either ComfyUI container; see README.md.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
