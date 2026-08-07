@@ -75,15 +75,17 @@ The script gracefully stops the service, performs a fast-forward-only pull, rebu
 
 Application code and the built browser assets live in the frontend image, and `.env` is read when its container starts. Enabling or changing the instance list therefore requires rebuilding and recreating/restarting only `comfyui-image-frontend`. Never restart or recreate either ComfyUI container for this application update.
 
+The updater intentionally never copies `.env.example` over the deployment's persistent, gitignored `.env`. A selector containing only **Original** with a warning icon means the running frontend is still using the legacy one-instance fallback. Add `CIF_COMFYUI_INSTANCES` and `CIF_COMFYUI_DEFAULT_INSTANCE_ID` to the actual Compose environment source, then rerun the frontend update; a running ComfyUI container is not discovered automatically.
+
 ### Connecting to external services
 
 `CIF_COMFYUI_INSTANCES` is a JSON array on one environment-variable line. Every entry requires a stable `id`, user-facing `label`, and credential-free HTTP(S) `base_url`. It may also include `description`, a credential-free `ws_url`, a ComfyUI multi-user `user`, and integer `concurrency` from 1 through 32. When `ws_url` is omitted, the application derives `/ws` from `base_url`; when per-instance `concurrency` is omitted, `CIF_COMFYUI_CONCURRENCY` supplies the same bounded fallback. IDs must be unique, start with an ASCII letter or digit, and contain 1–64 ASCII letters, digits, hyphens, or underscores. `CIF_COMFYUI_DEFAULT_INSTANCE_ID` must match one configured ID and defaults to the first array entry.
 
-For the two runtimes on the same Docker host, use the internal Docker URLs (keeping `home` only if that is the primary server's current stable ID):
+For the two runtimes on the same Docker host, use the internal Docker URLs. This deployment keeps the legacy primary ID `default` stable while giving both targets concise user-facing names; the second container's internal `worker-2` ID is intentionally independent from its sequential display name:
 
 ```env
-CIF_COMFYUI_INSTANCES=[{"id":"home","label":"RTX 3090","description":"Primary ComfyUI (24 GB VRAM)","base_url":"http://local-ai-comfyui:8188","concurrency":1},{"id":"worker-2","label":"RTX 3080","description":"Worker 2 (10 GB VRAM)","base_url":"http://local-ai-comfyui-worker-2:8188","concurrency":1}]
-CIF_COMFYUI_DEFAULT_INSTANCE_ID=home
+CIF_COMFYUI_INSTANCES=[{"id":"default","label":"Original · RTX 3090","description":"24 GB VRAM","base_url":"http://local-ai-comfyui:8188","concurrency":1},{"id":"worker-2","label":"Worker 1 · RTX 3080","description":"10 GB VRAM","base_url":"http://local-ai-comfyui-worker-2:8188","concurrency":1}]
+CIF_COMFYUI_DEFAULT_INSTANCE_ID=default
 CIF_COMFYUI_WORKFLOW_DIRECTORY=workflows
 CIF_OLLAMA_BASE_URL=http://192.168.1.21:11434
 CIF_SPEECH_TO_TEXT_URL=http://192.168.1.22:9000/v1/audio/transcriptions
@@ -93,7 +95,7 @@ CIF_SPEECH_TO_TEXT_MODEL=whisper-1
 
 The default instance is both the initial selector choice and the publication-catalog adapter. Source discovery, workflow diagnostics, and publication refresh use only that adapter. Every configured instance remains an independent execution target with its own availability, capacity, native queue, inputs, outputs, temporary files, history, and cancellation channel. This arrangement assumes the configured runtimes expose compatible nodes and the publications/models needed by the compiled graph; it does not merge their ComfyUI queues or storage.
 
-When `CIF_COMFYUI_INSTANCES` is absent, the application constructs one compatible entry from `CIF_COMFYUI_BASE_URL`, optional `CIF_COMFYUI_WS_URL`, `CIF_COMFYUI_INSTANCE_ID`, optional `CIF_COMFYUI_USER`, and `CIF_COMFYUI_CONCURRENCY`. This preserves existing single-instance deployments. Do not set a list entry URL containing credentials; connection URLs and optional user selectors remain server-side and are never returned to the browser.
+When `CIF_COMFYUI_INSTANCES` is absent, the application constructs one compatible entry named **Original** from `CIF_COMFYUI_BASE_URL`, optional `CIF_COMFYUI_WS_URL`, `CIF_COMFYUI_INSTANCE_ID`, optional `CIF_COMFYUI_USER`, and `CIF_COMFYUI_CONCURRENCY`. The selector shows a configuration warning icon in this legacy mode. This preserves existing single-instance deployments without presenting the internal ID as a display name. Do not set a list entry URL containing credentials; connection URLs and optional user selectors remain server-side and are never returned to the browser.
 
 Docker service names resolve only across a shared user-defined network. Inspect the existing runtime networks without printing container environments or secrets:
 

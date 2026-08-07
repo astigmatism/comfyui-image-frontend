@@ -50,4 +50,8 @@ def list_comfyui_instances(
                 checked_at=checked_at,
             )
         )
-    return ComfyUIInstanceList(default_instance_id=instances.default_id, items=items)
+    return ComfyUIInstanceList(
+        default_instance_id=instances.default_id,
+        configuration_mode=instances.configuration_mode,
+        items=items,
+    )

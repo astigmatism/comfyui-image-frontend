@@ -6,7 +6,15 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 COMFYUI_INSTANCE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
@@ -101,6 +109,8 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    _comfyui_instances_explicitly_configured: bool = PrivateAttr(default=False)
 
     app_title: str = "ImageGen V2"
     listen_host: str = "0.0.0.0"  # noqa: S104 - configurable application listener default
@@ -204,11 +214,12 @@ class Settings(BaseSettings):
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
         configured_instances = self.comfyui_instances
+        self._comfyui_instances_explicitly_configured = configured_instances is not None
         if configured_instances is None:
             configured_instances = [
                 ComfyUIInstanceConfig(
                     id=self.comfyui_instance_id,
-                    label=self.comfyui_instance_id,
+                    label="Original",
                     base_url=self.comfyui_base_url,
                     ws_url=self.comfyui_ws_url,
                     user=self.comfyui_user,
@@ -280,6 +291,10 @@ class Settings(BaseSettings):
     def configured_comfyui_instances(self) -> tuple[ComfyUIInstanceConfig, ...]:
         assert self.comfyui_instances is not None
         return tuple(self.comfyui_instances)
+
+    @property
+    def comfyui_instance_configuration_mode(self) -> Literal["explicit", "legacy"]:
+        return "explicit" if self._comfyui_instances_explicitly_configured else "legacy"
 
     @property
     def default_comfyui_instance(self) -> ComfyUIInstanceConfig:

@@ -56,6 +56,7 @@ const state = {
   comfyuiInstances: [],
   comfyuiInstancesStatus: "idle",
   comfyuiInstancesMessage: null,
+  comfyuiInstanceConfigurationMode: null,
   selectedComfyuiInstanceId: null,
   comfyuiInstanceSelectionInitialized: false,
   comfyuiInstanceError: null,
@@ -1709,6 +1710,7 @@ async function logout() {
   state.comfyuiInstances = [];
   state.comfyuiInstancesStatus = "idle";
   state.comfyuiInstancesMessage = null;
+  state.comfyuiInstanceConfigurationMode = null;
   state.selectedComfyuiInstanceId = null;
   state.comfyuiInstanceSelectionInitialized = false;
   state.comfyuiInstanceError = null;
@@ -1774,6 +1776,7 @@ async function enterApplication() {
   state.comfyuiInstances = [];
   state.comfyuiInstancesStatus = "loading";
   state.comfyuiInstancesMessage = null;
+  state.comfyuiInstanceConfigurationMode = null;
   state.selectedComfyuiInstanceId = null;
   state.comfyuiInstanceSelectionInitialized = false;
   state.comfyuiInstanceError = null;
@@ -1944,6 +1947,12 @@ function applyComfyuiInstanceCatalog(payload) {
     : [];
   const previousId = state.selectedComfyuiInstanceId;
   state.comfyuiInstances = items;
+  state.comfyuiInstanceConfigurationMode =
+    payload?.configuration_mode === "legacy"
+      ? "legacy"
+      : payload?.configuration_mode === "explicit"
+        ? "explicit"
+        : null;
   if (!state.comfyuiInstanceSelectionInitialized) {
     const requestedDefault =
       typeof payload?.default_instance_id === "string"
@@ -2004,6 +2013,7 @@ function comfyuiInstancePanelState() {
   return JSON.stringify({
     status: state.comfyuiInstancesStatus,
     message: state.comfyuiInstancesMessage,
+    configurationMode: state.comfyuiInstanceConfigurationMode,
     selectedId: state.selectedComfyuiInstanceId,
     error: state.comfyuiInstanceError,
     warning: state.comfyuiInstanceWarning,

@@ -21,6 +21,7 @@ class ComfyUIInstances:
         self.settings = settings
         self.configs = settings.configured_comfyui_instances
         self.default_id = settings.default_comfyui_instance.id
+        self.configuration_mode = settings.comfyui_instance_configuration_mode
         self.configured_ids = frozenset(instance.id for instance in self.configs)
         self._configs = {instance.id: instance for instance in self.configs}
         self._adapters = {

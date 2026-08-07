@@ -235,29 +235,40 @@ function comfyuiInstanceSelectorMarkup(state) {
     ? `${selected ? "" : '<option value="" selected>Choose a runtime</option>'}${instances
         .map((instance) => {
           const details = String(instance.description || "").trim();
-          const availability = instance.available === true ? "" : " — Unavailable";
-          const copy = `${instance.label || instance.id}${details ? ` — ${details}` : ""}${availability}`;
+          const availability = instance.available === true ? "" : " · ❌";
+          const copy = `${instance.label || instance.id}${details ? ` · ${details}` : ""}${availability}`;
           return `<option value="${escapeHtml(instance.id)}" ${instance.id === state.selectedComfyuiInstanceId ? "selected" : ""}>${escapeHtml(copy)}</option>`;
         })
         .join("")}`
     : `<option value="">${state.comfyuiInstancesStatus === "loading" ? "Loading runtimes…" : "No runtimes configured"}</option>`;
   const status = comfyuiInstanceStatus(state, selected);
-  return `<label class="field compact comfyui-instance-field" for="comfyui-instance">
-    <span>ComfyUI runtime</span>
+  return `<div class="field compact comfyui-instance-field">
+    <label for="comfyui-instance">Runtime</label>
     <select id="comfyui-instance" aria-describedby="comfyui-instance-status" ${instances.length ? "" : "disabled"}>${options}</select>
-    <small id="comfyui-instance-status" class="comfyui-instance-status ${status.kind}" ${status.role ? `role="${status.role}"` : ""}>${escapeHtml(status.message)}</small>
-  </label>`;
+    <small id="comfyui-instance-status" class="comfyui-instance-status ${status.kind}" title="${escapeHtml(status.message)}" tabindex="0" ${status.role ? `role="${status.role}"` : ""}><span class="comfyui-instance-status-icon" aria-hidden="true">${status.icon}</span><span class="comfyui-instance-status-message">${escapeHtml(status.message)}</span></small>
+  </div>`;
 }
 
 function comfyuiInstanceStatus(state, selected) {
   if (state.comfyuiInstancesStatus === "loading") {
-    return { kind: "pending", role: "status", message: "Checking configured runtimes…" };
+    return {
+      icon: "⏳",
+      kind: "pending",
+      role: "status",
+      message: "Checking configured runtimes…",
+    };
   }
   if (state.comfyuiInstanceError) {
-    return { kind: "error", role: "alert", message: state.comfyuiInstanceError };
+    return {
+      icon: "❌",
+      kind: "error",
+      role: "alert",
+      message: state.comfyuiInstanceError,
+    };
   }
   if (state.comfyuiInstancesStatus === "error") {
     return {
+      icon: "❌",
       kind: "error",
       role: "alert",
       message:
@@ -267,6 +278,7 @@ function comfyuiInstanceStatus(state, selected) {
   }
   if (!selected) {
     return {
+      icon: "❌",
       kind: "error",
       role: "alert",
       message: (state.comfyuiInstances || []).length
@@ -276,6 +288,7 @@ function comfyuiInstanceStatus(state, selected) {
   }
   if (selected.available !== true) {
     return {
+      icon: "❌",
       kind: "error",
       role: "alert",
       message:
@@ -284,10 +297,25 @@ function comfyuiInstanceStatus(state, selected) {
     };
   }
   if (state.comfyuiInstanceWarning) {
-    return { kind: "warning", role: "status", message: state.comfyuiInstanceWarning };
+    return {
+      icon: "⚠️",
+      kind: "warning",
+      role: "status",
+      message: state.comfyuiInstanceWarning,
+    };
+  }
+  if (state.comfyuiInstanceConfigurationMode === "legacy") {
+    return {
+      icon: "⚠️",
+      kind: "warning",
+      role: "status",
+      message:
+        "Only the original ComfyUI runtime is configured. Add CIF_COMFYUI_INSTANCES to make workers selectable.",
+    };
   }
   const description = String(selected.description || "").trim();
   return {
+    icon: "✅",
     kind: "available",
     role: "status",
     message: description ? `${description} · Available` : "Available",

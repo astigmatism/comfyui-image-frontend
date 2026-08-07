@@ -309,7 +309,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
   await expect(footer.locator(".card-metadata")).toHaveText(
-    /^Generic Landscape · default · (?:\d+m )?\d+s$/,
+    /^Generic Landscape · Original · RTX 3090 · (?:\d+m )?\d+s$/,
   );
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
@@ -386,6 +386,71 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await deleteButton.click();
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose - 1);
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
+});
+
+test("runtime selector is a borderless single-line two-instance control", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+
+  const row = page.locator(".comfyui-instance-field");
+  const selector = page.getByLabel("Runtime", { exact: true });
+  await expect(row).toBeVisible();
+  await expect(selector).toHaveValue("default");
+  await expect(selector.locator("option")).toHaveText([
+    "Original · RTX 3090 · 24 GB VRAM",
+    "Worker 1 · RTX 3080 · 10 GB VRAM",
+  ]);
+  const status = row.locator("#comfyui-instance-status");
+  await expect(row.locator(".comfyui-instance-status-icon")).toHaveText("✅");
+  await expect(status).toHaveAttribute(
+    "title",
+    "24 GB VRAM · Available",
+  );
+  await status.focus();
+  await expect(status.locator(".comfyui-instance-status-message")).toBeVisible();
+
+  const presentation = await row.evaluate((element) => {
+    const [label, select, status] = element.children;
+    const centers = [label, select, status].map((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.top + rect.height / 2;
+    });
+    const style = getComputedStyle(element);
+    return {
+      backgroundImage: style.backgroundImage,
+      borderWidths: [
+        style.borderTopWidth,
+        style.borderRightWidth,
+        style.borderBottomWidth,
+        style.borderLeftWidth,
+      ],
+      centerSpread: Math.max(...centers) - Math.min(...centers),
+    };
+  });
+  expect(presentation.backgroundImage).toBe("none");
+  expect(presentation.borderWidths).toEqual(["0px", "0px", "0px", "0px"]);
+  expect(presentation.centerSpread).toBeLessThan(1);
+
+  await selector.selectOption("worker-2");
+  await expect(selector).toHaveValue("worker-2");
+  await expect(status).toHaveAttribute("title", "10 GB VRAM · Available");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("worker runtime routing check");
+  const acceptedResponse = await generateAndExpectAccepted(page);
+  const accepted = await acceptedResponse.json();
+  expect(accepted.comfyui_instance_id).toBe("worker-2");
+  expect(accepted.comfyui_instance_label).toBe("Worker 1 · RTX 3080");
+  await expect.poll(async () => {
+    const detail = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
+    return detail.status;
+  }).toBe("succeeded");
+  const completed = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
+  expect(completed.comfyui_instance_id).toBe("worker-2");
+  expect(completed.comfyui_instance_label).toBe("Worker 1 · RTX 3080");
+  await expect(
+    page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-metadata`),
+  ).toContainText("Worker 1 · RTX 3080");
 });
 
 test("photo viewer slideshow waits for a generation's final completed image", async ({

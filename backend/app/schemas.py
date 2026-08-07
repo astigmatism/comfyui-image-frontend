@@ -160,6 +160,7 @@ class ComfyUIInstanceStatus(APIModel):
 
 class ComfyUIInstanceList(APIModel):
     default_instance_id: str
+    configuration_mode: Literal["explicit", "legacy"]
     items: list[ComfyUIInstanceStatus]
 
 

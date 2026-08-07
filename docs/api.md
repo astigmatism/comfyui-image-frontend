@@ -36,12 +36,13 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
 
 ```json
 {
-  "default_instance_id": "home",
+  "default_instance_id": "default",
+  "configuration_mode": "explicit",
   "items": [
     {
-      "id": "home",
-      "label": "RTX 3090",
-      "description": "Primary ComfyUI (24 GB VRAM)",
+      "id": "default",
+      "label": "Original · RTX 3090",
+      "description": "24 GB VRAM",
       "is_default": true,
       "available": true,
       "message": null,
@@ -49,8 +50,8 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
     },
     {
       "id": "worker-2",
-      "label": "RTX 3080",
-      "description": "Worker 2 (10 GB VRAM)",
+      "label": "Worker 1 · RTX 3080",
+      "description": "10 GB VRAM",
       "is_default": false,
       "available": false,
       "message": "ComfyUI is unreachable.",
@@ -60,7 +61,7 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
 }
 ```
 
-Items follow deployment-configuration order. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients initialize the selector from `default_instance_id`, retain a later user choice while polling health, and disable new submission when the selected item is unavailable.
+Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog and `legacy` when the backend synthesized the one-item **Original** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients initialize the selector from `default_instance_id`, retain a later user choice while polling health, and disable new submission when the selected item is unavailable.
 
 ## Published generation sources
 

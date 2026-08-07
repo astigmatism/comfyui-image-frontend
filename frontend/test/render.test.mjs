@@ -634,19 +634,20 @@ test("generation panel places the configured ComfyUI runtime immediately above G
     submitting: false,
     services: [{ service: "comfyui", available: true }],
     comfyuiInstancesStatus: "ready",
+    comfyuiInstanceConfigurationMode: "explicit",
     comfyuiInstances: [
       {
         id: "primary",
-        label: "Primary ComfyUI",
-        description: "RTX 3090 · 24 GB VRAM",
+        label: "Original · RTX 3090",
+        description: "24 GB VRAM",
         is_default: true,
         available: true,
         base_url: "http://private-primary:8188",
       },
       {
         id: "worker-2",
-        label: "Worker 2",
-        description: "RTX 3080 · 10 GB VRAM",
+        label: "Worker 1 · RTX 3080",
+        description: "10 GB VRAM",
         is_default: false,
         available: true,
         base_url: "http://private-worker:8188",
@@ -675,9 +676,19 @@ test("generation panel places the configured ComfyUI runtime immediately above G
       creativeDirectionIndex < sourceIndex &&
       sourceIndex < promptIndex,
   );
-  assert.match(html, /<span>ComfyUI runtime<\/span>/);
-  assert.match(html, /value="primary" selected>Primary ComfyUI — RTX 3090 · 24 GB VRAM/);
-  assert.match(html, /value="worker-2" >Worker 2 — RTX 3080 · 10 GB VRAM/);
+  assert.match(html, /<label for="comfyui-instance">Runtime<\/label>/);
+  assert.match(html, /value="primary" selected>Original · RTX 3090 · 24 GB VRAM/);
+  assert.match(html, /value="worker-2" >Worker 1 · RTX 3080 · 10 GB VRAM/);
+  const runtimeStatus =
+    html.match(/<small id="comfyui-instance-status"[\s\S]*?<\/small>/)?.[0] || "";
+  assert.match(runtimeStatus, /class="comfyui-instance-status available"/);
+  assert.match(runtimeStatus, /title="24 GB VRAM · Available"/);
+  assert.match(runtimeStatus, /tabindex="0" role="status"/);
+  assert.match(runtimeStatus, /aria-hidden="true">✅<\/span>/);
+  assert.match(
+    runtimeStatus,
+    /class="comfyui-instance-status-message">24 GB VRAM · Available<\/span>/,
+  );
   assert.doesNotMatch(html, /private-primary|private-worker|base_url|8188/);
   assert.match(html, /id="auto-generate"[^>]*role="switch"/);
   const creativeDirectionControl =
@@ -720,6 +731,7 @@ test("only the selected unavailable ComfyUI runtime blocks generation", () => {
   const baseState = {
     submitting: false,
     comfyuiInstancesStatus: "ready",
+    comfyuiInstanceConfigurationMode: "explicit",
     comfyuiInstances: instances,
     workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
     activeProfileId: "p1",
@@ -733,8 +745,16 @@ test("only the selected unavailable ComfyUI runtime blocks generation", () => {
     baseState.workflows[0],
     contract,
   );
-  assert.match(selectedUnavailable, /Worker 2 — RTX 3080 · 10 GB VRAM — Unavailable/);
-  assert.match(selectedUnavailable, /Worker 2 did not answer its health check\./);
+  assert.match(selectedUnavailable, /Worker 2 · RTX 3080 · 10 GB VRAM · ❌/);
+  assert.match(
+    selectedUnavailable,
+    /title="Worker 2 did not answer its health check\."[^>]*role="alert"/,
+  );
+  assert.match(selectedUnavailable, /aria-hidden="true">❌<\/span>/);
+  assert.match(
+    selectedUnavailable,
+    /class="comfyui-instance-status-message">Worker 2 did not answer its health check\.<\/span>/,
+  );
   assert.match(
     selectedUnavailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
     /disabled/,
@@ -745,9 +765,63 @@ test("only the selected unavailable ComfyUI runtime blocks generation", () => {
     baseState.workflows[0],
     contract,
   );
-  assert.match(selectedAvailable, /RTX 3090 · 24 GB VRAM · Available/);
+  assert.match(selectedAvailable, /aria-hidden="true">✅<\/span>/);
+  assert.match(
+    selectedAvailable,
+    /class="comfyui-instance-status-message">RTX 3090 · 24 GB VRAM · Available/,
+  );
   assert.doesNotMatch(
     selectedAvailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
+    /disabled/,
+  );
+});
+
+test("ComfyUI runtime status uses compact loading and legacy configuration icons", () => {
+  const baseState = {
+    submitting: false,
+    workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello", "sampling.steps": 8 },
+    fieldErrors: {},
+    formError: null,
+  };
+  const loading = generationPanelMarkup(
+    {
+      ...baseState,
+      comfyuiInstancesStatus: "loading",
+      comfyuiInstances: [],
+      selectedComfyuiInstanceId: null,
+    },
+    baseState.workflows[0],
+    contract,
+  );
+  assert.match(loading, /aria-hidden="true">⏳<\/span>/);
+  assert.match(loading, /title="Checking configured runtimes…"[^>]*role="status"/);
+
+  const legacy = generationPanelMarkup(
+    {
+      ...baseState,
+      comfyuiInstancesStatus: "ready",
+      comfyuiInstanceConfigurationMode: "legacy",
+      comfyuiInstances: [
+        {
+          id: "default",
+          label: "Original",
+          description: "",
+          is_default: true,
+          available: true,
+        },
+      ],
+      selectedComfyuiInstanceId: "default",
+    },
+    baseState.workflows[0],
+    contract,
+  );
+  assert.match(legacy, /value="default" selected>Original<\/option>/);
+  assert.match(legacy, /aria-hidden="true">⚠️<\/span>/);
+  assert.match(legacy, /Only the original ComfyUI runtime is configured/);
+  assert.doesNotMatch(
+    legacy.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
     /disabled/,
   );
 });

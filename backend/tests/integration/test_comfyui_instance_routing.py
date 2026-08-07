@@ -57,6 +57,28 @@ def _instance_settings(settings_factory, primary: LiveFakeServer, worker: LiveFa
     )
 
 
+def test_legacy_instance_catalog_reports_friendly_fallback_without_private_urls(
+    settings_factory,
+    fake_services: LiveFakeServer,
+    fake_state,
+) -> None:
+    del fake_state
+    settings = settings_factory()
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="runtime.legacy")
+        response = client.get("/api/comfyui-instances")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["configuration_mode"] == "legacy"
+        assert payload["default_instance_id"] == "test-instance"
+        assert [(item["id"], item["label"]) for item in payload["items"]] == [
+            ("test-instance", "Original")
+        ]
+        serialized = json.dumps(payload)
+        assert fake_services.base_url not in serialized
+        assert "fixture-user" not in serialized
+
+
 def test_generation_operations_stay_on_the_pinned_comfyui_instance(
     settings_factory,
     fake_services: LiveFakeServer,
@@ -74,6 +96,7 @@ def test_generation_operations_stay_on_the_pinned_comfyui_instance(
                 lambda value: all(item["available"] for item in value["items"]),
             )
             assert instances["default_instance_id"] == "primary"
+            assert instances["configuration_mode"] == "explicit"
             assert [item["id"] for item in instances["items"]] == ["primary", "worker-2"]
             serialized_instances = json.dumps(instances)
             assert fake_services.base_url not in serialized_instances

@@ -10,7 +10,7 @@ from app.services.comfyui_instances import ComfyUIInstances
 from pydantic import ValidationError
 
 
-def test_legacy_single_instance_configuration_is_preserved() -> None:
+def test_legacy_single_instance_configuration_keeps_identity_with_friendly_label() -> None:
     settings = Settings(
         _env_file=None,
         test_mode=True,
@@ -22,10 +22,11 @@ def test_legacy_single_instance_configuration_is_preserved() -> None:
     )
 
     assert settings.comfyui_default_instance_id == "stable-home"
+    assert settings.comfyui_instance_configuration_mode == "legacy"
     assert [item.model_dump() for item in settings.configured_comfyui_instances] == [
         {
             "id": "stable-home",
-            "label": "stable-home",
+            "label": "Original",
             "description": None,
             "base_url": "http://comfy.test:8188",
             "ws_url": "ws://comfy.test:8188/ws",
@@ -60,6 +61,7 @@ def test_json_instance_configuration_selects_an_explicit_default(monkeypatch) ->
 
     settings = Settings(_env_file=None, test_mode=True)
 
+    assert settings.comfyui_instance_configuration_mode == "explicit"
     assert settings.default_comfyui_instance.label == "Primary ComfyUI — RTX 3090"
     assert [item.id for item in settings.configured_comfyui_instances] == [
         "primary",

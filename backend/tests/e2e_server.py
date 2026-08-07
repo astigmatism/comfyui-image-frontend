@@ -14,11 +14,13 @@ from tests.publication_fixtures import build_publication_bundle
 
 
 def main() -> None:
-    fake = LiveFakeServer()
-    fake.state.workflow_files.update(build_publication_bundle("image").files)
-    fake.state.workflow_files.update(build_publication_bundle("moody").files)
-    fake.state.slow_stage_delay = 2.0
-    fake.start()
+    primary = LiveFakeServer()
+    worker = LiveFakeServer()
+    primary.state.workflow_files.update(build_publication_bundle("image").files)
+    primary.state.workflow_files.update(build_publication_bundle("moody").files)
+    primary.state.slow_stage_delay = 2.0
+    primary.start()
+    worker.start()
     configured_data = os.getenv("CIF_E2E_DATA_DIR")
     data_dir = (
         Path(configured_data) if configured_data else Path(tempfile.mkdtemp(prefix="cif-e2e-"))
@@ -33,11 +35,26 @@ def main() -> None:
             session_secret="e2e-session-secret-material-0123456789abcdef",
             bootstrap_admin_username="admin",
             bootstrap_admin_temporary_password="E2EAdminTemporary123!",
-            comfyui_base_url=fake.base_url,
-            comfyui_ws_url=fake.ws_url,
+            comfyui_instances=[
+                {
+                    "id": "default",
+                    "label": "Original · RTX 3090",
+                    "description": "24 GB VRAM",
+                    "base_url": primary.base_url,
+                    "ws_url": primary.ws_url,
+                },
+                {
+                    "id": "worker-2",
+                    "label": "Worker 1 · RTX 3080",
+                    "description": "10 GB VRAM",
+                    "base_url": worker.base_url,
+                    "ws_url": worker.ws_url,
+                },
+            ],
+            comfyui_default_instance_id="default",
             comfyui_workflow_directory="workflows",
-            ollama_base_url=fake.base_url,
-            speech_to_text_url=f"{fake.base_url}/v1/audio/transcriptions",
+            ollama_base_url=primary.base_url,
+            speech_to_text_url=f"{primary.base_url}/v1/audio/transcriptions",
             speech_to_text_api_key="e2e-whisper-secret",
             frontend_dist=root / "frontend" / "dist",
             dispatch_poll_seconds=0.02,
@@ -53,7 +70,8 @@ def main() -> None:
             timeout_graceful_shutdown=settings.graceful_shutdown_timeout_seconds,
         )
     finally:
-        fake.stop()
+        worker.stop()
+        primary.stop()
         if remove_data:
             shutil.rmtree(data_dir, ignore_errors=True)
 

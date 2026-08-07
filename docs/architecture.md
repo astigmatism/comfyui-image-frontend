@@ -66,7 +66,7 @@ Content queries include both object ID and `owner_id`, returning not found for c
 
 `CIF_COMFYUI_INSTANCES` is a server-side JSON array. An entry has required `id`, `label`, and credential-free `base_url` fields plus optional `description`, `ws_url`, `user`, and `concurrency`. IDs are stable routing identities; labels and descriptions are safe presentation text. HTTP/WebSocket URLs and the optional ComfyUI user selector stay private. `CIF_COMFYUI_DEFAULT_INSTANCE_ID` names the initial execution choice and publication-catalog adapter; when omitted it resolves to the first entry. Per-entry concurrency falls back to `CIF_COMFYUI_CONCURRENCY`; both are restricted to 1 through 32.
 
-When the JSON list is absent, settings synthesize one entry from the legacy `CIF_COMFYUI_BASE_URL`, `CIF_COMFYUI_WS_URL`, `CIF_COMFYUI_INSTANCE_ID`, `CIF_COMFYUI_USER`, and `CIF_COMFYUI_CONCURRENCY` fields. This preserves existing source keys and single-instance deployment behavior. Once a list is adopted, the primary entry must reuse the old stable instance ID rather than inventing a new catalog identity.
+When the JSON list is absent, settings synthesize one entry named **Original** from the legacy `CIF_COMFYUI_BASE_URL`, `CIF_COMFYUI_WS_URL`, `CIF_COMFYUI_INSTANCE_ID`, `CIF_COMFYUI_USER`, and `CIF_COMFYUI_CONCURRENCY` fields. The safe instance-catalog response identifies this as `configuration_mode: legacy`, allowing the selector to distinguish a deliberate list from its one-target compatibility fallback. This preserves existing source keys and single-instance deployment behavior. Once a list is adopted, the primary entry must reuse the old stable instance ID rather than inventing a new catalog identity.
 
 ## Published-source discovery
 
