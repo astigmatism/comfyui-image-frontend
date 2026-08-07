@@ -395,6 +395,21 @@ test("runtime selector is a borderless single-line two-instance control", async 
   const row = page.locator(".comfyui-instance-field");
   const selector = page.getByLabel("Runtime", { exact: true });
   await expect(row).toBeVisible();
+  const actionOrder = await page.locator(".generation-actions").evaluate((element) =>
+    Array.from(element.children).map((child) =>
+      child.id ||
+      (child.classList.contains("auto-generation-options")
+        ? "auto-generation-options"
+        : child.classList.contains("comfyui-instance-field")
+          ? "comfyui-instance-field"
+          : "unknown"),
+    ),
+  );
+  expect(actionOrder).toEqual([
+    "generate-button",
+    "auto-generation-options",
+    "comfyui-instance-field",
+  ]);
   await expect(selector).toHaveValue("default");
   await expect(selector.locator("option")).toHaveText([
     "Original · RTX 3090 · 24 GB VRAM",

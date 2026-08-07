@@ -629,7 +629,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
 });
 
-test("generation panel places the configured ComfyUI runtime immediately above Generate", () => {
+test("generation panel places the configured ComfyUI runtime below generation controls", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -669,11 +669,11 @@ test("generation panel places the configured ComfyUI runtime immediately above G
   const sourceIndex = html.indexOf('id="workflow-source"');
   const promptIndex = html.indexOf('data-control-block="prompt.text"');
   assert.ok(
-    runtimeIndex >= 0 &&
-      runtimeIndex < generateIndex &&
+    generateIndex >= 0 &&
       generateIndex < autoGenerateIndex &&
       autoGenerateIndex < creativeDirectionIndex &&
-      creativeDirectionIndex < sourceIndex &&
+      creativeDirectionIndex < runtimeIndex &&
+      runtimeIndex < sourceIndex &&
       sourceIndex < promptIndex,
   );
   assert.match(html, /<label for="comfyui-instance">Runtime<\/label>/);
@@ -819,7 +819,11 @@ test("ComfyUI runtime status uses compact loading and legacy configuration icons
   );
   assert.match(legacy, /value="default" selected>Original<\/option>/);
   assert.match(legacy, /aria-hidden="true">⚠️<\/span>/);
-  assert.match(legacy, /Only the original ComfyUI runtime is configured/);
+  assert.match(
+    legacy,
+    /Only the original ComfyUI runtime is configured for this deployment\./,
+  );
+  assert.doesNotMatch(legacy, /Add CIF_COMFYUI_INSTANCES/);
   assert.doesNotMatch(
     legacy.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
     /disabled/,

@@ -138,7 +138,6 @@ export function generationPanelMarkup(state, profile, contract) {
     <div class="panel-layout">
       <div class="panel-fixed">
         <div class="generation-actions">
-          ${comfyuiInstanceSelectorMarkup(state)}
           <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (selectedTargetCount > 1 ? `Queueing ${selectedTargetCount}…` : "Queueing…") : "Generate"}</button>
           <div class="auto-generation-options">
             <label class="switch auto-generation-switch" for="auto-generate">
@@ -151,6 +150,7 @@ export function generationPanelMarkup(state, profile, contract) {
               <em>Creative Direction</em>
             </label>
           </div>
+          ${comfyuiInstanceSelectorMarkup(state)}
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}
         ${activeSourceModelChoicesMarkup(
@@ -310,7 +310,7 @@ function comfyuiInstanceStatus(state, selected) {
       kind: "warning",
       role: "status",
       message:
-        "Only the original ComfyUI runtime is configured. Add CIF_COMFYUI_INSTANCES to make workers selectable.",
+        "Only the original ComfyUI runtime is configured for this deployment.",
     };
   }
   const description = String(selected.description || "").trim();

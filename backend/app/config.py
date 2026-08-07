@@ -130,8 +130,11 @@ class Settings(BaseSettings):
     comfyui_base_url: str = "http://127.0.0.1:8188"
     comfyui_ws_url: str | None = None
     comfyui_instance_id: str = "default"
+    comfyui_label: str = Field(default="Original", min_length=1, max_length=120)
+    comfyui_description: str | None = Field(default=None, max_length=240)
     comfyui_user: str | None = None
     comfyui_instances: list[ComfyUIInstanceConfig] | None = None
+    comfyui_additional_instances: list[ComfyUIInstanceConfig] = Field(default_factory=list)
     comfyui_default_instance_id: str | None = None
     comfyui_workflow_directory: str = "workflows"
     comfyui_concurrency: int = Field(default=1, ge=1, le=32)
@@ -200,9 +203,17 @@ class Settings(BaseSettings):
     def validate_comfyui_default_instance_id(cls, value: str | None) -> str | None:
         return _validate_comfyui_instance_id(value) if value is not None else None
 
-    @field_validator("comfyui_user")
+    @field_validator("comfyui_label")
     @classmethod
-    def normalize_comfyui_user(cls, value: str | None) -> str | None:
+    def normalize_comfyui_label(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("comfyui_label must not be empty")
+        return normalized
+
+    @field_validator("comfyui_description", "comfyui_user")
+    @classmethod
+    def normalize_optional_comfyui_text(cls, value: str | None) -> str | None:
         normalized = value.strip() if value else None
         return normalized or None
 
@@ -214,17 +225,21 @@ class Settings(BaseSettings):
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
         configured_instances = self.comfyui_instances
-        self._comfyui_instances_explicitly_configured = configured_instances is not None
+        self._comfyui_instances_explicitly_configured = configured_instances is not None or bool(
+            self.comfyui_additional_instances
+        )
         if configured_instances is None:
             configured_instances = [
                 ComfyUIInstanceConfig(
                     id=self.comfyui_instance_id,
-                    label="Original",
+                    label=self.comfyui_label,
+                    description=self.comfyui_description,
                     base_url=self.comfyui_base_url,
                     ws_url=self.comfyui_ws_url,
                     user=self.comfyui_user,
                     concurrency=self.comfyui_concurrency,
-                )
+                ),
+                *self.comfyui_additional_instances,
             ]
         if not configured_instances:
             raise ValueError("comfyui_instances must configure at least one instance")

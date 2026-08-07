@@ -8,14 +8,15 @@ services:
     ports:
       - "8000:8000"
     env_file:
+      # Non-secret deployment defaults supply both household ComfyUI runtimes.
+      # The private .env is loaded last so an explicit operator configuration wins.
+      - deployment/comfyui-instances.env
       - .env
     volumes:
       - application-data:/data
     # Allows host.docker.internal URLs to reach services running directly on
-    # the Docker host. The ComfyUI service DNS names in .env.example instead
-    # require this frontend service to join their existing user-defined Docker
-    # network. Add that network to this service/declaration without restarting
-    # or recreating either ComfyUI container; see README.md.
+    # the Docker host. The household worker default uses its supplied LAN URL
+    # and therefore does not require an additional Docker network attachment.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
