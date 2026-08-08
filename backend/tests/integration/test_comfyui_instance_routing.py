@@ -88,6 +88,9 @@ def test_generation_operations_stay_on_the_pinned_comfyui_instance(
     fake_state.workflow_files.update(publication.files)
     with LiveFakeServer() as worker:
         worker.state.reset_runtime()
+        # Keep the cancellation fixture running while the independent primary lane
+        # completes, even when the full suite adds scheduler contention.
+        worker.state.slow_stage_delay = 2.0
         settings = _instance_settings(settings_factory, fake_services, worker)
         with TestClient(create_app(settings)) as client:
             provision_user(client, username="runtime.router")

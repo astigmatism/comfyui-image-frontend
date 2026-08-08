@@ -138,7 +138,7 @@ python3 scripts/generate_traceability.py --check
 
 ## Optional live ComfyUI verification
 
-Automated tests never require household services. For this multi-runtime deployment, live verification is intentionally limited to `GET /system_stats` and `GET /object_info` from inside the frontend container. These calls verify Docker DNS, HTTP reachability, device identity, and compatible node counts without uploading inputs, submitting a prompt, inspecting or changing either queue, interrupting work, reading history, or retrieving outputs:
+Automated tests never require household services. The container smoke test inspects settings inside the built image and fails unless an overridden stable primary identity is extended by `worker-2`; it also verifies that a full operator list remains authoritative and that an explicit empty additional list opts out cleanly. For this multi-runtime deployment, live verification is intentionally limited to `GET /system_stats` and `GET /object_info` from inside the frontend container. These calls verify HTTP reachability, device identity, and compatible node counts without uploading inputs, submitting a prompt, inspecting or changing either queue, interrupting work, reading history, or retrieving outputs:
 
 ```sh
 docker compose -f compose.example.yml exec -T comfyui-image-frontend python - <<'PY'

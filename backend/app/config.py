@@ -225,8 +225,8 @@ class Settings(BaseSettings):
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
         configured_instances = self.comfyui_instances
-        self._comfyui_instances_explicitly_configured = configured_instances is not None or bool(
-            self.comfyui_additional_instances
+        self._comfyui_instances_explicitly_configured = configured_instances is not None or (
+            "comfyui_additional_instances" in self.model_fields_set
         )
         if configured_instances is None:
             configured_instances = [

@@ -55,6 +55,7 @@ async function selectPublishedSource(page, name) {
   await option.check();
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
+  await expect(selector).toBeFocused();
 }
 
 async function generateAndExpectAccepted(page) {

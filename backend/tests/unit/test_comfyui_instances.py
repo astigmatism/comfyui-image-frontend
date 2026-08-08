@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.errors import AppError
 from app.schemas import GenerationCreate
 from app.services.comfyui_instances import ComfyUIInstances
@@ -128,6 +128,95 @@ def test_standard_compose_defaults_extend_the_existing_household_primary(
     defaults = defaults_file.read_text(encoding="utf-8")
     assert "CIF_COMFYUI_ADDITIONAL_INSTANCES=" in defaults
     assert "\nCIF_COMFYUI_INSTANCES=" not in defaults
+
+
+def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    for name in (
+        "CIF_COMFYUI_INSTANCES",
+        "CIF_COMFYUI_ADDITIONAL_INSTANCES",
+        "CIF_COMFYUI_DEFAULT_INSTANCE_ID",
+        "CIF_COMFYUI_LABEL",
+        "CIF_COMFYUI_DESCRIPTION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    defaults_file = REPOSITORY_ROOT / "deployment" / "comfyui-instances.env"
+    image_defaults: dict[str, str] = {}
+    for raw_line in defaults_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, value = line.split("=", 1)
+        image_defaults[name] = value
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CIF_COMFYUI_INSTANCE_ID", "persisted-home")
+    monkeypatch.setenv("CIF_COMFYUI_BASE_URL", "http://persisted-primary.test:8188")
+    monkeypatch.setenv("CIF_COMFYUI_WS_URL", "ws://persisted-primary.test:8188/ws")
+    monkeypatch.setenv("CIF_COMFYUI_USER", "persisted-user")
+    monkeypatch.setenv("CIF_COMFYUI_CONCURRENCY", "4")
+    monkeypatch.setenv("CIF_TEST_MODE", "true")
+
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert settings.comfyui_instance_configuration_mode == "explicit"
+    assert settings.comfyui_default_instance_id == "persisted-home"
+    assert [item.id for item in settings.configured_comfyui_instances] == [
+        "persisted-home",
+        "worker-2",
+    ]
+    primary, worker = settings.configured_comfyui_instances
+    assert primary.model_dump() == {
+        "id": "persisted-home",
+        "label": "Original · RTX 3090",
+        "description": "24 GB VRAM",
+        "base_url": "http://persisted-primary.test:8188",
+        "ws_url": "ws://persisted-primary.test:8188/ws",
+        "user": "persisted-user",
+        "concurrency": 4,
+    }
+    assert (worker.id, worker.label, worker.base_url) == (
+        "worker-2",
+        "Worker 1 · RTX 3080",
+        "http://192.168.1.21:8189",
+    )
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert f'ENV CIF_COMFYUI_LABEL="{image_defaults["CIF_COMFYUI_LABEL"]}"' in dockerfile
+    assert (
+        f'ENV CIF_COMFYUI_DESCRIPTION="{image_defaults["CIF_COMFYUI_DESCRIPTION"]}"' in dockerfile
+    )
+    escaped_workers = image_defaults["CIF_COMFYUI_ADDITIONAL_INSTANCES"].replace('"', '\\"')
+    assert f'ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="{escaped_workers}"' in dockerfile
+
+
+def test_explicit_empty_additional_instances_is_a_single_runtime_opt_out(monkeypatch) -> None:
+    monkeypatch.delenv("CIF_COMFYUI_INSTANCES", raising=False)
+    monkeypatch.delenv("CIF_COMFYUI_DEFAULT_INSTANCE_ID", raising=False)
+    monkeypatch.setenv("CIF_COMFYUI_ADDITIONAL_INSTANCES", "[]")
+
+    settings = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_instance_id="intentional-single",
+    )
+
+    assert settings.comfyui_instance_configuration_mode == "explicit"
+    assert [item.id for item in settings.configured_comfyui_instances] == ["intentional-single"]
+
+
+def test_updater_verifies_the_running_container_is_not_in_legacy_mode() -> None:
+    updater = (REPOSITORY_ROOT / "update_and_restart").read_text(encoding="utf-8")
+
+    verification_index = updater.index("comfyui_instance_configuration_mode")
+    success_index = updater.index('echo "$SERVICE is updated and healthy."')
+    assert '"${compose[@]}" exec -T "$SERVICE" python -c' in updater
+    assert verification_index < success_index
 
 
 def test_private_env_can_override_standard_compose_instance_defaults(

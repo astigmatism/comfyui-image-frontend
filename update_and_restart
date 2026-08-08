@@ -71,6 +71,13 @@ git pull --ff-only
 echo "Building and starting $SERVICE..."
 "${compose[@]}" up -d --build --wait --wait-timeout "$START_TIMEOUT" "$SERVICE"
 
+echo "Verifying explicit ComfyUI runtime configuration..."
+if ! "${compose[@]}" exec -T "$SERVICE" python -c \
+  'from app.config import get_settings; raise SystemExit(0 if get_settings().comfyui_instance_configuration_mode == "explicit" else 1)'
+then
+  die "Frontend started without an explicit ComfyUI runtime configuration."
+fi
+
 container_may_be_stopped=0
 trap - EXIT INT TERM
 echo "$SERVICE is updated and healthy."
