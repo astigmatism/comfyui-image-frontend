@@ -502,7 +502,7 @@ ComfyUI file references are never accepted from callers. The worker extracts onl
 | `GET` | `/api/prompt-assistant/status` | Availability without exposing server/model inventory |
 | `POST` | `/api/prompt-assistant/compose` | Explicit `refine` or `create` operation |
 
-Composition returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation. Prompt Assistant is never invoked implicitly by generation or recall.
+Composition accepts `mode`, `prompt`, `creative_direction`, and an optional boolean `think` that defaults to `true` for compatibility. It returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation. Prompt Assistant is never invoked implicitly by generation or recall.
 
 The status route reads the background health monitor's cached row and never contacts Ollama. A missing or stale check reports unavailable; an old success is not trusted indefinitely. Compose remains authoritative and can return a safe 503 if Ollama fails after a recent successful health check.
 

@@ -601,6 +601,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
     available: true,
     mode: "create",
     creativeDirection: "Moody <light>",
+    think: false,
     historicalModel: "model-one",
   });
   assert.match(html, /<h2 id="prompt-editor-title">Focused prompt editor<\/h2>/);
@@ -618,6 +619,13 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /class="prompt-editor-assistant-action-row"/);
   assert.match(html, /Refine Current Prompt/);
   assert.match(html, /New Prompt from Creative Direction/);
+  assert.match(html, /id="prompt-editor-thinking-mode" type="checkbox"/);
+  assert.doesNotMatch(html, /id="prompt-editor-thinking-mode" type="checkbox" checked/);
+  assert.ok(
+    html.indexOf('name="prompt-editor-assistant-mode" value="create"') <
+      html.indexOf('id="prompt-editor-thinking-mode"'),
+  );
+  assert.match(html, /Thinking mode/);
   assert.doesNotMatch(html, /Historical composition used model-one|prompt-editor-assistant-message/);
   assert.match(html, /data-action="compose-prompt-editor"/);
   assert.match(html, /Apply Creative Direction/);
@@ -627,6 +635,12 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   );
   assert.match(html, /data-action="cancel-prompt-editor">Cancel<\/button>/);
   assert.match(html, /data-action="apply-prompt-editor">Apply<\/button>/);
+});
+
+test("focused prompt editor enables thinking by default", () => {
+  const html = promptEditorMarkup("prompt.text", "Prompt", "", {});
+
+  assert.match(html, /id="prompt-editor-thinking-mode" type="checkbox" checked/);
 });
 
 test("generation panel places the configured ComfyUI runtime below generation controls", () => {

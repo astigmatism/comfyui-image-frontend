@@ -755,6 +755,26 @@ def test_prompt_assistant_rejects_a_response_without_thinking_output(
     assert fake_state.ollama_calls[-1]["think"] is True
 
 
+def test_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_state) -> None:
+    provision_user(app_client, username="thinking.disabled")
+    _cache_ollama_health(app_client, available=True)
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "a portrait in cool light",
+            "creative_direction": "make the light warmer",
+            "think": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "a portrait in cool light, make the light warmer"
+    assert fake_state.ollama_calls[-1]["think"] is False
+
+
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:
     provision_user(app_client)
     fake_state.ollama_available = False

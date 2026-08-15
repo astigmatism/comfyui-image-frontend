@@ -65,3 +65,13 @@ def test_refine_sampling_remains_deterministic() -> None:
     payload = _generate_payload(mode="refine", instruction="refine this", attempt=2)
 
     assert payload["options"] == {"temperature": 0.1, "seed": 0, "num_predict": 512}
+
+
+def test_thinking_can_be_disabled_per_request() -> None:
+    payload = _generate_payload(
+        mode="refine",
+        instruction="refine this",
+        think=False,
+    )
+
+    assert payload["think"] is False

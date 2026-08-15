@@ -2903,9 +2903,21 @@ dialog::backdrop {
   gap: 8px 20px;
 }
 
-.prompt-editor-assistant-mode-options label {
+.prompt-editor-assistant-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+}
+
+.prompt-editor-assistant-mode-options label,
+.prompt-editor-thinking-option {
   color: var(--text-soft);
   font-size: 0.78rem;
+}
+
+.prompt-editor-thinking-option {
+  white-space: nowrap;
 }
 
 .prompt-editor-assistant-action-row .button {

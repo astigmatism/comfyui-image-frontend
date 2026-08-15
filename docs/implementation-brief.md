@@ -139,7 +139,7 @@ Implement a backend Ollama adapter and the collapsed Prompt Assistant:
 
 - Server-configured base URL.
 - Active-only router model validation, with no user-facing model control.
-- Thinking-enabled generation requests, safe structured final-prompt extraction, and effective-model provenance from the Ollama response.
+- Per-request thinking control in the focused prompt editor, safe structured final-prompt extraction, and effective-model provenance from the Ollama response.
 - Creative direction text area.
 - Compact mode choice: Refine current prompt or Create from creative direction.
 - Explicit Compose Prompt action.

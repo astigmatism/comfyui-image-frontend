@@ -1257,12 +1257,16 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   const focusedCreateMode = dialog.getByRole("radio", {
     name: "New Prompt from Creative Direction",
   });
+  const focusedThinkingMode = dialog.getByRole("checkbox", { name: "Thinking mode" });
   await expect(focusedPrompt).toHaveValue("draft that should remain");
   await expect(focusedDirection).toHaveValue("column direction");
   await expect(focusedCreateMode).toBeChecked();
+  await expect(focusedThinkingMode).toBeChecked();
+  await expect(columnAssistant.getByRole("checkbox", { name: "Thinking mode" })).toHaveCount(0);
   await focusedPrompt.fill("this canceled draft should not be applied");
   await focusedDirection.fill("canceled direction");
   await focusedRefineMode.check();
+  await focusedThinkingMode.uncheck();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).not.toHaveAttribute("open", "");
   await expect(prompt).toHaveValue("draft that should remain");
@@ -1274,6 +1278,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await openEditor.click();
   await expect(focusedDirection).toHaveValue("column direction");
   await expect(focusedCreateMode).toBeChecked();
+  await expect(focusedThinkingMode).toBeChecked();
   await focusedPrompt.fill(longPrompt);
   await expect(dialog.locator("[data-prompt-word-count]")).toHaveText("120 words");
   await expect(dialog.locator("[data-prompt-character-count]")).toHaveText(
@@ -1281,7 +1286,14 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   );
   await focusedDirection.fill("focused assistant direction");
   await focusedRefineMode.check();
+  await focusedThinkingMode.uncheck();
+  const focusedCompositionRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST",
+  );
   await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  expect((await focusedCompositionRequest).postDataJSON().think).toBe(false);
   const composedPrompt = `${longPrompt}, focused assistant direction`;
   await expect(focusedPrompt).toHaveValue(composedPrompt);
   await expect(prompt).toHaveValue("draft that should remain");
@@ -1292,6 +1304,9 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(columnDirection).toHaveValue("focused assistant direction");
   await expect(columnAssistant.getByRole("radio", { name: "Refine Current Prompt" })).toBeChecked();
   await expect(openEditor).toBeFocused();
+  await openEditor.click();
+  await expect(focusedThinkingMode).not.toBeChecked();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
 test("voice input records and inserts transcripts at the cursor in every prompt surface", async ({

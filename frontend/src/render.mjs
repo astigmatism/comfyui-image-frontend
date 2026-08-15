@@ -1326,6 +1326,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
   const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
   const assistantMode = promptAssistant.mode === "create" ? "create" : "refine";
   const creativeDirection = String(promptAssistant.creativeDirection ?? "");
+  const thinkingEnabled = promptAssistant.think !== false;
   const assistantAvailable = promptAssistant.available !== false;
   return `<form class="dialog-frame prompt-editor-frame" method="dialog">
     <header class="dialog-header prompt-editor-header">
@@ -1346,7 +1347,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
         <div class="prompt-editor-assistant-controls">
           ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative Direction", creativeDirection, 3)}
           <div class="prompt-editor-assistant-action-row">
-            <div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div>
+            <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div><label class="prompt-editor-thinking-option"><input id="prompt-editor-thinking-mode" type="checkbox" ${thinkingEnabled ? "checked" : ""} /> Thinking mode</label></div>
             <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button>
           </div>
         </div>

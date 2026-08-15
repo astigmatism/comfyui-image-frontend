@@ -144,8 +144,9 @@ def render() -> str:
             "current deployment instead configures only the Ollama-compatible router base "
             "URL, verifies that `/api/tags` exposes a usable model, omits `model` from "
             "`/api/generate` so the router selects its active model, and records the effective "
-            "model returned in the response. Every composition sends `think: true`; if the "
-            "router places its schema-constrained final object in `thinking`, the adapter "
+            "model returned in the response. Thinking defaults on, while the focused prompt "
+            "editor can send `think: false` for an individual composition. When enabled, if "
+            "the router places its schema-constrained final object in `thinking`, the adapter "
             "extracts only that structured prompt and never promotes unstructured reasoning. "
             "`CIF_OLLAMA_MODEL` is not configured, and all Ollama traffic remains backend-only "
             "through the router.",

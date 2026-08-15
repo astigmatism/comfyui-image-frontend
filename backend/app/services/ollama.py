@@ -89,6 +89,7 @@ class OllamaAdapter:
         mode: Literal["refine", "create"],
         prompt: str,
         direction: str,
+        think: bool = True,
         excluded_prompts: Sequence[str] = (),
     ) -> ComposeResult:
         if not self._client:
@@ -123,6 +124,7 @@ class OllamaAdapter:
             payload = _generate_payload(
                 mode=mode,
                 instruction=instruction,
+                think=think,
                 attempt=attempt,
                 seed=create_seed + attempt if create_seed is not None else None,
             )
@@ -138,7 +140,7 @@ class OllamaAdapter:
                 ) from exc
             data = received if isinstance(received, dict) else {}
             responses.append(data)
-            if not _has_thinking_output(data):
+            if think and not _has_thinking_output(data):
                 raise AppError(
                     "ollama_invalid_response",
                     "Prompt Assistant did not return thinking output.",
@@ -216,6 +218,7 @@ def _generate_payload(
     *,
     mode: str,
     instruction: str,
+    think: bool = True,
     attempt: int = 0,
     seed: int | None = None,
 ) -> dict[str, Any]:
@@ -236,7 +239,7 @@ def _generate_payload(
     return {
         "prompt": instruction,
         "stream": False,
-        "think": True,
+        "think": think,
         "format": {
             "type": "object",
             "properties": {"prompt": {"type": "string"}},

@@ -369,6 +369,7 @@ class PromptComposeRequest(APIModel):
     mode: Literal["refine", "create"]
     prompt: str = ""
     creative_direction: str
+    think: bool = True
 
 
 class PromptComposeResponse(APIModel):

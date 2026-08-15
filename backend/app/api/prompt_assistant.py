@@ -117,6 +117,7 @@ async def compose(
             mode=payload.mode,
             prompt=payload.prompt,
             direction=payload.creative_direction,
+            think=payload.think,
             excluded_prompts=excluded_prompts,
         )
     except AppError as exc:

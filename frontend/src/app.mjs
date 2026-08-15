@@ -88,7 +88,13 @@ const state = {
   pendingSourceMigration: null,
   selectedPreset: null,
   compositionId: null,
-  promptAssistant: { mode: "refine", creativeDirection: "", available: false, message: null },
+  promptAssistant: {
+    mode: "refine",
+    creativeDirection: "",
+    think: true,
+    available: false,
+    message: null,
+  },
   speechToText: { available: false, message: null },
   generations: [],
   nextCursor: null,
@@ -900,6 +906,7 @@ function applyPromptEditor() {
   const assistantMode = dialog?.querySelector(
     '[name="prompt-editor-assistant-mode"]:checked',
   );
+  const assistantThinking = dialog?.querySelector("#prompt-editor-thinking-mode");
   const controlId = dialog?.dataset.promptControlId;
   const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === controlId);
   if (!dialog?.open || !editor || !controlId || !control) return;
@@ -910,6 +917,7 @@ function applyPromptEditor() {
   state.formError = null;
   state.promptAssistant.creativeDirection = creativeDirection?.value || "";
   state.promptAssistant.mode = assistantMode?.value === "create" ? "create" : "refine";
+  state.promptAssistant.think = assistantThinking?.checked !== false;
   preparedAutoGenerateAssistantFingerprint = null;
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
@@ -3278,10 +3286,20 @@ async function composePromptEditor(button) {
   const editor = dialog?.querySelector("[data-prompt-editor-input]");
   const direction = dialog?.querySelector("#prompt-editor-creative-direction");
   const checkedMode = dialog?.querySelector('[name="prompt-editor-assistant-mode"]:checked');
+  const thinkingMode = dialog?.querySelector("#prompt-editor-thinking-mode");
   const controlId = dialog?.dataset.promptControlId;
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
-  if (!dialog || !editor || !direction || !checkedMode || !controlId || !requestSourceKey) return;
+  if (
+    !dialog ||
+    !editor ||
+    !direction ||
+    !checkedMode ||
+    !thinkingMode ||
+    !controlId ||
+    !requestSourceKey
+  )
+    return;
 
   const requestMode = checkedMode.value === "create" ? "create" : "refine";
   const requestPrompt = editor.value;
@@ -3295,6 +3313,7 @@ async function composePromptEditor(button) {
         mode: requestMode,
         prompt: requestPrompt,
         creative_direction: requestDirection,
+        think: thinkingMode.checked,
       }),
     });
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {

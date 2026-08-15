@@ -738,7 +738,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             effective_model = state.models[0]
         response_text = json.dumps({"prompt": composed})
         thinking_text = ""
-        if state.ollama_include_thinking:
+        if state.ollama_include_thinking and payload.get("think") is not False:
             thinking_text = (
                 response_text
                 if state.ollama_response_in_thinking
