@@ -1317,6 +1317,7 @@ function promptAssistantMarkup() {
       ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" /> New Prompt from Creative Direction</label></div>
       <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
+      <label class="prompt-assistant-thinking-option"><input id="prompt-assistant-thinking-mode" type="checkbox" checked /> Thinking mode</label>
     </div>
   </section>`;
 }

@@ -354,6 +354,7 @@ test("auto-generation fingerprints non-empty Prompt Assistant input for one prep
     mode: "refine",
     creativeDirection: "cinematic light",
     prompt: "a lighthouse",
+    think: true,
   });
   assert.ok(refine);
   assert.equal(
@@ -381,6 +382,16 @@ test("auto-generation fingerprints non-empty Prompt Assistant input for one prep
       mode: "refine",
       creativeDirection: "cinematic light",
       prompt: "a mountain",
+    }),
+  );
+  assert.notEqual(
+    refine,
+    autoGenerationPromptAssistantFingerprint({
+      sourceKey: "landscape",
+      mode: "refine",
+      creativeDirection: "cinematic light",
+      prompt: "a lighthouse",
+      think: false,
     }),
   );
 });

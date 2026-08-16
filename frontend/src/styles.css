@@ -2911,12 +2911,14 @@ dialog::backdrop {
 }
 
 .prompt-editor-assistant-mode-options label,
-.prompt-editor-thinking-option {
+.prompt-editor-thinking-option,
+.prompt-assistant-thinking-option {
   color: var(--text-soft);
   font-size: 0.78rem;
 }
 
-.prompt-editor-thinking-option {
+.prompt-editor-thinking-option,
+.prompt-assistant-thinking-option {
   white-space: nowrap;
 }
 

@@ -447,6 +447,7 @@ export function autoGenerationPromptAssistantFingerprint({
   mode,
   creativeDirection,
   prompt,
+  think = true,
 }) {
   const direction = String(creativeDirection || "");
   if (!direction.trim()) return null;
@@ -455,6 +456,7 @@ export function autoGenerationPromptAssistantFingerprint({
     mode === "create" ? "create" : "refine",
     direction,
     String(prompt || ""),
+    think !== false,
   ]);
 }
 

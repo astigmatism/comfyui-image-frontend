@@ -594,6 +594,12 @@ test("prompt is contract-rendered with helper text removed and Creative Directio
   assert.match(html, /Refine Current Prompt/);
   assert.match(html, /New Prompt from Creative Direction/);
   assert.match(html, /Apply Creative Direction/);
+  assert.match(html, /id="prompt-assistant-thinking-mode" type="checkbox" checked/);
+  assert.match(html, /Thinking mode/);
+  assert.ok(
+    html.indexOf('data-action="compose-prompt"') <
+      html.indexOf('id="prompt-assistant-thinking-mode"'),
+  );
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {

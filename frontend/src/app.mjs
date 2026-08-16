@@ -364,6 +364,12 @@ async function handleChange(event) {
     scheduleAutoGenerate();
     return;
   }
+  if (element.id === "prompt-assistant-thinking-mode") {
+    state.promptAssistant.think = element.checked;
+    preparedAutoGenerateAssistantFingerprint = null;
+    scheduleAutoGenerate();
+    return;
+  }
   if (element.matches("[data-source-draft-key]")) {
     updateSourcePickerDraftSelection(element.dataset.sourceDraftKey, element.checked);
     return;
@@ -2541,6 +2547,8 @@ function renderPanel() {
     direction.value = state.promptAssistant.creativeDirection || "";
     const mode = assistant.querySelector(`[name=assistant-mode][value=${state.promptAssistant.mode}]`);
     if (mode) mode.checked = true;
+    const thinkingMode = assistant.querySelector("#prompt-assistant-thinking-mode");
+    if (thinkingMode) thinkingMode.checked = state.promptAssistant.think !== false;
   }
   syncPromptAssistantAction();
   restorePanelView(panel, panelView);
@@ -2563,22 +2571,26 @@ function syncPromptAssistantDraftFromPanel() {
   if (!assistant) return;
   const direction = assistant.querySelector("#creative-direction");
   const mode = assistant.querySelector('[name="assistant-mode"]:checked');
+  const thinkingMode = assistant.querySelector("#prompt-assistant-thinking-mode");
   const automaticCreativeDirection = document.querySelector(
     "#auto-generate-creative-direction",
   );
   const nextDirection = direction?.value ?? state.promptAssistant.creativeDirection ?? "";
   const nextMode = mode?.value === "create" ? "create" : "refine";
+  const nextThinkingMode = thinkingMode?.checked ?? state.promptAssistant.think !== false;
   const nextAutomaticCreativeDirection =
     automaticCreativeDirection?.checked ?? state.autoGenerateCreativeDirection;
   if (
     nextDirection !== state.promptAssistant.creativeDirection ||
     nextMode !== state.promptAssistant.mode ||
+    nextThinkingMode !== (state.promptAssistant.think !== false) ||
     nextAutomaticCreativeDirection !== state.autoGenerateCreativeDirection
   ) {
     preparedAutoGenerateAssistantFingerprint = null;
   }
   state.promptAssistant.creativeDirection = nextDirection;
   state.promptAssistant.mode = nextMode;
+  state.promptAssistant.think = nextThinkingMode;
   state.autoGenerateCreativeDirection = nextAutomaticCreativeDirection;
 }
 
@@ -2742,6 +2754,7 @@ function currentAutoGenerateAssistantFingerprint() {
     mode: state.promptAssistant.mode,
     creativeDirection: state.promptAssistant.creativeDirection,
     prompt: promptInput ? state.parameters[promptInput.id] : "",
+    think: state.promptAssistant.think !== false,
   });
 }
 
@@ -3211,6 +3224,7 @@ async function composePrompt(button, { automatic = false } = {}) {
   const requestMode = state.promptAssistant.mode;
   const requestPrompt = state.parameters[promptInput.id] || "";
   const requestDirection = state.promptAssistant.creativeDirection || "";
+  const requestThink = state.promptAssistant.think !== false;
   promptCompositionRequests += 1;
   syncPromptAssistantAction();
   try {
@@ -3220,6 +3234,7 @@ async function composePrompt(button, { automatic = false } = {}) {
         mode: requestMode,
         prompt: requestPrompt,
         creative_direction: requestDirection,
+        think: requestThink,
       }),
     });
     if (
@@ -3229,7 +3244,8 @@ async function composePrompt(button, { automatic = false } = {}) {
           !state.autoGenerateCreativeDirection ||
           (state.parameters[promptInput.id] || "") !== requestPrompt ||
           state.promptAssistant.mode !== requestMode ||
-          state.promptAssistant.creativeDirection !== requestDirection))
+          state.promptAssistant.creativeDirection !== requestDirection ||
+          (state.promptAssistant.think !== false) !== requestThink))
     ) {
       if (!automatic) {
         toast("Prompt composition finished after the source changed and was not applied.");
@@ -3245,7 +3261,8 @@ async function composePrompt(button, { automatic = false } = {}) {
       state.autoGenerate &&
       state.autoGenerateCreativeDirection &&
       state.promptAssistant.mode === requestMode &&
-      state.promptAssistant.creativeDirection === requestDirection
+      state.promptAssistant.creativeDirection === requestDirection &&
+      (state.promptAssistant.think !== false) === requestThink
     ) {
       preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }

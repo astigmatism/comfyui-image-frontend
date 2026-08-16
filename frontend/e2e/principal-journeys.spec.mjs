@@ -1242,6 +1242,9 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   const columnCreateMode = columnAssistant.getByRole("radio", {
     name: "New Prompt from Creative Direction",
   });
+  const columnThinkingMode = columnAssistant.getByRole("checkbox", {
+    name: "Thinking mode",
+  });
   await columnDirection.fill("column direction");
   await columnCreateMode.check();
   await prompt.fill("draft that should remain");
@@ -1262,7 +1265,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(focusedDirection).toHaveValue("column direction");
   await expect(focusedCreateMode).toBeChecked();
   await expect(focusedThinkingMode).toBeChecked();
-  await expect(columnAssistant.getByRole("checkbox", { name: "Thinking mode" })).toHaveCount(0);
+  await expect(columnThinkingMode).toBeChecked();
   await focusedPrompt.fill("this canceled draft should not be applied");
   await focusedDirection.fill("canceled direction");
   await focusedRefineMode.check();
@@ -1272,6 +1275,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(prompt).toHaveValue("draft that should remain");
   await expect(columnDirection).toHaveValue("column direction");
   await expect(columnCreateMode).toBeChecked();
+  await expect(columnThinkingMode).toBeChecked();
   await expect(openEditor).toBeFocused();
 
   const longPrompt = Array.from({ length: 60 }, () => "cinematic detail").join(" ");
@@ -1307,6 +1311,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(prompt).toHaveValue(composedPrompt);
   await expect(columnDirection).toHaveValue("focused assistant direction");
   await expect(columnCreateMode).toBeChecked();
+  await expect(columnThinkingMode).not.toBeChecked();
   await expect(openEditor).toBeFocused();
   await openEditor.click();
   await expect(focusedThinkingMode).not.toBeChecked();
@@ -2211,19 +2216,24 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   const applyCreativeDirection = page.locator(
     '#prompt-assistant [data-action="compose-prompt"]',
   );
+  const thinkingMode = page.locator("#prompt-assistant-thinking-mode");
   const generate = page.locator("#generate-button");
   const composedPrompt = "a crimson fox beneath moonlit pines";
 
   await prompt.fill("the prompt that must be replaced");
   await direction.fill("a crimson fox beneath moonlit pines");
   await createMode.check();
+  await expect(thinkingMode).toBeChecked();
+  await thinkingMode.uncheck();
   await page.evaluate(() => {
     const promptElement = document.querySelector('[data-control-id="prompt"]');
     const directionElement = document.querySelector("#creative-direction");
+    const thinkingElement = document.querySelector("#prompt-assistant-thinking-mode");
     promptElement.style.height = "280px";
     directionElement.style.height = "170px";
     window.__stablePromptElement = promptElement;
     window.__stableDirectionElement = directionElement;
+    window.__stableThinkingElement = thinkingElement;
   });
 
   let composePayload;
@@ -2248,6 +2258,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
     mode: "create",
     prompt: "the prompt that must be replaced",
     creative_direction: "a crimson fox beneath moonlit pines",
+    think: false,
   });
   await expect(applyCreativeDirection).toBeDisabled();
   await expect(applyCreativeDirection).toHaveText("Applying…");
@@ -2258,12 +2269,18 @@ test("Prompt Assistant submits the live create mode and generation preserves con
         window.__stablePromptElement,
       directionStable:
         document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      thinkingStable:
+        document.querySelector("#prompt-assistant-thinking-mode") ===
+        window.__stableThinkingElement,
+      thinkingEnabled: window.__stableThinkingElement.checked,
       promptHeight: window.__stablePromptElement.style.height,
       directionHeight: window.__stableDirectionElement.style.height,
     })),
   ).toEqual({
     promptStable: true,
     directionStable: true,
+    thinkingStable: true,
+    thinkingEnabled: false,
     promptHeight: "280px",
     directionHeight: "170px",
   });
@@ -2278,12 +2295,18 @@ test("Prompt Assistant submits the live create mode and generation preserves con
         window.__stablePromptElement,
       directionStable:
         document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      thinkingStable:
+        document.querySelector("#prompt-assistant-thinking-mode") ===
+        window.__stableThinkingElement,
+      thinkingEnabled: window.__stableThinkingElement.checked,
       promptHeight: window.__stablePromptElement.style.height,
       directionHeight: window.__stableDirectionElement.style.height,
     })),
   ).toEqual({
     promptStable: true,
     directionStable: true,
+    thinkingStable: true,
+    thinkingEnabled: false,
     promptHeight: "280px",
     directionHeight: "170px",
   });
@@ -2306,7 +2329,9 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   expect(
     await page.evaluate(() =>
       document.querySelector('[data-control-id="prompt"]') === window.__stablePromptElement &&
-      document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      document.querySelector("#creative-direction") === window.__stableDirectionElement &&
+      document.querySelector("#prompt-assistant-thinking-mode") ===
+        window.__stableThinkingElement,
     ),
   ).toBe(true);
   releaseGeneration();
@@ -2319,12 +2344,18 @@ test("Prompt Assistant submits the live create mode and generation preserves con
         window.__stablePromptElement,
       directionStable:
         document.querySelector("#creative-direction") === window.__stableDirectionElement,
+      thinkingStable:
+        document.querySelector("#prompt-assistant-thinking-mode") ===
+        window.__stableThinkingElement,
+      thinkingEnabled: window.__stableThinkingElement.checked,
       promptHeight: window.__stablePromptElement.style.height,
       directionHeight: window.__stableDirectionElement.style.height,
     })),
   ).toEqual({
     promptStable: true,
     directionStable: true,
+    thinkingStable: true,
+    thinkingEnabled: false,
     promptHeight: "280px",
     directionHeight: "170px",
   });
