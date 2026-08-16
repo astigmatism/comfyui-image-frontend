@@ -125,9 +125,11 @@ async def compose(
             PromptAssistantRun(
                 owner_id=owner_id,
                 mode=payload.mode,
+                thinking_enabled=payload.think,
                 prompt_before=payload.prompt,
                 creative_direction=payload.creative_direction,
                 template_version=container.settings.prompt_template_version,
+                raw_response_json={"error_details": exc.details},
                 error_code=exc.code,
                 error_message=exc.message,
             )
@@ -137,6 +139,7 @@ async def compose(
     run = PromptAssistantRun(
         owner_id=owner_id,
         mode=payload.mode,
+        thinking_enabled=payload.think,
         prompt_before=payload.prompt,
         creative_direction=payload.creative_direction,
         model_name=result.model,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -773,6 +775,147 @@ def test_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_stat
     assert response.status_code == 200, response.text
     assert response.json()["prompt"] == "a portrait in cool light, make the light warmer"
     assert fake_state.ollama_calls[-1]["think"] is False
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+
+    with container.db.session_factory() as session:
+        run = session.get(PromptAssistantRun, response.json()["composition_id"])
+        assert run is not None
+        assert run.thinking_enabled is False
+
+
+def test_prompt_assistant_retries_a_transient_generate_failure(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="transient.ollama")
+    fake_state.ollama_generate_failure_status = 503
+    fake_state.ollama_generate_failures_remaining = 2
+    retry_delays: list[float] = []
+
+    async def record_retry_delay(delay: float) -> None:
+        retry_delays.append(delay)
+
+    app_client.app.state.container.ollama.retry_sleeper = record_retry_delay
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "a portrait",
+            "creative_direction": "warm window light",
+            "think": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "a portrait, warm window light"
+    assert len(fake_state.ollama_calls) == 3
+    assert retry_delays == [0.25, 0.5]
+
+
+def test_prompt_assistant_records_a_rejected_generate_request_precisely(
+    app_client: TestClient, fake_state, caplog
+) -> None:
+    provision_user(app_client, username="rejected.ollama")
+    fake_state.ollama_generate_failure_status = 400
+    fake_state.ollama_generate_failures_remaining = 1
+
+    with caplog.at_level(logging.WARNING, logger="app.services.ollama"):
+        response = app_client.post(
+            "/api/prompt-assistant/compose",
+            headers={"X-CSRF-Token": csrf(app_client)},
+            json={
+                "mode": "refine",
+                "prompt": "a portrait",
+                "creative_direction": "warm window light",
+                "think": False,
+            },
+        )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "ollama_generate_rejected"
+    assert error["details"] == {
+        "operation": "generate",
+        "failure_kind": "http_status",
+        "attempts": 1,
+        "thinking_enabled": False,
+        "upstream_status": 400,
+    }
+    assert len(fake_state.ollama_calls) == 1
+
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+    from sqlalchemy import select
+
+    with container.db.session_factory() as session:
+        run = session.scalar(
+            select(PromptAssistantRun).where(
+                PromptAssistantRun.error_code == "ollama_generate_rejected"
+            )
+        )
+        assert run is not None
+        assert run.thinking_enabled is False
+        assert run.error_code == "ollama_generate_rejected"
+        assert run.raw_response_json == {"error_details": error["details"]}
+
+    from app.main import JsonFormatter
+
+    record = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "ollama_generate_attempt_failed"
+    )
+    failure = json.loads(JsonFormatter().format(record))
+    assert failure == {
+        **{key: failure[key] for key in ("timestamp", "level", "logger")},
+        "message": "ollama_generate_attempt_failed",
+        "service": "ollama",
+        "operation": "generate",
+        "assistant_mode": "refine",
+        "thinking_enabled": False,
+        "attempt": 1,
+        "max_attempts": 3,
+        "failure_kind": "http_status",
+        "retryable": False,
+        "upstream_status": 400,
+        "exception_class": "HTTPStatusError",
+    }
+    assert "a portrait" not in json.dumps(failure)
+
+
+def test_prompt_assistant_reports_exhausted_transient_generate_failures(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="unavailable.ollama")
+    fake_state.ollama_generate_failure_status = 503
+    fake_state.ollama_generate_failures_remaining = 3
+
+    async def skip_retry_delay(_: float) -> None:
+        return None
+
+    app_client.app.state.container.ollama.retry_sleeper = skip_retry_delay
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "a portrait",
+            "creative_direction": "warm window light",
+        },
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "ollama_generate_unavailable"
+    assert error["details"] == {
+        "operation": "generate",
+        "failure_kind": "http_status",
+        "attempts": 3,
+        "thinking_enabled": True,
+        "upstream_status": 503,
+    }
+    assert len(fake_state.ollama_calls) == 3
 
 
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:

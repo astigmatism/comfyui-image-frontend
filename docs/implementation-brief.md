@@ -147,7 +147,8 @@ Implement a backend Ollama adapter and the collapsed Prompt Assistant:
 - Returned prompt replaces the visible `prompt.text` value and remains editable.
 - Generate never invokes Ollama automatically.
 - Ollama failure disables only Prompt Assistant.
-- Persist the model, template version, prompt before composition, direction, Ollama output, and exact final submitted prompt when used.
+- Retry transient router generation failures with a short bound and retain privacy-safe terminal diagnostics.
+- Persist thinking mode, model, template version, prompt before composition, direction, Ollama output, and exact final submitted prompt when used.
 - Recall restores the final submitted prompt and does not invoke Ollama.
 
 ### Durable queue and scheduling

@@ -12,6 +12,7 @@ from app.models import (
     GenerationStatus,
     GenerationTimingAuditState,
     GenerationTimingProfile,
+    PromptAssistantRun,
     User,
     UserPreference,
     WorkflowProfile,
@@ -21,12 +22,13 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "d72f6a8c9e10"
+HEAD_REVISION = "f3a91c7d2b64"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
 LEGACY_ARTIFACT_ID = "00000000-0000-4000-8000-000000000004"
 LEGACY_FAVORITE_ID = "00000000-0000-4000-8000-000000000005"
+LEGACY_PROMPT_RUN_ID = "00000000-0000-4000-8000-000000000007"
 
 
 def _config(database_path: Path) -> Config:
@@ -51,6 +53,7 @@ def _insert_populated_legacy_rows(engine: Engine) -> None:
                 "generations",
                 "artifacts",
                 "favorites",
+                "prompt_assistant_runs",
             ),
         )
         users = metadata.tables["users"]
@@ -59,6 +62,7 @@ def _insert_populated_legacy_rows(engine: Engine) -> None:
         generations = metadata.tables["generations"]
         artifacts = metadata.tables["artifacts"]
         favorites = metadata.tables["favorites"]
+        prompt_assistant_runs = metadata.tables["prompt_assistant_runs"]
 
         connection.execute(
             users.insert(),
@@ -209,6 +213,25 @@ def _insert_populated_legacy_rows(engine: Engine) -> None:
                 "created_at": now,
             },
         )
+        connection.execute(
+            prompt_assistant_runs.insert(),
+            {
+                "id": LEGACY_PROMPT_RUN_ID,
+                "owner_id": LEGACY_USER_ID,
+                "generation_id": LEGACY_GENERATION_ID,
+                "mode": "refine",
+                "prompt_before": "legacy prompt",
+                "creative_direction": "legacy direction",
+                "model_name": "legacy-model",
+                "template_version": "legacy-v1",
+                "ollama_output": "legacy composed prompt",
+                "raw_response_json": {"response": "legacy composed prompt"},
+                "error_code": None,
+                "error_message": None,
+                "duration_ms": 100,
+                "created_at": now,
+            },
+        )
 
 
 def _assert_populated_head_rows(engine: Engine) -> None:
@@ -219,6 +242,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         generation = session.get(Generation, LEGACY_GENERATION_ID)
         artifact = session.get(Artifact, LEGACY_ARTIFACT_ID)
         favorite = session.get(Favorite, LEGACY_FAVORITE_ID)
+        prompt_run = session.get(PromptAssistantRun, LEGACY_PROMPT_RUN_ID)
 
         assert user is not None and user.username == "legacy.owner"
         assert preference is not None
@@ -262,6 +286,9 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert favorite is not None
         assert favorite.generation_id == generation.id
         assert favorite.owner_id == user.id
+        assert prompt_run is not None
+        assert prompt_run.thinking_enabled is True
+        assert prompt_run.ollama_output == "legacy composed prompt"
 
     with engine.connect() as connection:
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
@@ -278,6 +305,7 @@ def _assert_populated_legacy_rows(engine: Engine) -> None:
             "generations",
             "artifacts",
             "favorites",
+            "prompt_assistant_runs",
         ),
     )
     users = metadata.tables["users"]
@@ -286,6 +314,7 @@ def _assert_populated_legacy_rows(engine: Engine) -> None:
     generations = metadata.tables["generations"]
     artifacts = metadata.tables["artifacts"]
     favorites = metadata.tables["favorites"]
+    prompt_assistant_runs = metadata.tables["prompt_assistant_runs"]
     statement = (
         select(
             users.c.username,
@@ -319,6 +348,14 @@ def _assert_populated_legacy_rows(engine: Engine) -> None:
             ).scalar_one()
             == 73
         )
+        assert (
+            connection.execute(
+                select(prompt_assistant_runs.c.mode).where(
+                    prompt_assistant_runs.c.id == LEGACY_PROMPT_RUN_ID
+                )
+            ).scalar_one()
+            == "refine"
+        )
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
 
 
@@ -346,6 +383,9 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     }.issubset(set(inspect(engine).get_table_names()))
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
+    assert "thinking_enabled" in {
+        column["name"] for column in inspect(engine).get_columns("prompt_assistant_runs")
     }
     assert "ix_generations_timing_audit" in {
         index["name"] for index in inspect(engine).get_indexes("generations")

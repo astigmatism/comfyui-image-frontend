@@ -92,7 +92,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - migration up/down/up with old rows, execution-ID/label backfill, per-instance health, and instance-queue indexes;
 - authentication, CSRF, IDOR/admin content denial, uploads, favorites/preferences, deletion, and Ollama provenance regressions.
 - progressive browser bootstrap with optional-service delay/failure, named safe-method deadlines, and mutation single-send behavior;
-- cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, and authoritative composition failure;
+- cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, transient generate recovery, precise terminal failure diagnostics, and authoritative composition failure;
 - constant-query gallery/favorites pages, forbidden detail-JSON SQL assertions, summary parity, artifact precedence, and owner isolation;
 - event-loop responsiveness while artifact/upload filesystem or metadata operations are deliberately blocked;
 - more live SSE subscriptions than the former pool capacity with zero retained pool checkouts;

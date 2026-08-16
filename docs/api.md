@@ -504,7 +504,7 @@ ComfyUI file references are never accepted from callers. The worker extracts onl
 
 Composition accepts `mode`, `prompt`, `creative_direction`, and an optional boolean `think` that defaults to `true` for compatibility. It returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation. Prompt Assistant is never invoked implicitly by generation or recall.
 
-The status route reads the background health monitor's cached row and never contacts Ollama. A missing or stale check reports unavailable; an old success is not trusted indefinitely. Compose remains authoritative and can return a safe 503 if Ollama fails after a recent successful health check.
+The status route reads the background health monitor's cached row and never contacts Ollama. A missing or stale check reports unavailable; an old success is not trusted indefinitely. Compose remains authoritative. Transient generate statuses, transport failures, and malformed JSON receive bounded retries. Terminal generate errors distinguish rejection (`ollama_generate_rejected`), exhausted transient status (`ollama_generate_unavailable`), timeout (`ollama_generate_timeout`), transport failure (`ollama_generate_transport_error`), and malformed JSON (`ollama_generate_invalid_json`); safe `details` identify the operation, failure kind, attempt count, thinking mode, and upstream status when available.
 
 ## Speech to text
 

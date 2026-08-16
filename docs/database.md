@@ -25,6 +25,8 @@ backfill; the estimator incorporates eligible legacy rows later in idle-only bat
 
 Migration `d72f6a8c9e10_add_comfyui_execution_instances.py` adds independent execution routing without rewriting publication identity. It creates `comfyui_instance_health`, adds non-null `generations.comfyui_instance_id` and `generations.comfyui_instance_label`, and adds the instance/status/queue index. Existing rows derive the ID from the retained generation source, then workflow profile, then the legacy `default` fallback; their initial display label is that ID. The migration does not contact, restart, or mutate ComfyUI.
 
+Migration `f3a91c7d2b64_record_prompt_assistant_thinking.py` adds non-null `prompt_assistant_runs.thinking_enabled`. Historical rows are backfilled to `true`, matching the only behavior available before the focused-editor toggle. New failed runs also retain bounded safe error details in `raw_response_json`; prompt content is never copied into those diagnostics.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -41,7 +43,7 @@ Migration `d72f6a8c9e10_add_comfyui_execution_instances.py` adds independent exe
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |
 | `generation_uploads` | Historical parameter-to-upload/hash links |
-| `prompt_assistant_runs` | Owner-scoped Ollama input/output/provenance, optionally linked to a generation |
+| `prompt_assistant_runs` | Owner-scoped Ollama input/output, thinking mode, safe failure diagnostics, and provenance, optionally linked to a generation |
 | `artifacts` | Every retained image/file batch member with owner-mediated URLs and presentation state |
 | `generation_events` | Durable owner event timeline and SSE replay source |
 | `scheduler_state` / `app_locks` | Fair queue cursor/sequence and SQLite coordination |

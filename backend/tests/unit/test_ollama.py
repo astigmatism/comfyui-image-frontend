@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 
+import httpx
+import pytest
+from app.config import Settings
+from app.errors import AppError
 from app.services.ollama import (
+    OllamaAdapter,
     _extract_prompt,
     _generate_payload,
     _has_thinking_output,
     _instruction,
 )
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
+        data_dir=tmp_path,
+        session_secret="test-session-secret-material-0123456789",
+        ollama_base_url="http://ollama.test",
+        test_mode=True,
+    )
 
 
 def test_refine_instruction_only_defines_the_outcome_and_inputs() -> None:
@@ -75,3 +91,54 @@ def test_thinking_can_be_disabled_per_request() -> None:
     )
 
     assert payload["think"] is False
+
+
+def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> None:
+    generate_calls = 0
+    retry_delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal generate_calls
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            generate_calls += 1
+            return httpx.Response(
+                200,
+                content=b"not-json",
+                headers={"Content-Type": "application/json"},
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def record_retry_delay(delay: float) -> None:
+        retry_delays.append(delay)
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            retry_sleeper=record_retry_delay,
+        )
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="refine",
+                    prompt="a portrait",
+                    direction="warm light",
+                    think=False,
+                )
+            assert raised.value.code == "ollama_generate_invalid_json"
+            assert raised.value.status_code == 502
+            assert raised.value.details == {
+                "operation": "generate",
+                "failure_kind": "invalid_json",
+                "attempts": 3,
+                "thinking_enabled": False,
+                "upstream_status": 200,
+            }
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert generate_calls == 3
+    assert retry_delays == [0.25, 0.5]

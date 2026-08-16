@@ -73,6 +73,15 @@ class JsonFormatter(logging.Formatter):
             "status_code",
             "duration_ms",
             "client_disconnected",
+            "service",
+            "operation",
+            "assistant_mode",
+            "thinking_enabled",
+            "attempt",
+            "max_attempts",
+            "failure_kind",
+            "retryable",
+            "upstream_status",
         ):
             value = getattr(record, key, None)
             if value is not None:

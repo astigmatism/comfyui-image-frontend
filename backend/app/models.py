@@ -263,6 +263,7 @@ class PromptAssistantRun(Base):
         String(36), ForeignKey("generations.id", ondelete="SET NULL"), index=True
     )
     mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    thinking_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     prompt_before: Mapped[str] = mapped_column(Text, nullable=False, default="")
     creative_direction: Mapped[str] = mapped_column(Text, nullable=False, default="")
     model_name: Mapped[str | None] = mapped_column(String(255))

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import secrets
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -15,7 +17,13 @@ from ..errors import AppError
 CREATE_SEED_MAXIMUM = 2**31 - 1
 MAX_CREATE_ATTEMPTS = 3
 MAX_CREATE_EXCLUSIONS = 8
+MAX_GENERATE_ATTEMPTS = 3
+GENERATE_RETRY_BASE_SECONDS = 0.25
+RETRYABLE_GENERATE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 CreateSeedResolver = Callable[[int, int], int]
+GenerateRetrySleeper = Callable[[float], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,10 +41,12 @@ class OllamaAdapter:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         seed_resolver: CreateSeedResolver | None = None,
+        retry_sleeper: GenerateRetrySleeper | None = None,
     ):
         self.settings = settings
         self.base_url = settings.ollama_base_url
         self.seed_resolver = seed_resolver or self._secure_seed
+        self.retry_sleeper = retry_sleeper or asyncio.sleep
         self._client = (
             httpx.AsyncClient(
                 base_url=self.base_url,
@@ -128,16 +138,7 @@ class OllamaAdapter:
                 attempt=attempt,
                 seed=create_seed + attempt if create_seed is not None else None,
             )
-            try:
-                response = await self._client.post("/api/generate", json=payload)
-                response.raise_for_status()
-                received = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                raise AppError(
-                    "ollama_unavailable",
-                    "Prompt Assistant could not compose a prompt; manual prompting still works.",
-                    status_code=503,
-                ) from exc
+            received = await self._generate(payload, mode=mode, think=think)
             data = received if isinstance(received, dict) else {}
             responses.append(data)
             if think and not _has_thinking_output(data):
@@ -175,6 +176,181 @@ class OllamaAdapter:
             "ollama_invalid_response",
             "Prompt Assistant could not produce a distinct new prompt after retrying.",
         )
+
+    async def _generate(self, payload: dict[str, Any], *, mode: str, think: bool) -> Any:
+        if not self._client:
+            raise RuntimeError("Ollama client is not configured")
+        for attempt in range(1, MAX_GENERATE_ATTEMPTS + 1):
+            try:
+                response = await self._client.post("/api/generate", json=payload)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                upstream_status = exc.response.status_code
+                retryable = upstream_status in RETRYABLE_GENERATE_STATUS_CODES
+                self._log_generate_failure(
+                    exc,
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    failure_kind="http_status",
+                    retryable=retryable,
+                    upstream_status=upstream_status,
+                )
+                if retryable and attempt < MAX_GENERATE_ATTEMPTS:
+                    await self._wait_before_generate_retry(attempt)
+                    continue
+                details = _generate_error_details(
+                    attempt=attempt,
+                    failure_kind="http_status",
+                    think=think,
+                    upstream_status=upstream_status,
+                )
+                if retryable:
+                    raise AppError(
+                        "ollama_generate_unavailable",
+                        "The Ollama router could not complete prompt composition after retrying.",
+                        status_code=503,
+                        details=details,
+                    ) from exc
+                raise AppError(
+                    "ollama_generate_rejected",
+                    "The Ollama router rejected the prompt composition request.",
+                    status_code=502,
+                    details=details,
+                ) from exc
+            except httpx.TimeoutException as exc:
+                retryable = isinstance(exc, httpx.ConnectTimeout)
+                self._log_generate_failure(
+                    exc,
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    failure_kind="timeout",
+                    retryable=retryable,
+                )
+                if retryable and attempt < MAX_GENERATE_ATTEMPTS:
+                    await self._wait_before_generate_retry(attempt)
+                    continue
+                raise AppError(
+                    "ollama_generate_timeout",
+                    "The Ollama router timed out while composing the prompt.",
+                    status_code=504,
+                    details=_generate_error_details(
+                        attempt=attempt,
+                        failure_kind="timeout",
+                        think=think,
+                    ),
+                ) from exc
+            except httpx.HTTPError as exc:
+                self._log_generate_failure(
+                    exc,
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    failure_kind="transport",
+                    retryable=True,
+                )
+                if attempt < MAX_GENERATE_ATTEMPTS:
+                    await self._wait_before_generate_retry(attempt)
+                    continue
+                raise AppError(
+                    "ollama_generate_transport_error",
+                    "Prompt Assistant lost its connection to the Ollama router after retrying.",
+                    status_code=503,
+                    details=_generate_error_details(
+                        attempt=attempt,
+                        failure_kind="transport",
+                        think=think,
+                    ),
+                ) from exc
+            try:
+                received: Any = response.json()
+            except ValueError as exc:
+                self._log_generate_failure(
+                    exc,
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    failure_kind="invalid_json",
+                    retryable=True,
+                    upstream_status=response.status_code,
+                )
+                if attempt < MAX_GENERATE_ATTEMPTS:
+                    await self._wait_before_generate_retry(attempt)
+                    continue
+                raise AppError(
+                    "ollama_generate_invalid_json",
+                    "The Ollama router returned malformed JSON for prompt composition.",
+                    status_code=502,
+                    details=_generate_error_details(
+                        attempt=attempt,
+                        failure_kind="invalid_json",
+                        think=think,
+                        upstream_status=response.status_code,
+                    ),
+                ) from exc
+            if attempt > 1:
+                logger.info(
+                    "ollama_generate_recovered",
+                    extra={
+                        "service": "ollama",
+                        "operation": "generate",
+                        "assistant_mode": mode,
+                        "thinking_enabled": think,
+                        "attempt": attempt,
+                        "max_attempts": MAX_GENERATE_ATTEMPTS,
+                    },
+                )
+            return received
+        raise RuntimeError("Ollama generate retry loop exited unexpectedly")
+
+    async def _wait_before_generate_retry(self, failed_attempt: int) -> None:
+        await self.retry_sleeper(GENERATE_RETRY_BASE_SECONDS * (2 ** (failed_attempt - 1)))
+
+    @staticmethod
+    def _log_generate_failure(
+        exc: Exception,
+        *,
+        mode: str,
+        think: bool,
+        attempt: int,
+        failure_kind: str,
+        retryable: bool,
+        upstream_status: int | None = None,
+    ) -> None:
+        logger.warning(
+            "ollama_generate_attempt_failed",
+            extra={
+                "service": "ollama",
+                "operation": "generate",
+                "assistant_mode": mode,
+                "thinking_enabled": think,
+                "attempt": attempt,
+                "max_attempts": MAX_GENERATE_ATTEMPTS,
+                "failure_kind": failure_kind,
+                "retryable": retryable,
+                "upstream_status": upstream_status,
+                "exception_class": type(exc).__name__,
+            },
+        )
+
+
+def _generate_error_details(
+    *,
+    attempt: int,
+    failure_kind: str,
+    think: bool,
+    upstream_status: int | None = None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "operation": "generate",
+        "failure_kind": failure_kind,
+        "attempts": attempt,
+        "thinking_enabled": think,
+    }
+    if upstream_status is not None:
+        details["upstream_status"] = upstream_status
+    return details
 
 
 def _instruction(*, mode: str, prompt: str, direction: str) -> str:

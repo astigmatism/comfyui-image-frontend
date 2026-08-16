@@ -148,6 +148,8 @@ def render() -> str:
             "editor can send `think: false` for an individual composition. When enabled, if "
             "the router places its schema-constrained final object in `thinking`, the adapter "
             "extracts only that structured prompt and never promotes unstructured reasoning. "
+            "Transient generate failures receive bounded retry, while terminal failures retain "
+            "privacy-safe diagnostics and the requested thinking mode. "
             "`CIF_OLLAMA_MODEL` is not configured, and all Ollama traffic remains backend-only "
             "through the router.",
             "",

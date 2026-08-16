@@ -97,6 +97,8 @@ class FakeServiceState:
     ollama_response_in_thinking: bool = False
     ollama_response_prompt: str | None = None
     ollama_response_prompts: list[str] = field(default_factory=list)
+    ollama_generate_failure_status: int | None = None
+    ollama_generate_failures_remaining: int = 0
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -143,6 +145,8 @@ class FakeServiceState:
         self.ollama_response_in_thinking = False
         self.ollama_response_prompt = None
         self.ollama_response_prompts.clear()
+        self.ollama_generate_failure_status = None
+        self.ollama_generate_failures_remaining = 0
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -716,6 +720,12 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             raise HTTPException(status_code=503)
         payload = await request.json()
         state.ollama_calls.append(copy.deepcopy(payload))
+        if state.ollama_generate_failures_remaining > 0:
+            state.ollama_generate_failures_remaining -= 1
+            return JSONResponse(
+                {"error": "configured Ollama generation failure"},
+                status_code=state.ollama_generate_failure_status or 503,
+            )
         instruction = str(payload.get("prompt", ""))
         current = ""
         if "Current prompt:\n" in instruction:
