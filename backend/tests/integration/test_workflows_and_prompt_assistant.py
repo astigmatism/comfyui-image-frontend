@@ -784,6 +784,34 @@ def test_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_stat
         assert run.thinking_enabled is False
 
 
+def test_create_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_state) -> None:
+    provision_user(app_client, username="create.thinking.disabled")
+    _cache_ollama_health(app_client, available=True)
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "an existing prompt",
+            "creative_direction": "a fox beneath moonlit pines",
+            "think": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "a fox beneath moonlit pines"
+    assert fake_state.ollama_calls[-1]["think"] is False
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+
+    with container.db.session_factory() as session:
+        run = session.get(PromptAssistantRun, response.json()["composition_id"])
+        assert run is not None
+        assert run.mode == "create"
+        assert run.thinking_enabled is False
+
+
 def test_prompt_assistant_retries_a_transient_generate_failure(
     app_client: TestClient, fake_state
 ) -> None:

@@ -1285,7 +1285,6 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
     `${longPrompt.length.toLocaleString()} characters`,
   );
   await focusedDirection.fill("focused assistant direction");
-  await focusedRefineMode.check();
   await focusedThinkingMode.uncheck();
   const focusedCompositionRequest = page.waitForRequest(
     (request) =>
@@ -1293,8 +1292,13 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
       request.method() === "POST",
   );
   await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
-  expect((await focusedCompositionRequest).postDataJSON().think).toBe(false);
-  const composedPrompt = `${longPrompt}, focused assistant direction`;
+  expect((await focusedCompositionRequest).postDataJSON()).toMatchObject({
+    mode: "create",
+    prompt: longPrompt,
+    creative_direction: "focused assistant direction",
+    think: false,
+  });
+  const composedPrompt = "focused assistant direction";
   await expect(focusedPrompt).toHaveValue(composedPrompt);
   await expect(prompt).toHaveValue("draft that should remain");
   await expect(columnDirection).toHaveValue("column direction");
@@ -1302,7 +1306,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(dialog).not.toHaveAttribute("open", "");
   await expect(prompt).toHaveValue(composedPrompt);
   await expect(columnDirection).toHaveValue("focused assistant direction");
-  await expect(columnAssistant.getByRole("radio", { name: "Refine Current Prompt" })).toBeChecked();
+  await expect(columnCreateMode).toBeChecked();
   await expect(openEditor).toBeFocused();
   await openEditor.click();
   await expect(focusedThinkingMode).not.toBeChecked();
