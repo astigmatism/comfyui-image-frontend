@@ -1640,6 +1640,24 @@ test("resolution markup exposes strict contract limits to native controls", () =
   assert.match(html, /data-resolution-part="height"[^>]*min="128"[^>]*max="1536"[^>]*step="8"/);
 });
 
+test("resolution markup includes a preset dropdown above the summary", () => {
+  const control = {
+    id: "size.resolution",
+    label: "Resolution",
+    type: "resolution",
+    semantic_role: "resolution",
+    group: "Parameters",
+  };
+  const html = controlMarkup(control, { "size.resolution": { width: 1024, height: 1536 } }, { capability_states: {} });
+  assert.match(html, /data-resolution-preset/);
+  assert.match(html, /<optgroup label="Landscape">/);
+  assert.match(html, /<optgroup label="Portrait">/);
+  assert.match(html, /<option value="1024x1536" selected>1024 × 1536 · 2:3<\/option>/);
+  assert.ok(html.indexOf('data-resolution-preset') < html.indexOf("resolution-summary"), "preset dropdown should render before the summary");
+  const customHtml = controlMarkup(control, { "size.resolution": { width: 1000, height: 900 } }, { capability_states: {} });
+  assert.match(customHtml, /<option value="custom" selected>Custom \(1000 × 900\)<\/option>/);
+});
+
 test("resolution markup includes the responsive three-handle grid and live caption", () => {
   const control = {
     id: "size.resolution",

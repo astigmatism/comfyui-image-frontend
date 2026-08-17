@@ -29,6 +29,8 @@ import {
   reconcileInterfaceValues,
   resolutionConstraints,
   resolutionGridConstraints,
+  resolutionPresetForValue,
+  resolutionPresets,
   resolutionSummary,
   scaleToLayout,
   seedAllowsRandom,
@@ -740,6 +742,24 @@ test("resolution constraints accept contract axis aliases and reject invalid req
   assert.deepEqual(clientValidate({ controls: [control] }, { "size.resolution": { width: 512, height: 512 } }), {});
   assert.match(clientValidate({ controls: [control] }, { "size.resolution": { width: 510, height: 512 } })[control.id], /multiples of 8/);
   assert.match(clientValidate({ controls: [control] }, { "size.resolution": { width: 2048, height: 2048 } })[control.id], /exceeds/);
+});
+
+test("resolution presets cover symmetric landscape and portrait sets", () => {
+  const presets = resolutionPresets();
+  const landscape = presets.filter((preset) => preset.width > preset.height);
+  const portrait = presets.filter((preset) => preset.width < preset.height);
+  assert.equal(landscape.length, portrait.length);
+  const swapped = new Set(portrait.map((preset) => `${preset.height}x${preset.width}`));
+  for (const preset of landscape) {
+    assert.ok(swapped.has(preset.key), `${preset.label} should have a portrait counterpart`);
+  }
+  assert.ok(resolutionPresets().length >= 20);
+  for (const preset of presets) {
+    assert.ok(preset.width % 4 === 0 && preset.height % 4 === 0, `${preset.label} should be divisible by 4`);
+  }
+  assert.deepEqual(resolutionPresetForValue({ width: 1024, height: 1536 }), presets.find((preset) => preset.width === 1024 && preset.height === 1536));
+  assert.equal(resolutionPresetForValue({ width: 1025, height: 1536 }), null);
+  assert.equal(resolutionPresetForValue({ width: 1024 }), null);
 });
 
 test("resolution grid mirrors Resolution Master snapping and live details", () => {

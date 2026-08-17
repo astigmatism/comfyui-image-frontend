@@ -22,6 +22,7 @@ import {
   positivePromptInput,
   recalledComfyuiInstanceState,
   reconcileInterfaceValues,
+  resolutionPresetForValue,
   resolutionSummary,
   scaleToLayout,
   seedFormValue,
@@ -336,6 +337,10 @@ async function handleClick(event) {
 
 async function handleChange(event) {
   const element = event.target;
+  if (element.matches("[data-resolution-preset]")) {
+    if (element.value !== "custom") applyResolutionPreset(element);
+    return;
+  }
   if (element.id === "comfyui-instance") {
     const selected = state.comfyuiInstances.find((item) => item.id === element.value);
     if (!selected) {
@@ -855,7 +860,9 @@ function handleInput(event) {
         ? element.closest("[data-resolution-pair-block]")
         : element.closest("[data-control-block]");
       const grid = container?.querySelector("[data-resolution-grid]");
-      updateResolutionUi(grid, resolutionValueForGrid(grid));
+      const value = resolutionValueForGrid(grid);
+      updateResolutionUi(grid, value);
+      syncResolutionPresetSelect(container, value);
     }
     if (element.type === "checkbox") {
       const stateLabel = element.closest(".switch")?.querySelector("em");
@@ -1505,6 +1512,56 @@ function resolutionGridLimits(grid) {
 function resolutionPosition(value, minimum, maximum) {
   if (maximum <= minimum) return 0;
   return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
+}
+
+function applyResolutionPreset(select) {
+  const block = select.closest("[data-resolution-pair-block], [data-control-block]");
+  const grid = block?.querySelector("[data-resolution-grid]");
+  if (!block || !grid || select.value === "custom") return;
+  const [widthRaw, heightRaw] = select.value.split("x");
+  const width = Number(widthRaw);
+  const height = Number(heightRaw);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  const widthId = grid.dataset.resolutionWidthId || grid.dataset.controlId;
+  const heightId = grid.dataset.resolutionHeightId;
+  if (grid.dataset.resolutionWidthId && grid.dataset.resolutionHeightId) {
+    state.parameters[widthId] = width;
+    state.parameters[heightId] = height;
+    state.explicitParameterIds.add(widthId);
+    state.explicitParameterIds.add(heightId);
+    delete state.serverFieldErrors[widthId];
+    delete state.serverFieldErrors[heightId];
+  } else {
+    state.parameters[widthId] = { ...(state.parameters[widthId] || {}), width, height };
+    state.explicitParameterIds.add(widthId);
+    delete state.serverFieldErrors[widthId];
+  }
+  state.formError = null;
+  updateResolutionUi(grid, resolutionValueForGrid(grid));
+  syncResolutionPresetSelect(block, resolutionValueForGrid(grid));
+  persistActiveParameterState();
+  syncParameterValidation(widthId);
+  if (heightId) syncParameterValidation(heightId);
+}
+
+function syncResolutionPresetSelect(block, value) {
+  const select = block?.querySelector("[data-resolution-preset]");
+  if (!select) return;
+  const preset = resolutionPresetForValue(value);
+  if (preset) {
+    select.value = preset.key;
+    return;
+  }
+  let custom = select.querySelector('option[value="custom"]');
+  if (!custom) {
+    custom = document.createElement("option");
+    custom.value = "custom";
+    select.prepend(custom);
+  }
+  if (value?.width && value?.height) {
+    custom.textContent = `Custom (${value.width} × ${value.height})`;
+  }
+  select.value = "custom";
 }
 
 function renderPanelWithResolutionFocus(grid, handle) {

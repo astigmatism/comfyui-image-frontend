@@ -8,6 +8,7 @@ import {
   normalizeSourceModelSelections,
   resolutionConstraints,
   resolutionGridConstraints,
+  resolutionPresetChoiceMarkup,
   resolutionSummary,
   seedAllowsRandom,
   seedFormValue,
@@ -1187,6 +1188,7 @@ function resolutionMarkup(control, value, disabled, required, error, describedBy
       <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
       <label for="${id}-height"><span>Height</span><input id="${id}-height" ${base} data-resolution-part="height" type="number" value="${value?.height ?? ""}" min="${limits.minimumHeight ?? ""}" max="${limits.maximumHeight ?? ""}" step="${limits.heightStep}" /></label>
     </div>
+    <div class="resolution-preset">${resolutionPresetChoiceMarkup(value)}</div>
     ${resolutionSummaryMarkup(value)}
   </div>`;
 }
@@ -1245,6 +1247,7 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
           ${widthInput}
           ${heightInput}
         </div>
+        <div class="resolution-preset">${resolutionPresetChoiceMarkup(value)}</div>
         ${resolutionSummaryMarkup(value)}
       </div>
     </fieldset>

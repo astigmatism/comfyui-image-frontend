@@ -938,6 +938,86 @@ export function resolutionSummary(width, height) {
   };
 }
 
+// Common AI-image-generation resolutions. The set is 180-degree symmetric:
+// every landscape entry also appears as its portrait swap.
+export const RESOLUTION_PRESET_GROUPS = [
+  {
+    label: "Square",
+    options: [
+      { width: 1024, height: 1024, tag: "1:1" },
+      { width: 1344, height: 1344, tag: "1:1" },
+      { width: 2048, height: 2048, tag: "1:1" },
+    ],
+  },
+  {
+    label: "Landscape",
+    options: [
+      { width: 1344, height: 768, tag: "7:4" },
+      { width: 1536, height: 1024, tag: "3:2" },
+      { width: 1664, height: 928, tag: "16:9" },
+      { width: 1920, height: 1080, tag: "16:9 · FHD" },
+      { width: 2048, height: 1152, tag: "16:9" },
+      { width: 2048, height: 1536, tag: "4:3" },
+      { width: 2304, height: 1296, tag: "16:9" },
+      { width: 2560, height: 1440, tag: "16:9 · QHD" },
+      { width: 3072, height: 1728, tag: "16:9" },
+      { width: 3840, height: 2160, tag: "16:9 · 4K" },
+    ],
+  },
+  {
+    label: "Portrait",
+    options: [
+      { width: 768, height: 1344, tag: "4:7" },
+      { width: 1024, height: 1536, tag: "2:3" },
+      { width: 928, height: 1664, tag: "9:16" },
+      { width: 1080, height: 1920, tag: "9:16 · FHD" },
+      { width: 1152, height: 2048, tag: "9:16" },
+      { width: 1536, height: 2048, tag: "3:4" },
+      { width: 1296, height: 2304, tag: "9:16" },
+      { width: 1440, height: 2560, tag: "9:16 · QHD" },
+      { width: 1728, height: 3072, tag: "9:16" },
+      { width: 2160, height: 3840, tag: "9:16 · 4K" },
+    ],
+  },
+];
+
+export function resolutionPresets() {
+  return RESOLUTION_PRESET_GROUPS.flatMap((group) =>
+    group.options.map((option) => ({
+      ...option,
+      key: `${option.width}x${option.height}`,
+      label: `${option.width} × ${option.height} · ${option.tag}`,
+    })),
+  );
+}
+
+export function resolutionPresetForValue(value) {
+  const width = Number(value?.width);
+  const height = Number(value?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  return resolutionPresets().find((preset) => preset.width === width && preset.height === height) || null;
+}
+
+export function resolutionPresetChoiceMarkup(value) {
+  const selected = resolutionPresetForValue(value);
+  const choice = (label) => (selected?.label === label ? " selected" : "");
+  const groups = RESOLUTION_PRESET_GROUPS.map((group) =>
+    `<optgroup label="${group.label}">` +
+    group.options
+      .map((option) => {
+        const label = `${option.width} × ${option.height} · ${option.tag}`;
+        return `<option value="${option.width}x${option.height}"${choice(label)}>${label}</option>`;
+      })
+      .join("") +
+    `</optgroup>`,
+  ).join("");
+  const custom = selected ? "" : `<option value="custom" selected>Custom${value?.width && value?.height ? ` (${value.width} × ${value.height})` : ""}</option>`;
+  return `<select class="resolution-preset-select" data-resolution-preset${selected ? "" : " data-resolution-preset-custom"}>
+    ${custom}
+    ${groups}
+  </select>`;
+}
+
 function greatestCommonDivisor(first, second) {
   let a = Math.abs(Math.round(Number(first))) || 1;
   let b = Math.abs(Math.round(Number(second))) || 1;
