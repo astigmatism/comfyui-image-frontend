@@ -22,15 +22,14 @@ def _adapter() -> OllamaAdapter:
     return OllamaAdapter(Settings(test_mode=True, ollama_base_url=_BASE_URL))
 
 
-def _assert_thinking_used(result: ComposeResult) -> None:
+def _assert_structured_output_selected(result: ComposeResult) -> None:
     responses = result.raw_response.get("attempts", [result.raw_response])
     assert isinstance(responses, list)
     assert responses
     for response in responses:
         assert isinstance(response, dict)
-        thinking = response.get("thinking")
-        assert isinstance(thinking, str)
-        assert thinking.strip()
+        assert response.get("selected_field") in {"response", "thinking"}
+        assert response.get("validation_stage") == "complete"
 
 
 async def test_live_create_returns_a_new_prompt_from_the_direction() -> None:
@@ -46,7 +45,7 @@ async def test_live_create_returns_a_new_prompt_from_the_direction() -> None:
 
     assert "an astronaut tending a greenhouse on mars" in result.prompt.casefold()
     assert "ceramic vase" not in result.prompt.casefold()
-    _assert_thinking_used(result)
+    _assert_structured_output_selected(result)
 
 
 async def test_live_refine_applies_the_requested_change() -> None:
@@ -68,7 +67,7 @@ async def test_live_refine_applies_the_requested_change() -> None:
     assert "red umbrella" not in normalized
     assert "quiet canal" in normalized
     assert "soft overcast light" in normalized
-    _assert_thinking_used(result)
+    _assert_structured_output_selected(result)
 
 
 async def test_live_repeated_create_returns_four_distinct_prompts() -> None:
@@ -86,7 +85,7 @@ async def test_live_repeated_create_returns_four_distinct_prompts() -> None:
             )
             prompts.append(result.prompt)
             current = result.prompt
-            _assert_thinking_used(result)
+            _assert_structured_output_selected(result)
     finally:
         await adapter.close()
 

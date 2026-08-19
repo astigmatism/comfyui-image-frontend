@@ -13,6 +13,7 @@ import httpx
 
 from ..config import Settings
 from ..errors import AppError
+from .prompt_safety import contains_sexual_content_involving_minors
 
 CREATE_SEED_MAXIMUM = 2**31 - 1
 MAX_CREATE_ATTEMPTS = 3
@@ -32,6 +33,12 @@ class ComposeResult:
     model: str
     raw_response: dict[str, Any]
     duration_ms: int
+
+
+@dataclass(frozen=True)
+class GenerateResult:
+    data: Any
+    status: int
 
 
 class OllamaAdapter:
@@ -114,7 +121,7 @@ class OllamaAdapter:
                 status_code=503,
             )
         started = time.monotonic()
-        responses: list[dict[str, Any]] = []
+        response_diagnostics: list[dict[str, Any]] = []
         excluded = _distinct_prompts((prompt, *excluded_prompts)) if mode == "create" else {}
         maximum_attempts = MAX_CREATE_ATTEMPTS if mode == "create" else 1
         create_seed = None
@@ -139,31 +146,102 @@ class OllamaAdapter:
                 seed=create_seed + attempt if create_seed is not None else None,
             )
             received = await self._generate(payload, mode=mode, think=think)
-            data = received if isinstance(received, dict) else {}
-            responses.append(data)
-            if think and not _has_thinking_output(data):
+            if not isinstance(received.data, dict):
+                diagnostics = _response_diagnostics(
+                    {},
+                    status=received.status,
+                    validation_stage="response_envelope",
+                )
                 raise AppError(
                     "ollama_invalid_response",
-                    "Prompt Assistant did not return thinking output.",
+                    "Prompt Assistant returned an invalid response envelope.",
+                    details=diagnostics,
                 )
-            final = _response_prompt(data)
+            data = received.data
+            final, selected_field = _response_prompt_with_source(data)
             if not final:
+                diagnostics = _response_diagnostics(
+                    data,
+                    status=received.status,
+                    validation_stage="structured_prompt",
+                )
+                has_output_text = any(
+                    isinstance(data.get(field), str) and bool(data[field].strip())
+                    for field in ("response", "thinking")
+                )
                 raise AppError(
-                    "ollama_invalid_response", "Prompt Assistant returned no usable prompt."
+                    "ollama_invalid_response",
+                    (
+                        "Prompt Assistant returned malformed structured prompt output."
+                        if has_output_text
+                        else "Prompt Assistant returned no usable prompt."
+                    ),
+                    details=diagnostics,
                 )
             effective_model = data.get("model")
             if not isinstance(effective_model, str) or not effective_model.strip():
+                diagnostics = _response_diagnostics(
+                    data,
+                    status=received.status,
+                    validation_stage="model_metadata",
+                    selected_field=selected_field,
+                )
                 raise AppError(
                     "ollama_invalid_response",
                     "Prompt Assistant did not identify the Ollama model that produced its "
                     "response.",
+                    details=diagnostics,
+                )
+            warnings = []
+            if think and not _has_thinking_output(data):
+                warnings.append("thinking_output_missing")
+            diagnostics = _response_diagnostics(
+                data,
+                status=received.status,
+                validation_stage="prompt_validation",
+                selected_field=selected_field,
+                warnings=warnings,
+            )
+            if warnings:
+                logger.warning(
+                    "ollama_thinking_output_missing",
+                    extra={
+                        "service": "ollama",
+                        "operation": "generate",
+                        "assistant_mode": mode,
+                        "thinking_enabled": think,
+                        **diagnostics,
+                    },
+                )
+            if contains_sexual_content_involving_minors(final):
+                diagnostics["validation_stage"] = "safety_policy"
+                raise AppError(
+                    "sexual_minors_prohibited",
+                    "Prompt refinement and image generation cannot be used for sexual content "
+                    "involving minors.",
+                    status_code=422,
+                    details=diagnostics,
                 )
             normalized_final = _normalize_prompt(final)
+            if mode == "refine" and _same_prompt(final, prompt):
+                diagnostics["validation_stage"] = "refinement_comparison"
+                raise AppError(
+                    "prompt_refinement_unchanged",
+                    "Prompt Assistant returned the original prompt unchanged. Add a more "
+                    "specific Creative Direction or try again.",
+                    status_code=422,
+                    details=diagnostics,
+                )
+            diagnostics["validation_stage"] = "complete"
+            response_diagnostics.append(diagnostics)
             if mode != "create" or normalized_final not in excluded:
                 raw_response = (
-                    data
-                    if len(responses) == 1
-                    else {"attempts": responses, "selected_attempt": len(responses)}
+                    diagnostics
+                    if len(response_diagnostics) == 1
+                    else {
+                        "attempts": response_diagnostics,
+                        "selected_attempt": len(response_diagnostics),
+                    }
                 )
                 return ComposeResult(
                     prompt=final,
@@ -175,9 +253,14 @@ class OllamaAdapter:
         raise AppError(
             "ollama_invalid_response",
             "Prompt Assistant could not produce a distinct new prompt after retrying.",
+            details={
+                **(response_diagnostics[-1] if response_diagnostics else {}),
+                "validation_stage": "create_distinctness",
+                "attempt_diagnostics": response_diagnostics,
+            },
         )
 
-    async def _generate(self, payload: dict[str, Any], *, mode: str, think: bool) -> Any:
+    async def _generate(self, payload: dict[str, Any], *, mode: str, think: bool) -> GenerateResult:
         if not self._client:
             raise RuntimeError("Ollama client is not configured")
         for attempt in range(1, MAX_GENERATE_ATTEMPTS + 1):
@@ -204,6 +287,7 @@ class OllamaAdapter:
                     failure_kind="http_status",
                     think=think,
                     upstream_status=upstream_status,
+                    response_data=_safe_json_object(exc.response),
                 )
                 if retryable:
                     raise AppError(
@@ -301,7 +385,7 @@ class OllamaAdapter:
                         "max_attempts": MAX_GENERATE_ATTEMPTS,
                     },
                 )
-            return received
+            return GenerateResult(data=received, status=response.status_code)
         raise RuntimeError("Ollama generate retry loop exited unexpectedly")
 
     async def _wait_before_generate_retry(self, failed_attempt: int) -> None:
@@ -341,6 +425,7 @@ def _generate_error_details(
     failure_kind: str,
     think: bool,
     upstream_status: int | None = None,
+    response_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     details: dict[str, Any] = {
         "operation": "generate",
@@ -350,7 +435,58 @@ def _generate_error_details(
     }
     if upstream_status is not None:
         details["upstream_status"] = upstream_status
+    details.update(
+        _response_diagnostics(
+            response_data or {},
+            status=upstream_status,
+            validation_stage=failure_kind,
+        )
+    )
     return details
+
+
+def _safe_json_object(response: httpx.Response) -> dict[str, Any] | None:
+    try:
+        value = response.json()
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _safe_metadata_string(value: Any, *, maximum: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped[:maximum] if stripped else None
+
+
+def _response_diagnostics(
+    data: dict[str, Any],
+    *,
+    status: int | None,
+    validation_stage: str,
+    selected_field: str | None = None,
+    warnings: Sequence[str] = (),
+) -> dict[str, Any]:
+    response_text = data.get("response")
+    thinking_text = data.get("thinking")
+    diagnostics: dict[str, Any] = {
+        "model": _safe_metadata_string(data.get("model"), maximum=255),
+        "status": status,
+        "field_presence": {
+            "response": "response" in data,
+            "thinking": "thinking" in data,
+        },
+        "response_length": len(response_text) if isinstance(response_text, str) else 0,
+        "thinking_length": len(thinking_text) if isinstance(thinking_text, str) else 0,
+        "done_reason": _safe_metadata_string(data.get("done_reason"), maximum=100),
+        "validation_stage": validation_stage,
+    }
+    if selected_field is not None:
+        diagnostics["selected_field"] = selected_field
+    if warnings:
+        diagnostics["warnings"] = list(warnings)
+    return diagnostics
 
 
 def _instruction(*, mode: str, prompt: str, direction: str) -> str:
@@ -427,15 +563,20 @@ def _generate_payload(
 
 
 def _response_prompt(data: dict[str, Any]) -> str:
+    return _response_prompt_with_source(data)[0]
+
+
+def _response_prompt_with_source(data: dict[str, Any]) -> tuple[str, str | None]:
     raw_text = data.get("response")
-    final = _extract_prompt(raw_text) if isinstance(raw_text, str) else ""
+    final = _extract_structured_prompt(raw_text) if isinstance(raw_text, str) else ""
     if final:
-        return final
+        return final, "response"
     # Thinking-capable Ollama parsers can place a schema-constrained final object in
     # `thinking` while leaving `response` empty. Only accept a structured prompt from
     # that field so internal reasoning can never become the visible image prompt.
     thinking_text = data.get("thinking")
-    return _extract_structured_prompt(thinking_text) if isinstance(thinking_text, str) else ""
+    final = _extract_structured_prompt(thinking_text) if isinstance(thinking_text, str) else ""
+    return (final, "thinking") if final else ("", None)
 
 
 def _has_thinking_output(data: dict[str, Any]) -> bool:

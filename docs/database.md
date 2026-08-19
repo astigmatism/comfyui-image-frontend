@@ -25,7 +25,7 @@ backfill; the estimator incorporates eligible legacy rows later in idle-only bat
 
 Migration `d72f6a8c9e10_add_comfyui_execution_instances.py` adds independent execution routing without rewriting publication identity. It creates `comfyui_instance_health`, adds non-null `generations.comfyui_instance_id` and `generations.comfyui_instance_label`, and adds the instance/status/queue index. Existing rows derive the ID from the retained generation source, then workflow profile, then the legacy `default` fallback; their initial display label is that ID. The migration does not contact, restart, or mutate ComfyUI.
 
-Migration `f3a91c7d2b64_record_prompt_assistant_thinking.py` adds non-null `prompt_assistant_runs.thinking_enabled`. Historical rows are backfilled to `true`, matching the only behavior available before the focused-editor toggle. New failed runs also retain bounded safe error details in `raw_response_json`; prompt content is never copied into those diagnostics.
+Migration `f3a91c7d2b64_record_prompt_assistant_thinking.py` adds non-null `prompt_assistant_runs.thinking_enabled`. Historical rows are backfilled to `true`, matching the only behavior available before the focused-editor toggle. New failed runs retain bounded model/status, field-presence, response/thinking-length, done-reason, and validation-stage details in `raw_response_json`. Their prompt and creative-direction columns are left empty so failed prompt text is not retained by default.
 
 ## Main tables
 

@@ -16,6 +16,7 @@ from tests.helpers import (
     login_ready_admin,
     provision_user,
     restore_cookie,
+    wait_for_status,
 )
 from tests.publication_fixtures import (
     build_publication_bundle,
@@ -731,7 +732,7 @@ def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
     assert fake_state.ollama_calls[-1]["think"] is True
 
 
-def test_prompt_assistant_rejects_a_response_without_thinking_output(
+def test_prompt_assistant_accepts_response_only_output_and_records_a_warning(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client, username="missing.thinking")
@@ -748,13 +749,54 @@ def test_prompt_assistant_rejects_a_response_without_thinking_output(
         },
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "ollama_invalid_response"
-    assert error["message"] == "Prompt Assistant did not return thinking output."
-    assert error["fields"] == {}
-    assert error["details"] == {}
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "a portrait in cool light, make the light warmer"
     assert fake_state.ollama_calls[-1]["think"] is True
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+
+    with container.db.session_factory() as session:
+        run = session.get(PromptAssistantRun, response.json()["composition_id"])
+        assert run is not None
+        diagnostics = run.raw_response_json
+        assert diagnostics["field_presence"] == {"response": True, "thinking": False}
+        assert diagnostics["thinking_length"] == 0
+        assert diagnostics["selected_field"] == "response"
+        assert diagnostics["warnings"] == ["thinking_output_missing"]
+        assert response.json()["prompt"] not in json.dumps(diagnostics)
+
+
+def test_successful_refinement_overrides_the_caller_prompt_sent_to_comfyui(
+    settings_factory, fake_state
+) -> None:
+    with TestClient(create_app(settings_factory(enable_background_worker=True))) as client:
+        provision_user(client, username="server.authoritative.refinement")
+        _cache_ollama_health(client, available=True)
+        composition = client.post(
+            "/api/prompt-assistant/compose",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={
+                "mode": "refine",
+                "prompt": "original prompt",
+                "creative_direction": "add dramatic moonlight",
+            },
+        )
+        assert composition.status_code == 200, composition.text
+        refined_prompt = composition.json()["prompt"]
+
+        payload = generation_payload(client, "original prompt", seed=123)
+        payload["prompt_assistant_run_id"] = composition.json()["composition_id"]
+        accepted = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json=payload,
+        )
+        assert accepted.status_code == 201, accepted.text
+        detail = wait_for_status(client, accepted.json()["id"], "succeeded")
+
+        assert detail["final_prompt"] == refined_prompt
+        assert fake_state.submitted[-1]["prompt"] == refined_prompt
+        assert fake_state.submitted[-1]["prompt"] != "original prompt"
 
 
 def test_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_state) -> None:
@@ -869,6 +911,13 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
         "attempts": 1,
         "thinking_enabled": False,
         "upstream_status": 400,
+        "model": None,
+        "status": 400,
+        "field_presence": {"response": False, "thinking": False},
+        "response_length": 0,
+        "thinking_length": 0,
+        "done_reason": None,
+        "validation_stage": "http_status",
     }
     assert len(fake_state.ollama_calls) == 1
 
@@ -885,7 +934,10 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
         assert run is not None
         assert run.thinking_enabled is False
         assert run.error_code == "ollama_generate_rejected"
+        assert run.prompt_before == ""
+        assert run.creative_direction == ""
         assert run.raw_response_json == {"error_details": error["details"]}
+        assert "a portrait" not in json.dumps(run.raw_response_json)
 
     from app.main import JsonFormatter
 
@@ -942,8 +994,107 @@ def test_prompt_assistant_reports_exhausted_transient_generate_failures(
         "attempts": 3,
         "thinking_enabled": True,
         "upstream_status": 503,
+        "model": None,
+        "status": 503,
+        "field_presence": {"response": False, "thinking": False},
+        "response_length": 0,
+        "thinking_length": 0,
+        "done_reason": None,
+        "validation_stage": "http_status",
     }
     assert len(fake_state.ollama_calls) == 3
+
+
+def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="unchanged.refinement")
+    _cache_ollama_health(app_client, available=True)
+    fake_state.ollama_response_prompt = "  A   PORTRAIT IN COOL LIGHT  "
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "a portrait in cool light",
+            "creative_direction": "make it warmer",
+        },
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "prompt_refinement_unchanged"
+    assert "specific Creative Direction" in error["message"]
+    assert error["details"]["validation_stage"] == "refinement_comparison"
+    assert error["details"]["model"] == fake_state.models[0]
+    assert error["details"]["status"] == 200
+
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+    from sqlalchemy import select
+
+    with container.db.session_factory() as session:
+        run = session.scalar(
+            select(PromptAssistantRun).where(
+                PromptAssistantRun.error_code == "prompt_refinement_unchanged"
+            )
+        )
+        assert run is not None
+        assert run.prompt_before == ""
+        assert run.creative_direction == ""
+        assert "portrait in cool light" not in json.dumps(run.raw_response_json).casefold()
+
+
+def test_sexual_content_involving_minors_is_blocked_before_and_after_ollama(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="prompt.safety")
+    _cache_ollama_health(app_client, available=True)
+
+    blocked_input = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "portrait of a 15-year-old",
+            "creative_direction": "make the image erotic",
+        },
+    )
+    assert blocked_input.status_code == 422
+    assert blocked_input.json()["error"]["code"] == "sexual_minors_prohibited"
+    assert fake_state.ollama_calls == []
+
+    fake_state.ollama_response_prompt = "explicit nude portrait of a child"
+    blocked_output = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "",
+            "creative_direction": "a studio portrait",
+        },
+    )
+    assert blocked_output.status_code == 422
+    assert blocked_output.json()["error"]["code"] == "sexual_minors_prohibited"
+    assert blocked_output.json()["error"]["details"]["validation_stage"] == "safety_policy"
+
+    direct = generation_payload(app_client, "explicit nude portrait of a child", seed=51)
+    validation = app_client.post(
+        "/api/generations/validate",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json=direct,
+    )
+    assert validation.status_code == 422
+    assert validation.json()["error"]["code"] == "sexual_minors_prohibited"
+    accepted = app_client.post(
+        "/api/generations",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json=direct,
+    )
+    assert accepted.status_code == 422
+    assert accepted.json()["error"]["code"] == "sexual_minors_prohibited"
+    assert fake_state.submitted == []
 
 
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:

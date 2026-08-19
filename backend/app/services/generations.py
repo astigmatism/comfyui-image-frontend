@@ -57,6 +57,7 @@ from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
+from .prompt_safety import ensure_no_sexual_content_involving_minors
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -148,6 +149,7 @@ class GenerationService:
         self._instance_for_request(session, request, require_available=False)
         profile = self._profile_for_request(session, request)
         result = self._compile(session, user=user, profile=profile, request=request)
+        ensure_no_sexual_content_involving_minors(result.final_prompt, field="prompt")
         return ValidationResult(
             valid=True,
             effective_parameters=result.effective_controls,
@@ -160,9 +162,11 @@ class GenerationService:
     ) -> GenerationSummary:
         instance = self._instance_for_request(session, request, require_available=True)
         profile = self._profile_for_request(session, request)
-        compiled = self._compile(session, user=user, profile=profile, request=request)
-        uploads = self._verify_uploads(session, user, profile, compiled)
         prompt_run = self._verify_prompt_run(session, user, request.prompt_assistant_run_id)
+        effective_request = self._apply_prompt_assistant_output(profile, request, prompt_run)
+        compiled = self._compile(session, user=user, profile=profile, request=effective_request)
+        ensure_no_sexual_content_involving_minors(compiled.final_prompt, field="prompt")
+        uploads = self._verify_uploads(session, user, profile, compiled)
         queue_seq = self._next_queue_sequence(session)
         generation = Generation(
             owner_id=user.id,
@@ -427,13 +431,48 @@ class GenerationService:
                 PromptAssistantRun.owner_id == user.id,
             )
         )
-        if run is None or run.generation_id is not None:
+        if (
+            run is None
+            or run.generation_id is not None
+            or run.error_code is not None
+            or not isinstance(run.ollama_output, str)
+            or not run.ollama_output.strip()
+        ):
             raise AppError(
                 "prompt_assistant_invalid",
                 "Prompt Assistant provenance is unavailable for this request.",
                 status_code=422,
             )
         return run
+
+    @staticmethod
+    def _apply_prompt_assistant_output(
+        profile: WorkflowProfile,
+        request: GenerationCreate,
+        run: PromptAssistantRun | None,
+    ) -> GenerationCreate:
+        if run is None:
+            return request
+        inputs = profile.resolved_contract_json.get("inputs", [])
+        positive_prompt_id = next(
+            (
+                item.get("id")
+                for item in inputs
+                if isinstance(item, dict)
+                and item.get("semantic_role") == "positive_prompt"
+                and isinstance(item.get("id"), str)
+            ),
+            None,
+        )
+        if positive_prompt_id is None:
+            raise AppError(
+                "source_unavailable",
+                "The accepted source has no prompt input for Prompt Assistant output.",
+                status_code=409,
+            )
+        parameters = copy.deepcopy(request.public_parameters)
+        parameters[positive_prompt_id] = run.ollama_output
+        return request.model_copy(update={"parameters": parameters, "controls": None})
 
     @staticmethod
     def _next_queue_sequence(session: Session) -> int:

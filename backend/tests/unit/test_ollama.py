@@ -93,6 +93,224 @@ def test_thinking_can_be_disabled_per_request() -> None:
     assert payload["think"] is False
 
 
+def test_response_only_structured_output_is_accepted_with_a_capability_warning(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "response-only-model",
+                    "response": json.dumps({"prompt": "a portrait in warm window light"}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            result = await adapter.compose(
+                mode="refine",
+                prompt="a portrait",
+                direction="use warm window light",
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == "a portrait in warm window light"
+        assert result.model == "response-only-model"
+        assert result.raw_response == {
+            "model": "response-only-model",
+            "status": 200,
+            "field_presence": {"response": True, "thinking": False},
+            "response_length": len('{"prompt": "a portrait in warm window light"}'),
+            "thinking_length": 0,
+            "done_reason": "stop",
+            "validation_stage": "complete",
+            "selected_field": "response",
+            "warnings": ["thinking_output_missing"],
+        }
+        assert "warm window light" not in json.dumps(result.raw_response)
+
+    asyncio.run(scenario())
+
+
+def test_thinking_only_structured_output_remains_supported(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "thinking": json.dumps({"prompt": "a fox beneath moonlit pines"}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 42,
+        )
+        try:
+            result = await adapter.compose(
+                mode="create",
+                prompt="",
+                direction="a fox beneath moonlit pines",
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == "a fox beneath moonlit pines"
+        assert result.raw_response["selected_field"] == "thinking"
+        assert "warnings" not in result.raw_response
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("response_text", "thinking_text", "expected_message"),
+    [
+        ("{not-json", "", "Prompt Assistant returned malformed structured prompt output."),
+        ("", "", "Prompt Assistant returned no usable prompt."),
+    ],
+)
+def test_malformed_or_empty_structured_output_is_rejected_with_safe_diagnostics(
+    tmp_path: Path,
+    response_text: str,
+    thinking_text: str,
+    expected_message: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "malformed-model",
+                    "response": response_text,
+                    "thinking": thinking_text,
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="refine",
+                    prompt="a portrait",
+                    direction="warm light",
+                )
+        finally:
+            await adapter.close()
+
+        assert raised.value.code == "ollama_invalid_response"
+        assert raised.value.message == expected_message
+        assert raised.value.details == {
+            "model": "malformed-model",
+            "status": 200,
+            "field_presence": {"response": True, "thinking": True},
+            "response_length": len(response_text),
+            "thinking_length": len(thinking_text),
+            "done_reason": "stop",
+            "validation_stage": "structured_prompt",
+        }
+        if response_text:
+            assert response_text not in json.dumps(raised.value.details)
+
+    asyncio.run(scenario())
+
+
+def test_refine_rejects_normalized_unchanged_output_with_actionable_error(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "active-model",
+                    "response": json.dumps({"prompt": "  A   PORTRAIT  "}),
+                    "thinking": "considered the request",
+                    "done": True,
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="refine",
+                    prompt="a portrait",
+                    direction="make it better",
+                )
+        finally:
+            await adapter.close()
+
+        assert raised.value.code == "prompt_refinement_unchanged"
+        assert raised.value.status_code == 422
+        assert "specific Creative Direction" in raised.value.message
+        assert raised.value.details["validation_stage"] == "refinement_comparison"
+
+    asyncio.run(scenario())
+
+
+def test_read_timeout_is_classified_without_retrying_or_retaining_prompt_text(
+    tmp_path: Path,
+) -> None:
+    generate_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal generate_calls
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            generate_calls += 1
+            raise httpx.ReadTimeout("private prompt must not be retained", request=request)
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="refine",
+                    prompt="private prompt must not be retained",
+                    direction="warm light",
+                )
+        finally:
+            await adapter.close()
+
+        assert raised.value.code == "ollama_generate_timeout"
+        assert raised.value.status_code == 504
+        assert raised.value.details["status"] is None
+        assert raised.value.details["validation_stage"] == "timeout"
+        assert "private prompt" not in json.dumps(raised.value.details)
+
+    asyncio.run(scenario())
+    assert generate_calls == 1
+
+
 def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> None:
     generate_calls = 0
     retry_delays: list[float] = []
@@ -135,6 +353,13 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
                 "attempts": 3,
                 "thinking_enabled": False,
                 "upstream_status": 200,
+                "model": None,
+                "status": 200,
+                "field_presence": {"response": False, "thinking": False},
+                "response_length": 0,
+                "thinking_length": 0,
+                "done_reason": None,
+                "validation_stage": "invalid_json",
             }
         finally:
             await adapter.close()

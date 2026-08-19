@@ -754,12 +754,15 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 if state.ollama_response_in_thinking
                 else "Analyzed the prompt composition requirements."
             )
-        return {
+        result = {
             "model": str(effective_model or ""),
             "response": "" if state.ollama_response_in_thinking else response_text,
-            "thinking": thinking_text,
             "done": True,
+            "done_reason": "stop",
         }
+        if state.ollama_include_thinking:
+            result["thinking"] = thinking_text
+        return result
 
     @app.post("/v1/audio/transcriptions")
     async def speech_to_text(
