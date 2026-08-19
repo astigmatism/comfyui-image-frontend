@@ -539,9 +539,9 @@ The authenticated application uses a two-dimensional shell:
 
 The card footer is intentionally minimal.
 
-- **GAL-022:** It MUST show only two pieces of informational metadata: the generation source display name and the completed generation duration.
-- **GAL-023:** Those values MUST appear in one horizontal metadata line separated by a centered dot. Duration MUST use whole minutes and seconds without an hours unit, for example: `Portrait Workflow · 1m 30s`.
-- **GAL-024:** Long source names MUST truncate gracefully without breaking the card layout.
+- **GAL-022:** It MUST show only the generation source display name, the selected checkpoint label when the source exposes a selectable checkpoint, and the completed generation duration.
+- **GAL-023:** Those values MUST appear in one horizontal metadata line separated by centered dots, with missing or incomplete values omitted, for example: `Portrait Workflow · 1m 30s` or `Moody Krea 2 Mix V4 · Moody Krea 2 V5 BF16 · 1m 30s`. Duration MUST use whole minutes and seconds without an hours unit.
+- **GAL-024:** Long source or checkpoint names MUST truncate gracefully without breaking the card layout.
 - **GAL-025:** The only persistent interactive control in the footer MUST be **Recall settings**.
 - **GAL-026:** Status, prompt excerpts, seed, dimensions, queue position, submission date, and error text MUST NOT be added to the footer in the first release.
 
@@ -797,7 +797,7 @@ The application is acceptable only when all of the following are true:
 11. Users can submit multiple generations and the application queues them durably and fairly.
 12. The gallery is the main view and shows one card for every accepted generation, including failed and cancelled attempts.
 13. The top-right slider scales cards from approximately one per row to compact thumbnails and persists per user.
-14. Each completed card footer displays `generation source · generation duration` plus its actions; cards without a completed duration display only the generation source.
+14. Each completed card footer displays `generation source · generation duration` plus its actions; cards without a completed duration display only the generation source. When the source exposes a selectable checkpoint, the footer displays `generation source · checkpoint · generation duration` instead, and the execution runtime is not shown there.
 15. A running card updates in place as contract-declared artifacts arrive.
 16. Only a terminal successful output is marked canonical; cancelled/failed checkpoints remain visibly non-final.
 17. Recall settings immediately overwrites the left panel, restores all inputs and the resolved seed, and never submits automatically.
@@ -828,7 +828,7 @@ The following decisions are deliberate and MUST not be reopened during implement
 - There is one gallery card per generation.
 - Progressive artifacts update the card; earlier declared checkpoints remain in the detail timeline.
 - Failed and cancelled accepted generations remain visible and recallable.
-- The card footer contains only source and date metadata, separated by a dot, plus Recall settings.
+- The card footer contains only the source, optional checkpoint label, and duration metadata, separated by dots, plus Recall settings.
 - Recall always overwrites current panel values immediately and without confirmation.
 - Recall restores concrete resolved seeds.
 - Exact recall requires the exact workflow version and hashes; no silent migration is permitted.

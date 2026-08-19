@@ -70,6 +70,7 @@ class _GenerationSummaryRow:
     id: str
     status: GenerationStatus
     workflow_display_name: str
+    checkpoint_label: str | None
     comfyui_instance_id: str
     comfyui_instance_label: str
     accepted_at: datetime
@@ -724,6 +725,7 @@ class GenerationService:
             id=row.id,
             status=status,
             workflow_display_name=row.workflow_display_name,
+            checkpoint_label=row.checkpoint_label,
             comfyui_instance_id=row.comfyui_instance_id,
             comfyui_instance_label=row.comfyui_instance_label,
             accepted_at=row.accepted_at,
@@ -818,6 +820,10 @@ class GenerationService:
             id=generation.id,
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
+            checkpoint_label=_checkpoint_label(
+                generation.resolved_contract_json,
+                generation.effective_controls_json,
+            ),
             comfyui_instance_id=generation.comfyui_instance_id,
             comfyui_instance_label=generation.comfyui_instance_label,
             accepted_at=generation.accepted_at,
@@ -1292,6 +1298,37 @@ class GenerationService:
         self.assets.delete_paths(artifact_paths + upload_paths)
 
 
+def _checkpoint_label(
+    contract: Any,
+    controls: Any,
+) -> str | None:
+    """Resolve the selected checkpoint's public label from the stored contract."""
+    if not isinstance(contract, Mapping) or not isinstance(controls, Mapping):
+        return None
+    inputs = contract.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    for declaration in inputs:
+        if not isinstance(declaration, Mapping) or declaration.get("type") != "choice":
+            continue
+        input_id = declaration.get("id")
+        semantic_role = declaration.get("semantic_role")
+        if semantic_role not in ("model", "checkpoint") and input_id != "checkpoint":
+            continue
+        value = controls.get(input_id)
+        if not isinstance(value, str) or not value:
+            continue
+        choices = declaration.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if isinstance(choice, Mapping) and choice.get("value") == value:
+                    label = choice.get("label")
+                    if isinstance(label, str) and label.strip():
+                        return label.strip()
+        return value
+    return None
+
+
 def _summary_projection() -> tuple[Any, ...]:
     inputs = (
         func.json_each(Generation.resolved_contract_json, "$.inputs")
@@ -1338,10 +1375,38 @@ def _summary_projection() -> tuple[Any, ...]:
             .scalar_subquery()
         )
 
+    def checkpoint_column() -> Any:
+        input_id = func.json_extract(inputs.c.value, "$.id")
+        input_role = func.json_extract(inputs.c.value, "$.semantic_role")
+        input_type = func.json_extract(inputs.c.value, "$.type")
+        selected = func.json_extract(Generation.effective_controls_json, _json_key_path(input_id))
+        choice_rows = (
+            func.json_each(
+                Generation.resolved_contract_json,
+                func.concat(_json_key_path(input_id), literal(".choices")),
+            )
+            .table_valued("value")
+            .alias("checkpoint_choices")
+        )
+        return (
+            select(func.coalesce(func.json_extract(choice_rows.c.value, "$.label"), selected))
+            .select_from(inputs, choice_rows)
+            .where(
+                (input_role.in_(("model", "checkpoint"))) | (input_id == "checkpoint"),
+                input_type == "choice",
+                selected.is_not(None),
+                func.json_extract(choice_rows.c.value, "$.value") == selected,
+            )
+            .limit(1)
+            .correlate(Generation)
+            .scalar_subquery()
+        )
+
     return (
         Generation.id.label("id"),
         Generation.status.label("status"),
         Generation.workflow_display_name.label("workflow_display_name"),
+        checkpoint_column().label("checkpoint_label"),
         Generation.comfyui_instance_id.label("comfyui_instance_id"),
         Generation.comfyui_instance_label.label("comfyui_instance_label"),
         Generation.accepted_at.label("accepted_at"),
@@ -1385,6 +1450,7 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         id=str(values["id"]),
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),
+        checkpoint_label=values["checkpoint_label"],
         comfyui_instance_id=str(values["comfyui_instance_id"]),
         comfyui_instance_label=str(values["comfyui_instance_label"]),
         accepted_at=values["accepted_at"],

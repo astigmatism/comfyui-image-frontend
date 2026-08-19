@@ -347,7 +347,8 @@ Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_ou
 | `POST` | `/api/generations/{id}/cancel` | Request running cancellation, or cancel and delete a queued item (`204`) |
 | `DELETE` | `/api/generations/{id}` | Delete owned history/files; may return 202 while active deletion reconciles |
 
-A summary contains lifecycle status, source display name, `comfyui_instance_id`, the snapshotted
+A summary contains lifecycle status, source display name, `checkpoint_label` (null when the
+source exposes no selectable checkpoint), `comfyui_instance_id`, the snapshotted
 `comfyui_instance_label`, acceptance/stage state, one optional
 active `progress` snapshot, total artifact count, image count, final-image count, one optional
 `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native

@@ -310,7 +310,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
   await expect(footer.locator(".card-metadata")).toHaveText(
-    /^Generic Landscape · Original · RTX 3090 · (?:\d+m )?\d+s$/,
+    /^Generic Landscape · (?:\d+m )?\d+s$/,
   );
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
@@ -466,7 +466,7 @@ test("runtime selector is a borderless single-line two-instance control", async 
   expect(completed.comfyui_instance_label).toBe("Worker 1 · RTX 3080");
   await expect(
     page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-metadata`),
-  ).toContainText("Worker 1 · RTX 3080");
+  ).toHaveText(/^Generic Landscape · (?:\d+m )?\d+s$/);
 });
 
 test("photo viewer slideshow waits for a generation's final completed image", async ({
@@ -1063,6 +1063,17 @@ test("Moody checkpoint choices are prominent, shared with the modal, and fan out
     const comparable = { ...request.parameters };
     delete comparable.checkpoint;
     expect(comparable).toEqual(sharedParameters);
+  }
+
+  const checkpointFooterPatterns = [
+    /Moody Krea 2 Mix V4 · Moody Krea 2 V4 INT8 ConvRot(?: · (?:\d+m )?\d+s)?$/,
+    /Moody Krea 2 Mix V4 · Moody Krea 2 TYJR MXFP8(?: · (?:\d+m )?\d+s)?$/,
+    /Moody Krea 2 Mix V4 · Moody Krea 2 V5 BF16(?: · (?:\d+m )?\d+s)?$/,
+  ];
+  for (const pattern of checkpointFooterPatterns) {
+    const footer = page.locator(".gallery-card .card-metadata").filter({ hasText: pattern });
+    await expect(footer).toHaveCount(1);
+    await expect(footer).toHaveText(pattern);
   }
 });
 

@@ -1600,6 +1600,11 @@ function generationComfyuiInstanceName(generation) {
   );
 }
 
+function generationCheckpointLabel(generation) {
+  const label = String(generation?.checkpoint_label || "").trim();
+  return label || null;
+}
+
 function statusPlaceholderMarkup(generation) {
   let label = generation.current_stage_label || statusLabel(generation.status);
   if (generation.status.startsWith("cancelled_")) label = "Cancelled generation";
@@ -1615,9 +1620,9 @@ function statusPlaceholderMarkup(generation) {
 
 export function cardFooterMarkup(generation) {
   const sourceName = generationSourceName(generation);
-  const runtimeName = generationComfyuiInstanceName(generation);
+  const checkpointName = generationCheckpointLabel(generation);
   const duration = formatGenerationDuration(generation.generation_duration_seconds);
-  const metadata = [sourceName, runtimeName, duration].filter(Boolean).join(" · ");
+  const metadata = [sourceName, checkpointName, duration].filter(Boolean).join(" · ");
   const artifact = generation.display_artifact;
   const deletePending = Boolean(generation.delete_pending);
   const download = artifact?.kind === "image"
@@ -1630,7 +1635,7 @@ export function cardFooterMarkup(generation) {
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${runtimeName ? ` on ${escapeHtml(runtimeName)}` : ""}">${escapeHtml(metadata)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${escapeHtml(metadata)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button><button type="button" class="delete-generation-button" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}" ${deletePending ? "disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>

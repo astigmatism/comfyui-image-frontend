@@ -280,6 +280,7 @@ class GenerationSummary(APIModel):
     id: str
     status: str
     workflow_display_name: str
+    checkpoint_label: str | None = None
     comfyui_instance_id: str
     comfyui_instance_label: str
     accepted_at: datetime

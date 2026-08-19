@@ -1365,6 +1365,7 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
+    checkpoint_label: "Moody Krea 2 V5 BF16",
     comfyui_instance_id: "worker-2",
     comfyui_instance_label: "Worker 2 · RTX 3080",
     accepted_at: "2026-07-12T12:00:00Z",
@@ -1380,8 +1381,9 @@ test("card footer groups generation actions and exposes permanent deletion", () 
     },
   };
   const html = cardFooterMarkup(generation);
-  assert.match(html, />Portrait Workflow · Worker 2 · RTX 3080 · 1m 30s<\/button>/);
-  assert.match(html, /title="Open generation details for Portrait Workflow on Worker 2 · RTX 3080"/);
+  assert.match(html, />Portrait Workflow · Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
+  assert.doesNotMatch(html, /Worker 2 · RTX 3080/);
+  assert.match(html, /title="Open generation details for Portrait Workflow with Moody Krea 2 V5 BF16"/);
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
