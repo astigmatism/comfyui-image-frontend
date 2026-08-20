@@ -151,6 +151,10 @@ export function generationPanelMarkup(state, profile, contract) {
               <em>Creative Direction</em>
             </label>
           </div>
+          <div id="auto-generate-status" class="auto-generate-status ${escapeHtml(state.autoGenerateStatus || "idle")}" role="${state.autoGenerateStatus === "paused" ? "alert" : "status"}" aria-live="polite" ${state.autoGenerateStatus === "idle" || !state.autoGenerateStatusMessage ? "hidden" : ""}>
+            ${state.autoGenerateStatusMessage ? `<span>${escapeHtml(state.autoGenerateStatusMessage)}</span>` : ""}
+            ${state.autoGenerateStatus === "paused" ? '<button type="button" class="button low auto-generate-retry" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
+          </div>
           ${comfyuiInstanceSelectorMarkup(state)}
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}

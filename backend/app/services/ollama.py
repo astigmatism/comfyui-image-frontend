@@ -20,6 +20,10 @@ MAX_CREATE_EXCLUSIONS = 8
 MAX_GENERATE_ATTEMPTS = 3
 GENERATE_RETRY_BASE_SECONDS = 0.25
 RETRYABLE_GENERATE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Ollama's generated-token allowance is shared by thinking and final output. Creative prompt
+# composition therefore starts with enough room for reasoning and escalates deterministically if
+# the upstream response reports that it exhausted the allowance before completing the schema.
+OUTPUT_TOKEN_BUDGETS = (2_048, 4_096, 8_192)
 CreateSeedResolver = Callable[[int, int], int]
 GenerateRetrySleeper = Callable[[float], Awaitable[None]]
 
@@ -137,36 +141,92 @@ class OllamaAdapter:
                 raise RuntimeError("create seed resolver returned an out-of-range value")
         for attempt in range(maximum_attempts):
             instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
-            payload = _generate_payload(
-                mode=mode,
-                instruction=instruction,
-                think=think,
-                attempt=attempt,
-                seed=create_seed + attempt if create_seed is not None else None,
-            )
-            received = await self._generate(payload, mode=mode, think=think)
-            if not isinstance(received.data, dict):
-                diagnostics = _response_diagnostics(
-                    {},
-                    status=received.status,
-                    validation_stage="response_envelope",
+            output_budget_diagnostics: list[dict[str, Any]] = []
+            final = ""
+            selected_field: str | None = None
+            data: dict[str, Any] = {}
+            received_status: int | None = None
+            selected_output_budget_attempt = 0
+            for output_budget_attempt, output_budget in enumerate(OUTPUT_TOKEN_BUDGETS, start=1):
+                payload = _generate_payload(
+                    mode=mode,
+                    instruction=instruction,
+                    think=think,
+                    attempt=attempt,
+                    seed=create_seed + attempt if create_seed is not None else None,
+                    output_budget=output_budget,
                 )
-                raise AppError(
-                    "ollama_invalid_response",
-                    "Prompt Assistant returned an invalid response envelope.",
-                    details=diagnostics,
-                )
-            data = received.data
-            final, selected_field = _response_prompt_with_source(data)
-            if not final:
+                received = await self._generate(payload, mode=mode, think=think)
+                received_status = received.status
+                if not isinstance(received.data, dict):
+                    diagnostics = _with_output_budget_diagnostics(
+                        _response_diagnostics(
+                            {},
+                            status=received.status,
+                            validation_stage="response_envelope",
+                        ),
+                        attempts=output_budget_attempt,
+                        allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
+                    )
+                    raise AppError(
+                        "ollama_invalid_response",
+                        "Prompt Assistant returned an invalid response envelope.",
+                        details=diagnostics,
+                    )
+                data = received.data
+                final, selected_field = _response_prompt_with_source(data)
+                if final:
+                    selected_output_budget_attempt = output_budget_attempt
+                    break
                 diagnostics = _response_diagnostics(
                     data,
                     status=received.status,
                     validation_stage="structured_prompt",
                 )
+                diagnostics["output_budget"] = output_budget
+                diagnostics["output_budget_attempt"] = output_budget_attempt
+                output_budget_diagnostics.append(diagnostics)
+                if diagnostics["done_reason"] == "length":
+                    if output_budget_attempt < len(OUTPUT_TOKEN_BUDGETS):
+                        logger.info(
+                            "ollama_output_budget_retry",
+                            extra={
+                                "service": "ollama",
+                                "operation": "generate",
+                                "assistant_mode": mode,
+                                "thinking_enabled": think,
+                                "candidate_attempt": attempt + 1,
+                                "output_budget_attempt": output_budget_attempt,
+                                "output_budget": output_budget,
+                                "next_output_budget": OUTPUT_TOKEN_BUDGETS[output_budget_attempt],
+                                "done_reason": "length",
+                            },
+                        )
+                        continue
+                    exhausted = _with_output_budget_diagnostics(
+                        {
+                            **diagnostics,
+                            "validation_stage": "output_budget_exhausted",
+                        },
+                        attempts=output_budget_attempt,
+                        allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
+                        attempt_diagnostics=output_budget_diagnostics,
+                    )
+                    raise AppError(
+                        "ollama_output_budget_exhausted",
+                        "Prompt Assistant exhausted its output-token budget before completing "
+                        "a structured prompt after bounded retries.",
+                        status_code=503,
+                        details=exhausted,
+                    )
                 has_output_text = any(
                     isinstance(data.get(field), str) and bool(data[field].strip())
                     for field in ("response", "thinking")
+                )
+                invalid = _with_output_budget_diagnostics(
+                    diagnostics,
+                    attempts=output_budget_attempt,
+                    allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
                 )
                 raise AppError(
                     "ollama_invalid_response",
@@ -175,15 +235,21 @@ class OllamaAdapter:
                         if has_output_text
                         else "Prompt Assistant returned no usable prompt."
                     ),
-                    details=diagnostics,
+                    details=invalid,
                 )
+            if not final or received_status is None:
+                raise RuntimeError("Ollama output-budget retry loop exited unexpectedly")
             effective_model = data.get("model")
             if not isinstance(effective_model, str) or not effective_model.strip():
-                diagnostics = _response_diagnostics(
-                    data,
-                    status=received.status,
-                    validation_stage="model_metadata",
-                    selected_field=selected_field,
+                diagnostics = _with_output_budget_diagnostics(
+                    _response_diagnostics(
+                        data,
+                        status=received_status,
+                        validation_stage="model_metadata",
+                        selected_field=selected_field,
+                    ),
+                    attempts=selected_output_budget_attempt,
+                    allowances=OUTPUT_TOKEN_BUDGETS[:selected_output_budget_attempt],
                 )
                 raise AppError(
                     "ollama_invalid_response",
@@ -194,12 +260,37 @@ class OllamaAdapter:
             warnings = []
             if think and not _has_thinking_output(data):
                 warnings.append("thinking_output_missing")
-            diagnostics = _response_diagnostics(
-                data,
-                status=received.status,
-                validation_stage="prompt_validation",
-                selected_field=selected_field,
-                warnings=warnings,
+            diagnostics = _with_output_budget_diagnostics(
+                _response_diagnostics(
+                    data,
+                    status=received_status,
+                    validation_stage="prompt_validation",
+                    selected_field=selected_field,
+                    warnings=warnings,
+                ),
+                attempts=selected_output_budget_attempt,
+                allowances=OUTPUT_TOKEN_BUDGETS[:selected_output_budget_attempt],
+                selected_attempt=selected_output_budget_attempt,
+                attempt_diagnostics=(
+                    [
+                        *output_budget_diagnostics,
+                        {
+                            **_response_diagnostics(
+                                data,
+                                status=received_status,
+                                validation_stage="prompt_validation",
+                                selected_field=selected_field,
+                                warnings=warnings,
+                            ),
+                            "output_budget": OUTPUT_TOKEN_BUDGETS[
+                                selected_output_budget_attempt - 1
+                            ],
+                            "output_budget_attempt": selected_output_budget_attempt,
+                        },
+                    ]
+                    if output_budget_diagnostics
+                    else None
+                ),
             )
             if warnings:
                 logger.warning(
@@ -479,6 +570,27 @@ def _response_diagnostics(
     return diagnostics
 
 
+def _with_output_budget_diagnostics(
+    diagnostics: dict[str, Any],
+    *,
+    attempts: int,
+    allowances: Sequence[int],
+    selected_attempt: int | None = None,
+    attempt_diagnostics: Sequence[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    enriched = {
+        **diagnostics,
+        "output_budget_attempts": attempts,
+        "output_budgets": list(allowances),
+    }
+    if selected_attempt is not None:
+        enriched["selected_output_budget_attempt"] = selected_attempt
+        enriched["selected_output_budget"] = allowances[selected_attempt - 1]
+    if attempt_diagnostics is not None:
+        enriched["output_budget_attempt_diagnostics"] = list(attempt_diagnostics)
+    return enriched
+
+
 def _instruction(*, mode: str, prompt: str, direction: str) -> str:
     if mode == "refine":
         return (
@@ -523,9 +635,10 @@ def _generate_payload(
     think: bool = True,
     attempt: int = 0,
     seed: int | None = None,
+    output_budget: int = OUTPUT_TOKEN_BUDGETS[0],
 ) -> dict[str, Any]:
     if mode == "refine":
-        options = {"temperature": 0.1, "seed": 0, "num_predict": 512}
+        options = {"temperature": 0.1, "seed": 0, "num_predict": output_budget}
     else:
         if (
             not isinstance(seed, int)
@@ -536,7 +649,7 @@ def _generate_payload(
         options = {
             "temperature": min(0.9, 0.5 + (attempt * 0.2)),
             "seed": seed,
-            "num_predict": 512,
+            "num_predict": output_budget,
         }
     return {
         "prompt": instruction,

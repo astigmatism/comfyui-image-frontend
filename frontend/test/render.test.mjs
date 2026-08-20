@@ -975,6 +975,32 @@ test("auto-generate disables only manual generation while queueing", () => {
   assert.doesNotMatch(prompt, /disabled/);
 });
 
+test("auto-generate renders a persistent accessible paused state with a retry action", () => {
+  const state = {
+    submitting: false,
+    autoGenerate: false,
+    autoGenerateCreativeDirection: true,
+    autoGenerateStatus: "paused",
+    autoGenerateStatusMessage: "Auto-generate paused: output budget exhausted.",
+    services: [{ service: "comfyui", available: true }],
+    workflows: [{ profile_id: "p1", display_name: "Portrait" }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello", "sampling.steps": 8 },
+    fieldErrors: {},
+  };
+
+  const html = generationPanelMarkup(state, state.workflows[0], contract);
+  const autoGenerate = html.match(/<input id="auto-generate"[^>]*>/)?.[0] || "";
+
+  assert.doesNotMatch(autoGenerate, /checked/);
+  assert.match(
+    html,
+    /id="auto-generate-status" class="auto-generate-status paused" role="alert"/,
+  );
+  assert.match(html, /Auto-generate paused: output budget exhausted\./);
+  assert.match(html, /data-action="retry-auto-generate">Retry Auto-generate<\/button>/);
+});
+
 test("generation panel turns a Basic group into a divider section while preserving control metadata", () => {
   const state = {
     submitting: false,

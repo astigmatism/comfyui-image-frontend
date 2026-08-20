@@ -409,6 +409,7 @@ test("runtime selector is a borderless single-line two-instance control", async 
   expect(actionOrder).toEqual([
     "generate-button",
     "auto-generation-options",
+    "auto-generate-status",
     "comfyui-instance-field",
   ]);
   await expect(selector).toHaveValue("default");
@@ -2540,6 +2541,293 @@ test("auto-generate applies enabled Creative Direction before every generation a
   await expect(generate).toBeEnabled();
   await page.unroute("**/api/prompt-assistant/compose");
   await page.unroute("**/api/generations");
+});
+
+test("auto-generate retries one recoverable composition without parallel requests and queues once", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const useCreativeDirection = page.getByRole("checkbox", {
+    name: "Use Creative Direction",
+  });
+  let composeCalls = 0;
+  let generationCalls = 0;
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  const relevantRequests = new Set();
+  const trackFinished = (request) => {
+    if (!relevantRequests.delete(request)) return;
+    activeRequests -= 1;
+  };
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      ["/api/prompt-assistant/compose", "/api/generations"].includes(path)
+    ) {
+      relevantRequests.add(request);
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+      if (path === "/api/generations") generationCalls += 1;
+    }
+  });
+  page.on("requestfinished", trackFinished);
+  page.on("requestfailed", trackFinished);
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    composeCalls += 1;
+    if (composeCalls === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "ollama_output_budget_exhausted",
+            message: "Prompt Assistant exhausted its output-token budget.",
+            fields: {},
+            details: {},
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await prompt.fill("retry lighthouse");
+  await direction.fill("cinematic blue hour");
+  await useCreativeDirection.check();
+  await autoGenerate.check();
+  await expect(page.locator("#auto-generate-status")).toContainText(
+    "Retrying Auto-generate in 1 second",
+  );
+  await page.waitForTimeout(500);
+  expect(composeCalls).toBe(1);
+  expect(generationCalls).toBe(0);
+
+  const generationRequest = await page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  await autoGenerate.uncheck();
+
+  expect(composeCalls).toBe(2);
+  expect(generationCalls).toBe(1);
+  expect(maximumActiveRequests).toBe(1);
+  expect(generationRequest.postDataJSON().parameters.prompt).toBe(
+    "retry lighthouse, cinematic blue hour",
+  );
+  expect(generationRequest.postDataJSON().prompt_assistant_run_id).toBeTruthy();
+  await page.waitForTimeout(500);
+  expect(generationCalls).toBe(1);
+  await page.unroute("**/api/prompt-assistant/compose");
+});
+
+test("turning Auto-generate off cancels a pending Prompt Assistant retry", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  let composeCalls = 0;
+  let generationCalls = 0;
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST"
+    ) {
+      generationCalls += 1;
+    }
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    composeCalls += 1;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "ollama_generate_unavailable",
+          message: "Prompt Assistant is temporarily unavailable.",
+          fields: {},
+          details: {},
+        },
+      }),
+    });
+  });
+
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill(
+    "cancelled retry lighthouse",
+  );
+  await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill(
+    "storm light",
+  );
+  await page.getByRole("checkbox", { name: "Use Creative Direction" }).check();
+  await autoGenerate.check();
+  await expect(page.locator("#auto-generate-status")).toContainText(
+    "Retrying Auto-generate",
+  );
+  await autoGenerate.uncheck();
+  await expect(page.locator("#auto-generate-status")).toBeHidden();
+  await page.waitForTimeout(1_300);
+
+  expect(composeCalls).toBe(1);
+  expect(generationCalls).toBe(0);
+  await page.unroute("**/api/prompt-assistant/compose");
+});
+
+test("changing Creative Direction invalidates backoff and composes the fresh fingerprint", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  const compositionBodies = [];
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    compositionBodies.push(route.request().postDataJSON());
+    if (compositionBodies.length === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "ollama_output_budget_exhausted",
+            message: "Prompt Assistant exhausted its output-token budget.",
+            fields: {},
+            details: {},
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill(
+    "fresh fingerprint lighthouse",
+  );
+  await direction.fill("stale blue hour");
+  await page.getByRole("checkbox", { name: "Use Creative Direction" }).check();
+  await autoGenerate.check();
+  await expect(page.locator("#auto-generate-status")).toContainText(
+    "Retrying Auto-generate",
+  );
+
+  const freshComposition = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST" &&
+      request.postDataJSON().creative_direction === "fresh golden hour",
+  );
+  await direction.fill("fresh golden hour");
+  await freshComposition;
+  const generationRequest = await page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  await autoGenerate.uncheck();
+  await page.waitForTimeout(1_200);
+
+  expect(compositionBodies).toHaveLength(2);
+  expect(compositionBodies[0].creative_direction).toBe("stale blue hour");
+  expect(compositionBodies[1].creative_direction).toBe("fresh golden hour");
+  expect(generationRequest.postDataJSON().parameters.prompt).toBe(
+    "fresh fingerprint lighthouse, fresh golden hour",
+  );
+  await page.unroute("**/api/prompt-assistant/compose");
+});
+
+test("exhausted automatic composition pauses visibly and explicit retry restores operation", async ({
+  page,
+}) => {
+  test.setTimeout(45_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
+  let composeCalls = 0;
+  let allowSuccess = false;
+  let generationCalls = 0;
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST"
+    ) {
+      generationCalls += 1;
+    }
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    composeCalls += 1;
+    if (allowSuccess) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "ollama_output_budget_exhausted",
+          message: "Prompt Assistant exhausted all output budgets.",
+          fields: {},
+          details: {},
+        },
+      }),
+    });
+  });
+
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill(
+    "paused retry lighthouse",
+  );
+  await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill(
+    "violet dusk",
+  );
+  await page.getByRole("checkbox", { name: "Use Creative Direction" }).check();
+  await autoGenerate.check();
+
+  const paused = page.locator("#auto-generate-status");
+  await expect(paused).toHaveAttribute("role", "alert", { timeout: 10_000 });
+  await expect(paused).toContainText("Auto-generate paused");
+  await expect(autoGenerate).not.toBeChecked();
+  expect(composeCalls).toBe(3);
+  expect(generationCalls).toBe(0);
+
+  allowSuccess = true;
+  const generationRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Retry Auto-generate" }).click();
+  await generationRequest;
+  await autoGenerate.uncheck();
+
+  expect(composeCalls).toBe(4);
+  expect(generationCalls).toBe(1);
+  await expect(paused).toBeHidden();
+  await page.unroute("**/api/prompt-assistant/compose");
 });
 
 test("auto-generate leaves a populated Creative Direction unused when its control is disabled", async ({

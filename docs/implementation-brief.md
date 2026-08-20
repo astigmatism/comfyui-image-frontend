@@ -143,11 +143,12 @@ Implement a backend Ollama adapter and the collapsed Prompt Assistant:
 - Creative direction text area.
 - Compact mode choice: Refine current prompt or Create from creative direction.
 - Explicit Compose Prompt action.
-- Structured finalized-prompt response when available, with a safe plain-text fallback.
+- A complete schema-constrained finalized prompt from `response`, or from `thinking` only for the parser-compatibility case; never promote unstructured reasoning.
 - Returned prompt replaces the visible `prompt.text` value and remains editable.
-- Generate never invokes Ollama automatically.
-- Ollama failure disables only Prompt Assistant.
-- Retry transient router generation failures with a short bound and retain privacy-safe terminal diagnostics.
+- Manual Generate never invokes Ollama automatically; Auto-generate with Creative Direction explicitly enabled composes before each queued cycle.
+- Keep the selected thinking mode unchanged. Since thinking and final output share Ollama's generated-token allowance, retry schema-incomplete `done_reason: length` responses with the bounded `2048 → 4096 → 8192` allowance schedule while preserving candidate sampling.
+- Retry transient router generation failures independently with a short bound and retain privacy-safe terminal diagnostics, including budget attempts and allowances but no raw reasoning.
+- Retry recoverable automatic composition failures with bounded browser backoff; invalidate stale timers on source/revision/runtime/fingerprint changes and visibly pause with an unchecked Auto-generate switch plus retry action on terminal failure.
 - Persist thinking mode, model, template version, prompt before composition, direction, Ollama output, and exact final submitted prompt when used.
 - Recall restores the final submitted prompt and does not invoke Ollama.
 

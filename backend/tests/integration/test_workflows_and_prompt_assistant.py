@@ -8,6 +8,7 @@ from typing import Any
 from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING
 from app.main import create_app
 from app.models import ServiceHealth
+from app.services.ollama import OUTPUT_TOKEN_BUDGETS
 from fastapi.testclient import TestClient
 from tests.conftest import csrf
 from tests.helpers import (
@@ -519,7 +520,11 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
         "required": ["prompt"],
         "additionalProperties": False,
     }
-    assert request_payload["options"] == {"temperature": 0.1, "seed": 0, "num_predict": 512}
+    assert request_payload["options"] == {
+        "temperature": 0.1,
+        "seed": 0,
+        "num_predict": OUTPUT_TOKEN_BUDGETS[0],
+    }
     assert request_payload["prompt"] == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
         "Refine the current prompt according to the creative direction.\n\n"
@@ -585,8 +590,143 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
         "direction:\n\na red fox"
     )
     assert request_payload["think"] is True
-    assert request_payload["options"] == {"temperature": 0.5, "seed": 700, "num_predict": 512}
+    assert request_payload["options"] == {
+        "temperature": 0.5,
+        "seed": 700,
+        "num_predict": OUTPUT_TOKEN_BUDGETS[0],
+    }
     assert response.json()["template_version"] == "v5"
+
+
+def test_prompt_assistant_recovers_production_length_shape_without_changing_candidate(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="length.recovery")
+    _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 712
+    private_partial_reasoning = "private partial reasoning from an exhausted allowance"
+    fake_state.ollama_generate_responses = [
+        {
+            "model": "router-thinking-model",
+            "response": "",
+            "thinking": private_partial_reasoning,
+            "done": True,
+            "done_reason": "length",
+            "eval_count": OUTPUT_TOKEN_BUDGETS[0],
+        },
+        {
+            "model": "router-thinking-model",
+            "response": json.dumps({"prompt": "a red fox crossing a moonlit clearing"}),
+            "thinking": "completed private reasoning",
+            "done": True,
+            "done_reason": "stop",
+        },
+    ]
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "old private prompt",
+            "creative_direction": "private moonlit fox direction",
+            "think": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "a red fox crossing a moonlit clearing"
+    assert response.json()["model"] == "router-thinking-model"
+    assert len(fake_state.ollama_calls) == 2
+    first, recovered = fake_state.ollama_calls
+    assert first["think"] is True
+    assert recovered["think"] is True
+    assert first["format"] == recovered["format"]
+    assert first["prompt"] == recovered["prompt"]
+    assert first["options"] == {
+        "temperature": 0.5,
+        "seed": 712,
+        "num_predict": OUTPUT_TOKEN_BUDGETS[0],
+    }
+    assert recovered["options"] == {
+        "temperature": 0.5,
+        "seed": 712,
+        "num_predict": OUTPUT_TOKEN_BUDGETS[1],
+    }
+
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+
+    with container.db.session_factory() as session:
+        run = session.get(PromptAssistantRun, response.json()["composition_id"])
+        assert run is not None
+        assert run.thinking_enabled is True
+        diagnostics = run.raw_response_json
+        assert diagnostics["output_budget_attempts"] == 2
+        assert diagnostics["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS[:2])
+        assert diagnostics["selected_output_budget_attempt"] == 2
+        assert private_partial_reasoning not in json.dumps(diagnostics)
+
+
+def test_prompt_assistant_persists_safe_bounded_output_budget_exhaustion(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="length.exhausted")
+    _cache_ollama_health(app_client, available=True)
+    private_partial_reasoning = "never persist this private partial reasoning"
+    fake_state.ollama_generate_responses = [
+        {
+            "model": "router-thinking-model",
+            "response": "",
+            "thinking": private_partial_reasoning,
+            "done": True,
+            "done_reason": "length",
+            "eval_count": budget,
+        }
+        for budget in OUTPUT_TOKEN_BUDGETS
+    ]
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "private portrait prompt",
+            "creative_direction": "private dramatic light direction",
+            "think": True,
+        },
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "ollama_output_budget_exhausted"
+    assert error["details"]["validation_stage"] == "output_budget_exhausted"
+    assert error["details"]["done_reason"] == "length"
+    assert error["details"]["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS)
+    assert error["details"]["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS)
+    assert [call["options"]["num_predict"] for call in fake_state.ollama_calls] == list(
+        OUTPUT_TOKEN_BUDGETS
+    )
+
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+    from sqlalchemy import select
+
+    with container.db.session_factory() as session:
+        run = session.scalar(
+            select(PromptAssistantRun).where(
+                PromptAssistantRun.error_code == "ollama_output_budget_exhausted"
+            )
+        )
+        assert run is not None
+        assert run.prompt_before == ""
+        assert run.creative_direction == ""
+        assert run.model_name == "router-thinking-model"
+        assert run.raw_response_json == {"error_details": error["details"]}
+        serialized = json.dumps(run.raw_response_json)
+        assert private_partial_reasoning not in serialized
+        assert "private portrait prompt" not in serialized
+        assert "private dramatic light direction" not in serialized
 
 
 def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
@@ -617,11 +757,15 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
     assert response.json()["template_version"] == "v5"
     assert len(fake_state.ollama_calls) == 2
     first_request, retry_request = fake_state.ollama_calls
-    assert first_request["options"] == {"temperature": 0.5, "seed": 800, "num_predict": 512}
+    assert first_request["options"] == {
+        "temperature": 0.5,
+        "seed": 800,
+        "num_predict": OUTPUT_TOKEN_BUDGETS[0],
+    }
     assert retry_request["options"] == {
         "temperature": 0.7,
         "seed": 801,
-        "num_predict": 512,
+        "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
     assert retry_request["prompt"] == first_request["prompt"]
     assert retry_request["prompt"].endswith("from this creative direction:\n\na red fox")
@@ -1317,9 +1461,7 @@ def test_generation_list_projects_checkpoint_label_after_refresh(
     with TestClient(create_app(settings_factory(enable_background_worker=True))) as client:
         provision_user(client, username="checkpoint.list")
         summaries = client.get("/api/workflows").json()
-        source = next(
-            item for item in summaries if item["display_name"] == "Moody Krea 2 Mix V4"
-        )
+        source = next(item for item in summaries if item["display_name"] == "Moody Krea 2 Mix V4")
 
         payload = {
             "source_key": source["source_key"],

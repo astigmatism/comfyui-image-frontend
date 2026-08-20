@@ -409,6 +409,33 @@ code {
   white-space: nowrap;
 }
 
+.auto-generate-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  line-height: 1.4;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.auto-generate-status[hidden] {
+  display: none;
+}
+
+.auto-generate-status.paused {
+  color: var(--danger-text, #ffb4b4);
+  border-color: var(--danger, #b94b4b);
+}
+
+.auto-generate-retry {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .panel-scroll {
   overflow-y: auto;
   overscroll-behavior: contain;

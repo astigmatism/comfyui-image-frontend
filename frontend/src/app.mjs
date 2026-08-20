@@ -1,6 +1,8 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
 import {
+  AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   applyChoiceStrengthDefaults,
+  autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
   clientValidate,
   choiceOptions,
@@ -12,6 +14,7 @@ import {
   hasActiveGeneration,
   interfaceInputs,
   insertTranscription,
+  isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
   migrateInterfaceState,
   normalizeSourceModelSelections,
@@ -112,6 +115,8 @@ const state = {
   submitting: false,
   autoGenerate: false,
   autoGenerateCreativeDirection: false,
+  autoGenerateStatus: "idle",
+  autoGenerateStatusMessage: null,
   imageUploadsPending: 0,
   serverFieldErrors: {},
   formError: null,
@@ -153,6 +158,9 @@ let startupGalleryBoundary = null;
 let autoGenerateScheduled = false;
 let autoGenerateCycleRunning = false;
 let autoGenerateRescheduleRequested = false;
+let autoGenerateRetryTimer = null;
+let autoGenerateRetryFailures = 0;
+let autoGenerateRetryContext = null;
 let preparedAutoGenerateAssistantFingerprint = null;
 let promptCompositionRequests = 0;
 
@@ -301,6 +309,7 @@ async function handleClick(event) {
     else if (action === "clear-prompt-editor-text") clearPromptEditorText();
     else if (action === "compose-prompt-editor") await composePromptEditor(target);
     else if (action === "compose-prompt") await composePrompt(target);
+    else if (action === "retry-auto-generate") retryAutoGenerate();
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "recall-favorite") await recallFavorite(target.dataset.generationId);
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
@@ -357,6 +366,7 @@ async function handleChange(event) {
     return;
   }
   if (element.id === "auto-generate") {
+    resetAutoGenerateRetryState();
     state.autoGenerate = element.checked;
     preparedAutoGenerateAssistantFingerprint = null;
     syncGenerationSubmissionState();
@@ -1816,6 +1826,7 @@ async function logout() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.autoGenerateCreativeDirection = false;
+  resetAutoGenerateRetryState();
   const session = await api("/api/auth/session", {
     operation: "Session request",
     deadlineMs: STARTUP_DEADLINES.session,
@@ -1863,6 +1874,7 @@ async function enterApplication() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.autoGenerateCreativeDirection = false;
+  resetAutoGenerateRetryState();
   state.favorites = [];
   state.favoritesNextCursor = null;
   state.sourceRatings = {};
@@ -2784,8 +2796,137 @@ function syncGenerationSubmissionState() {
   syncActiveSourceModelControls(panel);
 }
 
-function scheduleAutoGenerate() {
+function currentAutoGenerateRetryContext() {
+  return JSON.stringify([
+    state.activeSourceKey || "",
+    sourceRevision(state.activeSource),
+    state.selectedComfyuiInstanceId || "",
+    currentAutoGenerateAssistantFingerprint(),
+  ]);
+}
+
+function cancelAutoGenerateRetryTimer() {
+  if (autoGenerateRetryTimer === null) return;
+  window.clearTimeout(autoGenerateRetryTimer);
+  autoGenerateRetryTimer = null;
+}
+
+function syncAutoGenerateStatus() {
+  const status = document.querySelector("#auto-generate-status");
+  if (!status) return;
+  status.replaceChildren();
+  status.className = `auto-generate-status ${state.autoGenerateStatus}`;
+  if (state.autoGenerateStatus === "idle" || !state.autoGenerateStatusMessage) {
+    status.hidden = true;
+    status.setAttribute("role", "status");
+    return;
+  }
+  status.hidden = false;
+  status.setAttribute(
+    "role",
+    state.autoGenerateStatus === "paused" ? "alert" : "status",
+  );
+  const message = document.createElement("span");
+  message.textContent = state.autoGenerateStatusMessage;
+  status.append(message);
+  if (state.autoGenerateStatus === "paused") {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "button low auto-generate-retry";
+    retry.dataset.action = "retry-auto-generate";
+    retry.textContent = "Retry Auto-generate";
+    status.append(retry);
+  }
+}
+
+function resetAutoGenerateRetryState() {
+  cancelAutoGenerateRetryTimer();
+  autoGenerateRetryFailures = 0;
+  autoGenerateRetryContext = null;
+  state.autoGenerateStatus = "idle";
+  state.autoGenerateStatusMessage = null;
+  syncAutoGenerateStatus();
+}
+
+function retryAutoGenerate() {
+  resetAutoGenerateRetryState();
+  state.autoGenerate = true;
+  preparedAutoGenerateAssistantFingerprint = null;
+  const control = document.querySelector("#auto-generate");
+  if (control) control.checked = true;
+  syncGenerationSubmissionState();
+  scheduleAutoGenerate();
+}
+
+function pauseAutoGenerateAfterCompositionFailure(error) {
+  cancelAutoGenerateRetryTimer();
+  state.autoGenerate = false;
+  state.autoGenerateStatus = "paused";
+  state.autoGenerateStatusMessage = `Auto-generate paused: ${
+    error?.message || "Prompt Assistant composition failed."
+  }`;
+  const control = document.querySelector("#auto-generate");
+  if (control) control.checked = false;
+  syncGenerationSubmissionState();
+  syncAutoGenerateStatus();
+}
+
+function scheduleAutoGenerateCompositionRetry(error, requestContext) {
   if (!state.autoGenerate) return;
+  const currentContext = currentAutoGenerateRetryContext();
+  if (currentContext !== requestContext) {
+    resetAutoGenerateRetryState();
+    scheduleAutoGenerate();
+    return;
+  }
+  if (!isRetryablePromptAssistantError(error)) {
+    pauseAutoGenerateAfterCompositionFailure(error);
+    return;
+  }
+  autoGenerateRetryContext = requestContext;
+  autoGenerateRetryFailures += 1;
+  if (autoGenerateRetryFailures >= AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS) {
+    pauseAutoGenerateAfterCompositionFailure(error);
+    toast("Auto-generate paused after Prompt Assistant retries were exhausted.", "error");
+    return;
+  }
+  const delay = autoGenerateCompositionRetryDelayMs(autoGenerateRetryFailures);
+  const nextAttempt = autoGenerateRetryFailures + 1;
+  state.autoGenerateStatus = "retrying";
+  state.autoGenerateStatusMessage = `Prompt Assistant is temporarily unavailable. Retrying Auto-generate in ${
+    delay / 1_000
+  } ${delay === 1_000 ? "second" : "seconds"} (attempt ${nextAttempt} of ${
+    AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS
+  }).`;
+  syncAutoGenerateStatus();
+  if (autoGenerateRetryFailures === 1) {
+    toast("Prompt Assistant failed temporarily; Auto-generate will retry.");
+  }
+  cancelAutoGenerateRetryTimer();
+  autoGenerateRetryTimer = window.setTimeout(() => {
+    autoGenerateRetryTimer = null;
+    if (
+      !state.autoGenerate ||
+      currentAutoGenerateRetryContext() !== requestContext
+    ) {
+      resetAutoGenerateRetryState();
+      if (state.autoGenerate) scheduleAutoGenerate();
+      return;
+    }
+    scheduleAutoGenerate();
+  }, delay);
+}
+
+function scheduleAutoGenerate() {
+  if (!state.autoGenerate) {
+    if (state.autoGenerateStatus !== "paused") resetAutoGenerateRetryState();
+    return;
+  }
+  const context = currentAutoGenerateRetryContext();
+  if (autoGenerateRetryContext !== null && autoGenerateRetryContext !== context) {
+    resetAutoGenerateRetryState();
+  }
+  if (autoGenerateRetryTimer !== null) return;
   if (autoGenerateCycleRunning) {
     autoGenerateRescheduleRequested = true;
     return;
@@ -2852,11 +2993,16 @@ async function runAutoGenerateCycle() {
   const requestSourceKey = state.activeSourceKey;
   const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
+  const requestRetryContext = currentAutoGenerateRetryContext();
+  autoGenerateRetryContext = requestRetryContext;
   let queued = false;
   autoGenerateCycleRunning = true;
   try {
     if (autoGenerationNeedsPromptAssistant()) {
-      const composed = await composePrompt(null, { automatic: true });
+      const composed = await composePrompt(null, {
+        automatic: true,
+        autoGenerateContext: requestRetryContext,
+      });
       if (
         !composed ||
         !state.autoGenerate ||
@@ -2866,6 +3012,7 @@ async function runAutoGenerateCycle() {
         return;
     }
     queued = await generate({ automatic: true });
+    if (queued) resetAutoGenerateRetryState();
   } finally {
     autoGenerateCycleRunning = false;
     const rescheduleRequested = autoGenerateRescheduleRequested;
@@ -3262,7 +3409,10 @@ async function generateSelectedSources() {
   }
 }
 
-async function composePrompt(button, { automatic = false } = {}) {
+async function composePrompt(
+  button,
+  { automatic = false, autoGenerateContext = null } = {},
+) {
   if (!state.promptAssistant.available || promptCompositionRequests > 0) return false;
   syncPromptAssistantDraftFromPanel();
   const requestSourceKey = state.activeSourceKey;
@@ -3333,14 +3483,19 @@ async function composePrompt(button, { automatic = false } = {}) {
     if (!automatic) {
       prompt?.focus();
       toast("Creative direction applied to the editable Prompt field.", "success");
+    } else {
+      resetAutoGenerateRetryState();
     }
     return true;
   } catch (error) {
-    if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+    if (automatic) {
+      scheduleAutoGenerateCompositionRetry(
+        error,
+        autoGenerateContext || currentAutoGenerateRetryContext(),
+      );
+    } else if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       toast(
-        automatic
-          ? `Auto-generate could not apply Creative Direction: ${error.message}`
-          : error.message || "Creative direction could not be applied.",
+        error.message || "Creative direction could not be applied.",
         "error",
       );
     } else {

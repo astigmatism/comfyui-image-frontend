@@ -92,7 +92,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - migration up/down/up with old rows, execution-ID/label backfill, per-instance health, and instance-queue indexes;
 - authentication, CSRF, IDOR/admin content denial, uploads, favorites/preferences, deletion, and Ollama provenance regressions.
 - progressive browser bootstrap with optional-service delay/failure, named safe-method deadlines, and mutation single-send behavior;
-- cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, response-only and thinking-only structured output, unchanged-refinement rejection, transient generate recovery, precise terminal failure diagnostics, authoritative final ComfyUI prompt replacement, and the server-side minor-safety boundary;
+- cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, response-only and thinking-only structured output, unchanged-refinement rejection, transient generate recovery, thinking-enabled `done_reason: length` budget escalation for Create and Refine, stable seed/temperature/schema semantics across escalation, distinctness-attempt separation, bounded privacy-safe exhaustion, precise terminal failure diagnostics, authoritative final ComfyUI prompt replacement, and the server-side minor-safety boundary;
 - constant-query gallery/favorites pages, forbidden detail-JSON SQL assertions, summary parity, artifact precedence, and owner isolation;
 - event-loop responsiveness while artifact/upload filesystem or metadata operations are deliberately blocked;
 - more live SSE subscriptions than the former pool capacity with zero retained pool checkouts;
@@ -106,7 +106,7 @@ silently uses the fake service.
 
 ## Browser journeys
 
-`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
+`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. Auto-generate journeys also verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
 Run browser tests alone:
 
@@ -172,7 +172,7 @@ Expect HTTP 200, 2,659 node types from each target, and device names identifying
 
 ## Optional live Ollama verification
 
-The opt-in live suite exercises create, refine, and repeated-create behavior through the production `OllamaAdapter`. Successful cases require a schema-constrained final object in either `response` or `thinking`; create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
+The opt-in live suite exercises create, refine, and repeated-create behavior through the production `OllamaAdapter`. Successful cases require a schema-constrained final object in either `response` or `thinking`; create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. The same adapter uses the production `2048 → 4096 → 8192` output-budget policy, so a schema-incomplete length response may make bounded follow-up calls. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
 
 ```sh
 CIF_RUN_LIVE_OLLAMA_TESTS=1 \

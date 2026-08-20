@@ -460,6 +460,31 @@ export function autoGenerationPromptAssistantFingerprint({
   ]);
 }
 
+export const AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS = 3;
+export const AUTO_GENERATE_COMPOSITION_RETRY_BASE_MS = 1_000;
+export const AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS = 5_000;
+
+const RETRYABLE_PROMPT_ASSISTANT_ERROR_CODES = new Set([
+  "ollama_output_budget_exhausted",
+  "ollama_generate_unavailable",
+  "ollama_generate_transport_error",
+  "ollama_generate_timeout",
+  "ollama_generate_invalid_json",
+  "ollama_unavailable",
+]);
+
+export function isRetryablePromptAssistantError(error) {
+  return RETRYABLE_PROMPT_ASSISTANT_ERROR_CODES.has(error?.code);
+}
+
+export function autoGenerateCompositionRetryDelayMs(failedAttempts) {
+  const normalizedAttempts = Math.max(1, Math.trunc(Number(failedAttempts) || 1));
+  return Math.min(
+    AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
+    AUTO_GENERATE_COMPOSITION_RETRY_BASE_MS * 2 ** (normalizedAttempts - 1),
+  );
+}
+
 const COMPARISON_INPUT_TYPES = new Map([
   ["positive_prompt", "string"],
   ["width", "integer"],

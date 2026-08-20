@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
+  AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
   applyChoiceStrengthDefaults,
+  autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
   clientValidate,
   choiceStrengthCompanion,
@@ -17,6 +20,7 @@ import {
   generationSourceModelVariant,
   hasActiveGeneration,
   insertTranscription,
+  isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
   migrateInterfaceState,
   missingComparisonRoles,
@@ -395,6 +399,31 @@ test("auto-generation fingerprints non-empty Prompt Assistant input for one prep
       prompt: "a lighthouse",
       think: false,
     }),
+  );
+});
+
+test("auto-generation retries only recoverable Prompt Assistant failures with bounded backoff", () => {
+  for (const code of [
+    "ollama_output_budget_exhausted",
+    "ollama_generate_unavailable",
+    "ollama_generate_transport_error",
+    "ollama_generate_timeout",
+    "ollama_generate_invalid_json",
+    "ollama_unavailable",
+  ]) {
+    assert.equal(isRetryablePromptAssistantError({ code }), true);
+  }
+  for (const code of [
+    "ollama_invalid_response",
+    "ollama_generate_rejected",
+    "prompt_refinement_unchanged",
+  ]) {
+    assert.equal(isRetryablePromptAssistantError({ code }), false);
+  }
+  assert.equal(AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS, 3);
+  assert.deepEqual(
+    [1, 2, 3, 20].map(autoGenerateCompositionRetryDelayMs),
+    [1_000, 2_000, 4_000, AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS],
   );
 });
 
