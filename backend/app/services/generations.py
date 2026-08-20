@@ -57,7 +57,6 @@ from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
-from .prompt_safety import ensure_no_sexual_content_involving_minors
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -149,7 +148,6 @@ class GenerationService:
         self._instance_for_request(session, request, require_available=False)
         profile = self._profile_for_request(session, request)
         result = self._compile(session, user=user, profile=profile, request=request)
-        ensure_no_sexual_content_involving_minors(result.final_prompt, field="prompt")
         return ValidationResult(
             valid=True,
             effective_parameters=result.effective_controls,
@@ -165,7 +163,6 @@ class GenerationService:
         prompt_run = self._verify_prompt_run(session, user, request.prompt_assistant_run_id)
         effective_request = self._apply_prompt_assistant_output(profile, request, prompt_run)
         compiled = self._compile(session, user=user, profile=profile, request=effective_request)
-        ensure_no_sexual_content_involving_minors(compiled.final_prompt, field="prompt")
         uploads = self._verify_uploads(session, user, profile, compiled)
         queue_seq = self._next_queue_sequence(session)
         generation = Generation(

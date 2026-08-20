@@ -1046,57 +1046,6 @@ def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
         assert "portrait in cool light" not in json.dumps(run.raw_response_json).casefold()
 
 
-def test_sexual_content_involving_minors_is_blocked_before_and_after_ollama(
-    app_client: TestClient, fake_state
-) -> None:
-    provision_user(app_client, username="prompt.safety")
-    _cache_ollama_health(app_client, available=True)
-
-    blocked_input = app_client.post(
-        "/api/prompt-assistant/compose",
-        headers={"X-CSRF-Token": csrf(app_client)},
-        json={
-            "mode": "refine",
-            "prompt": "portrait of a 15-year-old",
-            "creative_direction": "make the image erotic",
-        },
-    )
-    assert blocked_input.status_code == 422
-    assert blocked_input.json()["error"]["code"] == "sexual_minors_prohibited"
-    assert fake_state.ollama_calls == []
-
-    fake_state.ollama_response_prompt = "explicit nude portrait of a child"
-    blocked_output = app_client.post(
-        "/api/prompt-assistant/compose",
-        headers={"X-CSRF-Token": csrf(app_client)},
-        json={
-            "mode": "create",
-            "prompt": "",
-            "creative_direction": "a studio portrait",
-        },
-    )
-    assert blocked_output.status_code == 422
-    assert blocked_output.json()["error"]["code"] == "sexual_minors_prohibited"
-    assert blocked_output.json()["error"]["details"]["validation_stage"] == "safety_policy"
-
-    direct = generation_payload(app_client, "explicit nude portrait of a child", seed=51)
-    validation = app_client.post(
-        "/api/generations/validate",
-        headers={"X-CSRF-Token": csrf(app_client)},
-        json=direct,
-    )
-    assert validation.status_code == 422
-    assert validation.json()["error"]["code"] == "sexual_minors_prohibited"
-    accepted = app_client.post(
-        "/api/generations",
-        headers={"X-CSRF-Token": csrf(app_client)},
-        json=direct,
-    )
-    assert accepted.status_code == 422
-    assert accepted.json()["error"]["code"] == "sexual_minors_prohibited"
-    assert fake_state.submitted == []
-
-
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:
     provision_user(app_client)
     fake_state.ollama_available = False

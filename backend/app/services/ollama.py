@@ -13,7 +13,6 @@ import httpx
 
 from ..config import Settings
 from ..errors import AppError
-from .prompt_safety import contains_sexual_content_involving_minors
 
 CREATE_SEED_MAXIMUM = 2**31 - 1
 MAX_CREATE_ATTEMPTS = 3
@@ -212,15 +211,6 @@ class OllamaAdapter:
                         "thinking_enabled": think,
                         **diagnostics,
                     },
-                )
-            if contains_sexual_content_involving_minors(final):
-                diagnostics["validation_stage"] = "safety_policy"
-                raise AppError(
-                    "sexual_minors_prohibited",
-                    "Prompt refinement and image generation cannot be used for sexual content "
-                    "involving minors.",
-                    status_code=422,
-                    details=diagnostics,
                 )
             normalized_final = _normalize_prompt(final)
             if mode == "refine" and _same_prompt(final, prompt):

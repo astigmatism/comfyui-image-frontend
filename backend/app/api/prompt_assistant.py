@@ -18,7 +18,6 @@ from ..errors import AppError
 from ..models import PromptAssistantRun, ServiceHealth
 from ..schemas import PromptAssistantStatus, PromptComposeRequest, PromptComposeResponse
 from ..services.ollama import MAX_CREATE_EXCLUSIONS
-from ..services.prompt_safety import ensure_no_sexual_content_involving_minors
 
 router = APIRouter(prefix="/api/prompt-assistant", tags=["prompt-assistant"])
 PROMPT_HISTORY_SCAN_LIMIT = 64
@@ -86,17 +85,6 @@ async def compose(
             "direction_required",
             "Create mode requires a creative direction.",
             fields={"creative_direction": "Describe the intended image."},
-        )
-    if payload.mode == "refine":
-        ensure_no_sexual_content_involving_minors(
-            payload.prompt,
-            payload.creative_direction,
-            field="prompt",
-        )
-    else:
-        ensure_no_sexual_content_involving_minors(
-            payload.creative_direction,
-            field="creative_direction",
         )
     container = get_container(request)
     owner_id = context.user.id

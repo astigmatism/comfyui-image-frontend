@@ -152,8 +152,8 @@ def render() -> str:
             "unchanged output, and a successful composition becomes the server-authoritative "
             "positive prompt sent to ComfyUI. Transient generate failures receive bounded retry, "
             "while terminal failures retain privacy-safe field/status/length/stage diagnostics "
-            "and the requested thinking mode. Server-side composition and generation boundaries "
-            "reject sexual content involving minors. "
+            "and the requested thinking mode. The application does not moderate or restrict "
+            "prompt content. "
             "`CIF_OLLAMA_MODEL` is not configured, and all Ollama traffic remains backend-only "
             "through the router.",
             "",
