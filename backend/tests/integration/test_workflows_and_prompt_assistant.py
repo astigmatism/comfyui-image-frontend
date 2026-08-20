@@ -1304,3 +1304,49 @@ def test_republication_changes_only_new_generation_snapshots(
         assert old_profile is not None and new_profile is not None
         assert "revision_marker" not in old_profile.source_ui_json
         assert new_profile.source_ui_json["revision_marker"] == "new-publication"
+
+
+def test_generation_list_projects_checkpoint_label_after_refresh(
+    fake_state, settings_factory
+) -> None:
+    """The list/card endpoint (page-refresh path) must surface the resolved
+    checkpoint label via the SQL summary projection, not just the detail view."""
+    bundle = build_publication_bundle("moody")
+    fake_state.workflow_files = dict(bundle.files)
+
+    with TestClient(create_app(settings_factory(enable_background_worker=True))) as client:
+        provision_user(client, username="checkpoint.list")
+        summaries = client.get("/api/workflows").json()
+        source = next(
+            item for item in summaries if item["display_name"] == "Moody Krea 2 Mix V4"
+        )
+
+        payload = {
+            "source_key": source["source_key"],
+            "revision": source["revision"],
+            "parameters": {
+                "prompt": "refresh keeps the checkpoint label",
+                "seed": 4242,
+                "width": 512,
+                "height": 512,
+                "enable_seedvr2_upscale": False,
+                "checkpoint": "tyjr_mxfp8",
+            },
+        }
+        response = client.post(
+            "/api/generations",
+            headers={"X-CSRF-Token": csrf(client)},
+            json=payload,
+        )
+        assert response.status_code == 201, response.text
+        generation = response.json()
+        wait_for_status(client, generation["id"], "succeeded")
+
+        # Detail endpoint (Python helper path) — parity baseline.
+        detail = client.get(f"/api/generations/{generation['id']}").json()
+        assert detail["checkpoint_label"] == "Moody Krea 2 TYJR MXFP8"
+
+        # List endpoint (SQL projection path) — the previously broken path.
+        items = client.get("/api/generations?limit=60").json()["items"]
+        listed = next(item for item in items if item["id"] == generation["id"])
+        assert listed["checkpoint_label"] == "Moody Krea 2 TYJR MXFP8"

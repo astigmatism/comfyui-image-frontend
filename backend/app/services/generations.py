@@ -1417,10 +1417,7 @@ def _summary_projection() -> tuple[Any, ...]:
         input_type = func.json_extract(inputs.c.value, "$.type")
         selected = func.json_extract(Generation.effective_controls_json, _json_key_path(input_id))
         choice_rows = (
-            func.json_each(
-                Generation.resolved_contract_json,
-                func.concat(_json_key_path(input_id), literal(".choices")),
-            )
+            func.json_each(inputs.c.value, "$.choices")
             .table_valued("value")
             .alias("checkpoint_choices")
         )
