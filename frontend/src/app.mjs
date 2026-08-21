@@ -4081,6 +4081,14 @@ async function openDetail(id) {
   dialog.showModal();
 }
 
+function photoViewerGeneration(id) {
+  return (
+    state.generations.find((item) => item.id === id) ||
+    state.favorites.find((item) => item.generation.id === id)?.generation ||
+    null
+  );
+}
+
 function photoViewerGenerations() {
   return state.generations.filter((generation) => generation.display_artifact?.kind === "image");
 }
@@ -4101,7 +4109,7 @@ function renderPhotoViewer() {
     activePhotoViewerDrag.renderPending = true;
     return;
   }
-  const generation = state.generations.find((item) => item.id === state.photoViewerGenerationId);
+  const generation = photoViewerGeneration(state.photoViewerGenerationId);
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") {
     closePhotoViewer();
     return;
@@ -4119,7 +4127,7 @@ function renderPhotoViewer() {
 }
 
 function openPhotoViewer(id) {
-  const generation = state.generations.find((item) => item.id === id);
+  const generation = photoViewerGeneration(id);
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") return;
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog) return;

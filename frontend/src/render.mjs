@@ -1794,8 +1794,9 @@ function favoriteItemMarkup(favorite) {
   const artifact = generation.display_artifact;
   const sourceName = generationSourceName(generation);
   const runtimeName = generationComfyuiInstanceName(generation);
-  const media = artifact?.kind === "image"
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${sourceName}`)}" />`
+  const hasImage = artifact?.kind === "image";
+  const media = hasImage
+    ? `<button type="button" class="favorite-thumbnail-button" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View original image for ${escapeHtml(sourceName)}" title="View original image"><img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${sourceName}`)}" /></button>`
     : `<div class="favorite-placeholder"><span aria-hidden="true">◇</span><strong>No retained image</strong></div>`;
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
