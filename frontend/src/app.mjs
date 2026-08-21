@@ -293,8 +293,9 @@ async function handleClick(event) {
     else if (action === "deselect-all-generation-sources") deselectAllSourcePickerDraft();
     else if (action === "sort-generation-sources") sortSourcePickerDialog(target);
     else if (action === "rate-generation-source") await updateSourceRating(target);
-    else if (action === "set-generation-source-color") await setSourceColor(target);
-    else if (action === "clear-generation-source-color") await setSourceColor(target);
+    else if (action === "clear-generation-source-color") {
+      await applySourceColor(target.dataset.sourceColorKey, "");
+    }
     else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
@@ -351,6 +352,10 @@ async function handleClick(event) {
 
 async function handleChange(event) {
   const element = event.target;
+  if (element.matches("[data-source-color-input]")) {
+    applySourceColor(element.dataset.sourceColorInput, element.value);
+    return;
+  }
   if (element.matches("[data-resolution-preset]")) {
     if (element.value !== "custom") applyResolutionPreset(element);
     return;
@@ -770,12 +775,12 @@ async function updateSourceRating(button) {
   }
 }
 
-async function setSourceColor(button) {
-  const key = button.dataset.sourceColorKey;
-  const color = button.dataset.sourceColor || "";
+async function applySourceColor(key, color) {
   if (!key || !state.sources.some((source) => sourceKey(source) === key)) return;
+  const normalized = String(color || "").trim().toLowerCase();
+  const hex = normalized.replace(/^#/, "");
   const next = { ...state.sourceColors };
-  if (color && /^[0-9a-f]{6}$/i.test(color)) next[key] = `#${color.toLowerCase()}`;
+  if (hex && /^[0-9a-f]{6}$/.test(hex)) next[key] = `#${hex}`;
   else delete next[key];
   state.sourceColors = next;
   sourceColorsRevision += 1;

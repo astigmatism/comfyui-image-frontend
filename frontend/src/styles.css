@@ -2746,46 +2746,110 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
+  min-height: 28px;
 }
 
-.source-color-swatch {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1.5px solid rgb(255 255 255 / 35%);
+.source-color-current {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.source-color-current.is-set {
   background: var(--source-color);
+  border: 1px solid rgb(255 255 255 / 40%);
+}
+
+.source-color-current.is-empty {
+  background: transparent;
+  border: 1.5px dashed rgb(255 255 255 / 35%);
+}
+
+.source-color-hex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--text-soft);
+  background: rgb(12 19 28 / 60%);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+
+.source-color-none {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.source-color-picker-trigger {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgb(12 19 28 / 72%);
   cursor: pointer;
+  color: var(--text-soft);
   transition:
-    transform var(--motion-fast) ease,
-    box-shadow var(--motion-fast) ease;
+    border-color var(--motion-fast) ease,
+    background var(--motion-fast) ease;
 }
 
-.source-color-swatch:hover {
-  transform: scale(1.18);
+.source-color-picker-trigger:hover {
+  border-color: #426f9f;
+  background: rgb(37 78 120 / 30%);
 }
 
-.source-color-swatch:focus-visible {
+.source-color-picker-trigger svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.source-color-picker-trigger:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
 
-.source-color-swatch.is-selected {
-  box-shadow:
-    0 0 0 2px var(--surface, #1b222c),
-    0 0 0 4px var(--source-color);
+.source-color-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.source-color-input:focus-visible {
+  width: 24px;
+  height: 24px;
+  clip: auto;
+  clip-path: none;
+  overflow: visible;
+  border: 1px solid var(--focus);
+  border-radius: 6px;
 }
 
 .source-color-clear {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: 1px dashed rgb(255 255 255 / 40%);
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
   border-radius: 50%;
   background: transparent;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   line-height: 1;
   cursor: pointer;
   transition:

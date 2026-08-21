@@ -424,21 +424,6 @@ const SOURCE_SORT_KEYS = new Set([
   "generation_type",
 ]);
 
-const SOURCE_COLOR_PALETTE = [
-  "#e0533d",
-  "#e8863a",
-  "#e6bb5b",
-  "#7fa650",
-  "#3fa34d",
-  "#35b6a8",
-  "#3b9fd8",
-  "#4a7fe0",
-  "#7b5fe0",
-  "#b05fd0",
-  "#d95fa0",
-  "#c2414f",
-];
-
 export function sourcePickerDialogMarkup(
   sources,
   {
@@ -605,17 +590,15 @@ function sourceColorPickerMarkup(source, sourceColors) {
   const key = sourceKey(source);
   const name = source.display_name;
   const current = sourceColorFor(key, sourceColors);
-  const swatches = SOURCE_COLOR_PALETTE.map((swatch) => {
-    const isSelected = current === swatch;
-    const label = isSelected
-      ? `Remove color from ${name}`
-      : `Set ${name} color to ${swatch}`;
-    return `<button type="button" class="source-color-swatch${isSelected ? " is-selected" : ""}" data-action="set-generation-source-color" data-source-color-key="${escapeHtml(key)}" data-source-color="${escapeHtml(swatch)}" style="--source-color: ${escapeHtml(swatch)}" aria-label="${escapeHtml(label)}" aria-pressed="${isSelected}" title="${escapeHtml(label)}"></button>`;
-  }).join("");
+  const inputColor = current ? current.slice(1) : "000000";
+  const currentIndicator = current
+    ? `<span class="source-color-current is-set" style="--source-color: ${escapeHtml(current)}" aria-hidden="true"></span><code class="source-color-hex">${escapeHtml(current.toUpperCase())}</code>`
+    : `<span class="source-color-current is-empty" aria-hidden="true"></span><span class="source-color-none">No color</span>`;
+  const picker = `<label class="source-color-picker-trigger" for="source-color-input-${escapeHtml(key)}" title="Choose a custom color" aria-label="Choose a custom color for ${escapeHtml(name)}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 2-.9 2-2 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.5 1.8-1.5H16a5 5 0 0 0 5-5c0-3.9-4-7-9-7Z" /><circle cx="7.5" cy="11.5" r="1.1" /><circle cx="10.5" cy="7.5" r="1.1" /><circle cx="15" cy="7.5" r="1.1" /><circle cx="17.5" cy="11" r="1.1" /></svg></label><input id="source-color-input-${escapeHtml(key)}" class="source-color-input" type="color" data-source-color-input="${escapeHtml(key)}" value="${escapeHtml(inputColor)}" aria-label="Custom color for ${escapeHtml(name)}" />`;
   const clear = current
     ? `<button type="button" class="source-color-clear" data-action="clear-generation-source-color" data-source-color-key="${escapeHtml(key)}" aria-label="Remove color from ${escapeHtml(name)}" title="Remove color">×</button>`
     : "";
-  return `<div class="source-color-picker" role="group" aria-label="Color for ${escapeHtml(name)}">${swatches}${clear}</div>`;
+  return `<div class="source-color-picker" role="group" aria-label="Color for ${escapeHtml(name)}">${currentIndicator}${picker}${clear}</div>`;
 }
 
 function sourceModelChoicesMarkup(source, modelSelections, sourceDisabled) {
