@@ -2579,6 +2579,10 @@ dialog::backdrop {
   width: 142px;
 }
 
+.source-picker-table .source-picker-color-column {
+  width: 190px;
+}
+
 .source-picker-table .source-picker-model-column {
   width: 300px;
 }
@@ -2736,6 +2740,83 @@ dialog::backdrop {
   border-radius: 5px;
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+.source-color-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.source-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1.5px solid rgb(255 255 255 / 35%);
+  border-radius: 50%;
+  background: var(--source-color);
+  cursor: pointer;
+  transition:
+    transform var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+
+.source-color-swatch:hover {
+  transform: scale(1.18);
+}
+
+.source-color-swatch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.source-color-swatch.is-selected {
+  box-shadow:
+    0 0 0 2px var(--surface, #1b222c),
+    0 0 0 4px var(--source-color);
+}
+
+.source-color-clear {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px dashed rgb(255 255 255 / 40%);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+
+.source-color-clear:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.source-color-clear:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.source-color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--source-color);
+  vertical-align: baseline;
+  flex: 0 0 auto;
+}
+
+.source-colored-name {
+  color: var(--source-color);
+  font-weight: 600;
 }
 
 .source-sort-button {

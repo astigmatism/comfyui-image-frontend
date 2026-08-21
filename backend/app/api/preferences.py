@@ -21,6 +21,7 @@ def get_preferences(
     return PreferenceResponse(
         gallery_scale=preference.gallery_scale if preference else 45,
         source_ratings=preference.source_ratings_json if preference else {},
+        source_colors=preference.source_colors_json if preference else {},
     )
 
 
@@ -36,14 +37,18 @@ def update_preferences(
             user_id=context.user.id,
             gallery_scale=45,
             source_ratings_json={},
+            source_colors_json={},
         )
         session.add(preference)
     if payload.gallery_scale is not None:
         preference.gallery_scale = payload.gallery_scale
     if payload.source_ratings is not None:
         preference.source_ratings_json = dict(payload.source_ratings)
+    if payload.source_colors is not None:
+        preference.source_colors_json = dict(payload.source_colors)
     session.commit()
     return PreferenceResponse(
         gallery_scale=preference.gallery_scale,
         source_ratings=preference.source_ratings_json,
+        source_colors=preference.source_colors_json,
     )

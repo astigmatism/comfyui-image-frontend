@@ -40,6 +40,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         assert first.get("/api/preferences").json() == {
             "gallery_scale": 45,
             "source_ratings": {},
+            "source_colors": {},
         }
 
         saved = first.put(
@@ -48,7 +49,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             json={"gallery_scale": 93},
         )
         assert saved.status_code == 200
-        assert saved.json() == {"gallery_scale": 93, "source_ratings": {}}
+        assert saved.json() == {"gallery_scale": 93, "source_ratings": {}, "source_colors": {}}
         ratings_saved = first.put(
             "/api/preferences",
             headers={"X-CSRF-Token": csrf(first)},
@@ -58,6 +59,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         assert ratings_saved.json() == {
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
+            "source_colors": {},
         }
         assert (
             first.put(
@@ -97,6 +99,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         assert second.get("/api/preferences").json() == {
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
+            "source_colors": {},
         }
 
 

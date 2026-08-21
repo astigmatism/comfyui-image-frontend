@@ -152,6 +152,7 @@ class UserPreference(Base):
     )
     gallery_scale: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
     source_ratings_json: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    source_colors_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

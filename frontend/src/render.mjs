@@ -365,12 +365,13 @@ function sourcePickerMarkup(
   ]
     .filter(Boolean)
     .join(" · ");
+  const activeColor = activeSource ? sourceColorFor(activeKey, state.sourceColors) : null;
   return `
     <div class="field compact source-picker-field">
       <span id="generation-source-label">Generation source</span>
       <div class="source-picker">
         <button id="workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
-          <span class="source-picker-current"><strong id="generation-source-value">${escapeHtml(activeName)}</strong>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
+          <span class="source-picker-current">${sourceColorDot(activeColor, activeName)}<strong id="generation-source-value">${escapeHtml(activeName)}</strong>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
           <svg class="source-picker-launch-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h12M4 14.5h12" /><circle cx="7" cy="5.5" r="1.5" /><circle cx="13" cy="10" r="1.5" /><circle cx="9" cy="14.5" r="1.5" /></svg>
         </button>
       </div>
@@ -423,12 +424,28 @@ const SOURCE_SORT_KEYS = new Set([
   "generation_type",
 ]);
 
+const SOURCE_COLOR_PALETTE = [
+  "#e0533d",
+  "#e8863a",
+  "#e6bb5b",
+  "#7fa650",
+  "#3fa34d",
+  "#35b6a8",
+  "#3b9fd8",
+  "#4a7fe0",
+  "#7b5fe0",
+  "#b05fd0",
+  "#d95fa0",
+  "#c2414f",
+];
+
 export function sourcePickerDialogMarkup(
   sources,
   {
     primaryKey,
     selectedKeys = new Set(),
     sourceRatings = {},
+    sourceColors = {},
     sortKey = "display_name",
     sortDirection = "ascending",
     generationTypeFilters = null,
@@ -493,6 +510,7 @@ export function sourcePickerDialogMarkup(
         selected,
         sourceRatings,
         modelSelectionsBySource?.[sourceKey(source)] || {},
+        sourceColors,
       ),
     )
     .join("");
@@ -526,12 +544,13 @@ export function sourcePickerDialogMarkup(
             ${sourceSortHeading("display_name", "Source", normalizedSortKey, normalizedDirection)}
             <th class="source-picker-model-column" scope="col"><span class="source-column-heading">Model choices</span></th>
             ${sourceSortHeading("rating", "Rating", normalizedSortKey, normalizedDirection, "source-picker-rating-column")}
+            <th class="source-picker-color-column" scope="col"><span class="source-column-heading">Color</span></th>
             ${sourceSortHeading("architecture", "Architecture", normalizedSortKey, normalizedDirection)}
             ${sourceSortHeading("introduced", "Introduced", normalizedSortKey, normalizedDirection)}
             ${sourceSortHeading("generation_type", "Generation type", normalizedSortKey, normalizedDirection)}
             <th scope="col"><span class="source-column-heading">Technologies</span></th>
           </tr></thead>
-          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="9">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="10">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
         </table>
       </div>
       <p class="source-picker-dialog-help">Each selected source and model choice is queued separately. The primary source provides the control values; additional sources reuse compatible prompt, resolution, and seed settings when available.</p>
@@ -560,6 +579,7 @@ function sourcePickerRowMarkup(
   selectedKeys,
   sourceRatings,
   modelSelections,
+  sourceColors = {},
 ) {
   const key = sourceKey(source);
   const primary = key === primaryKey;
@@ -573,11 +593,29 @@ function sourcePickerRowMarkup(
     <th class="source-picker-name-cell" scope="row"><strong>${escapeHtml(sourceDisplayName(source))}</strong><small>${escapeHtml(status)}</small></th>
     <td class="source-picker-model-column">${sourceModelChoicesMarkup(source, modelSelections, unavailable || !selected)}</td>
     <td class="source-picker-rating-column">${sourceRatingMarkup(source, sourceRatings)}</td>
+    <td class="source-picker-color-column">${sourceColorPickerMarkup(source, sourceColors)}</td>
     <td>${escapeHtml(metadata.architecture)}</td>
     <td>${escapeHtml(metadata.introduced)}</td>
     <td>${escapeHtml(metadata.generationType)}</td>
     <td class="source-picker-technologies-cell">${escapeHtml(metadata.technologies)}</td>
   </tr>`;
+}
+
+function sourceColorPickerMarkup(source, sourceColors) {
+  const key = sourceKey(source);
+  const name = source.display_name;
+  const current = sourceColorFor(key, sourceColors);
+  const swatches = SOURCE_COLOR_PALETTE.map((swatch) => {
+    const isSelected = current === swatch;
+    const label = isSelected
+      ? `Remove color from ${name}`
+      : `Set ${name} color to ${swatch}`;
+    return `<button type="button" class="source-color-swatch${isSelected ? " is-selected" : ""}" data-action="set-generation-source-color" data-source-color-key="${escapeHtml(key)}" data-source-color="${escapeHtml(swatch)}" style="--source-color: ${escapeHtml(swatch)}" aria-label="${escapeHtml(label)}" aria-pressed="${isSelected}" title="${escapeHtml(label)}"></button>`;
+  }).join("");
+  const clear = current
+    ? `<button type="button" class="source-color-clear" data-action="clear-generation-source-color" data-source-color-key="${escapeHtml(key)}" aria-label="Remove color from ${escapeHtml(name)}" title="Remove color">×</button>`
+    : "";
+  return `<div class="source-color-picker" role="group" aria-label="Color for ${escapeHtml(name)}">${swatches}${clear}</div>`;
 }
 
 function sourceModelChoicesMarkup(source, modelSelections, sourceDisabled) {
@@ -1377,8 +1415,10 @@ function speechButtonMarkup(targetId, label, controlDisabled = false) {
   return `<button type="button" class="icon-button speech-button" data-action="toggle-speech-recording" data-speech-target="${escapeHtml(targetId)}" data-speech-label="${escapeHtml(label)}" data-speech-control-disabled="${controlDisabled}" aria-label="Start voice input for ${escapeHtml(label)}" aria-pressed="false" title="Start voice input for ${escapeHtml(label)}" ${controlDisabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7" /></svg></button>`;
 }
 
-export function galleryMarkup(generations, { status = "ready", message = null } = {}) {
-  const cards = sortGenerationsNewestFirst(generations).map(galleryCardMarkup).join("");
+export function galleryMarkup(generations, { status = "ready", message = null, sourceColors = {} } = {}) {
+  const cards = sortGenerationsNewestFirst(generations)
+    .map((generation) => galleryCardMarkup(generation, sourceColors))
+    .join("");
   if (status === "loading") {
     return `<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
   }
@@ -1391,7 +1431,7 @@ export function galleryMarkup(generations, { status = "ready", message = null } 
   return cards;
 }
 
-export function galleryCardMarkup(generation) {
+export function galleryCardMarkup(generation, sourceColors = {}) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
   const sourceName = generationSourceName(generation);
@@ -1418,7 +1458,7 @@ export function galleryCardMarkup(generation) {
       <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
       ${cancel}
     </div>
-    ${cardFooterMarkup(generation)}
+    ${cardFooterMarkup(generation, sourceColors)}
   </article>`;
 }
 
@@ -1594,6 +1634,31 @@ function generationSourceName(generation) {
   );
 }
 
+function generationSourceKey(generation) {
+  return (
+    generation?.generation_source?.source_key ||
+    generation?.source_key ||
+    generation?.generation_source?.source_id ||
+    ""
+  );
+}
+
+export function sourceColorFor(key, sourceColors) {
+  if (!sourceColors || typeof sourceColors !== "object" || !key) return null;
+  const color = String(sourceColors[key] || "").trim().toLowerCase();
+  return /^[0-9a-f]{6}$/.test(color) ? `#${color}` : null;
+}
+
+function sourceColorDot(color, name) {
+  if (!color) return "";
+  return `<span class="source-color-dot" style="--source-color: ${escapeHtml(color)}" aria-hidden="true" title="${escapeHtml(`Color for ${name}`)}"></span>`;
+}
+
+function coloredSourceName(color, name) {
+  if (!color) return escapeHtml(name);
+  return `<span class="source-colored-name" style="--source-color: ${escapeHtml(color)}">${escapeHtml(name)}</span>`;
+}
+
 function generationComfyuiInstanceName(generation) {
   return (
     String(
@@ -1622,11 +1687,12 @@ function statusPlaceholderMarkup(generation) {
   return `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${runtimeCopy}${queueCopy}</div>`;
 }
 
-export function cardFooterMarkup(generation) {
+export function cardFooterMarkup(generation, sourceColors = {}) {
   const sourceName = generationSourceName(generation);
   const checkpointName = generationCheckpointLabel(generation);
   const duration = formatGenerationDuration(generation.generation_duration_seconds);
-  const metadata = [sourceName, checkpointName, duration].filter(Boolean).join(" · ");
+  const sourceColor = sourceColorFor(generationSourceKey(generation), sourceColors);
+  const metadata = `${coloredSourceName(sourceColor, sourceName)}${checkpointName ? ` · ${escapeHtml(checkpointName)}` : ""}${duration ? ` · ${escapeHtml(duration)}` : ""}`;
   const artifact = generation.display_artifact;
   const deletePending = Boolean(generation.delete_pending);
   const download = artifact?.kind === "image"
@@ -1639,7 +1705,7 @@ export function cardFooterMarkup(generation) {
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${escapeHtml(metadata)}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button><button type="button" class="delete-generation-button" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}" ${deletePending ? "disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>

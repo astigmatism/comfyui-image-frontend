@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -62,11 +63,13 @@ class ResetPasswordRequest(APIModel):
 class PreferenceResponse(APIModel):
     gallery_scale: int
     source_ratings: dict[str, int] = Field(default_factory=dict)
+    source_colors: dict[str, str] = Field(default_factory=dict)
 
 
 class PreferenceUpdate(APIModel):
     gallery_scale: int | None = Field(default=None, ge=0, le=100)
     source_ratings: dict[str, StrictInt] | None = None
+    source_colors: dict[str, str] | None = None
 
     @field_validator("source_ratings")
     @classmethod
@@ -82,9 +85,32 @@ class PreferenceUpdate(APIModel):
                 raise ValueError("source ratings must be integers from 1 to 5")
         return value
 
+    @field_validator("source_colors")
+    @classmethod
+    def validate_source_colors(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return value
+        if len(value) > 500:
+            raise ValueError("source_colors cannot contain more than 500 entries")
+        for key, color in value.items():
+            if not key or key != key.strip() or len(key) > 256:
+                raise ValueError("source color keys must be 1 to 256 non-whitespace characters")
+            normalized = str(color or "").strip()
+            if not normalized or normalized.lower() == "none":
+                value[key] = ""
+                continue
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", normalized):
+                raise ValueError("source colors must be #rrggbb hex values or empty")
+            value[key] = normalized.lower()
+        return value
+
     @model_validator(mode="after")
     def validate_update_fields(self) -> PreferenceUpdate:
-        if self.gallery_scale is None and self.source_ratings is None:
+        if (
+            self.gallery_scale is None
+            and self.source_ratings is None
+            and self.source_colors is None
+        ):
             raise ValueError("at least one preference field is required")
         return self
 
