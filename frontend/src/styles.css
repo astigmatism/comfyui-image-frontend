@@ -2867,6 +2867,68 @@ dialog::backdrop {
   outline-offset: 1px;
 }
 
+.source-color-editor {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 6px;
+  border: 1px solid var(--focus);
+  border-radius: 8px;
+  background: rgb(12 19 28 / 60%);
+}
+
+.source-color-editor-preview {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  flex: 0 0 auto;
+  background: var(--source-color);
+  border: 1px solid rgb(255 255 255 / 40%);
+}
+
+.source-color-editor .source-color-picker-trigger {
+  cursor: default;
+}
+
+.source-color-editor input[type="color"] {
+  position: static;
+  width: 34px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  clip: auto;
+  clip-path: none;
+  overflow: visible;
+  white-space: normal;
+  background: rgb(12 19 28 / 72%);
+  cursor: pointer;
+}
+
+.source-color-editor input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.source-color-editor input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
+.source-color-editor input[type="color"]::-moz-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
+.source-color-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .source-color-dot {
   display: inline-block;
   width: 10px;

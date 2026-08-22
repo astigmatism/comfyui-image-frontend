@@ -79,6 +79,7 @@ const state = {
   comparisonSourceKeys: new Set(),
   sourcePickerDialogOpen: false,
   sourcePickerDraft: null,
+  sourceColorEditorKey: null,
   sourcePickerSortKey: "display_name",
   sourcePickerSortDirection: "ascending",
   sourceRatings: {},
@@ -293,7 +294,22 @@ async function handleClick(event) {
     else if (action === "deselect-all-generation-sources") deselectAllSourcePickerDraft();
     else if (action === "sort-generation-sources") sortSourcePickerDialog(target);
     else if (action === "rate-generation-source") await updateSourceRating(target);
-    else if (action === "clear-generation-source-color") {
+    else if (action === "open-source-color-editor") {
+      state.sourceColorEditorKey = target.dataset.sourceColorKey;
+      renderSourcePickerDialog();
+    } else if (action === "cancel-source-color-editor") {
+      state.sourceColorEditorKey = null;
+      renderSourcePickerDialog();
+    } else if (action === "apply-source-color-editor") {
+      const key = target.dataset.sourceColorKey;
+      const editor = document.querySelector(
+        `#source-picker-dialog [data-source-color-editor="${CSS.escape(key)}"]`,
+      );
+      const colorValue = editor?.querySelector("[type=color]")?.value || "";
+      state.sourceColorEditorKey = null;
+      await applySourceColor(key, colorValue);
+    } else if (action === "clear-generation-source-color") {
+      state.sourceColorEditorKey = null;
       await applySourceColor(target.dataset.sourceColorKey, "");
     }
     else if (action === "logout") await logout();
@@ -350,13 +366,9 @@ async function handleClick(event) {
   }
 }
 
-async function handleChange(event) {
-  const element = event.target;
-  if (element.matches("[data-source-color-input]")) {
-    applySourceColor(element.dataset.sourceColorInput, element.value);
-    return;
-  }
-  if (element.matches("[data-resolution-preset]")) {
+ async function handleChange(event) {
+   const element = event.target;
+   if (element.matches("[data-resolution-preset]")) {
     if (element.value !== "custom") applyResolutionPreset(element);
     return;
   }
@@ -583,11 +595,18 @@ function renderSourcePickerDialog() {
     sortDirection: state.sourcePickerSortDirection,
     generationTypeFilters: draft.generationTypeFilters,
     modelSelectionsBySource: draft.modelSelectionsBySource,
+    sourceColorEditorKey: state.sourceColorEditorKey,
   });
   const scroller = dialog.querySelector(".source-picker-table-wrap");
   if (scroller) {
     scroller.scrollLeft = scrollLeft;
     scroller.scrollTop = scrollTop;
+  }
+  if (state.sourceColorEditorKey) {
+    const input = dialog.querySelector(
+      `[data-source-color-editor="${CSS.escape(state.sourceColorEditorKey)}"] [type="color"]`,
+    );
+    input?.focus({ preventScroll: true });
   }
 }
 
