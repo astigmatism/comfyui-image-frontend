@@ -1200,11 +1200,12 @@ test("gallery defaults to request initiation order when the page arrives unsorte
 }) => {
   await page.route("**/api/events?**", (route) => route.abort());
   await page.route("**/api/generations?limit=24", async (route) => {
-    const generation = (id, acceptedAt, status) => ({
+    const generation = (id, acceptedAt, status, sourceKey, sourceName) => ({
       id,
       accepted_at: acceptedAt,
       status,
-      workflow_display_name: id,
+      source_key: sourceKey,
+      workflow_display_name: sourceName,
       artifact_count: 0,
       image_count: 0,
       final_artifact_count: 0,
@@ -1218,9 +1219,9 @@ test("gallery defaults to request initiation order when the page arrives unsorte
       contentType: "application/json",
       body: JSON.stringify({
         items: [
-          generation("oldest", "2026-07-14T12:00:00Z", "succeeded"),
-          generation("newest-active", "2026-07-14T12:02:00Z", "running"),
-          generation("previous", "2026-07-14T12:01:00Z", "succeeded"),
+          generation("oldest", "2026-07-14T12:00:00Z", "succeeded", "colored-source", "Colored Source"),
+          generation("newest-active", "2026-07-14T12:02:00Z", "running", "other-source", "Other Source"),
+          generation("previous", "2026-07-14T12:01:00Z", "succeeded", "colored-source", "Colored Source"),
         ],
         next_cursor: null,
       }),
@@ -1234,6 +1235,145 @@ test("gallery defaults to request initiation order when the page arrives unsorte
     .locator(".gallery-card")
     .evaluateAll((cards) => cards.map((card) => card.dataset.generationId));
   expect(cardIds).toEqual(["newest-active", "previous", "oldest"]);
+});
+
+test("generation source color applies, colors only matching cards, persists across reload, and clears", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  await page.locator("#workflow-source").click();
+  const sourceDialog = page.locator("#source-picker-dialog");
+  const sourceRow = (name) =>
+    sourceDialog.locator("[data-source-row-key]").filter({ hasText: name });
+  const kreaSourceKey = await sourceRow("Krea 2 NSFW V4").getAttribute("data-source-row-key");
+  const genericSourceKey = await sourceRow("Generic Landscape").getAttribute("data-source-row-key");
+  expect(kreaSourceKey).toBeTruthy();
+  expect(genericSourceKey).toBeTruthy();
+
+  // No color initially: row shows the "No color" state and there is no clear button.
+  await expect(sourceRow("Krea 2 NSFW V4").locator(".source-color-none")).toHaveText("No color");
+  await expect(sourceRow("Krea 2 NSFW V4").locator(".source-color-clear")).toHaveCount(0);
+
+  // Open the inline editor and apply a specific color through the real interaction.
+  const savedColor = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await sourceRow("Krea 2 NSFW V4")
+    .getByRole("button", { name: "Choose a custom color for Krea 2 NSFW V4" })
+    .click();
+  await sourceRow("Krea 2 NSFW V4")
+    .locator('input[type="color"]')
+    .evaluate((input) => {
+      input.value = "#2e86c1";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  await sourceRow("Krea 2 NSFW V4")
+    .getByRole("button", { name: "Apply", exact: true })
+    .click();
+
+  const colorSave = await savedColor;
+  expect(colorSave.ok()).toBe(true);
+  expect(colorSave.request().postDataJSON().source_colors[kreaSourceKey]).toBe("#2e86c1");
+  expect(colorSave.request().postDataJSON().source_colors[genericSourceKey]).toBeUndefined();
+
+  // The row now shows the configured swatch + uppercase hex, not "No color".
+  const kreaColorCell = sourceRow("Krea 2 NSFW V4").locator(".source-color-picker");
+  await expect(kreaColorCell.locator(".source-color-current.is-set")).toHaveCount(1);
+  await expect(kreaColorCell.locator(".source-color-hex")).toHaveText("#2E86C1");
+  await expect(kreaColorCell.locator(".source-color-none")).toHaveCount(0);
+  // The other source is untouched.
+  await expect(sourceRow("Generic Landscape").locator(".source-color-none")).toHaveText("No color");
+
+  // Color survives closing and reopening the modal.
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.locator("#workflow-source").click();
+  const reopenedDialog = page.locator("#source-picker-dialog");
+  const reopenedRow = (name) =>
+    reopenedDialog.locator("[data-source-row-key]").filter({ hasText: name });
+  await expect(
+    reopenedRow("Krea 2 NSFW V4").locator(".source-color-current.is-set"),
+  ).toHaveCount(1);
+  await expect(
+    reopenedRow("Krea 2 NSFW V4").locator(".source-color-hex"),
+  ).toHaveText("#2E86C1");
+
+  // Generate a card from the colored source and confirm the source name (only) is colored.
+  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("colored caption lighthouse");
+  await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("384");
+  await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("512");
+  const accepted = await generateAndExpectAccepted(page);
+  const generation = await accepted.json();
+  const coloredCard = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
+  await expect(coloredCard).toHaveClass(/status-succeeded/, { timeout: 30_000 });
+  const coloredName = coloredCard.locator(".card-metadata .source-colored-name");
+  await expect(coloredName).toHaveText("Krea 2 NSFW V4");
+  await expect(coloredName).toHaveAttribute("style", /--source-color: #2e86c1/);
+  // Adjacent caption text (checkpoint/duration) is not itself wrapped in a colored span:
+  // only the source-name span carries the custom color, so the full metadata line must
+  // contain more than just the colored source name.
+  const metadataText = await coloredCard.locator(".card-metadata").innerText();
+  expect(metadataText).not.toBe("Krea 2 NSFW V4");
+  // Every colored-name span in the gallery belongs to the colored source, proving cards
+  // from other sources remain uncolored.
+  const coloredNames = page.locator(".gallery-card .source-colored-name");
+  const coloredCount = await coloredNames.count();
+  expect(coloredCount).toBeGreaterThan(0);
+  for (let i = 0; i < coloredCount; i += 1) {
+    await expect(coloredNames.nth(i)).toHaveText("Krea 2 NSFW V4");
+  }
+
+  // Reload: the color persists and re-colors the matching card on a fresh gallery render.
+  const preferencesLoaded = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "GET",
+  );
+  await page.reload();
+  const preferences = await (await preferencesLoaded).json();
+  expect(preferences.source_colors[kreaSourceKey]).toBe("#2e86c1");
+  await expect(coloredCard).toHaveClass(/status-succeeded/);
+  const reloadedName = coloredCard.locator(".card-metadata .source-colored-name");
+  await expect(reloadedName).toHaveText("Krea 2 NSFW V4");
+  await expect(reloadedName).toHaveAttribute("style", /--source-color: #2e86c1/);
+
+  // Clearing the color restores "No color" and removes the caption styling immediately.
+  await page.locator("#workflow-source").click();
+  const clearDialog = page.locator("#source-picker-dialog");
+  const clearRow = (name) =>
+    clearDialog.locator("[data-source-row-key]").filter({ hasText: name });
+  const clearSaved = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await clearRow("Krea 2 NSFW V4")
+    .getByRole("button", { name: "Remove color from Krea 2 NSFW V4" })
+    .click();
+  const clearSave = await clearSaved;
+  expect(clearSave.ok()).toBe(true);
+  expect(clearSave.request().postDataJSON().source_colors[kreaSourceKey]).toBeUndefined();
+  await expect(clearRow("Krea 2 NSFW V4").locator(".source-color-none")).toHaveText("No color");
+  await expect(clearRow("Krea 2 NSFW V4").locator(".source-color-current.is-set")).toHaveCount(0);
+  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
+
+  // Reload: the cleared state persists (no color in preferences, no colored caption).
+  const clearPreferencesLoaded = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "GET",
+  );
+  await page.reload();
+  const clearPreferences = await (await clearPreferencesLoaded).json();
+  expect(clearPreferences.source_colors[kreaSourceKey]).toBeUndefined();
+  await expect(coloredCard).toHaveClass(/status-succeeded/);
+  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
 });
 
 test("focused prompt editor isolates canceled drafts and applies composed prompts and assistant settings", async ({

@@ -1998,6 +1998,7 @@ function requestWasAborted(error, signal) {
 
 async function loadStartupPreferences(signal = applicationStartupController?.signal) {
   const ratingsRevision = sourceRatingsRevision;
+  const colorsRevision = sourceColorsRevision;
   try {
     const preferences = await startupGet("/api/preferences", {
       operation: "Display preferences",
@@ -2010,7 +2011,7 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
       state.sourceRatings = normalizedSourceRatings(preferences.source_ratings);
       if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
     }
-    if (sourceColorsRevision === 0) {
+    if (colorsRevision === sourceColorsRevision) {
       state.sourceColors = normalizedSourceColors(preferences.source_colors);
       if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
       renderGallery();

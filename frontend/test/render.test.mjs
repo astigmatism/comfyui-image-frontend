@@ -16,6 +16,7 @@ import {
   photoViewerMarkup,
   promptEditorMarkup,
   serviceBannerMarkup,
+  sourceColorFor,
   sourcePickerDialogMarkup,
 } from "../src/render.mjs";
 
@@ -1438,6 +1439,94 @@ test("card footer groups generation actions and exposes permanent deletion", () 
 
   const pending = cardFooterMarkup({ ...generation, delete_pending: true });
   assert.match(pending, /data-action="delete-generation"[^>]+disabled[^>]+aria-label="Deletion pending"/);
+});
+
+test("sourceColorFor returns a normalized #rrggbb value for configured colors", () => {
+  assert.equal(sourceColorFor("one", { one: "#2E86C1" }), "#2e86c1");
+  assert.equal(sourceColorFor("one", { one: "#2E86C1".toLowerCase() }), "#2e86c1");
+  assert.equal(sourceColorFor("one", { one: "2e86c1" }), "#2e86c1");
+  assert.equal(sourceColorFor("one", { one: "  #2E86C1 " }), "#2e86c1");
+});
+
+test("sourceColorFor returns null for missing or malformed colors", () => {
+  assert.equal(sourceColorFor("one", {}), null);
+  assert.equal(sourceColorFor("one", { other: "#2e86c1" }), null);
+  assert.equal(sourceColorFor("one", { one: "" }), null);
+  assert.equal(sourceColorFor("one", { one: "#2e8" }), null);
+  assert.equal(sourceColorFor("one", { one: "#gggggg" }), null);
+  assert.equal(sourceColorFor("one", { one: null }), null);
+  assert.equal(sourceColorFor("", { one: "#2e86c1" }), null);
+  assert.equal(sourceColorFor("one", null), null);
+});
+
+test("source picker row renders a configured source color instead of No color", () => {
+  const sources = [
+    { source_key: "colored", display_name: "Colored", available: true },
+    { source_key: "uncolored", display_name: "Uncolored", available: true },
+  ];
+  const html = sourcePickerDialogMarkup(sources, {
+    primaryKey: "colored",
+    selectedKeys: ["colored", "uncolored"],
+    sourceColors: { colored: "#2E86C1" },
+  });
+
+  const coloredRow = html.match(/<tr[^>]*data-source-row-key="colored"[\s\S]*?<\/tr>/)?.[0] || "";
+  const uncoloredRow = html.match(/<tr[^>]*data-source-row-key="uncolored"[\s\S]*?<\/tr>/)?.[0] || "";
+
+  assert.match(coloredRow, /class="source-color-current is-set" style="--source-color: #2e86c1"/);
+  assert.match(coloredRow, /<code class="source-color-hex">#2E86C1<\/code>/);
+  assert.doesNotMatch(coloredRow, /No color/);
+  assert.match(coloredRow, /data-action="clear-generation-source-color"[^>]*data-source-color-key="colored"/);
+
+  assert.match(uncoloredRow, /class="source-color-current is-empty"/);
+  assert.match(uncoloredRow, /<span class="source-color-none">No color<\/span>/);
+  assert.doesNotMatch(uncoloredRow, /data-action="clear-generation-source-color"/);
+});
+
+test("source picker row renders the inline editor with the configured color as its starting value", () => {
+  const html = sourcePickerDialogMarkup(
+    [{ source_key: "colored", display_name: "Colored", available: true }],
+    {
+      primaryKey: "colored",
+      selectedKeys: ["colored"],
+      sourceColors: { colored: "#2E86C1" },
+      sourceColorEditorKey: "colored",
+    },
+  );
+  assert.match(html, /data-source-color-editor="colored"/);
+  assert.match(html, /type="color"[^>]*value="2e86c1"/);
+  assert.match(html, /class="source-color-hex source-color-editor-hex"[^>]*>#2E86C1<\/code>/);
+  assert.match(html, /data-action="apply-source-color-editor"[^>]*data-source-color-key="colored"/);
+});
+
+test("gallery card colors only the source name for a matching stable source key", () => {
+  const base = {
+    id: "g1",
+    status: "succeeded",
+    accepted_at: "2026-07-12T12:00:00Z",
+    generation_duration_seconds: 90,
+    checkpoint_label: "Moody Krea 2 V5 BF16",
+    display_artifact: {
+      kind: "image",
+      content_url: "/api/artifacts/current/content",
+    },
+  };
+  const sourceA = { source_key: "source-a", display_name: "Source A" };
+  const sourceB = { source_key: "source-b", display_name: "Source B" };
+  const sourceColors = { "source-a": "#2E86C1" };
+
+  const matched = cardFooterMarkup({ ...base, generation_source: sourceA }, sourceColors);
+  assert.match(matched, /<span class="source-colored-name" style="--source-color: #2e86c1">Source A<\/span>/);
+  assert.match(matched, /Moody Krea 2 V5 BF16 · 1m 30s/);
+  assert.doesNotMatch(matched, /style="--source-color: #2e86c1">Moody/);
+
+  const unmatched = cardFooterMarkup({ ...base, generation_source: sourceB }, sourceColors);
+  assert.match(unmatched, /Source B · Moody Krea 2 V5 BF16 · 1m 30s/);
+  assert.doesNotMatch(unmatched, /source-colored-name|source-color/);
+
+  const noColors = cardFooterMarkup({ ...base, generation_source: sourceA });
+  assert.match(noColors, /Source A · Moody Krea 2 V5 BF16 · 1m 30s/);
+  assert.doesNotMatch(noColors, /source-colored-name|source-color/);
 });
 
 test("generation duration uses only whole minutes and seconds", () => {

@@ -593,7 +593,7 @@ function sourceColorEditorMarkup(source, sourceColors) {
   const key = sourceKey(source);
   const name = source.display_name;
   const current = sourceColorFor(key, sourceColors);
-  const inputColor = current ? current.slice(1) : "000000";
+  const inputColor = (current ? current.slice(1) : "000000").toLowerCase();
   const previewColor = current || "#000000";
   return `<div class="source-color-editor" data-source-color-editor="${escapeHtml(key)}" role="group" aria-label="Edit color for ${escapeHtml(name)}">
     <span class="source-color-editor-caption">Color for ${escapeHtml(name)}</span>
@@ -1648,7 +1648,7 @@ function generationSourceKey(generation) {
 
 export function sourceColorFor(key, sourceColors) {
   if (!sourceColors || typeof sourceColors !== "object" || !key) return null;
-  const color = String(sourceColors[key] || "").trim().toLowerCase();
+  const color = String(sourceColors[key] || "").trim().toLowerCase().replace(/^#/, "");
   return /^[0-9a-f]{6}$/.test(color) ? `#${color}` : null;
 }
 
