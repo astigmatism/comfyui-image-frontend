@@ -901,6 +901,11 @@ function handleInput(event) {
     updatePromptEditorStats(element.value);
     return;
   }
+  if (element.matches("[data-source-editor-color-input]")) {
+    const hex = element.closest("[data-source-color-editor]")?.querySelector(".source-color-editor-hex");
+    if (hex) hex.textContent = `#${String(element.value || "").replace(/^#/, "").toUpperCase()}`;
+    return;
+  }
   if (element.id === "gallery-scale") {
     updateGalleryScale(element.value, false);
     return;

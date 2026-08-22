@@ -596,12 +596,12 @@ function sourceColorEditorMarkup(source, sourceColors) {
   const inputColor = current ? current.slice(1) : "000000";
   const previewColor = current || "#000000";
   return `<div class="source-color-editor" data-source-color-editor="${escapeHtml(key)}" role="group" aria-label="Edit color for ${escapeHtml(name)}">
-    <span class="source-color-editor-preview" style="--source-color: ${escapeHtml(previewColor)}" aria-hidden="true"></span>
-    <label class="source-color-picker-trigger" for="source-color-input-${escapeHtml(key)}" title="Choose a custom color" aria-label="Choose a custom color for ${escapeHtml(name)}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 2-.9 2-2 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.5 1.8-1.5H16a5 5 0 0 0 5-5c0-3.9-4-7-9-7Z" /><circle cx="7.5" cy="11.5" r="1.1" /><circle cx="10.5" cy="7.5" r="1.1" /><circle cx="15" cy="7.5" r="1.1" /><circle cx="17.5" cy="11" r="1.1" /></svg></label>
-    <input id="source-color-input-${escapeHtml(key)}" class="source-color-input" type="color" data-source-editor-color-input="${escapeHtml(key)}" value="${escapeHtml(inputColor)}" aria-label="Custom color for ${escapeHtml(name)}" />
+    <span class="source-color-editor-caption">Color for ${escapeHtml(name)}</span>
+    <input id="source-color-input-${escapeHtml(key)}" class="source-color-editor-well" type="color" data-source-editor-color-input="${escapeHtml(key)}" value="${escapeHtml(inputColor)}" aria-label="Custom color for ${escapeHtml(name)}" />
+    <code class="source-color-hex source-color-editor-hex" id="source-color-hex-${escapeHtml(key)}">${escapeHtml(`#${inputColor.toUpperCase()}`)}</code>
     <div class="source-color-editor-actions">
-      <button type="button" class="button primary low" data-action="apply-source-color-editor" data-source-color-key="${escapeHtml(key)}" title="Apply this color">Apply</button>
       <button type="button" class="button low" data-action="cancel-source-color-editor" aria-label="Cancel color change for ${escapeHtml(name)}" title="Cancel">Cancel</button>
+      <button type="button" class="button primary low" data-action="apply-source-color-editor" data-source-color-key="${escapeHtml(key)}" title="Apply this color">Apply</button>
     </div>
   </div>`;
 }

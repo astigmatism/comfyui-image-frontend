@@ -2816,29 +2816,6 @@ dialog::backdrop {
   outline-offset: 1px;
 }
 
-.source-color-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  border: 0;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.source-color-input:focus-visible {
-  width: 24px;
-  height: 24px;
-  clip: auto;
-  clip-path: none;
-  overflow: visible;
-  border: 1px solid var(--focus);
-  border-radius: 6px;
-}
-
 .source-color-clear {
   width: 20px;
   height: 20px;
@@ -2868,39 +2845,34 @@ dialog::backdrop {
 }
 
 .source-color-editor {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-height: 28px;
-  padding: 4px 6px;
+  gap: 8px 10px;
+  min-height: 0;
+  padding: 8px;
   border: 1px solid var(--focus);
   border-radius: 8px;
   background: rgb(12 19 28 / 60%);
 }
 
-.source-color-editor-preview {
-  display: inline-block;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  flex: 0 0 auto;
-  background: var(--source-color);
-  border: 1px solid rgb(255 255 255 / 40%);
+.source-color-editor-caption {
+  grid-column: 1 / -1;
+  color: var(--text-soft);
+  font-size: 0.74rem;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.source-color-editor .source-color-picker-trigger {
-  cursor: default;
-}
-
-.source-color-editor input[type="color"] {
-  position: static;
-  width: 34px;
-  height: 26px;
+.source-color-editor-well {
+  width: 100%;
+  height: 120px;
   padding: 0;
   margin: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   clip: auto;
   clip-path: none;
   overflow: visible;
@@ -2909,23 +2881,30 @@ dialog::backdrop {
   cursor: pointer;
 }
 
-.source-color-editor input[type="color"]::-webkit-color-swatch-wrapper {
-  padding: 2px;
+.source-color-editor-well::-webkit-color-swatch-wrapper {
+  padding: 4px;
 }
 
-.source-color-editor input[type="color"]::-webkit-color-swatch {
+.source-color-editor-well::-webkit-color-swatch {
   border: none;
-  border-radius: 3px;
+  border-radius: 5px;
 }
 
-.source-color-editor input[type="color"]::-moz-color-swatch {
+.source-color-editor-well::-moz-color-swatch {
   border: none;
-  border-radius: 3px;
+  border-radius: 5px;
+}
+
+.source-color-editor-hex {
+  grid-column: 1 / -1;
+  display: inline-block;
+  justify-self: start;
 }
 
 .source-color-editor-actions {
+  grid-column: 1 / -1;
   display: inline-flex;
-  align-items: center;
+  justify-content: flex-end;
   gap: 6px;
 }
 
