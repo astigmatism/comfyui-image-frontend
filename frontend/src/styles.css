@@ -1394,10 +1394,17 @@ code {
 }
 
 .source-picker-current {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   flex: 1;
   gap: 1px;
+}
+
+.source-picker-primary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 
 .source-picker-current strong,
@@ -1408,6 +1415,7 @@ code {
 }
 
 .source-picker-current strong {
+  min-width: 0;
   font-size: 0.82rem;
   font-weight: 650;
 }

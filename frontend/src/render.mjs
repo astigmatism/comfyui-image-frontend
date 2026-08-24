@@ -369,7 +369,7 @@ function sourcePickerMarkup(
       <span id="generation-source-label">Generation source</span>
       <div class="source-picker">
         <button id="workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
-          <span class="source-picker-current">${sourceColorDot(activeColor, activeName)}<strong id="generation-source-value">${escapeHtml(activeName)}</strong>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
+          <span class="source-picker-current"><span class="source-picker-primary">${sourceColorDot(activeColor, activeName)}<strong id="generation-source-value">${escapeHtml(activeName)}</strong></span>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
           <svg class="source-picker-launch-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h12M4 14.5h12" /><circle cx="7" cy="5.5" r="1.5" /><circle cx="13" cy="10" r="1.5" /><circle cx="9" cy="14.5" r="1.5" /></svg>
         </button>
       </div>

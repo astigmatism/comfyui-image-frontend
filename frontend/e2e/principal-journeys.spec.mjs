@@ -1371,6 +1371,72 @@ test("generation source color applies, colors only matching cards, persists acro
   await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
 });
 
+test("generation source trigger keeps the color dot on the name line with details below it", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  // No color: the name itself opens the primary line — no dot, no placeholder indent.
+  await expect(page.locator("#workflow-source .source-color-dot")).toHaveCount(0);
+  expect(
+    await page
+      .locator("#workflow-source .source-picker-primary > :first-child")
+      .evaluate((el) => el.id || el.className),
+  ).toBe("generation-source-value");
+
+  // Add a secondary source so the trigger carries secondary detail text.
+  await page.locator("#workflow-source").click();
+  const sourceDialog = page.locator("#source-picker-dialog");
+  await page.getByLabel("Include Generic Landscape", { exact: true }).check();
+  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.locator("#workflow-source")).toContainText("2 sources selected");
+
+  // Assign a color to the selected source through the dialog color editor.
+  await page.locator("#workflow-source").click();
+  await expect(sourceDialog).toBeVisible();
+  const kreaRow = sourceDialog
+    .locator("[data-source-row-key]")
+    .filter({ hasText: "Krea 2 NSFW V4" });
+  await kreaRow
+    .getByRole("button", { name: "Choose a custom color for Krea 2 NSFW V4" })
+    .click();
+  await kreaRow.locator('input[type="color"]').evaluate((input) => {
+    input.value = "#2e86c1";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await kreaRow.getByRole("button", { name: "Apply", exact: true }).click();
+  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
+
+  const dot = page.locator("#workflow-source .source-color-dot");
+  const name = page.locator("#generation-source-value");
+  const detail = page.locator("#workflow-source .source-picker-current small");
+  await expect(dot).toBeVisible();
+  await expect(name).toHaveText("Krea 2 NSFW V4");
+  await expect(detail).toHaveText("2 sources selected", { exact: true });
+
+  // The dot and the source name share the same first line: matching vertical centers.
+  const dotBox = await dot.boundingBox();
+  const nameBox = await name.boundingBox();
+  expect(dotBox).toBeTruthy();
+  expect(nameBox).toBeTruthy();
+  expect(Math.abs(dotBox.y + dotBox.height / 2 - (nameBox.y + nameBox.height / 2))).toBeLessThanOrEqual(1);
+
+  // The secondary details stay on their own line below the primary line.
+  const primaryBox = await page.locator("#workflow-source .source-picker-primary").boundingBox();
+  const detailBox = await detail.boundingBox();
+  expect(primaryBox).toBeTruthy();
+  expect(detailBox).toBeTruthy();
+  expect(detailBox.y).toBeGreaterThan(primaryBox.y + primaryBox.height - 1);
+
+  // The control does not overflow horizontally at the narrow left-panel width.
+  expect(
+    await page.locator("#workflow-source").evaluate((el) => el.scrollWidth > el.clientWidth),
+  ).toBe(false);
+});
+
 test("focused prompt editor isolates canceled drafts and applies composed prompts and assistant settings", async ({
   page,
 }) => {

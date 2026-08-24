@@ -1479,6 +1479,70 @@ test("source picker row renders a configured source color instead of No color", 
   assert.doesNotMatch(uncoloredRow, /data-action="clear-generation-source-color"/);
 });
 
+test("generation source trigger keeps the color dot with the name on the primary line above details", () => {
+  const secondarySource = {
+    source_key: "local::workflows/comfyui-image-frontend/Generic Landscape.json",
+    display_name: "Generic Landscape",
+    instance_id: "local",
+    readiness: "ready",
+    available: true,
+    cached: false,
+    warnings: [],
+    revision: {
+      publication_id: "publication-2",
+      workflow_sha256: "workflow-hash-2",
+      api_sha256: "api-hash-2",
+      manifest_sha256: "manifest-hash-2",
+    },
+  };
+  const baseState = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource, secondarySource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: { prompt: "a tree with chickens" },
+    fieldErrors: {},
+    formError: null,
+    comparisonSourceKeys: [secondarySource.source_key],
+    selectedGenerationTargetCount: 3,
+  };
+  const currentMarkup = (html) =>
+    html.match(
+      /<span class="source-picker-current">([\s\S]*?)<\/span>\s*<svg class="source-picker-launch-icon"/,
+    )?.[1] || "";
+
+  const colored = generationPanelMarkup(
+    { ...baseState, sourceColors: { [publishedSource.source_key]: "#2E86C1" } },
+    publishedSource,
+    publishedInterface,
+  );
+  const coloredLine = currentMarkup(colored);
+  const coloredPrimary = coloredLine.match(
+    /<span class="source-picker-primary">[\s\S]*?<\/span>\s*(?=<small>|$)/,
+  )?.[0] || "";
+  assert.ok(coloredPrimary.startsWith('<span class="source-picker-primary">'));
+  assert.match(
+    coloredPrimary,
+    /<span class="source-color-dot" style="--source-color: #2e86c1" aria-hidden="true" title="Color for Krea 2 NSFW V4"><\/span><strong id="generation-source-value">Krea 2 NSFW V4<\/strong><\/span>$/,
+  );
+  assert.doesNotMatch(coloredPrimary, /<small>/);
+  assert.match(coloredLine, /<small>2 sources selected · 3 generations planned<\/small>$/);
+  assert.ok(coloredLine.startsWith(coloredPrimary));
+  assert.ok(coloredLine.slice(coloredPrimary.length).startsWith("<small>"));
+
+  const uncolored = generationPanelMarkup(baseState, publishedSource, publishedInterface);
+  const uncoloredLine = currentMarkup(uncolored);
+  assert.doesNotMatch(uncoloredLine, /source-color-dot/);
+  assert.match(
+    uncoloredLine,
+    /^<span class="source-picker-primary"><strong id="generation-source-value">Krea 2 NSFW V4<\/strong><\/span>/,
+  );
+  assert.match(uncoloredLine, /<small>2 sources selected · 3 generations planned<\/small>$/);
+  assert.match(uncolored, /aria-labelledby="generation-source-label generation-source-value"/);
+});
+
 test("source picker row renders the inline editor with the configured color as its starting value", () => {
   const html = sourcePickerDialogMarkup(
     [{ source_key: "colored", display_name: "Colored", available: true }],
