@@ -41,8 +41,8 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
   "items": [
     {
       "id": "default",
-      "label": "Original · RTX 3090",
-      "description": "24 GB VRAM",
+      "label": "Primary",
+      "description": null,
       "is_default": true,
       "available": true,
       "message": null,
@@ -50,8 +50,8 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
     },
     {
       "id": "worker-2",
-      "label": "Worker 1 · RTX 3080",
-      "description": "10 GB VRAM",
+      "label": "Secondary",
+      "description": null,
       "is_default": false,
       "available": false,
       "message": "ComfyUI is unreachable.",
@@ -61,7 +61,7 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
 }
 ```
 
-Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog or `CIF_COMFYUI_ADDITIONAL_INSTANCES` was supplied (including an empty deliberate opt-out), and `legacy` when the backend synthesized only the one-item **Original** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients initialize the selector from `default_instance_id`, retain a later user choice while polling health, and disable new submission when the selected item is unavailable.
+Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog or `CIF_COMFYUI_ADDITIONAL_INSTANCES` was supplied (including an empty deliberate opt-out), and `legacy` when the backend synthesized only the one-item **Primary** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients initialize the selector from `default_instance_id`, retain a later user choice while polling health, and disable new submission when the selected item is unavailable.
 
 ## Published generation sources
 
@@ -411,7 +411,7 @@ Generation detail adds:
 ```json
 {
   "comfyui_instance_id": "worker-2",
-  "comfyui_instance_label": "RTX 3080",
+  "comfyui_instance_label": "Secondary",
   "generation_source": {
     "source_key": "...",
     "instance_id": "home",

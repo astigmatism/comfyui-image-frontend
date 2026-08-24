@@ -24,9 +24,8 @@ COPY pyproject.toml README.md ./
 # Bundle the non-secret household runtime defaults independently of the launch
 # working directory. Compose and docker-run environment values still take
 # precedence, so private settings and explicit instance lists remain authoritative.
-ENV CIF_COMFYUI_LABEL="Original · RTX 3090"
-ENV CIF_COMFYUI_DESCRIPTION="24 GB VRAM"
-ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="[{\"id\":\"worker-2\",\"label\":\"Worker 1 · RTX 3080\",\"description\":\"10 GB VRAM\",\"base_url\":\"http://192.168.1.21:8189\",\"concurrency\":1}]"
+ENV CIF_COMFYUI_LABEL="Primary"
+ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="[{\"id\":\"worker-2\",\"label\":\"Secondary\",\"base_url\":\"http://192.168.1.21:8189\",\"concurrency\":1}]"
 COPY backend ./backend
 RUN pip install --no-cache-dir .
 COPY --from=frontend-build /build/frontend/dist ./frontend/dist

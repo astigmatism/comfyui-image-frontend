@@ -38,15 +38,13 @@ def main() -> None:
             comfyui_instances=[
                 {
                     "id": "default",
-                    "label": "Original · RTX 3090",
-                    "description": "24 GB VRAM",
+                    "label": "Primary",
                     "base_url": primary.base_url,
                     "ws_url": primary.ws_url,
                 },
                 {
                     "id": "worker-2",
-                    "label": "Worker 1 · RTX 3080",
-                    "description": "10 GB VRAM",
+                    "label": "Secondary",
                     "base_url": worker.base_url,
                     "ws_url": worker.ws_url,
                 },

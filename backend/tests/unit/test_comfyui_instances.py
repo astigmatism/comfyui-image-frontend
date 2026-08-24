@@ -29,7 +29,7 @@ def test_legacy_single_instance_configuration_keeps_identity_with_friendly_label
     assert [item.model_dump() for item in settings.configured_comfyui_instances] == [
         {
             "id": "stable-home",
-            "label": "Original",
+            "label": "Primary",
             "description": None,
             "base_url": "http://comfy.test:8188",
             "ws_url": "ws://comfy.test:8188/ws",
@@ -46,14 +46,12 @@ def test_json_instance_configuration_selects_an_explicit_default(monkeypatch) ->
             [
                 {
                     "id": "primary",
-                    "label": "Primary ComfyUI — RTX 3090",
-                    "description": "24 GB VRAM",
+                    "label": "Primary",
                     "base_url": "http://local-ai-comfyui:8188",
                 },
                 {
                     "id": "worker-2",
-                    "label": "ComfyUI Worker 2 — RTX 3080",
-                    "description": "10 GB VRAM",
+                    "label": "Secondary",
                     "base_url": "http://local-ai-comfyui-worker-2:8188",
                     "concurrency": 2,
                 },
@@ -65,7 +63,8 @@ def test_json_instance_configuration_selects_an_explicit_default(monkeypatch) ->
     settings = Settings(_env_file=None, test_mode=True)
 
     assert settings.comfyui_instance_configuration_mode == "explicit"
-    assert settings.default_comfyui_instance.label == "Primary ComfyUI — RTX 3090"
+    assert settings.default_comfyui_instance.label == "Primary"
+    assert settings.default_comfyui_instance.description is None
     assert [item.id for item in settings.configured_comfyui_instances] == [
         "primary",
         "worker-2",
@@ -102,14 +101,14 @@ def test_standard_compose_defaults_extend_the_existing_household_primary(
     ] == [
         (
             "home",
-            "Original · RTX 3090",
-            "24 GB VRAM",
+            "Primary",
+            None,
             "http://local-ai-comfyui:8188",
         ),
         (
             "worker-2",
-            "Worker 1 · RTX 3080",
-            "10 GB VRAM",
+            "Secondary",
+            None,
             "http://192.168.1.21:8189",
         ),
     ]
@@ -139,7 +138,6 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
         "CIF_COMFYUI_ADDITIONAL_INSTANCES",
         "CIF_COMFYUI_DEFAULT_INSTANCE_ID",
         "CIF_COMFYUI_LABEL",
-        "CIF_COMFYUI_DESCRIPTION",
     ):
         monkeypatch.delenv(name, raising=False)
     defaults_file = REPOSITORY_ROOT / "deployment" / "comfyui-instances.env"
@@ -174,8 +172,8 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
     primary, worker = settings.configured_comfyui_instances
     assert primary.model_dump() == {
         "id": "persisted-home",
-        "label": "Original · RTX 3090",
-        "description": "24 GB VRAM",
+        "label": "Primary",
+        "description": None,
         "base_url": "http://persisted-primary.test:8188",
         "ws_url": "ws://persisted-primary.test:8188/ws",
         "user": "persisted-user",
@@ -183,14 +181,13 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
     }
     assert (worker.id, worker.label, worker.base_url) == (
         "worker-2",
-        "Worker 1 · RTX 3080",
+        "Secondary",
         "http://192.168.1.21:8189",
     )
+    assert worker.description is None
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f'ENV CIF_COMFYUI_LABEL="{image_defaults["CIF_COMFYUI_LABEL"]}"' in dockerfile
-    assert (
-        f'ENV CIF_COMFYUI_DESCRIPTION="{image_defaults["CIF_COMFYUI_DESCRIPTION"]}"' in dockerfile
-    )
+    assert "CIF_COMFYUI_DESCRIPTION" not in dockerfile
     escaped_workers = image_defaults["CIF_COMFYUI_ADDITIONAL_INSTANCES"].replace('"', '\\"')
     assert f'ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="{escaped_workers}"' in dockerfile
 

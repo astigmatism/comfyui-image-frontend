@@ -36,8 +36,7 @@ def _instance_settings(settings_factory, primary: LiveFakeServer, worker: LiveFa
         comfyui_instances=[
             {
                 "id": "primary",
-                "label": "Primary ComfyUI — RTX 3090",
-                "description": "24 GB VRAM",
+                "label": "Primary",
                 "base_url": primary.base_url,
                 "ws_url": primary.ws_url,
                 "user": "fixture-user",
@@ -45,8 +44,7 @@ def _instance_settings(settings_factory, primary: LiveFakeServer, worker: LiveFa
             },
             {
                 "id": "worker-2",
-                "label": "ComfyUI Worker 2 — RTX 3080",
-                "description": "10 GB VRAM",
+                "label": "Secondary",
                 "base_url": worker.base_url,
                 "ws_url": worker.ws_url,
                 "user": "fixture-user",
@@ -72,7 +70,7 @@ def test_legacy_instance_catalog_reports_friendly_fallback_without_private_urls(
         assert payload["configuration_mode"] == "legacy"
         assert payload["default_instance_id"] == "test-instance"
         assert [(item["id"], item["label"]) for item in payload["items"]] == [
-            ("test-instance", "Original")
+            ("test-instance", "Primary")
         ]
         serialized = json.dumps(payload)
         assert fake_services.base_url not in serialized
@@ -124,10 +122,10 @@ def test_generation_operations_stay_on_the_pinned_comfyui_instance(
             )
             assert queued.status_code == 201, queued.text
             assert queued.json()["comfyui_instance_id"] == "worker-2"
-            assert queued.json()["comfyui_instance_label"] == "ComfyUI Worker 2 — RTX 3080"
+            assert queued.json()["comfyui_instance_label"] == "Secondary"
             complete = wait_for_status(client, queued.json()["id"], "succeeded", timeout=10)
             assert complete["comfyui_instance_id"] == "worker-2"
-            assert complete["comfyui_instance_label"] == "ComfyUI Worker 2 — RTX 3080"
+            assert complete["comfyui_instance_label"] == "Secondary"
             assert worker.state.submitted
             assert worker.state.uploaded
             assert worker.state.history_calls
@@ -253,7 +251,7 @@ def test_unavailable_instance_is_explicit_and_does_not_block_another_lane(
             )
             assert rejected.status_code == 503, rejected.text
             assert rejected.json()["error"]["code"] == "comfyui_instance_unavailable"
-            assert "RTX 3080" in rejected.json()["error"]["message"]
+            assert "Secondary is unavailable" in rejected.json()["error"]["message"]
 
             primary_payload = generation_payload(client, "healthy primary", seed=902)
             primary_payload["comfyui_instance_id"] = "primary"

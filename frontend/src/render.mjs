@@ -239,9 +239,8 @@ function comfyuiInstanceSelectorMarkup(state) {
   const options = instances.length
     ? `${selected ? "" : '<option value="" selected>Choose a runtime</option>'}${instances
         .map((instance) => {
-          const details = String(instance.description || "").trim();
           const availability = instance.available === true ? "" : " · ❌";
-          const copy = `${instance.label || instance.id}${details ? ` · ${details}` : ""}${availability}`;
+          const copy = `${instance.label || instance.id}${availability}`;
           return `<option value="${escapeHtml(instance.id)}" ${instance.id === state.selectedComfyuiInstanceId ? "selected" : ""}>${escapeHtml(copy)}</option>`;
         })
         .join("")}`
@@ -315,15 +314,14 @@ function comfyuiInstanceStatus(state, selected) {
       kind: "warning",
       role: "status",
       message:
-        "Only the original ComfyUI runtime is configured for this deployment.",
+        "Only the primary ComfyUI runtime is configured for this deployment.",
     };
   }
-  const description = String(selected.description || "").trim();
   return {
     icon: "✅",
     kind: "available",
     role: "status",
-    message: description ? `${description} · Available` : "Available",
+    message: "Available",
   };
 }
 

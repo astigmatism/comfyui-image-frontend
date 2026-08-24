@@ -413,16 +413,11 @@ test("runtime selector is a borderless single-line two-instance control", async 
     "comfyui-instance-field",
   ]);
   await expect(selector).toHaveValue("default");
-  await expect(selector.locator("option")).toHaveText([
-    "Original · RTX 3090 · 24 GB VRAM",
-    "Worker 1 · RTX 3080 · 10 GB VRAM",
-  ]);
+  await expect(selector.locator("option")).toHaveText(["Primary", "Secondary"]);
   const status = row.locator("#comfyui-instance-status");
   await expect(row.locator(".comfyui-instance-status-icon")).toHaveText("✅");
-  await expect(status).toHaveAttribute(
-    "title",
-    "24 GB VRAM · Available",
-  );
+  await expect(status).toHaveAttribute("title", "Available");
+  await expect(status.locator(".comfyui-instance-status-message")).toHaveText("Available");
   await status.focus();
   await expect(status.locator(".comfyui-instance-status-message")).toBeVisible();
 
@@ -450,21 +445,21 @@ test("runtime selector is a borderless single-line two-instance control", async 
 
   await selector.selectOption("worker-2");
   await expect(selector).toHaveValue("worker-2");
-  await expect(status).toHaveAttribute("title", "10 GB VRAM · Available");
+  await expect(status).toHaveAttribute("title", "Available");
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .fill("worker runtime routing check");
   const acceptedResponse = await generateAndExpectAccepted(page);
   const accepted = await acceptedResponse.json();
   expect(accepted.comfyui_instance_id).toBe("worker-2");
-  expect(accepted.comfyui_instance_label).toBe("Worker 1 · RTX 3080");
+  expect(accepted.comfyui_instance_label).toBe("Secondary");
   await expect.poll(async () => {
     const detail = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
     return detail.status;
   }).toBe("succeeded");
   const completed = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
   expect(completed.comfyui_instance_id).toBe("worker-2");
-  expect(completed.comfyui_instance_label).toBe("Worker 1 · RTX 3080");
+  expect(completed.comfyui_instance_label).toBe("Secondary");
   await expect(
     page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-metadata`),
   ).toHaveText(/^Generic Landscape · (?:\d+m )?\d+s$/);

@@ -246,7 +246,7 @@ test("running generation renders an accessible compact linear progress bar", () 
     status: "running",
     workflow_display_name: "Portrait",
     comfyui_instance_id: "primary",
-    comfyui_instance_label: "Primary · RTX 3090",
+    comfyui_instance_label: "Primary",
     progress: {
       kind: "node",
       label: "Main sampling",
@@ -259,12 +259,12 @@ test("running generation renders an accessible compact linear progress bar", () 
   const html = galleryCardMarkup(generation);
   assert.match(html, /class="progress-bar progress-bar-determinate"/);
   assert.match(html, /class="generation-progress-label">Main sampling/);
-  assert.match(html, /class="generation-progress-runtime">Primary · RTX 3090/);
+  assert.match(html, /class="generation-progress-runtime">Primary/);
   assert.match(html, /role="progressbar"/);
   assert.match(html, /aria-valuemin="0"/);
   assert.match(html, /aria-valuemax="24"/);
   assert.match(html, /aria-valuenow="12"/);
-  assert.match(html, /aria-valuetext="12 of 24 for Main sampling on Primary · RTX 3090"/);
+  assert.match(html, /aria-valuetext="12 of 24 for Main sampling on Primary"/);
   assert.match(html, /style="--progress-value: 50\.00%"/);
   assert.match(html, /class="progress-bar-fill"/);
   assert.doesNotMatch(html, /Current operation/);
@@ -447,10 +447,10 @@ test("indeterminate linear progress omits aria-valuenow and queued cards keep qu
     status: "queued",
     workflow_display_name: "Portrait",
     comfyui_instance_id: "worker-2",
-    comfyui_instance_label: "Worker 2 · RTX 3080",
+    comfyui_instance_label: "Secondary",
   });
   assert.match(queued, /Waiting for a fair queue slot/);
-  assert.match(queued, /class="status-runtime">Worker 2 · RTX 3080/);
+  assert.match(queued, /class="status-runtime">Secondary/);
   assert.doesNotMatch(queued, /progress-bar-indeterminate/);
 });
 
@@ -659,7 +659,7 @@ test("generation panel places the configured ComfyUI runtime below generation co
     comfyuiInstances: [
       {
         id: "primary",
-        label: "Original · RTX 3090",
+        label: "Primary",
         description: "24 GB VRAM",
         is_default: true,
         available: true,
@@ -667,7 +667,7 @@ test("generation panel places the configured ComfyUI runtime below generation co
       },
       {
         id: "worker-2",
-        label: "Worker 1 · RTX 3080",
+        label: "Secondary",
         description: "10 GB VRAM",
         is_default: false,
         available: true,
@@ -698,18 +698,16 @@ test("generation panel places the configured ComfyUI runtime below generation co
       sourceIndex < promptIndex,
   );
   assert.match(html, /<label for="comfyui-instance">Runtime<\/label>/);
-  assert.match(html, /value="primary" selected>Original · RTX 3090 · 24 GB VRAM/);
-  assert.match(html, /value="worker-2" >Worker 1 · RTX 3080 · 10 GB VRAM/);
+  assert.match(html, /value="primary" selected>Primary<\/option>/);
+  assert.match(html, /value="worker-2" >Secondary<\/option>/);
+  assert.doesNotMatch(html, /24 GB VRAM|10 GB VRAM/);
   const runtimeStatus =
     html.match(/<small id="comfyui-instance-status"[\s\S]*?<\/small>/)?.[0] || "";
   assert.match(runtimeStatus, /class="comfyui-instance-status available"/);
-  assert.match(runtimeStatus, /title="24 GB VRAM · Available"/);
+  assert.match(runtimeStatus, /title="Available"/);
   assert.match(runtimeStatus, /tabindex="0" role="status"/);
   assert.match(runtimeStatus, /aria-hidden="true">✅<\/span>/);
-  assert.match(
-    runtimeStatus,
-    /class="comfyui-instance-status-message">24 GB VRAM · Available<\/span>/,
-  );
+  assert.match(runtimeStatus, /class="comfyui-instance-status-message">Available<\/span>/);
   assert.doesNotMatch(html, /private-primary|private-worker|base_url|8188/);
   assert.match(html, /id="auto-generate"[^>]*role="switch"/);
   const creativeDirectionControl =
@@ -766,7 +764,7 @@ test("only the selected unavailable ComfyUI runtime blocks generation", () => {
     baseState.workflows[0],
     contract,
   );
-  assert.match(selectedUnavailable, /Worker 2 · RTX 3080 · 10 GB VRAM · ❌/);
+  assert.match(selectedUnavailable, /Worker 2 · ❌/);
   assert.match(
     selectedUnavailable,
     /title="Worker 2 did not answer its health check\."[^>]*role="alert"/,
@@ -787,10 +785,8 @@ test("only the selected unavailable ComfyUI runtime blocks generation", () => {
     contract,
   );
   assert.match(selectedAvailable, /aria-hidden="true">✅<\/span>/);
-  assert.match(
-    selectedAvailable,
-    /class="comfyui-instance-status-message">RTX 3090 · 24 GB VRAM · Available/,
-  );
+  assert.match(selectedAvailable, /class="comfyui-instance-status-message">Available<\/span>/);
+  assert.doesNotMatch(selectedAvailable, /RTX 3090|24 GB VRAM/);
   assert.doesNotMatch(
     selectedAvailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
     /disabled/,
@@ -827,7 +823,7 @@ test("ComfyUI runtime status uses compact loading and legacy configuration icons
       comfyuiInstances: [
         {
           id: "default",
-          label: "Original",
+          label: "Primary",
           description: "",
           is_default: true,
           available: true,
@@ -838,11 +834,11 @@ test("ComfyUI runtime status uses compact loading and legacy configuration icons
     baseState.workflows[0],
     contract,
   );
-  assert.match(legacy, /value="default" selected>Original<\/option>/);
+  assert.match(legacy, /value="default" selected>Primary<\/option>/);
   assert.match(legacy, /aria-hidden="true">⚠️<\/span>/);
   assert.match(
     legacy,
-    /Only the original ComfyUI runtime is configured for this deployment\./,
+    /Only the primary ComfyUI runtime is configured for this deployment\./,
   );
   assert.doesNotMatch(legacy, /Add CIF_COMFYUI_INSTANCES/);
   assert.doesNotMatch(
@@ -1394,7 +1390,7 @@ test("card footer groups generation actions and exposes permanent deletion", () 
     workflow_display_name: "Portrait Workflow",
     checkpoint_label: "Moody Krea 2 V5 BF16",
     comfyui_instance_id: "worker-2",
-    comfyui_instance_label: "Worker 2 · RTX 3080",
+    comfyui_instance_label: "Secondary",
     accepted_at: "2026-07-12T12:00:00Z",
     generation_duration_seconds: 90,
     status: "failed_with_artifacts",
@@ -1409,7 +1405,7 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   };
   const html = cardFooterMarkup(generation);
   assert.match(html, />Portrait Workflow · Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
-  assert.doesNotMatch(html, /Worker 2 · RTX 3080/);
+  assert.doesNotMatch(html, /Secondary/);
   assert.match(html, /title="Open generation details for Portrait Workflow with Moody Krea 2 V5 BF16"/);
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
@@ -1557,7 +1553,7 @@ test("Favorites modal renders a thumbnail, generation details, recall, and delet
         id: "g1",
         workflow_display_name: "Portrait Workflow",
         comfyui_instance_id: "primary",
-        comfyui_instance_label: "Primary · RTX 3090",
+        comfyui_instance_label: "Primary",
         accepted_at: "2026-07-12T12:00:00Z",
         status: "succeeded",
         recall_available: true,
@@ -1572,7 +1568,7 @@ test("Favorites modal renders a thumbnail, generation details, recall, and delet
   assert.match(html, /<h2>Favorites<\/h2>/);
   assert.match(html, /a1\/thumbnail/);
   assert.match(html, /Portrait Workflow/);
-  assert.match(html, /Primary · RTX 3090 · Generated/);
+  assert.match(html, /Primary · Generated/);
   assert.match(html, /lighthouse &lt;at dusk&gt;/);
   assert.match(html, /data-action="recall-favorite"/);
   assert.match(html, /data-action="delete-favorite"/);
@@ -2176,7 +2172,7 @@ test("generation detail retains metadata and presents authored roles with every 
     id: "g-rich",
     status: "succeeded",
     comfyui_instance_id: "worker-2",
-    comfyui_instance_label: "Worker 2 · RTX 3080",
+    comfyui_instance_label: "Secondary",
     accepted_at: "2026-07-13T12:00:00Z",
     generation_source: { ...publishedSource, revision: publishedSource.revision },
     prompt_id: "native-prompt-123",
@@ -2233,8 +2229,8 @@ test("generation detail retains metadata and presents authored roles with every 
     delete_pending: false,
   });
   assert.match(html, /native-prompt-123/);
-  assert.match(html, /Complete · Worker 2 · RTX 3080/);
-  assert.match(html, /<dt>Execution runtime<\/dt><dd>Worker 2 · RTX 3080<\/dd>/);
+  assert.match(html, /Complete · Secondary/);
+  assert.match(html, /<dt>Execution runtime<\/dt><dd>Secondary<\/dd>/);
   assert.match(html, /<dt>Publication instance<\/dt><dd>local<\/dd>/);
   assert.match(html, /publication-1/);
   assert.match(html, /9223372036854775807/);

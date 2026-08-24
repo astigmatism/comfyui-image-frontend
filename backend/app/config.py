@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     comfyui_base_url: str = "http://127.0.0.1:8188"
     comfyui_ws_url: str | None = None
     comfyui_instance_id: str = "default"
-    comfyui_label: str = Field(default="Original", min_length=1, max_length=120)
+    comfyui_label: str = Field(default="Primary", min_length=1, max_length=120)
     comfyui_description: str | None = Field(default=None, max_length=240)
     comfyui_user: str | None = None
     comfyui_instances: list[ComfyUIInstanceConfig] | None = None

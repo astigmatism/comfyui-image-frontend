@@ -97,7 +97,7 @@ instances = settings.configured_comfyui_instances
 assert settings.comfyui_instance_configuration_mode == "explicit"
 assert [item.id for item in instances] == ["smoke-primary", "worker-2"]
 assert instances[0].base_url == "http://127.0.0.1:9"
-assert instances[1].label == "Worker 1 · RTX 3080"
+assert instances[1].label == "Secondary"
 assert instances[1].base_url == "http://192.168.1.21:8189"
 '
 
