@@ -2120,11 +2120,6 @@ export function serviceBannerMarkup(
     if (selected?.available === false) {
       return `<div class="service-banner" role="status"><strong>${escapeHtml(selected.label || selected.id)} unavailable.</strong><span>${escapeHtml(selected.message || "Choose another configured runtime to generate; history remains available.")}</span></div>`;
     }
-    const unavailable = instances.filter((item) => item.available === false);
-    if (unavailable.length) {
-      const labels = unavailable.map((item) => item.label || item.id).join(", ");
-      return `<div class="service-banner" role="status"><strong>${escapeHtml(labels)} unavailable.</strong><span>The selected runtime remains available.</span></div>`;
-    }
     return "";
   }
   if (status === "loading") {

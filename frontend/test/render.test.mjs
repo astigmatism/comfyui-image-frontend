@@ -530,7 +530,7 @@ test("gallery and service regions render independent progressive startup states"
     serviceBannerMarkup([], "error", "Service status timed out after 8 seconds."),
     /Service status timed out after 8 seconds/,
   );
-  const runtimeBanner = serviceBannerMarkup([], "ready", null, {
+  const secondaryRuntimeBanner = serviceBannerMarkup([], "ready", null, {
     status: "ready",
     selectedInstanceId: "primary",
     instances: [
@@ -543,8 +543,7 @@ test("gallery and service regions render independent progressive startup states"
       },
     ],
   });
-  assert.match(runtimeBanner, /Worker 2 unavailable/);
-  assert.match(runtimeBanner, /selected runtime remains available/);
+  assert.equal(secondaryRuntimeBanner, "");
 
   const selectedRuntimeBanner = serviceBannerMarkup([], "ready", null, {
     status: "ready",
