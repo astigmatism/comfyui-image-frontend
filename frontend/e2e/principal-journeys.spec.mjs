@@ -1515,7 +1515,9 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
     creative_direction: "focused assistant direction",
     think: false,
   });
-  const composedPrompt = "focused assistant direction";
+  const composedPrompt =
+    "focused assistant direction, detailed photographic rendering, soft natural light, " +
+    "shallow depth of field, high detail";
   await expect(focusedPrompt).toHaveValue(composedPrompt);
   await expect(prompt).toHaveValue("draft that should remain");
   await expect(columnDirection).toHaveValue("column direction");
@@ -2431,7 +2433,9 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   );
   const thinkingMode = page.locator("#prompt-assistant-thinking-mode");
   const generate = page.locator("#generate-button");
-  const composedPrompt = "a crimson fox beneath moonlit pines";
+  const composedPrompt =
+    "a crimson fox beneath moonlit pines, detailed photographic rendering, soft natural " +
+    "light, shallow depth of field, high detail";
 
   await prompt.fill("the prompt that must be replaced");
   await direction.fill("a crimson fox beneath moonlit pines");

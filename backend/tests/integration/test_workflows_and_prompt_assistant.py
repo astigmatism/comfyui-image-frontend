@@ -587,7 +587,9 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
     assert instruction == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
         "Create one complete, polished, directly usable image prompt from this creative "
-        "direction:\n\na red fox"
+        "direction. Expand the direction: keep its subject and intent, and add concrete "
+        "subject details, setting, lighting, camera, and style or quality terms. Never "
+        "return the direction verbatim or unchanged:\n\na red fox"
     )
     assert request_payload["think"] is True
     assert request_payload["options"] == {
@@ -768,7 +770,9 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
     assert retry_request["prompt"] == first_request["prompt"]
-    assert retry_request["prompt"].endswith("from this creative direction:\n\na red fox")
+    assert retry_request["prompt"].endswith(
+        "return the direction verbatim or unchanged:\n\na red fox"
+    )
 
 
 def test_create_prompt_assistant_accepts_a_useful_paraphrase_without_retrying(
@@ -849,7 +853,9 @@ def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
     expected_instruction = (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
         "Create one complete, polished, directly usable image prompt from this creative "
-        "direction:\n\na red fox beneath moonlit pines"
+        "direction. Expand the direction: keep its subject and intent, and add concrete "
+        "subject details, setting, lighting, camera, and style or quality terms. Never "
+        "return the direction verbatim or unchanged:\n\na red fox beneath moonlit pines"
     )
     assert {call["prompt"] for call in fake_state.ollama_calls} == {expected_instruction}
 
@@ -872,7 +878,10 @@ def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["prompt"] == "a red fox"
+    assert response.json()["prompt"] == (
+        "a red fox, detailed photographic rendering, soft natural light, "
+        "shallow depth of field, high detail"
+    )
     assert fake_state.ollama_calls[-1]["think"] is True
 
 
@@ -986,7 +995,10 @@ def test_create_prompt_assistant_can_disable_thinking(app_client: TestClient, fa
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["prompt"] == "a fox beneath moonlit pines"
+    assert response.json()["prompt"] == (
+        "a fox beneath moonlit pines, detailed photographic rendering, soft natural light, "
+        "shallow depth of field, high detail"
+    )
     assert fake_state.ollama_calls[-1]["think"] is False
     container = app_client.app.state.container
     from app.models import PromptAssistantRun
@@ -1188,6 +1200,78 @@ def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
         assert run.prompt_before == ""
         assert run.creative_direction == ""
         assert "portrait in cool light" not in json.dumps(run.raw_response_json).casefold()
+
+
+def test_create_rejects_direction_echo_with_distinct_error_and_clean_baseline(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="echo.direction")
+    _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 900
+    direction = "a gorgeous 19 year old Korean girl"
+    fake_state.ollama_response_prompts = [
+        direction,
+        "  A   Gorgeous 19 Year Old Korean Girl  ",
+        "A GORGEOUS 19 YEAR OLD KOREAN GIRL",
+    ]
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "an existing prompt that must stay untouched",
+            "creative_direction": direction,
+        },
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "prompt_creation_unchanged"
+    assert "could not expand the creative direction" in error["message"]
+    assert error["details"]["validation_stage"] == "create_distinctness"
+    assert len(fake_state.ollama_calls) == 3
+    assert [call["options"]["seed"] for call in fake_state.ollama_calls] == [900, 901, 902]
+
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+    from sqlalchemy import select
+
+    with container.db.session_factory() as session:
+        runs = session.scalars(select(PromptAssistantRun)).all()
+        assert len(runs) == 1
+        failed = runs[0]
+        # The degenerate echo must not be stored as a successful run, and the failed
+        # row must stay out of the distinctness baseline that seeds future exclusions.
+        assert failed.error_code == "prompt_creation_unchanged"
+        assert failed.ollama_output is None
+        assert failed.prompt_before == ""
+        assert failed.creative_direction == ""
+        assert direction.casefold() not in json.dumps(failed.raw_response_json).casefold()
+        successful = session.scalars(
+            select(PromptAssistantRun).where(
+                PromptAssistantRun.error_code.is_(None),
+                PromptAssistantRun.ollama_output.is_not(None),
+            )
+        ).all()
+        assert all(run.ollama_output.casefold() != direction.casefold() for run in successful)
+
+    # A later run with the same direction is unaffected by the failed run's row.
+    expansion = (
+        "a gorgeous 19-year-old Korean girl, soft natural beauty, warm window light, 85mm portrait"
+    )
+    fake_state.ollama_response_prompts = [expansion]
+    retry = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "create",
+            "prompt": "an existing prompt that must stay untouched",
+            "creative_direction": direction,
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["prompt"] == expansion
 
 
 def test_ollama_outage_only_disables_assistant(app_client: TestClient, fake_state) -> None:

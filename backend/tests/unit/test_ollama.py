@@ -12,10 +12,12 @@ from app.errors import AppError
 from app.services.ollama import (
     OUTPUT_TOKEN_BUDGETS,
     OllamaAdapter,
+    _create_excluded_prompts,
     _extract_prompt,
     _generate_payload,
     _has_thinking_output,
     _instruction,
+    _is_direction_echo,
 )
 
 
@@ -54,7 +56,9 @@ def test_create_instruction_only_defines_the_outcome_and_direction() -> None:
     assert instruction == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
         "Create one complete, polished, directly usable image prompt from this creative "
-        "direction:\n\na ceramic robot"
+        "direction. Expand the direction: keep its subject and intent, and add concrete "
+        "subject details, setting, lighting, camera, and style or quality terms. Never "
+        "return the direction verbatim or unchanged:\n\na ceramic robot"
     )
 
 
@@ -164,7 +168,9 @@ def test_thinking_only_structured_output_remains_supported(tmp_path: Path) -> No
                 json={
                     "model": "thinking-model",
                     "response": "",
-                    "thinking": json.dumps({"prompt": "a fox beneath moonlit pines"}),
+                    "thinking": json.dumps(
+                        {"prompt": "a fox beneath moonlit pines, snow drifting in cold blue night"}
+                    ),
                     "done": True,
                     "done_reason": "stop",
                 },
@@ -186,7 +192,7 @@ def test_thinking_only_structured_output_remains_supported(tmp_path: Path) -> No
         finally:
             await adapter.close()
 
-        assert result.prompt == "a fox beneath moonlit pines"
+        assert result.prompt == "a fox beneath moonlit pines, snow drifting in cold blue night"
         assert result.raw_response["selected_field"] == "thinking"
         assert "warnings" not in result.raw_response
 
@@ -219,7 +225,9 @@ def test_thinking_create_retries_length_with_only_a_larger_output_budget(
                 200,
                 json={
                     "model": "thinking-model",
-                    "response": json.dumps({"prompt": "a fox beneath moonlit pines"}),
+                    "response": json.dumps(
+                        {"prompt": "a fox beneath moonlit pines, snow drifting in cold blue night"}
+                    ),
                     "thinking": "completed private reasoning",
                     "done": True,
                     "done_reason": "stop",
@@ -243,7 +251,7 @@ def test_thinking_create_retries_length_with_only_a_larger_output_budget(
         finally:
             await adapter.close()
 
-        assert result.prompt == "a fox beneath moonlit pines"
+        assert result.prompt == "a fox beneath moonlit pines, snow drifting in cold blue night"
         assert result.duration_ms >= 0
         assert result.raw_response["output_budget_attempts"] == 2
         assert result.raw_response["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS[:2])
@@ -588,6 +596,309 @@ def test_refine_rejects_normalized_unchanged_output_with_actionable_error(
         assert raised.value.details["validation_stage"] == "refinement_comparison"
 
     asyncio.run(scenario())
+
+
+def test_direction_echo_rule_covers_variants_and_not_expansions() -> None:
+    direction = "a red fox beneath moonlit pines"
+    assert _is_direction_echo(direction, direction) is True
+    assert _is_direction_echo("  A   Red Fox Beneath Moonlit Pines  ", direction) is True
+    assert _is_direction_echo("a red fox beneath moonlit", direction) is True
+    assert _is_direction_echo("beneath moonlit pines", direction) is True
+    assert _is_direction_echo("a red fox beneath moonlit pines, at dawn", direction) is False
+    assert _is_direction_echo("a crimson fox beneath moonlit pines", direction) is False
+    assert _is_direction_echo(direction, "") is False
+
+
+def test_create_exclusion_set_contains_the_normalized_direction() -> None:
+    excluded = _create_excluded_prompts(
+        "old prompt",
+        "  A   Gorgeous 19 Year Old Korean Girl  ",
+        ["previous output"],
+    )
+
+    assert set(excluded) == {
+        "old prompt",
+        "a gorgeous 19 year old korean girl",
+        "previous output",
+    }
+
+
+def test_create_retries_a_direction_echo_and_returns_the_expansion(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    direction = "a gorgeous 19 year old Korean girl"
+    expansion = (
+        "a gorgeous 19-year-old Korean girl, soft natural beauty, delicate features, "
+        "luminous skin, gentle smile, long dark hair flowing naturally, soft diffused "
+        "daylight, shallow depth of field, 85mm lens, photorealistic, warm tones"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
+            # Attempt 1 returns a case/whitespace variant of the direction verbatim,
+            # modelling the degenerate echo observed in the incident.
+            candidate = (
+                "  A   Gorgeous 19 Year Old Korean Girl  " if len(payloads) == 1 else expansion
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "thinking": json.dumps({"prompt": candidate}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 1394240140,
+        )
+        try:
+            with caplog.at_level(logging.INFO, logger="app.services.ollama"):
+                result = await adapter.compose(
+                    mode="create",
+                    prompt="an existing prompt that create mode must ignore",
+                    direction=direction,
+                )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == expansion
+        assert result.raw_response["selected_attempt"] == 2
+        assert result.raw_response["attempts"][0]["validation_stage"] == "creation_comparison"
+        assert result.raw_response["attempts"][1]["validation_stage"] == "complete"
+
+    asyncio.run(scenario())
+
+    # One rejected candidate produced exactly one retry, with the next seed and temperature.
+    assert len(payloads) == 2
+    assert [payload["options"]["seed"] for payload in payloads] == [1394240140, 1394240141]
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.5, 0.7]
+    retry_records = [
+        record.__dict__
+        for record in caplog.records
+        if record.getMessage() == "ollama_create_candidate_rejected"
+    ]
+    assert len(retry_records) == 1
+    assert retry_records[0]["candidate_attempt"] == 1
+    assert retry_records[0]["max_candidate_attempts"] == 3
+    assert retry_records[0]["rejection_reason"] == "direction_echo"
+    assert direction not in json.dumps(retry_records, default=str)
+
+
+def test_create_direction_echo_on_every_attempt_raises_prompt_creation_unchanged(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    direction = "a gorgeous 19 year old Korean girl"
+    variants = [
+        direction,
+        "  A   Gorgeous 19 Year Old Korean Girl  ",
+        "A GORGEOUS 19 YEAR OLD KOREAN GIRL",
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "thinking": json.dumps({"prompt": variants[len(payloads) - 1]}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 7,
+        )
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="create",
+                    prompt="an unrelated existing prompt",
+                    direction=direction,
+                )
+        finally:
+            await adapter.close()
+
+        error = raised.value
+        assert error.code == "prompt_creation_unchanged"
+        assert error.status_code == 422
+        assert error.details["validation_stage"] == "create_distinctness"
+        attempts = error.details["attempt_diagnostics"]
+        assert len(attempts) == 3
+        assert all(item["validation_stage"] == "creation_comparison" for item in attempts)
+        # Candidate text is metadata-only; the direction itself must not be retained.
+        serialized = json.dumps(error.details).casefold()
+        for candidate in [direction, *variants]:
+            assert candidate.casefold() not in serialized
+
+    asyncio.run(scenario())
+
+    assert len(payloads) == 3
+    assert [payload["options"]["seed"] for payload in payloads] == [7, 8, 9]
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.5, 0.7, 0.9]
+
+
+def test_create_rejects_a_truncated_direction_and_returns_the_expansion(tmp_path: Path) -> None:
+    payloads: list[dict[str, object]] = []
+    direction = "a red fox beneath moonlit pines, standing on a snowy ledge"
+    truncated = "a red fox beneath moonlit pines"
+    expansion = "a red fox beneath moonlit pines, standing on a snowy ledge at dawn"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
+            candidate = truncated if len(payloads) == 1 else expansion
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": json.dumps({"prompt": candidate}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 11,
+        )
+        try:
+            result = await adapter.compose(
+                mode="create",
+                prompt="",
+                direction=direction,
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == expansion
+        assert result.raw_response["selected_attempt"] == 2
+        assert result.raw_response["attempts"][0]["validation_stage"] == "creation_comparison"
+
+    asyncio.run(scenario())
+    assert len(payloads) == 2
+
+
+def test_create_accepts_an_expansion_that_starts_with_the_direction(tmp_path: Path) -> None:
+    payloads: list[dict[str, object]] = []
+    direction = "a red fox"
+    expansion = "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": json.dumps({"prompt": expansion}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 21,
+        )
+        try:
+            result = await adapter.compose(
+                mode="create",
+                prompt="",
+                direction=direction,
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == expansion
+        # A single accepted candidate: no retry, no attempt wrapper.
+        assert result.raw_response["validation_stage"] == "complete"
+        assert "attempts" not in result.raw_response
+
+    asyncio.run(scenario())
+    assert len(payloads) == 1
+
+
+def test_create_exhaustion_with_non_echo_duplicates_keeps_the_generic_error(tmp_path: Path) -> None:
+    payloads: list[dict[str, object]] = []
+    direction = "a red fox"
+    current = "an existing prompt"
+    candidates = [direction, "  A   RED FOX  ", current]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": json.dumps({"prompt": candidates[len(payloads) - 1]}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 31,
+        )
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="create",
+                    prompt=current,
+                    direction=direction,
+                )
+        finally:
+            await adapter.close()
+
+        error = raised.value
+        # Only direction-echo exhaustion earns the distinct 422; a mix of duplicates
+        # keeps the generic distinctness failure.
+        assert error.code == "ollama_invalid_response"
+        assert error.status_code == 400
+        assert error.details["validation_stage"] == "create_distinctness"
+        stages = [item["validation_stage"] for item in error.details["attempt_diagnostics"]]
+        assert stages == ["creation_comparison", "creation_comparison", "complete"]
+
+    asyncio.run(scenario())
+    assert len(payloads) == 3
 
 
 def test_read_timeout_is_classified_without_retrying_or_retaining_prompt_text(

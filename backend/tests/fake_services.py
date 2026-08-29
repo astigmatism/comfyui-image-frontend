@@ -745,8 +745,19 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             composed = state.ollama_response_prompts.pop(0)
         elif state.ollama_response_prompt is not None:
             composed = state.ollama_response_prompt
+        elif current and direction:
+            composed = f"{current}, {direction}"
+        elif current:
+            composed = current
+        elif direction:
+            # Create mode: a healthy model expands the direction; the default fake
+            # models that expansion instead of echoing the direction verbatim.
+            composed = (
+                f"{direction}, detailed photographic rendering, soft natural light, "
+                "shallow depth of field, high detail"
+            )
         else:
-            composed = f"{current}, {direction}".strip(" ,") or "composed image prompt"
+            composed = "composed image prompt"
         effective_model = state.ollama_effective_model or payload.get("model")
         if not effective_model and state.models:
             effective_model = state.models[0]

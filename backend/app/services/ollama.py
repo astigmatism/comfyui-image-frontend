@@ -125,8 +125,13 @@ class OllamaAdapter:
             )
         started = time.monotonic()
         response_diagnostics: list[dict[str, Any]] = []
-        excluded = _distinct_prompts((prompt, *excluded_prompts)) if mode == "create" else {}
+        excluded = (
+            _create_excluded_prompts(prompt, direction, excluded_prompts)
+            if mode == "create"
+            else {}
+        )
         maximum_attempts = MAX_CREATE_ATTEMPTS if mode == "create" else 1
+        direction_echo_attempts = 0
         create_seed = None
         if mode == "create":
             create_seed = self.seed_resolver(
@@ -313,6 +318,22 @@ class OllamaAdapter:
                     status_code=422,
                     details=diagnostics,
                 )
+            if mode == "create" and _is_direction_echo(final, direction):
+                # Create mode must expand the direction. A candidate that only repeats
+                # (or truncates) it is a degenerate sample, not a new prompt: reject it
+                # and redraw with the next seed instead of accepting it.
+                diagnostics["validation_stage"] = "creation_comparison"
+                direction_echo_attempts += 1
+                response_diagnostics.append(diagnostics)
+                self._log_create_candidate_rejected(
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    maximum_attempts=maximum_attempts,
+                    reason="direction_echo",
+                )
+                excluded.setdefault(normalized_final, final.strip())
+                continue
             diagnostics["validation_stage"] = "complete"
             response_diagnostics.append(diagnostics)
             if mode != "create" or normalized_final not in excluded:
@@ -330,7 +351,26 @@ class OllamaAdapter:
                     raw_response=raw_response,
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
+            self._log_create_candidate_rejected(
+                mode=mode,
+                think=think,
+                attempt=attempt,
+                maximum_attempts=maximum_attempts,
+                reason="excluded_prompt",
+            )
             excluded.setdefault(normalized_final, final.strip())
+        if mode == "create" and direction_echo_attempts == maximum_attempts:
+            raise AppError(
+                "prompt_creation_unchanged",
+                "Prompt Assistant could not expand the creative direction into a new prompt. "
+                "Add more detail to the Creative Direction or try again.",
+                status_code=422,
+                details={
+                    **(response_diagnostics[-1] if response_diagnostics else {}),
+                    "validation_stage": "create_distinctness",
+                    "attempt_diagnostics": response_diagnostics,
+                },
+            )
         raise AppError(
             "ollama_invalid_response",
             "Prompt Assistant could not produce a distinct new prompt after retrying.",
@@ -473,6 +513,30 @@ class OllamaAdapter:
         await self.retry_sleeper(GENERATE_RETRY_BASE_SECONDS * (2 ** (failed_attempt - 1)))
 
     @staticmethod
+    def _log_create_candidate_rejected(
+        *,
+        mode: str,
+        think: bool,
+        attempt: int,
+        maximum_attempts: int,
+        reason: str,
+    ) -> None:
+        # Candidate text is deliberately not logged; only the redrew-the-sample metadata
+        # is recorded so operators can see distinctness retries without exposing prompts.
+        logger.info(
+            "ollama_create_candidate_rejected",
+            extra={
+                "service": "ollama",
+                "operation": "generate",
+                "assistant_mode": mode,
+                "thinking_enabled": think,
+                "candidate_attempt": attempt + 1,
+                "max_candidate_attempts": maximum_attempts,
+                "rejection_reason": reason,
+            },
+        )
+
+    @staticmethod
     def _log_generate_failure(
         exc: Exception,
         *,
@@ -600,7 +664,10 @@ def _instruction(*, mode: str, prompt: str, direction: str) -> str:
         )
     return (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. Create "
-        "one complete, polished, directly usable image prompt from this creative direction:\n\n"
+        "one complete, polished, directly usable image prompt from this creative direction. Expand "
+        "the direction: keep its subject and intent, and add concrete subject details, setting, "
+        "lighting, camera, and style or quality terms. Never return the direction verbatim or "
+        "unchanged:\n\n"
         f"{direction}"
     )
 
@@ -626,6 +693,30 @@ def _distinct_prompts(prompts: Sequence[str]) -> dict[str, str]:
         if normalized:
             distinct.setdefault(normalized, prompt.strip())
     return distinct
+
+
+def _create_excluded_prompts(
+    current_prompt: str,
+    direction: str,
+    excluded_prompts: Sequence[str],
+) -> dict[str, str]:
+    # Create mode must return a prompt distinct from the current prompt and from past
+    # outputs for the same direction, and it must expand the direction itself: a
+    # candidate that only repeats the direction is a degenerate sample, not a new
+    # prompt, so the normalized direction is part of the forbidden set.
+    return _distinct_prompts((current_prompt, direction, *excluded_prompts))
+
+
+def _is_direction_echo(candidate: str, direction: str) -> bool:
+    # Deterministic create-mode rule: a candidate is a direction echo when its
+    # normalized text is contained in the normalized direction, which covers
+    # case/whitespace-variant verbatim echoes, truncated directions, and fragments.
+    # A genuine expansion or paraphrase is always strictly longer than the direction
+    # or not a substring of it, so it is never classified as an echo.
+    normalized_direction = _normalize_prompt(direction)
+    if not normalized_direction:
+        return False
+    return _normalize_prompt(candidate) in normalized_direction
 
 
 def _generate_payload(

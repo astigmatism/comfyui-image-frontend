@@ -96,6 +96,9 @@ async def compose(
                 .where(
                     PromptAssistantRun.owner_id == owner_id,
                     PromptAssistantRun.ollama_output.is_not(None),
+                    # Only successful runs seed the distinctness baseline; rejected or
+                    # errored runs must never pollute the exclusion set.
+                    PromptAssistantRun.error_code.is_(None),
                 )
                 .order_by(PromptAssistantRun.created_at.desc(), PromptAssistantRun.id.desc())
                 .limit(PROMPT_HISTORY_SCAN_LIMIT)
