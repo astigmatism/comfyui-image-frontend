@@ -9,6 +9,7 @@ import httpx
 import pytest
 from app.config import Settings
 from app.errors import AppError
+from app.main import JsonFormatter
 from app.services.ollama import (
     OUTPUT_TOKEN_BUDGETS,
     OllamaAdapter,
@@ -685,15 +686,28 @@ def test_create_retries_a_direction_echo_and_returns_the_expansion(
     assert [payload["options"]["seed"] for payload in payloads] == [1394240140, 1394240141]
     assert [payload["options"]["temperature"] for payload in payloads] == [0.5, 0.7]
     retry_records = [
-        record.__dict__
+        record
         for record in caplog.records
         if record.getMessage() == "ollama_create_candidate_rejected"
     ]
     assert len(retry_records) == 1
-    assert retry_records[0]["candidate_attempt"] == 1
-    assert retry_records[0]["max_candidate_attempts"] == 3
-    assert retry_records[0]["rejection_reason"] == "direction_echo"
-    assert direction not in json.dumps(retry_records, default=str)
+    retry_record = retry_records[0]
+    assert retry_record.__dict__["candidate_attempt"] == 1
+    assert retry_record.__dict__["max_candidate_attempts"] == 3
+    assert retry_record.__dict__["rejection_reason"] == "direction_echo"
+    assert direction not in json.dumps(retry_record.__dict__, default=str)
+
+    # The operator-visible JSON line must carry the same metadata; a formatter
+    # whitelist regression must fail this test, not only the record-level asserts.
+    formatted = json.loads(JsonFormatter().format(retry_record))
+    assert formatted["message"] == "ollama_create_candidate_rejected"
+    assert formatted["service"] == "ollama"
+    assert formatted["operation"] == "generate"
+    assert formatted["assistant_mode"] == "create"
+    assert formatted["thinking_enabled"] is True
+    assert formatted["candidate_attempt"] == 1
+    assert formatted["max_candidate_attempts"] == 3
+    assert formatted["rejection_reason"] == "direction_echo"
 
 
 def test_create_direction_echo_on_every_attempt_raises_prompt_creation_unchanged(
