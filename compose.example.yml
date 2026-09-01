@@ -19,6 +19,23 @@ services:
     # and therefore does not require an additional Docker network attachment.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Service Portal "Update and restart" opt-in. The portal reads these live
+    # labels from the running container and, after operator confirmation, runs
+    # the repository's update script in a detached maintenance container from
+    # an existing local runner image (bash, Git, Docker CLI, Compose v2).
+    # The runner image must already exist on the Docker host; build it once
+    # with:
+    #   docker build -t "${PROJECT_RUNNER_IMAGE:-comfyui-image-frontend-portal-runner:latest}" \
+    #     deployment/runner
+    # Set HOST_UID/HOST_GID to the numeric owner of this host checkout
+    # (id -u; id -g) so Git never creates root-owned files. After changing
+    # these labels, recreate this service so Docker records them. If you
+    # deploy from another Compose file, keep the four labels identical there.
+    labels:
+      io.service-portal.update.enabled: "true"
+      io.service-portal.update.script: "scripts/update-and-restart.sh"
+      io.service-portal.update.image: "${PROJECT_RUNNER_IMAGE:-comfyui-image-frontend-portal-runner:latest}"
+      io.service-portal.update.user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     healthcheck:
       test:
         - CMD

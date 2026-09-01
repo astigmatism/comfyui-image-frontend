@@ -71,7 +71,35 @@ From a clean checkout with an upstream branch:
 ./update_and_restart
 ```
 
-The script gracefully stops the service, performs a fast-forward-only pull, rebuilds, restarts, and waits for health. It tries to restart the prior image if pull/build fails after shutdown. By default, Compose's `stop_grace_period` controls the stop deadline (30 seconds in the example); set `CIF_UPDATE_STOP_TIMEOUT` only for an exceptional explicit override. Override other defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, or `CIF_UPDATE_START_TIMEOUT`. Uvicorn cancels lingering request tasks after `CIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` (10 seconds by default), leaving the rest of the container grace period for lifespan cleanup.
+`./update_and_restart` is a thin wrapper around the canonical entry point, `scripts/update-and-restart.sh` (also the script the Service Portal control invokes; see below). From a clean checkout on the expected branch the script:
+
+1. verifies its toolchain (Git, Docker CLI, Compose v2), Docker daemon access, and the validity of the current Compose configuration;
+2. acquires an atomic per-checkout lock (removed again on every exit; a dead holder or a lock recorded by a different maintenance container is treated as stale, and `CIF_UPDATE_FORCE_UNLOCK=1` is the operator escape hatch);
+3. verifies the expected branch (`main` by default), that `origin` points at the expected repository, that the branch upstream is `origin/<branch>`, and that the working tree is clean. A detached HEAD, an unexpected remote, a missing upstream, or a dirty tree aborts before any change;
+4. fetches the expected upstream branch and merges **fast-forward only**, rejecting divergent or rewritten history;
+5. re-validates the updated Compose configuration, then builds the replacement image while the current application remains available;
+6. reconciles the complete Compose project with `docker compose up -d --wait --wait-timeout`, which recreates the service and health-checks it with a bounded wait. The old container is only stopped as part of the recreation, so the current application stays up for as long as the architecture allows; and
+7. verifies the running frontend resolved an explicit ComfyUI runtime configuration before reporting success.
+
+The script never runs `docker compose down`, never prunes, and never touches named volumes or bind-mounted configuration, so user data survives every update. If the final reconcile fails, it makes one bounded recovery pass with the last built image and then exits nonzero with a concise `Error:`/`Refusing:` line. Uvicorn cancels lingering request tasks after `CIF_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` (10 seconds by default), leaving the rest of the container grace period for lifespan cleanup.
+
+Override defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, `CIF_UPDATE_START_TIMEOUT` (bounded health wait in seconds, default 120), `CIF_UPDATE_EXPECTED_BRANCH` (default `main`), or `CIF_UPDATE_EXPECTED_REMOTE` (default `https://github.com/astigmatism/comfyui-image-frontend.git`; set this if your host checkout uses a different remote URL, for example an SSH URL). The former `CIF_UPDATE_STOP_TIMEOUT` stop-deadline knob is no longer used because the script no longer stops the service explicitly; recreation honors the Compose `stop_grace_period` (30 seconds in the example) instead.
+
+### Service Portal "Update and restart" control
+
+`compose.example.yml` opts the single long-lived service into Service Portal's project-scoped **Update and restart** control through the `io.service-portal.update.*` labels: after operator confirmation, the portal runs `scripts/update-and-restart.sh` in a detached maintenance container built from an existing local runner image, as the numeric user of the host checkout, with the Docker socket mounted. No portal rebuild is required; the labels are read from live container metadata. To activate the control:
+
+1. Build the runner image once on the Docker host (the portal never pulls or builds it):
+
+   ```sh
+   docker build -t comfyui-image-frontend-portal-runner:latest deployment/runner
+   ```
+
+   The image contains exactly bash, Git, the Docker CLI, and the Compose v2 plugin — no application code and no secrets.
+2. In the deployment's `.env`, set `HOST_UID` and `HOST_GID` to the numeric owner of the checkout (`id -u; id -g`) and keep `PROJECT_RUNNER_IMAGE` pointing at the image you built (defaults documented in `.env.example`).
+3. Recreate the service so Docker records the new labels: `docker compose -f compose.example.yml up -d --force-recreate comfyui-image-frontend`.
+
+If you deploy from a custom Compose file, copy the four labels verbatim from `compose.example.yml`; the portal suppresses the control when more than one service opts in with different effective settings. The remote is public, so no Git credentials are required; if that ever changes, provision noninteractive least-privilege credentials inside the runner image or the host checkout without committing them to source or exposing them to the browser.
 
 Application code, built browser assets, and the non-secret runtime defaults live in the frontend image. The Dockerfile records those defaults as image environment values so they do not depend on the launcher's working directory; process environment values supplied by Compose, `docker run --env-file`, or another launcher take precedence. Enabling or changing the instance list therefore requires rebuilding and recreating/restarting only `comfyui-image-frontend`. Never restart or recreate either ComfyUI container for this application update.
 

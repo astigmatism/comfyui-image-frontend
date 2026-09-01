@@ -208,10 +208,10 @@ def test_explicit_empty_additional_instances_is_a_single_runtime_opt_out(monkeyp
 
 
 def test_updater_verifies_the_running_container_is_not_in_legacy_mode() -> None:
-    updater = (REPOSITORY_ROOT / "update_and_restart").read_text(encoding="utf-8")
+    updater = (REPOSITORY_ROOT / "scripts" / "update-and-restart.sh").read_text(encoding="utf-8")
 
     verification_index = updater.index("comfyui_instance_configuration_mode")
-    success_index = updater.index('echo "$SERVICE is updated and healthy."')
+    success_index = updater.index('log "$SERVICE is updated and healthy on $BRANCH."')
     assert '"${compose[@]}" exec -T "$SERVICE" python -c' in updater
     assert verification_index < success_index
 
