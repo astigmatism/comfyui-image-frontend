@@ -42,7 +42,8 @@ def test_refine_instruction_only_defines_the_outcome_and_inputs() -> None:
 
     assert instruction == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
-        "Refine the current prompt according to the creative direction.\n\n"
+        "Refine the current prompt according to the creative direction. The returned prompt "
+        "must incorporate that direction and must not repeat the current prompt unchanged.\n\n"
         f"Current prompt:\n{current}\n\nCreative direction:\n{direction}"
     )
 
@@ -88,12 +89,17 @@ def test_duplicate_create_retry_changes_sampling_without_adding_instructions() -
     assert payload["think"] is True
 
 
-def test_refine_sampling_remains_deterministic() -> None:
-    payload = _generate_payload(mode="refine", instruction="refine this", attempt=2)
+def test_refine_retry_changes_sampling() -> None:
+    payload = _generate_payload(
+        mode="refine",
+        instruction="refine this",
+        attempt=2,
+        seed=90210,
+    )
 
     assert payload["options"] == {
-        "temperature": 0.1,
-        "seed": 0,
+        "temperature": 0.5,
+        "seed": 90210,
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
 
@@ -127,7 +133,11 @@ def test_response_only_structured_output_is_accepted_with_a_capability_warning(
         raise AssertionError(f"unexpected request {request.method} {request.url}")
 
     async def scenario() -> None:
-        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 500,
+        )
         try:
             result = await adapter.compose(
                 mode="refine",
@@ -374,7 +384,11 @@ def test_refine_retries_length_with_deterministic_sampling(tmp_path: Path) -> No
         raise AssertionError(f"unexpected request {request.method} {request.url}")
 
     async def scenario() -> None:
-        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 500,
+        )
         try:
             result = await adapter.compose(
                 mode="refine",
@@ -388,7 +402,7 @@ def test_refine_retries_length_with_deterministic_sampling(tmp_path: Path) -> No
     asyncio.run(scenario())
 
     assert [payload["options"] for payload in payloads] == [
-        {"temperature": 0.1, "seed": 0, "num_predict": budget}
+        {"temperature": 0.1, "seed": 500, "num_predict": budget}
         for budget in OUTPUT_TOKEN_BUDGETS[:2]
     ]
 
@@ -561,13 +575,64 @@ def test_malformed_or_empty_structured_output_is_rejected_with_safe_diagnostics(
     asyncio.run(scenario())
 
 
-def test_refine_rejects_normalized_unchanged_output_with_actionable_error(
+def test_refine_redraws_an_unchanged_candidate_and_returns_the_changed_prompt(
     tmp_path: Path,
 ) -> None:
+    payloads: list[dict[str, object]] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
         if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
+            candidate = "A PORTRAIT" if len(payloads) == 1 else "a portrait in warm window light"
+            return httpx.Response(
+                200,
+                json={
+                    "model": "active-model",
+                    "response": json.dumps({"prompt": candidate}),
+                    "thinking": "considered the request",
+                    "done": True,
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 700,
+        )
+        try:
+            result = await adapter.compose(
+                mode="refine",
+                prompt="a portrait",
+                direction="use warm window light",
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == "a portrait in warm window light"
+        assert result.raw_response["selected_attempt"] == 2
+        assert result.raw_response["attempts"][0]["validation_stage"] == ("refinement_comparison")
+        assert result.raw_response["attempts"][1]["validation_stage"] == "complete"
+
+    asyncio.run(scenario())
+
+    assert [payload["options"]["seed"] for payload in payloads] == [700, 701]
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.1, 0.3]
+
+
+def test_refine_rejects_unchanged_output_only_after_bounded_redraws(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/generate":
+            payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
                 json={
@@ -580,7 +645,11 @@ def test_refine_rejects_normalized_unchanged_output_with_actionable_error(
         raise AssertionError(f"unexpected request {request.method} {request.url}")
 
     async def scenario() -> None:
-        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 800,
+        )
         try:
             with pytest.raises(AppError) as raised:
                 await adapter.compose(
@@ -593,10 +662,14 @@ def test_refine_rejects_normalized_unchanged_output_with_actionable_error(
 
         assert raised.value.code == "prompt_refinement_unchanged"
         assert raised.value.status_code == 422
-        assert "specific Creative Direction" in raised.value.message
-        assert raised.value.details["validation_stage"] == "refinement_comparison"
+        assert "after retrying" in raised.value.message
+        assert raised.value.details["validation_stage"] == "refinement_distinctness"
+        assert len(raised.value.details["attempt_diagnostics"]) == 3
 
     asyncio.run(scenario())
+
+    assert [payload["options"]["seed"] for payload in payloads] == [800, 801, 802]
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.1, 0.3, 0.5]
 
 
 def test_direction_echo_rule_covers_variants_and_not_expansions() -> None:
@@ -686,9 +759,7 @@ def test_create_retries_a_direction_echo_and_returns_the_expansion(
     assert [payload["options"]["seed"] for payload in payloads] == [1394240140, 1394240141]
     assert [payload["options"]["temperature"] for payload in payloads] == [0.5, 0.7]
     retry_records = [
-        record
-        for record in caplog.records
-        if record.getMessage() == "ollama_create_candidate_rejected"
+        record for record in caplog.records if record.getMessage() == "ollama_candidate_rejected"
     ]
     assert len(retry_records) == 1
     retry_record = retry_records[0]
@@ -700,7 +771,7 @@ def test_create_retries_a_direction_echo_and_returns_the_expansion(
     # The operator-visible JSON line must carry the same metadata; a formatter
     # whitelist regression must fail this test, not only the record-level asserts.
     formatted = json.loads(JsonFormatter().format(retry_record))
-    assert formatted["message"] == "ollama_create_candidate_rejected"
+    assert formatted["message"] == "ollama_candidate_rejected"
     assert formatted["service"] == "ollama"
     assert formatted["operation"] == "generate"
     assert formatted["assistant_mode"] == "create"

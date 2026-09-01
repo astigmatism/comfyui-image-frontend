@@ -14,7 +14,8 @@ import httpx
 from ..config import Settings
 from ..errors import AppError
 
-CREATE_SEED_MAXIMUM = 2**31 - 1
+CANDIDATE_SEED_MAXIMUM = 2**31 - 1
+MAX_REFINE_ATTEMPTS = 3
 MAX_CREATE_ATTEMPTS = 3
 MAX_CREATE_EXCLUSIONS = 8
 MAX_GENERATE_ATTEMPTS = 3
@@ -24,7 +25,7 @@ RETRYABLE_GENERATE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 # composition therefore starts with enough room for reasoning and escalates deterministically if
 # the upstream response reports that it exhausted the allowance before completing the schema.
 OUTPUT_TOKEN_BUDGETS = (2_048, 4_096, 8_192)
-CreateSeedResolver = Callable[[int, int], int]
+CandidateSeedResolver = Callable[[int, int], int]
 GenerateRetrySleeper = Callable[[float], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ class OllamaAdapter:
         settings: Settings,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
-        seed_resolver: CreateSeedResolver | None = None,
+        seed_resolver: CandidateSeedResolver | None = None,
         retry_sleeper: GenerateRetrySleeper | None = None,
     ):
         self.settings = settings
@@ -130,20 +131,18 @@ class OllamaAdapter:
             if mode == "create"
             else {}
         )
-        maximum_attempts = MAX_CREATE_ATTEMPTS if mode == "create" else 1
+        maximum_attempts = MAX_CREATE_ATTEMPTS if mode == "create" else MAX_REFINE_ATTEMPTS
         direction_echo_attempts = 0
-        create_seed = None
-        if mode == "create":
-            create_seed = self.seed_resolver(
-                0,
-                CREATE_SEED_MAXIMUM - (maximum_attempts - 1),
-            )
-            if (
-                not isinstance(create_seed, int)
-                or isinstance(create_seed, bool)
-                or not 0 <= create_seed <= CREATE_SEED_MAXIMUM - (maximum_attempts - 1)
-            ):
-                raise RuntimeError("create seed resolver returned an out-of-range value")
+        candidate_seed = self.seed_resolver(
+            0,
+            CANDIDATE_SEED_MAXIMUM - (maximum_attempts - 1),
+        )
+        if (
+            not isinstance(candidate_seed, int)
+            or isinstance(candidate_seed, bool)
+            or not 0 <= candidate_seed <= CANDIDATE_SEED_MAXIMUM - (maximum_attempts - 1)
+        ):
+            raise RuntimeError("candidate seed resolver returned an out-of-range value")
         for attempt in range(maximum_attempts):
             instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
             output_budget_diagnostics: list[dict[str, Any]] = []
@@ -158,7 +157,7 @@ class OllamaAdapter:
                     instruction=instruction,
                     think=think,
                     attempt=attempt,
-                    seed=create_seed + attempt if create_seed is not None else None,
+                    seed=candidate_seed + attempt,
                     output_budget=output_budget,
                 )
                 received = await self._generate(payload, mode=mode, think=think)
@@ -311,13 +310,15 @@ class OllamaAdapter:
             normalized_final = _normalize_prompt(final)
             if mode == "refine" and _same_prompt(final, prompt):
                 diagnostics["validation_stage"] = "refinement_comparison"
-                raise AppError(
-                    "prompt_refinement_unchanged",
-                    "Prompt Assistant returned the original prompt unchanged. Add a more "
-                    "specific Creative Direction or try again.",
-                    status_code=422,
-                    details=diagnostics,
+                response_diagnostics.append(diagnostics)
+                self._log_candidate_rejected(
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    maximum_attempts=maximum_attempts,
+                    reason="unchanged_prompt",
                 )
+                continue
             if mode == "create" and _is_direction_echo(final, direction):
                 # Create mode must expand the direction. A candidate that only repeats
                 # (or truncates) it is a degenerate sample, not a new prompt: reject it
@@ -325,7 +326,7 @@ class OllamaAdapter:
                 diagnostics["validation_stage"] = "creation_comparison"
                 direction_echo_attempts += 1
                 response_diagnostics.append(diagnostics)
-                self._log_create_candidate_rejected(
+                self._log_candidate_rejected(
                     mode=mode,
                     think=think,
                     attempt=attempt,
@@ -351,7 +352,7 @@ class OllamaAdapter:
                     raw_response=raw_response,
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
-            self._log_create_candidate_rejected(
+            self._log_candidate_rejected(
                 mode=mode,
                 think=think,
                 attempt=attempt,
@@ -359,6 +360,18 @@ class OllamaAdapter:
                 reason="excluded_prompt",
             )
             excluded.setdefault(normalized_final, final.strip())
+        if mode == "refine":
+            raise AppError(
+                "prompt_refinement_unchanged",
+                "Prompt Assistant could not produce a changed prompt after retrying. "
+                "Adjust the Creative Direction and try again.",
+                status_code=422,
+                details={
+                    **(response_diagnostics[-1] if response_diagnostics else {}),
+                    "validation_stage": "refinement_distinctness",
+                    "attempt_diagnostics": response_diagnostics,
+                },
+            )
         if mode == "create" and direction_echo_attempts == maximum_attempts:
             raise AppError(
                 "prompt_creation_unchanged",
@@ -513,7 +526,7 @@ class OllamaAdapter:
         await self.retry_sleeper(GENERATE_RETRY_BASE_SECONDS * (2 ** (failed_attempt - 1)))
 
     @staticmethod
-    def _log_create_candidate_rejected(
+    def _log_candidate_rejected(
         *,
         mode: str,
         think: bool,
@@ -524,7 +537,7 @@ class OllamaAdapter:
         # Candidate text is deliberately not logged; only the redrew-the-sample metadata
         # is recorded so operators can see distinctness retries without exposing prompts.
         logger.info(
-            "ollama_create_candidate_rejected",
+            "ollama_candidate_rejected",
             extra={
                 "service": "ollama",
                 "operation": "generate",
@@ -659,7 +672,8 @@ def _instruction(*, mode: str, prompt: str, direction: str) -> str:
     if mode == "refine":
         return (
             "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
-            "Refine the current prompt according to the creative direction.\n\n"
+            "Refine the current prompt according to the creative direction. The returned prompt "
+            "must incorporate that direction and must not repeat the current prompt unchanged.\n\n"
             f"Current prompt:\n{prompt}\n\nCreative direction:\n{direction}"
         )
     return (
@@ -725,18 +739,22 @@ def _generate_payload(
     instruction: str,
     think: bool = True,
     attempt: int = 0,
-    seed: int | None = None,
+    seed: int | None = 0,
     output_budget: int = OUTPUT_TOKEN_BUDGETS[0],
 ) -> dict[str, Any]:
+    if (
+        not isinstance(seed, int)
+        or isinstance(seed, bool)
+        or not 0 <= seed <= CANDIDATE_SEED_MAXIMUM
+    ):
+        raise ValueError(f"{mode} sampling requires an in-range integer seed")
     if mode == "refine":
-        options = {"temperature": 0.1, "seed": 0, "num_predict": output_budget}
+        options = {
+            "temperature": min(0.5, round(0.1 + (attempt * 0.2), 1)),
+            "seed": seed,
+            "num_predict": output_budget,
+        }
     else:
-        if (
-            not isinstance(seed, int)
-            or isinstance(seed, bool)
-            or not 0 <= seed <= CREATE_SEED_MAXIMUM
-        ):
-            raise ValueError("create sampling requires an in-range integer seed")
         options = {
             "temperature": min(0.9, 0.5 + (attempt * 0.2)),
             "seed": seed,

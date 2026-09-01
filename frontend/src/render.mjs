@@ -1364,6 +1364,7 @@ function promptAssistantMarkup() {
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" /> New Prompt from Creative Direction</label></div>
       <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
       <label class="prompt-assistant-thinking-option"><input id="prompt-assistant-thinking-mode" type="checkbox" checked /> Thinking mode</label>
+      <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
   </section>`;
 }
@@ -1397,6 +1398,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div><label class="prompt-editor-thinking-option"><input id="prompt-editor-thinking-mode" type="checkbox" ${thinkingEnabled ? "checked" : ""} /> Thinking mode</label></div>
             <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button>
           </div>
+          <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
         </div>
       </section>
       <p class="prompt-editor-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> applies the draft.</p>

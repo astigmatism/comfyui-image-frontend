@@ -2578,6 +2578,57 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   });
 });
 
+test("Prompt Assistant failures remain visible beneath Thinking mode", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const failureMessage = "Prompt Assistant could not produce a changed prompt after retrying.";
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "prompt_refinement_unchanged",
+          message: failureMessage,
+          fields: {},
+        },
+      }),
+    });
+  });
+
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("a portrait");
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  await direction.fill("use warm window light");
+  await page.getByRole("button", { name: "Apply Creative Direction" }).click();
+
+  const panelError = page.locator("#prompt-assistant-error");
+  await expect(panelError).toBeVisible();
+  await expect(panelError).toHaveText(failureMessage);
+  await expect(page.locator("#prompt-assistant-thinking-mode")).toHaveAttribute(
+    "aria-describedby",
+    "prompt-assistant-error",
+  );
+
+  await direction.fill("use dramatic side light");
+  await expect(panelError).toBeHidden();
+
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  const dialog = page.locator("#prompt-editor-dialog");
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  const editorError = dialog.locator("#prompt-editor-assistant-error");
+  await expect(editorError).toBeVisible();
+  await expect(editorError).toHaveText(failureMessage);
+  await expect(dialog.locator("#prompt-editor-thinking-mode")).toHaveAttribute(
+    "aria-describedby",
+    "prompt-editor-assistant-error",
+  );
+});
+
 test("auto-generate applies enabled Creative Direction before every generation and queues only when idle", async ({
   page,
 }) => {

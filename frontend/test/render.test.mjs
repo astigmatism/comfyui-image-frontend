@@ -596,6 +596,10 @@ test("prompt is contract-rendered with helper text removed and Creative Directio
   assert.match(html, /Apply Creative Direction/);
   assert.match(html, /id="prompt-assistant-thinking-mode" type="checkbox" checked/);
   assert.match(html, /Thinking mode/);
+  assert.match(
+    html,
+    /id="prompt-assistant-thinking-mode"[\s\S]*id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden/,
+  );
   assert.ok(
     html.indexOf('data-action="compose-prompt"') <
       html.indexOf('id="prompt-assistant-thinking-mode"'),
@@ -632,6 +636,10 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
       html.indexOf('id="prompt-editor-thinking-mode"'),
   );
   assert.match(html, /Thinking mode/);
+  assert.match(
+    html,
+    /id="prompt-editor-thinking-mode"[\s\S]*id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden/,
+  );
   assert.doesNotMatch(html, /Historical composition used model-one|prompt-editor-assistant-message/);
   assert.match(html, /data-action="compose-prompt-editor"/);
   assert.match(html, /Apply Creative Direction/);

@@ -1874,6 +1874,22 @@ code {
   font-size: 0.78rem;
 }
 
+.prompt-assistant-error {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid #783f47;
+  border-radius: var(--radius-sm);
+  background: #32191e;
+  color: #ffc0c5;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.prompt-assistant-error[hidden] {
+  display: none;
+}
+
 .empty-copy,
 .empty-gallery,
 .gallery-status {

@@ -100,6 +100,7 @@ const state = {
     think: true,
     available: false,
     message: null,
+    error: null,
   },
   speechToText: { available: false, message: null },
   generations: [],
@@ -403,6 +404,7 @@ async function handleClick(event) {
   }
   if (element.id === "prompt-assistant-thinking-mode") {
     state.promptAssistant.think = element.checked;
+    setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
@@ -897,6 +899,13 @@ function setControlSectionElementOpen(section, open) {
 
 function handleInput(event) {
   const element = event.target;
+  if (
+    element.matches(
+      "#prompt-editor-dialog [data-prompt-editor-input], #prompt-editor-creative-direction, [name=prompt-editor-assistant-mode], #prompt-editor-thinking-mode",
+    )
+  ) {
+    setPromptEditorAssistantError(element.closest("#prompt-editor-dialog"), null);
+  }
   if (element.matches("[data-prompt-editor-input]")) {
     updatePromptEditorStats(element.value);
     return;
@@ -912,18 +921,23 @@ function handleInput(event) {
   }
   if (element.id === "creative-direction") {
     state.promptAssistant.creativeDirection = element.value;
+    setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
   if (element.name === "assistant-mode") {
     state.promptAssistant.mode = element.value;
+    setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
     return;
   }
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
     const control = updateControlFromElement(element);
+    if (control?.semantic_role === "positive_prompt" || control?.id === "prompt.text") {
+      setPromptAssistantError(null);
+    }
     syncNumberControlPair(element);
     syncChoiceStrengthControl(control);
     if (element.dataset.resolutionPart || element.dataset.resolutionAxis) {
@@ -1948,6 +1962,7 @@ async function enterApplication() {
     ...state.promptAssistant,
     available: false,
     message: "Checking Prompt Assistant availability…",
+    error: null,
   };
   state.speechToText = {
     available: false,
@@ -2700,6 +2715,7 @@ function renderPanel() {
     if (thinkingMode) thinkingMode.checked = state.promptAssistant.think !== false;
   }
   syncPromptAssistantAction();
+  syncPromptAssistantError();
   restorePanelView(panel, panelView);
   syncSpeechControls();
   scheduleAutoGenerate();
@@ -2713,6 +2729,33 @@ function syncPromptAssistantAction() {
   button.textContent = busy ? "Applying…" : "Apply Creative Direction";
   if (busy) button.setAttribute("aria-busy", "true");
   else button.removeAttribute("aria-busy");
+}
+
+function setPromptAssistantError(message) {
+  state.promptAssistant.error = message || null;
+  syncPromptAssistantError();
+}
+
+function syncPromptAssistantError() {
+  const region = document.querySelector("#prompt-assistant-error");
+  if (!region) return;
+  const message = state.promptAssistant.error || "";
+  region.textContent = message;
+  region.hidden = !message;
+  const thinkingMode = document.querySelector("#prompt-assistant-thinking-mode");
+  if (message) thinkingMode?.setAttribute("aria-describedby", region.id);
+  else thinkingMode?.removeAttribute("aria-describedby");
+}
+
+function setPromptEditorAssistantError(dialog, message) {
+  const region = dialog?.querySelector("#prompt-editor-assistant-error");
+  if (!region) return;
+  const text = message || "";
+  region.textContent = text;
+  region.hidden = !text;
+  const thinkingMode = dialog.querySelector("#prompt-editor-thinking-mode");
+  if (text) thinkingMode?.setAttribute("aria-describedby", region.id);
+  else thinkingMode?.removeAttribute("aria-describedby");
 }
 
 function syncPromptAssistantDraftFromPanel() {
@@ -3513,6 +3556,7 @@ async function composePrompt(
   const requestDirection = state.promptAssistant.creativeDirection || "";
   const requestThink = state.promptAssistant.think !== false;
   promptCompositionRequests += 1;
+  setPromptAssistantError(null);
   syncPromptAssistantAction();
   try {
     const result = await api("/api/prompt-assistant/compose", {
@@ -3574,10 +3618,9 @@ async function composePrompt(
         autoGenerateContext || currentAutoGenerateRetryContext(),
       );
     } else if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      toast(
-        error.message || "Creative direction could not be applied.",
-        "error",
-      );
+      const message = error.message || "Creative direction could not be applied.";
+      setPromptAssistantError(message);
+      toast(message, "error");
     } else {
       toast(`Prompt composition for the previous source failed: ${error.message}`, "error");
     }
@@ -3615,6 +3658,7 @@ async function composePromptEditor(button) {
   const requestDirection = direction.value;
   button.disabled = true;
   button.textContent = "Applying…";
+  setPromptEditorAssistantError(dialog, null);
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -3641,7 +3685,9 @@ async function composePromptEditor(button) {
     toast("Creative direction applied in the focused editor. Apply to keep it.", "success");
   } catch (error) {
     if (dialog.open && button.isConnected && sourceContextIsCurrent(requestSourceKey, requestRevision)) {
-      toast(error.message || "Creative direction could not be applied.", "error");
+      const message = error.message || "Creative direction could not be applied.";
+      setPromptEditorAssistantError(dialog, message);
+      toast(message, "error");
     } else {
       toast(`Focused prompt composition failed: ${error.message}`, "error");
     }

@@ -744,6 +744,7 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
       mode: recall.prompt_assistant?.mode || "refine",
       creativeDirection: recall.prompt_assistant?.creative_direction || "",
       historicalModel: recall.prompt_assistant?.model || null,
+      error: null,
     },
     fieldErrors: {},
     formError: null,

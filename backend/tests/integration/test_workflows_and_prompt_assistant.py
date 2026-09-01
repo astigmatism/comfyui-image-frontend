@@ -496,6 +496,7 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     _cache_ollama_health(app_client, available=True)
     assert app_client.get("/api/prompt-assistant/status").json()["available"] is True
     fake_state.ollama_effective_model = "router-active:latest"
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 600
     before = app_client.get("/api/generations").json()["items"]
     response = app_client.post(
         "/api/prompt-assistant/compose",
@@ -522,12 +523,13 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     }
     assert request_payload["options"] == {
         "temperature": 0.1,
-        "seed": 0,
+        "seed": 600,
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
     assert request_payload["prompt"] == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
-        "Refine the current prompt according to the creative direction.\n\n"
+        "Refine the current prompt according to the creative direction. The returned prompt "
+        "must incorporate that direction and must not repeat the current prompt unchanged.\n\n"
         "Current prompt:\nportrait\n\nCreative direction:\nsoft window light"
     )
     assert composed["template_version"] == "v5"
@@ -1166,6 +1168,7 @@ def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
 ) -> None:
     provision_user(app_client, username="unchanged.refinement")
     _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 700
     fake_state.ollama_response_prompt = "  A   PORTRAIT IN COOL LIGHT  "
 
     response = app_client.post(
@@ -1181,10 +1184,12 @@ def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["code"] == "prompt_refinement_unchanged"
-    assert "specific Creative Direction" in error["message"]
-    assert error["details"]["validation_stage"] == "refinement_comparison"
+    assert "after retrying" in error["message"]
+    assert error["details"]["validation_stage"] == "refinement_distinctness"
     assert error["details"]["model"] == fake_state.models[0]
     assert error["details"]["status"] == 200
+    assert len(error["details"]["attempt_diagnostics"]) == 3
+    assert [call["options"]["seed"] for call in fake_state.ollama_calls] == [700, 701, 702]
 
     container = app_client.app.state.container
     from app.models import PromptAssistantRun
