@@ -621,6 +621,42 @@ test("photo viewer favorite toggle syncs with the gallery card and persists acro
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 });
 
+test("photo viewer delete asks for confirmation and removes the generation", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("photo viewer delete");
+  const acceptedResponse = await generateAndExpectAccepted(page);
+  const accepted = await acceptedResponse.json();
+  const card = page.locator(`.gallery-card[data-generation-id="${accepted.id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/);
+  await card.locator(".card-media").click();
+
+  const photoViewer = page.locator("#photo-viewer");
+  await expect(photoViewer).toHaveAttribute("open", "");
+  const viewerDelete = photoViewer.locator(".photo-viewer-toolbar .delete-generation-button");
+  await expect(viewerDelete).toHaveAttribute("data-generation-id", accepted.id);
+  await expect(viewerDelete).toHaveAttribute("aria-label", "Delete generation");
+
+  await page.mouse.move(80, 80);
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("It will disappear from your history and cannot be undone.");
+    return dialog.dismiss();
+  });
+  await viewerDelete.click();
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await expect(card).toBeVisible();
+
+  await page.mouse.move(80, 80);
+  page.once("dialog", (dialog) => dialog.accept());
+  await viewerDelete.click();
+  await expect(photoViewer).not.toHaveAttribute("open", "");
+  await expect(card).toHaveCount(0);
+  await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
+});
+
 test("progressive bootstrap renders while optional status is delayed and localizes failures", async ({
   page,
 }) => {

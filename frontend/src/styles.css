@@ -2222,6 +2222,19 @@ dialog::backdrop {
   fill: currentColor;
 }
 
+.photo-viewer-delete {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: #f2b8be;
+}
+
+.photo-viewer-delete:hover:not(:disabled) {
+  border-color: #8a4249;
+  background: #351b20;
+  color: #ffdadd;
+}
+
 .photo-viewer-toolbar {
   position: absolute;
   top: 18px;

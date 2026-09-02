@@ -1699,8 +1699,14 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
     html,
     /class="favorite-button photo-viewer-favorite photo-viewer-control" data-action="toggle-favorite" data-generation-id="g-live" aria-label="Add to Favorites" aria-pressed="false" title="Add to Favorites"/,
   );
+  assert.match(
+    html,
+    /class="delete-generation-button photo-viewer-delete photo-viewer-control" data-action="delete-generation" data-generation-id="g-live" aria-label="Delete generation" title="Permanently delete this generation"/,
+  );
   assert.ok(
     html.indexOf('photo-viewer-favorite') <
+      html.indexOf('photo-viewer-delete') &&
+      html.indexOf('photo-viewer-delete') <
       html.indexOf('photo-viewer-toggle photo-viewer-slideshow'),
   );
   assert.match(html, /data-photo-toggle-state="hold" role="group" aria-label="Playback mode"/);
@@ -1790,6 +1796,21 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   assert.ok(
     favorited.indexOf('photo-viewer-favorite') <
       favorited.indexOf('photo-viewer-toggle photo-viewer-slideshow'),
+  );
+
+  const pendingDeletion = photoViewerMarkup(
+    {
+      id: "g-pending",
+      workflow_display_name: "Pending source",
+      status: "cancel_requested",
+      delete_pending: true,
+      display_artifact: { kind: "image", content_url: "/pending.png" },
+    },
+    {},
+  );
+  assert.match(
+    pendingDeletion,
+    /class="delete-generation-button photo-viewer-delete photo-viewer-control" data-action="delete-generation" data-generation-id="g-pending" disabled aria-label="Deletion pending" title="Cancellation and deletion are being reconciled"/,
   );
 });
 
