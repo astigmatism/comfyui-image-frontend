@@ -657,6 +657,33 @@ test("photo viewer delete asks for confirmation and removes the generation", asy
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
 });
 
+test("photo viewer download control downloads the image being viewed", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("photo viewer download");
+  const acceptedResponse = await generateAndExpectAccepted(page);
+  const accepted = await acceptedResponse.json();
+  const card = page.locator(`.gallery-card[data-generation-id="${accepted.id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/);
+  await card.locator(".card-media").click();
+
+  const photoViewer = page.locator("#photo-viewer");
+  await expect(photoViewer).toHaveAttribute("open", "");
+  const viewerDownload = photoViewer.locator(".photo-viewer-toolbar .download-button");
+  await expect(viewerDownload).toHaveAttribute("aria-label", "Download current image");
+  const imageSrc = await photoViewer.locator(".photo-viewer-media img").getAttribute("src");
+  await expect(viewerDownload).toHaveAttribute("href", imageSrc);
+
+  await page.mouse.move(80, 80);
+  const downloadPromise = page.waitForEvent("download");
+  await viewerDownload.click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).not.toBe("");
+});
+
 test("progressive bootstrap renders while optional status is delayed and localizes failures", async ({
   page,
 }) => {

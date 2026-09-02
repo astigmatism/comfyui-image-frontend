@@ -1697,17 +1697,10 @@ export function cardFooterMarkup(generation, sourceColors = {}) {
   const sourceColor = sourceColorFor(generationSourceKey(generation), sourceColors);
   const metadata = `${coloredSourceName(sourceColor, sourceName)}${checkpointName ? ` · ${escapeHtml(checkpointName)}` : ""}${duration ? ` · ${escapeHtml(duration)}` : ""}`;
   const artifact = generation.display_artifact;
-  const download = artifact?.kind === "image"
-    ? `<a class="download-button" href="${escapeHtml(artifact.content_url)}" download aria-label="Download current image" title="Download current image">
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>
-    </a>`
-    : `<button type="button" class="download-button" disabled aria-label="Download unavailable" title="No image is available to download">
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>
-    </button>`;
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${download}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button>${deleteGenerationButtonMarkup(generation)}</div></footer>`;
 }
@@ -1717,6 +1710,13 @@ export function deleteGenerationButtonMarkup(generation, extraClasses = "") {
   return `<button type="button" class="delete-generation-button${extraClasses ? ` ${extraClasses}` : ""}" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}"${deletePending ? " disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
   </button>`;
+}
+
+export function downloadButtonMarkup(artifact, extraClasses = "") {
+  const icon = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M5 20h14" /></svg>`;
+  return artifact?.kind === "image"
+    ? `<a class="download-button${extraClasses ? ` ${extraClasses}` : ""}" href="${escapeHtml(artifact.content_url)}" download aria-label="Download current image" title="Download current image">${icon}</a>`
+    : `<button type="button" class="download-button${extraClasses ? ` ${extraClasses}` : ""}" disabled aria-label="Download unavailable" title="No image is available to download">${icon}</button>`;
 }
 
 export function formatGenerationDuration(value) {
@@ -1755,6 +1755,7 @@ export function photoViewerMarkup(
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
     <div class="photo-viewer-toolbar">
+      ${downloadButtonMarkup(artifact, "photo-viewer-download photo-viewer-control")}
       ${favoriteButtonMarkup(generation, "photo-viewer-favorite photo-viewer-control")}
       ${deleteGenerationButtonMarkup(generation, "photo-viewer-delete photo-viewer-control")}
       <div class="photo-viewer-toggle photo-viewer-slideshow photo-viewer-control" data-photo-toggle-state="${playbackMode}" role="group" aria-label="Playback mode">

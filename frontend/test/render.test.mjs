@@ -1703,8 +1703,14 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
     html,
     /class="delete-generation-button photo-viewer-delete photo-viewer-control" data-action="delete-generation" data-generation-id="g-live" aria-label="Delete generation" title="Permanently delete this generation"/,
   );
+  assert.match(
+    html,
+    /class="download-button photo-viewer-download photo-viewer-control" href="\/api\/artifacts\/latest\/content" download aria-label="Download current image" title="Download current image"/,
+  );
   assert.ok(
-    html.indexOf('photo-viewer-favorite') <
+    html.indexOf('photo-viewer-download') <
+      html.indexOf('photo-viewer-favorite') &&
+      html.indexOf('photo-viewer-favorite') <
       html.indexOf('photo-viewer-delete') &&
       html.indexOf('photo-viewer-delete') <
       html.indexOf('photo-viewer-toggle photo-viewer-slideshow'),

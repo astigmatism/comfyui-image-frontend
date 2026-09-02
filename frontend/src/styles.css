@@ -2235,6 +2235,19 @@ dialog::backdrop {
   color: #ffdadd;
 }
 
+.photo-viewer-download {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: #b9d5fa;
+}
+
+.photo-viewer-download:hover:not(:disabled) {
+  border-color: #45698f;
+  background: #17263a;
+  color: #d7e9ff;
+}
+
 .photo-viewer-toolbar {
   position: absolute;
   top: 18px;
