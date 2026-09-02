@@ -2206,6 +2206,22 @@ dialog::backdrop {
   font-weight: 700;
 }
 
+.photo-viewer-favorite {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+}
+
+.photo-viewer-favorite[aria-pressed="true"] {
+  border-color: #b64f76;
+  background: #351a26;
+  color: #ff6f9f;
+}
+
+.photo-viewer-favorite[aria-pressed="true"] path {
+  fill: currentColor;
+}
+
 .photo-viewer-toolbar {
   position: absolute;
   top: 18px;

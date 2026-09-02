@@ -1751,6 +1751,7 @@ export function photoViewerMarkup(
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
     <div class="photo-viewer-toolbar">
+      ${favoriteButtonMarkup(generation, "photo-viewer-favorite photo-viewer-control")}
       <div class="photo-viewer-toggle photo-viewer-slideshow photo-viewer-control" data-photo-toggle-state="${playbackMode}" role="group" aria-label="Playback mode">
         <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-playback" data-photo-playback-mode="hold" aria-pressed="${playbackMode === "hold"}">Hold</button>
         <button type="button" class="photo-viewer-toggle-switch" data-action="toggle-photo-slideshow" role="switch" aria-label="Slideshow mode" aria-checked="${playbackMode === "slideshow"}"><span class="photo-viewer-toggle-thumb" aria-hidden="true"></span></button>
@@ -1773,10 +1774,10 @@ export function photoViewerMarkup(
   </div>`;
 }
 
-export function favoriteButtonMarkup(generation) {
+export function favoriteButtonMarkup(generation, extraClasses = "") {
   const active = Boolean(generation.is_favorite);
   const label = active ? "Remove from Favorites" : "Add to Favorites";
-  return `<button type="button" class="favorite-button" data-action="toggle-favorite" data-generation-id="${escapeHtml(generation.id)}" aria-label="${label}" aria-pressed="${active}" title="${label}">
+  return `<button type="button" class="favorite-button${extraClasses ? ` ${extraClasses}` : ""}" data-action="toggle-favorite" data-generation-id="${escapeHtml(generation.id)}" aria-label="${label}" aria-pressed="${active}" title="${label}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /></svg>
   </button>`;
 }

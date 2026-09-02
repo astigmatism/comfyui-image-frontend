@@ -4070,7 +4070,9 @@ async function recallFavorite(id) {
 }
 
 async function toggleFavorite(id, button) {
-  const generation = state.generations.find((item) => item.id === id);
+  const generation =
+    state.generations.find((item) => item.id === id) ||
+    state.favorites.find((item) => item.generation.id === id)?.generation;
   if (!generation) return;
   const wasFavorite = Boolean(generation.is_favorite);
   button.disabled = true;
@@ -4080,6 +4082,7 @@ async function toggleFavorite(id, button) {
       setGenerationFavorite(id, false);
       state.favorites = state.favorites.filter((item) => item.generation.id !== id);
       if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
+      updatePhotoViewerFavoriteControl();
       toast("Removed from Favorites.", "success");
     } else {
       const favorite = await api(`/api/generations/${encodeURIComponent(id)}/favorite`, {
@@ -4091,6 +4094,7 @@ async function toggleFavorite(id, button) {
         ...state.favorites.filter((item) => item.generation.id !== id),
       ];
       if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
+      updatePhotoViewerFavoriteControl();
       toast("Added to Favorites.", "success");
     }
   } finally {
@@ -4145,6 +4149,7 @@ async function deleteFavorite(id) {
   await api(`/api/generations/${encodeURIComponent(id)}/favorite`, { method: "DELETE" });
   state.favorites = state.favorites.filter((item) => item.generation.id !== id);
   setGenerationFavorite(id, false);
+  updatePhotoViewerFavoriteControl();
   renderFavoritesDialog();
   toast("Favorite deleted. Generation history was preserved.", "success");
 }
@@ -4415,6 +4420,19 @@ function updatePhotoViewerFullscreenControl() {
   const active = Boolean(document.fullscreenElement);
   button.textContent = active ? "Exit full screen" : "Full screen";
   button.setAttribute("aria-pressed", String(active));
+}
+
+function updatePhotoViewerFavoriteControl() {
+  const dialog = document.querySelector("#photo-viewer");
+  if (!dialog?.open || !state.photoViewerGenerationId) return;
+  const button = dialog.querySelector(".photo-viewer-toolbar [data-action=toggle-favorite]");
+  if (!button) return;
+  const generation = photoViewerGeneration(state.photoViewerGenerationId);
+  const active = Boolean(generation?.is_favorite);
+  const label = active ? "Remove from Favorites" : "Add to Favorites";
+  button.setAttribute("aria-pressed", String(active));
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
 }
 
 function updatePhotoViewerModeControl() {

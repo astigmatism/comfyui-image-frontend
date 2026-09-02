@@ -1695,6 +1695,14 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   );
   assert.match(html, /src="\/api\/artifacts\/latest\/content"/);
   assert.match(html, /data-photo-view-mode="fill"/);
+  assert.match(
+    html,
+    /class="favorite-button photo-viewer-favorite photo-viewer-control" data-action="toggle-favorite" data-generation-id="g-live" aria-label="Add to Favorites" aria-pressed="false" title="Add to Favorites"/,
+  );
+  assert.ok(
+    html.indexOf('photo-viewer-favorite') <
+      html.indexOf('photo-viewer-toggle photo-viewer-slideshow'),
+  );
   assert.match(html, /data-photo-toggle-state="hold" role="group" aria-label="Playback mode"/);
   assert.match(html, /data-photo-playback-mode="hold" aria-pressed="true">Hold<\/button>/);
   assert.match(html, /aria-label="Slideshow mode" aria-checked="false"/);
@@ -1763,6 +1771,25 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   assert.ok(
     actual.indexOf('data-photo-view-mode="actual"') <
       actual.indexOf('class="photo-viewer-toggle photo-viewer-mode'),
+  );
+
+  const favorited = photoViewerMarkup(
+    {
+      id: "g-fav",
+      workflow_display_name: "Favorited source",
+      status: "succeeded",
+      is_favorite: true,
+      display_artifact: { kind: "image", content_url: "/fav.png" },
+    },
+    {},
+  );
+  assert.match(
+    favorited,
+    /class="favorite-button photo-viewer-favorite photo-viewer-control" data-action="toggle-favorite" data-generation-id="g-fav" aria-label="Remove from Favorites" aria-pressed="true" title="Remove from Favorites"/,
+  );
+  assert.ok(
+    favorited.indexOf('photo-viewer-favorite') <
+      favorited.indexOf('photo-viewer-toggle photo-viewer-slideshow'),
   );
 });
 

@@ -568,6 +568,59 @@ test("photo viewer slideshow waits for a generation's final completed image", as
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 });
 
+test("photo viewer favorite toggle syncs with the gallery card and persists across viewer opens", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("photo viewer favorite");
+  const acceptedResponse = await generateAndExpectAccepted(page);
+  const accepted = await acceptedResponse.json();
+  const card = page.locator(`.gallery-card[data-generation-id="${accepted.id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/);
+  await card.locator(".card-media").click();
+
+  const photoViewer = page.locator("#photo-viewer");
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await expect(photoViewer.locator(".photo-viewer-frame")).toHaveAttribute(
+    "data-photo-generation-id",
+    accepted.id,
+  );
+  const viewerFavorite = photoViewer.locator(".photo-viewer-toolbar .favorite-button");
+  const cardFavorite = card.locator(".favorite-button");
+  await expect(viewerFavorite).toHaveAttribute("data-generation-id", accepted.id);
+  await expect(viewerFavorite).toHaveAttribute("aria-pressed", "false");
+  await expect(viewerFavorite).toHaveAttribute("aria-label", "Add to Favorites");
+
+  await page.mouse.move(80, 80);
+  await viewerFavorite.click();
+  await expect(viewerFavorite).toHaveAttribute("aria-pressed", "true");
+  await expect(viewerFavorite).toHaveAttribute("aria-label", "Remove from Favorites");
+  await expect(page.locator("#toast-region")).toContainText("Added to Favorites.");
+  await expect(cardFavorite).toHaveAttribute("aria-pressed", "true");
+
+  await page.mouse.move(80, 80);
+  await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
+  await expect(photoViewer).not.toHaveAttribute("open", "");
+  await card.locator(".card-media").click();
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await expect(viewerFavorite).toHaveAttribute("aria-pressed", "true");
+  await expect(viewerFavorite).toHaveAttribute("aria-label", "Remove from Favorites");
+
+  await page.mouse.move(80, 80);
+  await viewerFavorite.click();
+  await expect(viewerFavorite).toHaveAttribute("aria-pressed", "false");
+  await expect(viewerFavorite).toHaveAttribute("aria-label", "Add to Favorites");
+  await expect(page.locator("#toast-region")).toContainText("Removed from Favorites.");
+  await expect(cardFavorite).toHaveAttribute("aria-pressed", "false");
+
+  await page.mouse.move(80, 80);
+  await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
+});
+
 test("progressive bootstrap renders while optional status is delayed and localizes failures", async ({
   page,
 }) => {
