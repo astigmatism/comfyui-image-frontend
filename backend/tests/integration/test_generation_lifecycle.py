@@ -15,6 +15,7 @@ from tests.helpers import (
     create_generation,
     generation_payload,
     provision_user,
+    restore_cookie,
     wait_for_generation,
     wait_for_status,
 )
@@ -287,6 +288,7 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
             generation_id,
             lambda item: item["artifact_count"] >= 1 and item["status"] not in TERMINAL,
         )
+        assert progressive["artifact_count"] == 1
         assert progressive["canonical_artifact_id"] is None
         assert progressive["best_available_artifact_id"] is not None
         assert progressive["progress"]["kind"] == "node"
@@ -298,19 +300,15 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
         complete = wait_for_status(client, generation_id, "succeeded")
         assert complete["progress"] is None
         assert complete["generation_duration_seconds"] >= 0.5
-        assert complete["artifact_count"] == 8
+        assert complete["artifact_count"] == 2
         assert complete["final_artifact_count"] == 2
         assert complete["canonical_artifact_id"] is not None
         assert complete["best_available_artifact_id"] is not None
         assert sum(item["canonical"] for item in complete["artifacts"]) == 2
         assert sum(item["best_available"] for item in complete["artifacts"]) == 1
-        assert {item["output_id"] for item in complete["artifacts"]} == {
-            "native:900",
-            "native:901",
-            "base",
-            "second_pass",
-            "final",
-        }
+        assert {item["output_id"] for item in complete["artifacts"]} == {"final"}
+        assert fake_state.output_files == {}
+        assert len([path for path in settings.assets_dir.rglob("*") if path.is_file()]) == 4
 
         gallery = client.get("/api/generations").json()["items"]
         assert [item["id"] for item in gallery].count(generation_id) == 1
@@ -364,6 +362,7 @@ def test_progressive_success_multiple_outputs_and_exact_recall(
 
             stored = session.get(Generation, generation_id)
             assert stored is not None
+            assert stored.internal_diagnostics_json["comfyui_source_cleanup_complete"] is True
             assert "prompt" in stored.raw_history_json
             assert "extra_data" in stored.raw_history_json
             raw_outputs = dict(stored.raw_history_json["outputs"])
@@ -508,7 +507,8 @@ def test_websocket_setup_failure_falls_back_to_history_without_stranding_generat
 
         complete = wait_for_status(client, accepted["id"], "succeeded", timeout=12)
         assert complete["progress"] is None
-        assert complete["artifact_count"] == 5
+        assert complete["artifact_count"] == 1
+        assert {item["output_id"] for item in complete["artifacts"]} == {"final"}
 
 
 def test_concurrent_choice_submissions_apply_public_values_and_option_strength_hints(
@@ -579,14 +579,8 @@ def test_concurrent_choice_submissions_apply_public_values_and_option_strength_h
             assert submission["graph"]["20"] == source_api["20"]
             assert submission["graph"]["20"]["inputs"]["lora_name"] == ["202", 0]
 
-            assert detail["artifact_count"] == 5
-            assert {item["output_id"] for item in detail["artifacts"]} == {
-                "native:900",
-                "native:901",
-                "base",
-                "second_pass",
-                "final",
-            }
+            assert detail["artifact_count"] == 1
+            assert {item["output_id"] for item in detail["artifacts"]} == {"final"}
             assert [
                 item.get("output_id", item.get("id"))
                 for item in _declared_output_list(detail["declared_outputs"])
@@ -599,7 +593,7 @@ def test_concurrent_choice_submissions_apply_public_values_and_option_strength_h
         assert private_choice_node["inputs"]["value"] == "knp_v4_1"
 
 
-def test_authored_multi_publisher_batches_and_native_history_are_exhaustive(
+def test_authored_multi_publisher_history_is_exhaustive_but_only_final_batch_is_retained(
     settings_factory, fake_state
 ) -> None:
     publication = _multi_publisher_bundle()
@@ -645,18 +639,11 @@ def test_authored_multi_publisher_batches_and_native_history_are_exhaustive(
             for artifact in complete["artifacts"]
             if artifact["output_id"] in {"base", "second_pass", "final"}
         ]
-        assert len(declared_artifacts) == 6
+        assert len(declared_artifacts) == 2
         assert {
             (artifact["output_id"], artifact["role"], artifact["batch_index"])
             for artifact in declared_artifacts
-        } == {
-            ("base", "preview", 0),
-            ("base", "preview", 1),
-            ("second_pass", "comparison", 0),
-            ("second_pass", "comparison", 1),
-            ("final", "final", 0),
-            ("final", "final", 1),
-        }
+        } == {("final", "final", 0), ("final", "final", 1)}
         assert complete["final_artifact_count"] == 2
         assert all(
             client.get(artifact["content_url"]).status_code == 200
@@ -750,14 +737,8 @@ def test_terminal_websocket_event_retries_until_delayed_history_is_persisted(
         )
         assert fake_state.history_calls[prompt_id] > fake_state.history_delay_polls
 
-        assert complete["artifact_count"] == 5
-        assert {item["output_id"] for item in complete["artifacts"]} == {
-            "native:900",
-            "native:901",
-            "base",
-            "second_pass",
-            "final",
-        }
+        assert complete["artifact_count"] == 1
+        assert {item["output_id"] for item in complete["artifacts"]} == {"final"}
         assert set(complete["raw_history"]["outputs"]) == {
             "900",
             "901",
@@ -783,14 +764,8 @@ def test_cached_execution_reconciles_complete_history_without_ordinary_events(
         client_id = str(fake_state.prompts[prompt_id]["client_id"])
         assert [event["type"] for event in fake_state.event_log[client_id]] == ["execution_cached"]
 
-        assert complete["artifact_count"] == 5
-        assert {item["output_id"] for item in complete["artifacts"]} == {
-            "native:900",
-            "native:901",
-            "base",
-            "second_pass",
-            "final",
-        }
+        assert complete["artifact_count"] == 1
+        assert {item["output_id"] for item in complete["artifacts"]} == {"final"}
         assert [
             item.get("output_id", item.get("id"))
             for item in _declared_output_list(complete["declared_outputs"])
@@ -952,6 +927,7 @@ def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
         assert cancel.json()["status"] == "cancel_requested"
         assert cancel.json()["cancel_allowed"] is False
         cancelled = wait_for_status(client, cancellable["id"], "cancelled_with_artifacts")
+        assert cancelled["artifact_count"] == 1
         assert cancelled["canonical_artifact_id"] is None
         assert cancelled["best_available_artifact_id"] is not None
         best = next(item for item in cancelled["artifacts"] if item["best_available"])
@@ -962,6 +938,7 @@ def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
 
         failed_attempt = create_generation(client, "please fail after checkpoint", seed=202)
         failed = wait_for_status(client, failed_attempt["id"], "failed_with_artifacts")
+        assert failed["artifact_count"] == 1
         assert failed["canonical_artifact_id"] is None
         assert failed["best_available_artifact_id"] is not None
         assert failed["error_code"] == "execution_failed"
@@ -974,6 +951,7 @@ def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
         statuses = {item["id"]: item["status"] for item in page}
         assert statuses[cancellable["id"]] == "cancelled_with_artifacts"
         assert statuses[failed_attempt["id"]] == "failed_with_artifacts"
+        assert fake_state.output_files == {}
 
 
 def test_gallery_summary_exposes_target_dimensions_and_queued_cancel_deletes_record(
@@ -1164,7 +1142,7 @@ def test_unmapped_artifact_failure_preserves_reference_as_warning_and_allows_suc
         succeeded = wait_for_status(client, generation["id"], "succeeded", timeout=10)
 
         assert succeeded["error_code"] is None
-        assert succeeded["artifact_count"] == 4
+        assert succeeded["artifact_count"] == 1
         assert set(succeeded["unmapped_outputs"]) == {"900", "901"}
         unresolved = succeeded["unmapped_outputs"]["901"]["images"][0]
         warning = next(
@@ -1212,12 +1190,44 @@ def test_transient_executed_event_retrieval_failure_recovers_from_terminal_histo
         succeeded = wait_for_status(client, generation["id"], "succeeded", timeout=10)
 
         assert succeeded["error_code"] is None
-        assert succeeded["artifact_count"] >= 2
+        assert succeeded["artifact_count"] == 1
         assert any(item["type"] == "artifact.persistence_failed" for item in succeeded["events"])
         assert not any(
             isinstance(item, dict) and item.get("code") == "artifact_persistence_failed"
             for item in succeeded["errors"]
         )
+
+
+def test_failed_comfyui_source_cleanup_is_visible_and_retried_after_restart(
+    settings_factory, fake_state
+) -> None:
+    fake_state.fail_artifact_cleanup = True
+    settings = settings_factory(enable_background_worker=True)
+    with TestClient(create_app(settings)) as first:
+        _, cookie = provision_user(first, username="cleanup.retry")
+        generation = create_generation(first, "cleanup retry", seed=913)
+        succeeded = wait_for_status(first, generation["id"], "succeeded", timeout=10)
+        assert any(
+            isinstance(item, dict) and item.get("code") == "comfyui_source_cleanup_failed"
+            for item in succeeded["warnings"]
+        )
+        assert fake_state.output_files
+
+    fake_state.fail_artifact_cleanup = False
+    with TestClient(create_app(settings)) as second:
+        restore_cookie(second, cookie, name=settings.session_cookie_name)
+        deadline = time.monotonic() + 5
+        while True:
+            detail = second.get(f"/api/generations/{generation['id']}").json()
+            cleanup_warning = any(
+                isinstance(item, dict) and item.get("code") == "comfyui_source_cleanup_failed"
+                for item in detail["warnings"]
+            )
+            if not cleanup_warning and not fake_state.output_files:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("startup did not retry ComfyUI source cleanup")
+            time.sleep(0.02)
 
 
 def test_deleting_queued_and_running_generations_reconciles_before_cleanup(

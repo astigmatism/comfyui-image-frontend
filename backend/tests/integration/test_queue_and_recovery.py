@@ -6,7 +6,7 @@ from typing import Any
 
 from app.domain.results import NativeFileOutput
 from app.main import create_app
-from app.models import Artifact, Generation, GenerationStatus
+from app.models import Artifact, ArtifactState, Generation, GenerationStatus
 from app.services.queue_worker import (
     QueueWorker,
     _artifact_requires_persistence,
@@ -16,6 +16,7 @@ from app.services.queue_worker import (
 )
 from fastapi.testclient import TestClient
 from tests.conftest import change_password, create_user, login
+from tests.fake_services import make_png
 from tests.helpers import (
     ADMIN_PASSWORD,
     ADMIN_TEMP,
@@ -197,6 +198,96 @@ def test_queued_generation_survives_restart_and_dispatches(settings_factory, fak
         assert [item["prompt"] for item in fake_state.submitted] == ["queued across restart"]
 
 
+def test_startup_compacts_artifacts_created_under_the_legacy_retention_policy(
+    settings_factory, fake_state
+) -> None:
+    settings = settings_factory(enable_background_worker=False)
+    pruned_paths: list[str] = []
+    with TestClient(create_app(settings)) as first:
+        _, cookie = provision_user(first, username="restart.compaction")
+        generation = create_generation(first, "legacy retained stages", seed=119)
+        container = first.app.state.container
+        stored_images = [
+            container.assets.store_artifact(
+                make_png(label), generation_id=generation["id"], kind="image"
+            )
+            for label in ("legacy base", "legacy detail", "legacy final")
+        ]
+        with container.db.session_factory() as session:
+            row = session.get(Generation, generation["id"])
+            assert row is not None
+            artifacts = []
+            for index, (output_id, role, sequence, stored) in enumerate(
+                zip(
+                    ("base", "detail", "final"),
+                    ("preview", "comparison", "final"),
+                    (1000, 2000, 3000),
+                    stored_images,
+                    strict=True,
+                )
+            ):
+                source_filename = f"legacy-{index}.png"
+                fake_state.output_files[(source_filename, "legacy", "output")] = make_png(
+                    f"comfy source {index}"
+                )
+                artifact = Artifact(
+                    generation_id=row.id,
+                    owner_id=row.owner_id,
+                    output_id=output_id,
+                    role=role,
+                    kind="image",
+                    state=ArtifactState.FINAL if role == "final" else ArtifactState.SUPERSEDED,
+                    sequence=sequence,
+                    batch_index=0,
+                    storage_path=stored.relative_path,
+                    thumbnail_path=stored.thumbnail_path,
+                    mime_type=stored.mime_type,
+                    byte_size=stored.byte_size,
+                    width=stored.width,
+                    height=stored.height,
+                    sha256=stored.sha256,
+                    source_filename=source_filename,
+                    source_subfolder="legacy",
+                    source_type="output",
+                    usable_on_cancel=True,
+                    usable_on_failure=True,
+                    canonical=role == "final",
+                    best_available=role == "final",
+                )
+                session.add(artifact)
+                artifacts.append(artifact)
+                if index < 2:
+                    pruned_paths.extend(
+                        path for path in (stored.relative_path, stored.thumbnail_path) if path
+                    )
+            session.flush()
+            row.status = GenerationStatus.SUCCEEDED
+            row.artifact_count = 3
+            row.final_artifact_count = 1
+            row.canonical_artifact_id = artifacts[-1].id
+            row.best_available_artifact_id = artifacts[-1].id
+            row.internal_diagnostics_json = {}
+            session.commit()
+
+    settings.enable_background_worker = True
+    with TestClient(create_app(settings)) as second:
+        restore_cookie(second, cookie, name=settings.session_cookie_name)
+        compacted = wait_for_generation(
+            second,
+            generation["id"],
+            lambda detail: detail["artifact_count"] == 1,
+            timeout=5,
+        )
+        assert {item["output_id"] for item in compacted["artifacts"]} == {"final"}
+        deadline = time.monotonic() + 2
+        while fake_state.output_files or any(
+            (settings.data_dir / path).exists() for path in pruned_paths
+        ):
+            if time.monotonic() >= deadline:
+                raise AssertionError("startup left legacy application or ComfyUI files behind")
+            time.sleep(0.01)
+
+
 def test_running_generation_reconciles_after_application_restart(
     settings_factory, fake_state
 ) -> None:
@@ -214,7 +305,7 @@ def test_running_generation_reconciles_after_application_restart(
     with TestClient(create_app(settings)) as second:
         restore_cookie(second, cookie, name=settings.session_cookie_name)
         reconciled = wait_for_status(second, running["id"], "succeeded")
-        assert reconciled["artifact_count"] == 5
+        assert reconciled["artifact_count"] == 1
         assert reconciled["final_artifact_count"] == 1
         assert reconciled["canonical_artifact_id"] is not None
         assert len(fake_state.submitted) == 1

@@ -94,6 +94,8 @@ async def test_startup_recovery_database_phase_does_not_block_the_event_loop(
         return (), ()
 
     monkeypatch.setattr(worker, "_prepare_startup_recovery", blocking_recovery_plan)
+    monkeypatch.setattr(worker, "_prepare_terminal_source_cleanup", lambda: [])
+    monkeypatch.setattr(worker, "_compact_existing_artifacts", lambda: None)
     started_at = time.monotonic()
     reconciliation = asyncio.create_task(worker._reconcile_startup())
     try:

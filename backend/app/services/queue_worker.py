@@ -1494,6 +1494,7 @@ class QueueWorker:
                 )
             )
             if duplicate is not None:
+                self._record_archived_source_reference(generation_id, file_output)
                 self._clear_persistence_failure(generation_id, file_output)
                 return
         stored: StoredImage | None = None
@@ -1528,6 +1529,7 @@ class QueueWorker:
             if not retained:
                 await self.assets.delete_stored_async(stored)
                 stored = None
+            self._record_archived_source_reference(generation_id, file_output)
             self._clear_persistence_failure(generation_id, file_output)
             if event:
                 await self._publish_event_best_effort(event, generation_id=generation_id)
@@ -1599,6 +1601,28 @@ class QueueWorker:
             )
             if duplicate:
                 return None, False
+            existing_images = list(
+                session.scalars(
+                    select(Artifact).where(
+                        Artifact.generation_id == generation_id,
+                        Artifact.kind == "image",
+                    )
+                )
+            )
+            current = max(
+                existing_images,
+                key=lambda item: (
+                    item.sequence,
+                    item.batch_index == 0,
+                    item.emitted_at.timestamp() if item.emitted_at else 0.0,
+                ),
+                default=None,
+            )
+            artifact_kind = str(declaration.get("kind"))
+            # A delayed/cached event from an older stage is no longer useful once a more
+            # advanced image is safely archived. The caller removes its just-written local file.
+            if artifact_kind == "image" and current is not None and sequence < current.sequence:
+                return None, False
             supersedes = declaration.get("progression", {}).get("supersedes", [])
             parent = None
             if supersedes:
@@ -1625,7 +1649,7 @@ class QueueWorker:
                 owner_id=generation.owner_id,
                 output_id=output_id,
                 role=str(declaration.get("role")),
-                kind=str(declaration.get("kind")),
+                kind=artifact_kind,
                 state=ArtifactState.PROVISIONAL,
                 sequence=sequence,
                 batch_index=batch_index,
@@ -1653,6 +1677,33 @@ class QueueWorker:
             )
             session.add(artifact)
             session.flush()
+            pruned_paths: list[str] = []
+            if artifact.kind == "image":
+                if current is None or _is_better_presentation_candidate(artifact, current):
+                    generation.best_available_artifact_id = artifact.id
+                if current is None or artifact.sequence > current.sequence:
+                    superseded_images = [
+                        item for item in existing_images if item.sequence < artifact.sequence
+                    ]
+                else:
+                    # A repeated emission for the same logical batch replaces its older bytes.
+                    superseded_images = [
+                        item
+                        for item in existing_images
+                        if item.sequence == artifact.sequence
+                        and item.output_id == artifact.output_id
+                        and item.batch_index == artifact.batch_index
+                    ]
+                    if current in superseded_images:
+                        generation.best_available_artifact_id = artifact.id
+                for superseded in superseded_images:
+                    pruned_paths.extend(
+                        path
+                        for path in (superseded.storage_path, superseded.thumbnail_path)
+                        if path
+                    )
+                    session.delete(superseded)
+                session.flush()
             generation.artifact_count = (
                 session.scalar(
                     select(func.count())
@@ -1661,14 +1712,6 @@ class QueueWorker:
                 )
                 or 0
             )
-            if artifact.kind == "image":
-                current = (
-                    session.get(Artifact, generation.best_available_artifact_id)
-                    if generation.best_available_artifact_id
-                    else None
-                )
-                if current is None or _is_better_presentation_candidate(artifact, current):
-                    generation.best_available_artifact_id = artifact.id
             event = add_generation_event(
                 session,
                 generation,
@@ -1693,6 +1736,7 @@ class QueueWorker:
                 },
             )
             session.commit()
+            self.assets.delete_paths(pruned_paths)
             return event, True
 
     async def _record_persistence_failure(
@@ -1736,6 +1780,32 @@ class QueueWorker:
             )
             session.commit()
         await self._publish_event_best_effort(event, generation_id=generation_id)
+
+    def _record_archived_source_reference(
+        self, generation_id: str, file_output: NativeFileOutput
+    ) -> None:
+        reference = _cleanup_reference(file_output.reference)
+        if reference is None:
+            return
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None:
+                return
+            diagnostics = dict(generation.internal_diagnostics_json or {})
+            archived = [
+                value
+                for value in diagnostics.get("archived_comfyui_sources", [])
+                if isinstance(value, Mapping)
+            ]
+            if not any(
+                all(value.get(key) == expected for key, expected in reference.items())
+                for value in archived
+            ):
+                archived.append(reference)
+                diagnostics["archived_comfyui_sources"] = archived
+                diagnostics["comfyui_source_cleanup_complete"] = False
+                generation.internal_diagnostics_json = diagnostics
+                session.commit()
 
     def _clear_persistence_failure(self, generation_id: str, file_output: NativeFileOutput) -> None:
         failure_key = _persistence_failure_key(file_output)
@@ -1924,6 +1994,7 @@ class QueueWorker:
             raise RuntimeError("final history snapshot was not retained")
         for file_output in normalized.files:
             await self._persist_native_file(generation_id, file_output, comfyui=comfyui)
+        await self._cleanup_comfyui_sources(generation_id, comfyui=comfyui)
         committed = await _run_blocking(
             self._commit_finalization,
             generation_id,
@@ -1933,7 +2004,9 @@ class QueueWorker:
         )
         if committed is None:
             return
-        event, pending_delete, owner_id = committed
+        event, pending_delete, owner_id, pruned_paths = committed
+        if pruned_paths:
+            await asyncio.to_thread(self.assets.delete_paths, pruned_paths)
         await self._publish_event_best_effort(event, generation_id=generation_id)
         self.generation_eta.notify()
         if pending_delete:
@@ -1950,6 +2023,81 @@ class QueueWorker:
                 generation_id=generation_id,
             )
 
+    async def _cleanup_comfyui_sources(
+        self,
+        generation_id: str,
+        *,
+        comfyui: ComfyUIAdapter | None = None,
+    ) -> None:
+        references = await _run_blocking(self._source_cleanup_references, generation_id)
+        if references is None:
+            return
+        adapter = comfyui
+        if adapter is None:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                instance_id = generation.comfyui_instance_id if generation is not None else None
+            if instance_id is None:
+                return
+            try:
+                adapter = self._adapter_for_instance(instance_id)
+            except Exception as exc:
+                await _run_blocking(self._record_source_cleanup_result, generation_id, exc)
+                return
+        delete_artifacts = getattr(adapter, "delete_artifacts", None)
+        if delete_artifacts is None:
+            await _run_blocking(
+                self._record_source_cleanup_result,
+                generation_id,
+                RuntimeError("ComfyUI adapter has no artifact cleanup capability"),
+            )
+            return
+        try:
+            await delete_artifacts(references)
+        except Exception as exc:
+            await _run_blocking(self._record_source_cleanup_result, generation_id, exc)
+        else:
+            await _run_blocking(self._record_source_cleanup_result, generation_id, None)
+
+    def _source_cleanup_references(self, generation_id: str) -> list[dict[str, str]] | None:
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None:
+                return None
+            diagnostics = generation.internal_diagnostics_json or {}
+            references = [
+                reference
+                for value in diagnostics.get("archived_comfyui_sources", [])
+                if isinstance(value, Mapping)
+                and (reference := _cleanup_reference(value)) is not None
+            ]
+            return references
+
+    def _record_source_cleanup_result(self, generation_id: str, error: Exception | None) -> None:
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None:
+                return
+            diagnostics = dict(generation.internal_diagnostics_json or {})
+            warnings = [
+                value
+                for value in (generation.result_warnings_json or [])
+                if not (
+                    isinstance(value, Mapping)
+                    and value.get("code") == "comfyui_source_cleanup_failed"
+                )
+            ]
+            if error is None:
+                diagnostics["comfyui_source_cleanup_complete"] = True
+                diagnostics.pop("comfyui_source_cleanup_error", None)
+            else:
+                diagnostics["comfyui_source_cleanup_complete"] = False
+                diagnostics["comfyui_source_cleanup_error"] = type(error).__name__
+                warnings.append(_source_cleanup_warning())
+            generation.internal_diagnostics_json = diagnostics
+            generation.result_warnings_json = warnings
+            session.commit()
+
     def _commit_finalization(
         self,
         generation_id: str,
@@ -1957,7 +2105,7 @@ class QueueWorker:
         raw_history: dict[str, Any],
         normalized: NormalizedHistory,
         outcome: str,
-    ) -> tuple[Any, bool, str] | None:
+    ) -> tuple[Any, bool, str, list[str]] | None:
         """Atomically persist the terminal result using a thread-confined session."""
 
         with self.session_factory() as session:
@@ -1993,6 +2141,7 @@ class QueueWorker:
             )
             persistence_failures = diagnostics.get("artifact_persistence_failures", [])
             persistence_warnings = diagnostics.get("artifact_persistence_warnings", [])
+            pruned_paths: list[str] = []
             result_warnings: list[Any] = list(normalized.warnings)
             if outcome == "success" and diagnostics.get("comfyui_execution_error"):
                 result_warnings.append(
@@ -2011,6 +2160,8 @@ class QueueWorker:
                     warning = _optional_persistence_warning(failure)
                     if warning not in result_warnings:
                         result_warnings.append(warning)
+            if diagnostics.get("comfyui_source_cleanup_error"):
+                result_warnings.append(_source_cleanup_warning())
             generation.result_warnings_json = result_warnings
             if outcome == "success" and not persistence_failures:
                 declared_final = [item for item in artifacts if item.role == "final"]
@@ -2018,6 +2169,9 @@ class QueueWorker:
                 presentation = (
                     declared_final[0] if declared_final else _best_native_image(artifacts)
                 )
+                retained_images = {
+                    item.id for item in (declared_final or ([presentation] if presentation else []))
+                }
                 for artifact in artifacts:
                     artifact.canonical = artifact in declared_final
                     artifact.best_available = bool(presentation and artifact.id == presentation.id)
@@ -2027,6 +2181,13 @@ class QueueWorker:
                         artifact.state = ArtifactState.BEST_AVAILABLE
                     elif artifact.state == ArtifactState.PROVISIONAL:
                         artifact.state = ArtifactState.SUPERSEDED
+                    if artifact.kind == "image" and artifact.id not in retained_images:
+                        pruned_paths.extend(
+                            path
+                            for path in (artifact.storage_path, artifact.thumbnail_path)
+                            if path
+                        )
+                        session.delete(artifact)
                 generation.canonical_artifact_id = declared_final[0].id if declared_final else None
                 generation.best_available_artifact_id = presentation.id if presentation else None
                 generation.final_artifact_count = len(declared_final)
@@ -2063,6 +2224,13 @@ class QueueWorker:
                         artifact.state = ArtifactState.BEST_AVAILABLE
                     elif artifact.state == ArtifactState.PROVISIONAL:
                         artifact.state = ArtifactState.SUPERSEDED
+                    if artifact.kind == "image" and (best is None or artifact.id != best.id):
+                        pruned_paths.extend(
+                            path
+                            for path in (artifact.storage_path, artifact.thumbnail_path)
+                            if path
+                        )
+                        session.delete(artifact)
                 generation.canonical_artifact_id = None
                 generation.best_available_artifact_id = best.id if best else None
                 if outcome == "interrupted":
@@ -2098,6 +2266,15 @@ class QueueWorker:
                             "message": generation.error_message or "Generation did not complete.",
                         },
                     ]
+            session.flush()
+            generation.artifact_count = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(Artifact)
+                    .where(Artifact.generation_id == generation_id)
+                )
+                or 0
+            )
             generation.completed_at = datetime.now(UTC)
             generation.current_stage_id = None
             generation.current_stage_label = None
@@ -2116,7 +2293,7 @@ class QueueWorker:
             pending_delete = generation.pending_delete
             owner_id = generation.owner_id
             session.commit()
-            return event, pending_delete, owner_id
+            return event, pending_delete, owner_id, pruned_paths
 
     def _delete_terminal_if_present(self, generation_id: str) -> None:
         """Delete a reconciled pending generation and its files in one worker thread."""
@@ -2213,6 +2390,14 @@ class QueueWorker:
 
     async def _reconcile_startup(self) -> None:
         notifications, prompt_jobs = await _run_blocking(self._prepare_startup_recovery)
+        cleanup_jobs = await _run_blocking(self._prepare_terminal_source_cleanup)
+        for generation_id, instance_id in cleanup_jobs:
+            try:
+                adapter = self._adapter_for_instance(instance_id)
+            except Exception:
+                adapter = None
+            await self._cleanup_comfyui_sources(generation_id, comfyui=adapter)
+        await _run_blocking(self._compact_existing_artifacts)
         for owner_id, event in notifications:
             generation_id = str(event["generation_id"])
             await self._publish_broker_best_effort(
@@ -2306,6 +2491,131 @@ class QueueWorker:
                     outcome="interrupted",
                     comfyui=comfyui,
                 )
+
+    def _prepare_terminal_source_cleanup(self) -> list[tuple[str, str]]:
+        """Seed cleanup locators for old rows and return terminal jobs needing cleanup."""
+
+        with self.session_factory() as session:
+            generations = list(
+                session.scalars(select(Generation).where(Generation.status.in_(TERMINAL_STATUSES)))
+            )
+            jobs: list[tuple[str, str]] = []
+            for generation in generations:
+                diagnostics = dict(generation.internal_diagnostics_json or {})
+                if diagnostics.get("comfyui_source_cleanup_complete") is True:
+                    continue
+                archived = [
+                    reference
+                    for value in diagnostics.get("archived_comfyui_sources", [])
+                    if isinstance(value, Mapping)
+                    and (reference := _cleanup_reference(value)) is not None
+                ]
+                if not archived:
+                    for artifact in session.scalars(
+                        select(Artifact).where(Artifact.generation_id == generation.id)
+                    ):
+                        reference = _cleanup_reference(
+                            {
+                                "filename": artifact.source_filename,
+                                "subfolder": artifact.source_subfolder or "",
+                                "type": artifact.source_type or "output",
+                            }
+                        )
+                        if reference is not None and reference not in archived:
+                            archived.append(reference)
+                diagnostics["archived_comfyui_sources"] = archived
+                diagnostics["comfyui_source_cleanup_complete"] = False
+                generation.internal_diagnostics_json = diagnostics
+                jobs.append((generation.id, generation.comfyui_instance_id))
+            session.commit()
+            return jobs
+
+    def _compact_existing_artifacts(self) -> None:
+        """Apply compact retention to generations created before this policy was enabled."""
+
+        pruned_paths: list[str] = []
+        with self.session_factory() as session:
+            generations = list(session.scalars(select(Generation)))
+            for generation in generations:
+                artifacts = list(
+                    session.scalars(
+                        select(Artifact)
+                        .where(Artifact.generation_id == generation.id)
+                        .order_by(Artifact.sequence, Artifact.batch_index, Artifact.available_at)
+                    )
+                )
+                images = [artifact for artifact in artifacts if artifact.kind == "image"]
+                if not images:
+                    continue
+                keep: list[Artifact]
+                if generation.status == GenerationStatus.SUCCEEDED:
+                    finals = [artifact for artifact in images if artifact.role == "final"]
+                    fallback = _best_native_image(images)
+                    keep = finals or ([fallback] if fallback is not None else [])
+                elif generation.status in TERMINAL_STATUSES:
+                    cancelled = generation.status in {
+                        GenerationStatus.CANCELLED_WITH_ARTIFACTS,
+                        GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS,
+                    }
+                    eligible = [
+                        artifact
+                        for artifact in images
+                        if (artifact.usable_on_cancel if cancelled else artifact.usable_on_failure)
+                    ]
+                    best = _best_native_image(eligible)
+                    keep = [best] if best is not None else []
+                else:
+                    latest_sequence = max(artifact.sequence for artifact in images)
+                    keep = [artifact for artifact in images if artifact.sequence == latest_sequence]
+                retained = {artifact.id for artifact in keep if artifact is not None}
+                for artifact in images:
+                    if artifact.id in retained:
+                        continue
+                    pruned_paths.extend(
+                        path for path in (artifact.storage_path, artifact.thumbnail_path) if path
+                    )
+                    session.delete(artifact)
+                session.flush()
+                retained_images = [artifact for artifact in keep if artifact is not None]
+                presentation = _best_native_image(retained_images)
+                if generation.status == GenerationStatus.SUCCEEDED:
+                    finals = [artifact for artifact in retained_images if artifact.role == "final"]
+                    finals.sort(key=lambda item: (item.sequence, item.batch_index))
+                    for artifact in retained_images:
+                        artifact.canonical = artifact in finals
+                        artifact.best_available = bool(
+                            presentation and artifact.id == presentation.id
+                        )
+                        artifact.state = (
+                            ArtifactState.FINAL
+                            if artifact in finals
+                            else ArtifactState.BEST_AVAILABLE
+                        )
+                    generation.canonical_artifact_id = finals[0].id if finals else None
+                    generation.final_artifact_count = len(finals)
+                else:
+                    for artifact in retained_images:
+                        artifact.canonical = False
+                        artifact.best_available = bool(
+                            presentation and artifact.id == presentation.id
+                        )
+                        if generation.status in TERMINAL_STATUSES:
+                            artifact.state = ArtifactState.BEST_AVAILABLE
+                    generation.canonical_artifact_id = None
+                    generation.final_artifact_count = 0
+                generation.best_available_artifact_id = (
+                    presentation.id if presentation is not None else None
+                )
+                generation.artifact_count = (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(Artifact)
+                        .where(Artifact.generation_id == generation.id)
+                    )
+                    or 0
+                )
+            session.commit()
+        self.assets.delete_paths(pruned_paths)
 
     def _prepare_startup_recovery(self) -> RecoveryPlan:
         """Build a primitive recovery plan without loading generation JSON payloads."""
@@ -2736,6 +3046,30 @@ def _persistence_failure_key(file_output: NativeFileOutput) -> dict[str, Any]:
         "filename": file_output.reference.get("filename"),
         "subfolder": file_output.reference.get("subfolder", ""),
         "type": file_output.reference.get("type", "output"),
+    }
+
+
+def _cleanup_reference(reference: Mapping[str, Any]) -> dict[str, str] | None:
+    filename = reference.get("filename")
+    subfolder = reference.get("subfolder", "")
+    storage_type = reference.get("type", "output")
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or not isinstance(subfolder, str)
+        or storage_type not in {"output", "temp"}
+    ):
+        return None
+    return {"filename": filename, "subfolder": subfolder, "type": str(storage_type)}
+
+
+def _source_cleanup_warning() -> dict[str, str]:
+    return {
+        "code": "comfyui_source_cleanup_failed",
+        "message": (
+            "The result is safely stored by the frontend, but its ComfyUI source file could "
+            "not yet be removed. Cleanup will retry after restart."
+        ),
     }
 
 

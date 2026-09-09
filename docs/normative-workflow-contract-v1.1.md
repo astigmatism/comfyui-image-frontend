@@ -1025,7 +1025,7 @@ When cancellation is requested:
 1. The service records the request time and current stage.
 2. It sends ComfyUI queue deletion or `/interrupt` as appropriate.
 3. It continues processing WebSocket and history events until terminal state is reconciled.
-4. It preserves every already-emitted output whose policy requires retention.
+4. It preserves the latest/best already-emitted output required by the compact retention policy.
 5. It selects `best_available_artifact_id` using the contract's strategy.
 6. It does not mark that artifact canonical unless the product offers a separate explicit “Use this result” action.
 
@@ -1041,7 +1041,7 @@ Progressive artifacts use one of these states:
 - `final` — terminal canonical result after successful completion;
 - `partial` — emitted from an incomplete or partially failed stage and not ordinarily selectable.
 
-Every later image should retain lineage to its immediate predecessor where practical. This enables the front-end to present a coherent visual timeline and lets audit records show which intermediate was refined or upscaled into the final result.
+Every later image may retain metadata lineage to its immediate predecessor where practical. This enables audit records to describe which intermediate was refined or upscaled without requiring the predecessor's binary file to remain stored.
 
 ### 19.6 Storage policy
 
@@ -1053,11 +1053,13 @@ Progressive rendering does not require indefinite storage. A checkpoint can be:
 - always durable;
 - discarded after a later output supersedes it, when the contract and client request permit.
 
-The default recommendation is:
+The frontend's default policy is:
 
-- retain declared checkpoints for the job TTL;
-- retain the best available checkpoint when the run is cancelled or fails;
-- durably retain the terminal final according to normal output policy;
+- retain only the latest semantic stage and its batch siblings while a job is active;
+- retain one best available image when the run is cancelled, fails, or is interrupted;
+- retain only the authored final batch after successful completion;
+- keep complete bounded result metadata for audit without keeping pruned binary files;
+- remove successfully transferred ComfyUI `output`/`temp` sources after terminal processing;
 - avoid persisting incidental sampler frames.
 
 ---

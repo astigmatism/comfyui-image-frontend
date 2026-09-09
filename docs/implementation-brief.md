@@ -174,7 +174,7 @@ Implement the workflow contract's compilation and execution pipeline. Keep Comfy
 
 Provide an authenticated application event stream using SSE or an application WebSocket. It must publish queue state, semantic stages, artifact availability, cancellation state, errors, and terminal completion. Reconnection must recover current durable state.
 
-Handle every declared publisher output immediately when retrievable. Parse the publisher's namespaced `artifacts` list as the authority for output identity and batch order, while retaining the complete ordinary publisher result in raw history. Copy every nonpublisher node result untouched into additional outputs; never filter runtime history through a compile-time node inventory. Update the same gallery card to the authored final/newest meaningful checkpoint while retaining preview, comparison, auxiliary, native, and batch-sibling images for detail/download. Mark a final artifact canonical only after terminal success. Keep best-available artifacts explicitly non-final after cancellation or later-stage failure.
+Handle every declared publisher output immediately when retrievable. Parse the publisher's namespaced `artifacts` list as the authority for output identity and batch order, while retaining the complete ordinary publisher result in raw history. Copy every nonpublisher node result untouched into additional-output metadata; never filter runtime history through a compile-time node inventory. Keep only the newest semantic image stage while active, the authored final batch after success, or one best eligible image after cancellation/failure/interruption. Mark a final artifact canonical only after terminal success. After local processing is durable, remove successfully transferred ComfyUI `output`/`temp` source files through the bounded companion route and surface/retry cleanup failures.
 
 Support queued and running cancellation. Cancelling a queued generation before dispatch must delete its record just like an explicit cancel-and-delete action. For work that has begun dispatching or running, model `cancel_requested` separately, reconcile races, retain emitted artifacts, and preserve the record for Recall settings.
 
@@ -208,7 +208,7 @@ Do not put status in the footer. If one generation returns multiple final images
 
 ### Deletion
 
-Users can permanently delete their own generations from the gallery-card footer or detail view after confirmation. Active jobs must be cancelled/reconciled before cleanup. Delete application-owned records and files only; do not purge ComfyUI or Ollama.
+Users can permanently delete their own generations from the gallery-card footer or detail view after confirmation. Active jobs must be cancelled/reconciled before cleanup. This later record deletion removes application-owned records/files only; ComfyUI `output`/`temp` source cleanup already occurs during normal terminal reconciliation and never purges ComfyUI history, inputs, userdata, or Ollama.
 
 Deleting a user must revoke sessions, remove queued work, cancel/reconcile running work, delete all application-owned content, and then remove the account without orphan rows or files. The administrator performs this operation without being shown the user's content.
 

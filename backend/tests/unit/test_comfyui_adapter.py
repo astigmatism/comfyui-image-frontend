@@ -519,3 +519,37 @@ def test_view_references_reject_paths_and_storage_types_before_network(
             await adapter.close()
 
     asyncio.run(scenario())
+
+
+def test_artifact_cleanup_batches_unique_output_and_temp_references(tmp_path: Path) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/comfyui-image-frontend/artifacts/delete"
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"deleted": 2, "missing": 0})
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            output = {"filename": "final.png", "subfolder": "job", "type": "output"}
+            await adapter.delete_artifacts(
+                [
+                    output,
+                    output,
+                    {"filename": "preview.png", "subfolder": "job", "type": "temp"},
+                    {"filename": "source.png", "subfolder": "job", "type": "input"},
+                ]
+            )
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert requests == [
+        {
+            "artifacts": [
+                {"filename": "final.png", "subfolder": "job", "type": "output"},
+                {"filename": "preview.png", "subfolder": "job", "type": "temp"},
+            ]
+        }
+    ]

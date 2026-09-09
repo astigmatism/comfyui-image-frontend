@@ -35,6 +35,8 @@ class ComfyUIAdapter:
         ("/userdata", "query"),
     )
     GET_ROUTE = "/userdata/{path}"
+    ARTIFACT_DELETE_ROUTE = "/comfyui-image-frontend/artifacts/delete"
+    ARTIFACT_DELETE_BATCH_SIZE = 1024
 
     def __init__(self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
@@ -520,35 +522,7 @@ class ComfyUIAdapter:
             response.raise_for_status()
 
     async def retrieve_artifact(self, reference: Mapping[str, Any]) -> bytes:
-        filename = reference.get("filename")
-        if (
-            not isinstance(filename, str)
-            or not filename
-            or len(filename) > 500
-            or "/" in filename
-            or "\\" in filename
-            or PurePosixPath(filename).name != filename
-        ):
-            raise AppError("output_unclassified", "ComfyUI artifact reference has no filename.")
-        raw_subfolder = reference.get("subfolder", "")
-        if not isinstance(raw_subfolder, str):
-            raise AppError("output_unclassified", "ComfyUI artifact path is unsafe.")
-        subfolder = raw_subfolder
-        subfolder_path = PurePosixPath(subfolder)
-        if len(subfolder) > 500 or (
-            subfolder
-            and (
-                subfolder.startswith("/")
-                or "\\" in subfolder
-                or "//" in subfolder
-                or any(part in {".", ".."} for part in subfolder_path.parts)
-                or str(subfolder_path) != subfolder
-            )
-        ):
-            raise AppError("output_unclassified", "ComfyUI artifact path is unsafe.")
-        storage_type = reference.get("type", "output")
-        if storage_type not in {"input", "output", "temp"}:
-            raise AppError("output_unclassified", "ComfyUI artifact storage type is unsafe.")
+        filename, subfolder, storage_type = _validated_artifact_reference(reference)
         response = await self._request_limited(
             "GET",
             "/view",
@@ -561,6 +535,39 @@ class ComfyUIAdapter:
             response, self.settings.comfyui_output_max_bytes, "ComfyUI output artifact"
         )
         return response.content
+
+    async def delete_artifacts(self, references: list[Mapping[str, Any]]) -> None:
+        """Delete frontend-owned output files after their local archive is durable.
+
+        ComfyUI core exposes only GET /view for these locators. The companion route shipped in
+        ``comfyui_extension`` supplies the deliberately narrow destructive operation. Input files
+        are excluded because a workflow may reference shared/static inputs that this job did not
+        create.
+        """
+
+        artifacts: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for reference in references:
+            filename, subfolder, storage_type = _validated_artifact_reference(reference)
+            if storage_type not in {"output", "temp"}:
+                continue
+            key = (filename, subfolder, storage_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            artifacts.append({"filename": filename, "subfolder": subfolder, "type": storage_type})
+        if not artifacts:
+            return
+        for offset in range(0, len(artifacts), self.ARTIFACT_DELETE_BATCH_SIZE):
+            response = await self._request_limited(
+                "POST",
+                self.ARTIFACT_DELETE_ROUTE,
+                json={"artifacts": artifacts[offset : offset + self.ARTIFACT_DELETE_BATCH_SIZE]},
+                timeout=5,
+                maximum_bytes=self.settings.comfyui_listing_max_bytes,
+                context="ComfyUI artifact cleanup response",
+            )
+            response.raise_for_status()
 
     async def health(self) -> tuple[bool, str | None]:
         try:
@@ -576,6 +583,41 @@ class ComfyUIAdapter:
             return False, f"ComfyUI returned HTTP {response.status_code}."
         except (AppError, httpx.HTTPError):
             return False, "ComfyUI is unreachable."
+
+
+def _validated_artifact_reference(reference: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Validate the only ComfyUI file locator shape accepted for retrieval or deletion."""
+
+    filename = reference.get("filename")
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or len(filename) > 500
+        or "/" in filename
+        or "\\" in filename
+        or PurePosixPath(filename).name != filename
+    ):
+        raise AppError("output_unclassified", "ComfyUI artifact reference has no filename.")
+    raw_subfolder = reference.get("subfolder", "")
+    if not isinstance(raw_subfolder, str):
+        raise AppError("output_unclassified", "ComfyUI artifact path is unsafe.")
+    subfolder = raw_subfolder
+    subfolder_path = PurePosixPath(subfolder)
+    if len(subfolder) > 500 or (
+        subfolder
+        and (
+            subfolder.startswith("/")
+            or "\\" in subfolder
+            or "//" in subfolder
+            or any(part in {".", ".."} for part in subfolder_path.parts)
+            or str(subfolder_path) != subfolder
+        )
+    ):
+        raise AppError("output_unclassified", "ComfyUI artifact path is unsafe.")
+    storage_type = reference.get("type", "output")
+    if storage_type not in {"input", "output", "temp"}:
+        raise AppError("output_unclassified", "ComfyUI artifact storage type is unsafe.")
+    return filename, subfolder, storage_type
 
 
 def _queue_prompt_ids(payload: Mapping[str, Any]) -> tuple[set[str], set[str]]:

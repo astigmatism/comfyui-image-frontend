@@ -1,8 +1,10 @@
 # ComfyUI Image Front-End
 
-A private image-generation appliance for a trusted home network. It discovers deliberately published ComfyUI workflows, renders their manifest-defined controls, keeps one durable gallery card per accepted generation, archives all returned image batches in application-owned storage, and supports private per-user favorites and exact request recall.
+A private image-generation appliance for a trusted home network. It discovers deliberately published ComfyUI workflows, renders their manifest-defined controls, keeps one durable gallery card per accepted generation, retains only the final image batch (or one best available partial), and supports private per-user favorites and exact request recall.
 
 > **External prerequisites:** this repository does not publish workflows, install ComfyUI custom nodes, models, or other workflow dependencies. A separately maintained publisher/custom-node package must create valid three-file publication bundles in ComfyUI userdata.
+
+Install the included [`comfyui_extension/cif_artifact_cleanup`](comfyui_extension/cif_artifact_cleanup) companion in every execution runtime's `custom_nodes` directory. It lets the frontend remove its ComfyUI `output`/`temp` source files after their application-owned copy is durable. If the route is unavailable, generation still completes with an explicit cleanup warning and startup retries later.
 
 ## What is included
 
@@ -267,7 +269,7 @@ Each runtime admits up to its configured `concurrency` active application jobs a
 
 When requested by the publication, the accepted editable snapshot is attached as `extra_data.extra_pnginfo.workflow`; its separately recorded observed hash may differ from the publication-time hash without changing the frozen executable revision. The native ComfyUI `prompt_id` is persisted. WebSocket events provide progress, while bounded `/history/{prompt_id}` reconciliation supplies terminal truth and recovery after cached or missed events.
 
-The server retains complete bounded ComfyUI history. Generation detail removes only top-level submitted `prompt` and `extra_data` graph envelopes; actual outputs, arbitrary JSON-safe custom UI fields, publisher metadata, status/messages/errors, and execution metadata remain intact. It also returns requested/effective parameters, exact seed strings, immutable source revision, ordered publisher outputs with authoritative batch indices, untouched node-keyed unmapped outputs, and every archived image batch member. The gallery uses the authored final as its primary image, while detail groups previews, comparisons, auxiliary publishers, and additional native outputs without dropping any batch sibling.
+The server retains complete bounded ComfyUI history. Generation detail removes only top-level submitted `prompt` and `extra_data` graph envelopes; actual outputs, arbitrary JSON-safe custom UI fields, publisher metadata, status/messages/errors, and execution metadata remain intact. Binary retention is deliberately compact: while a job runs, a more advanced stage replaces older application files; success keeps the authored final batch; cancellation or failure keeps one best available image. Logical references to other returned results remain in history without duplicate binary storage. After all retrievable files have been processed, the frontend deletes its source `output`/`temp` files from ComfyUI through the included companion route.
 
 Browser closure or sign-out does not cancel work. Queued jobs survive restarts, but cancelling one before dispatch deletes its generation record and removes its gallery card. Running jobs reconcile from stored prompt ID, queue state, events, and history. Running cancellation is asynchronous; already returned partial files remain available when safely archived.
 

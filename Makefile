@@ -9,11 +9,11 @@ install-dev:
 	cd frontend && npm install
 
 format-check:
-	$(PYTHON) -m ruff format --check backend/app backend/tests
+	$(PYTHON) -m ruff format --check backend/app backend/tests comfyui_extension
 	cd frontend && $(NODE) scripts/format-check.mjs
 
 lint:
-	$(PYTHON) -m ruff check backend/app backend/tests
+	$(PYTHON) -m ruff check backend/app backend/tests comfyui_extension
 	cd frontend && $(NODE) scripts/lint.mjs
 
 typecheck:
@@ -28,7 +28,7 @@ test-frontend:
 test: test-backend test-frontend
 
 build:
-	$(PYTHON) -m compileall -q backend/app
+	$(PYTHON) -m compileall -q backend/app comfyui_extension
 	cd frontend && $(NODE) scripts/build.mjs
 	$(PYTHON) -m build --wheel --no-isolation
 

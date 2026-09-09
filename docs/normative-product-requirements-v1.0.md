@@ -74,12 +74,13 @@ The first release MUST NOT include:
 - Cross-user sharing.
 - Billing, credits, subscriptions, or quotas intended for commercial use.
 - ComfyUI workflow editing or graph visualization.
-- Creation, installation, or modification of ComfyUI custom nodes.
+- User-facing creation, installation, or administration of general ComfyUI custom nodes. A narrow
+  companion cleanup route may be shipped for frontend-owned generation outputs.
 - Model, LoRA, checkpoint, or custom-node installation and administration.
 - Arbitrary exposure of ComfyUI node inputs.
 - A user-facing Ollama model selector or Ollama model-management UI.
 - A shared filesystem mount used by the application to read ComfyUI workflows.
-- Deleting ComfyUI history or ComfyUI-owned files when application records are deleted.
+- Deleting ComfyUI history or unrelated/source-workflow files when application records are deleted.
 - Deleting or modifying anything in Ollama when application records are deleted.
 - Search, filtering, favorites, comments, notes, social features, or public links unless later added as a separate requirement.
 - A guarantee of bit-for-bit image reproduction after workflow, model, dependency, runtime, GPU, or hardware changes.
@@ -247,7 +248,7 @@ For every accepted generation, the application MUST preserve enough information 
 - **DATA-008:** Random-seed policies MUST be resolved to concrete integers before the request is accepted into the queue.
 - **DATA-009:** The generation record created at queue acceptance MUST be immutable with respect to that execution. Later UI edits create a different future request and MUST NOT modify the queued record.
 - **DATA-010:** The application MUST copy retained ComfyUI outputs into application-owned storage. Historical viewing MUST not depend on ComfyUI continuing to retain the original output file.
-- **DATA-011:** All contract-declared user-visible progressive checkpoints that the application receives MUST be retained in the generation history until the generation or user is deleted. Incidental sampler frames and undeclared editor previews MUST not be stored as first-class history artifacts.
+- **DATA-011:** Binary image retention MUST be compact. While a job is active, a later semantic stage MUST replace older application-owned stage images while retaining every sibling in the current batch. Success MUST retain only the authored final batch. Cancellation, failure, or interruption MUST retain no more than one best eligible image. Complete bounded result metadata MAY continue to describe pruned images without retaining duplicate binary files.
 - **DATA-012:** The application SHOULD generate thumbnails or responsive derivatives for efficient gallery loading while retaining the original application-owned artifact.
 
 ### 9.3 Complete history and deletion
@@ -270,8 +271,9 @@ For every accepted generation, the application MUST preserve enough information 
 - **COMFY-005:** Generations submitted by the application are normal ComfyUI prompt jobs and may appear in ComfyUI queue/history. The application does not need to make the ComfyUI visual editor automatically load the corresponding graph onto its canvas.
 - **COMFY-006:** Jobs created outside this application MUST NOT be imported automatically into application user histories.
 - **COMFY-007:** The ComfyUI integration MUST be isolated behind a backend adapter so route or event differences can be capability-probed and tested.
+- **COMFY-008:** After the application has durably processed a generation's retrievable files, it MUST request deletion of those source files from ComfyUI `output` or `temp` storage. Cleanup MUST reject arbitrary paths and `input` storage, MUST treat missing files idempotently, and MUST remain retryable without sacrificing the application-owned result.
 
-The adapter is expected to use ComfyUI capabilities equivalent to workflow/user-data listing and retrieval, `/object_info`, prompt submission, queue inspection or deletion, interrupt, WebSocket execution events, history reconciliation, uploads, and output retrieval. Exact route details MUST be probed or isolated rather than scattered through UI code.
+The adapter is expected to use ComfyUI capabilities equivalent to workflow/user-data listing and retrieval, `/object_info`, prompt submission, queue inspection or deletion, interrupt, WebSocket execution events, history reconciliation, uploads, output retrieval, and the frontend companion's bounded output/temp cleanup route. Exact route details MUST be probed or isolated rather than scattered through UI code.
 
 ---
 

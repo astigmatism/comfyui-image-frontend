@@ -85,7 +85,7 @@ After ComfyUI history reconciliation, these columns retain the result without fl
 | `comfyui_status_json` | Native bounded status/error metadata |
 | `progress_json` | Coalesced active current-operation label, safe node identity, counter/fraction, timestamp, and optional nested ETA; never a workflow-wide percentage |
 
-`comfyui_prompt_id` is meaningful only together with `comfyui_instance_id`; native prompt IDs and queues are not merged across instances. `artifacts` remains the retrievable binary index: every successfully archived image reference in declared and unmapped results has its own row, including batch siblings. Logical publisher references remain in `declared_outputs_json` even when `/view` retrieval fails, so normalization is not reduced to the set of locally stored binaries. `canonical` / `best_available` and generation artifact pointers remain presentation/legacy lifecycle aids; they do not rewrite the declared/unmapped/raw result structures.
+`comfyui_prompt_id` is meaningful only together with `comfyui_instance_id`; native prompt IDs and queues are not merged across instances. `artifacts` is the compact retrievable binary index: advancing stages replace older image rows/files, success keeps the final batch, and cancellation/failure keeps one best image. Logical publisher references remain in `declared_outputs_json` even when their binary was pruned or `/view` retrieval failed, so normalization is not reduced to the locally retained set. `canonical` / `best_available` and generation artifact pointers select that set without rewriting declared/unmapped/raw result structures. `internal_diagnostics_json` durably records transferred ComfyUI source locators and whether their terminal cleanup completed, allowing failed cleanup to retry after restart.
 
 ## Completion timing profiles
 
@@ -118,7 +118,7 @@ still be incorporated into a later profile update.
 
 Uploads, original artifacts, and thumbnails are normal files, not database blobs. Paths are relative to the configured data root and filenames are opaque. Every open/delete resolves the target and rejects paths outside the root.
 
-Removing a favorite deletes only its bookmark. Generation deletion removes exclusive generation rows/files and deletes an upload only when no retained generation references it. User deletion revokes sessions, reconciles active jobs, collects paths, deletes all owner rows, commits, then deletes application files. Neither operation purges ComfyUI userdata/history/storage or changes published workflows.
+Removing a favorite deletes only its bookmark. Generation deletion removes exclusive generation rows/files and deletes an upload only when no retained generation references it. User deletion revokes sessions, reconciles active jobs, collects paths, deletes all owner rows, commits, then deletes application files. Normal terminal reconciliation—not later gallery/user deletion—removes frontend-generated `output`/`temp` files from ComfyUI. Userdata publications and ComfyUI history are unchanged.
 
 ## Time, indexes, and operations
 

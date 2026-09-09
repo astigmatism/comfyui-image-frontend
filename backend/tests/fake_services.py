@@ -78,6 +78,7 @@ class FakeServiceState:
     ollama_available: bool = True
     reject_prompts: bool = False
     fail_retrieval: bool = False
+    fail_artifact_cleanup: bool = False
     retrieval_failure_substrings: set[str] = field(default_factory=set)
     retrieval_failures_remaining: int = 0
     disconnect_websocket: bool = False
@@ -107,6 +108,7 @@ class FakeServiceState:
     queued_prompt_ids: set[str] = field(default_factory=set)
     cancelled_prompt_ids: set[str] = field(default_factory=set)
     output_files: dict[tuple[str, str, str], bytes] = field(default_factory=dict)
+    artifact_cleanup_requests: list[list[dict[str, str]]] = field(default_factory=list)
     event_log: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     websocket_clients: dict[str, list[WebSocket]] = field(default_factory=dict)
     submitted: list[dict[str, Any]] = field(default_factory=list)
@@ -127,6 +129,7 @@ class FakeServiceState:
         self.ollama_available = True
         self.reject_prompts = False
         self.fail_retrieval = False
+        self.fail_artifact_cleanup = False
         self.retrieval_failure_substrings.clear()
         self.retrieval_failures_remaining = 0
         self.disconnect_websocket = False
@@ -156,6 +159,7 @@ class FakeServiceState:
         self.queued_prompt_ids.clear()
         self.cancelled_prompt_ids.clear()
         self.output_files.clear()
+        self.artifact_cleanup_requests.clear()
         self.event_log.clear()
         self.websocket_clients.clear()
         self.submitted.clear()
@@ -709,6 +713,42 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         if key not in state.output_files:
             raise HTTPException(status_code=404)
         return Response(state.output_files[key], media_type="image/png")
+
+    @app.post("/comfyui-image-frontend/artifacts/delete")
+    async def delete_frontend_artifacts(request: Request) -> dict[str, int]:
+        require_comfy()
+        if state.fail_artifact_cleanup:
+            raise HTTPException(status_code=500, detail="cleanup failed")
+        payload = await request.json()
+        artifacts = payload.get("artifacts", []) if isinstance(payload, dict) else []
+        if not isinstance(artifacts, list):
+            raise HTTPException(status_code=400)
+        normalized: list[dict[str, str]] = []
+        deleted = 0
+        missing = 0
+        for reference in artifacts:
+            if not isinstance(reference, dict):
+                raise HTTPException(status_code=400)
+            filename = reference.get("filename")
+            subfolder = reference.get("subfolder", "")
+            storage_type = reference.get("type", "output")
+            if not all(isinstance(value, str) for value in (filename, subfolder, storage_type)):
+                raise HTTPException(status_code=400)
+            if storage_type not in {"output", "temp"}:
+                raise HTTPException(status_code=400)
+            item = {
+                "filename": str(filename),
+                "subfolder": str(subfolder),
+                "type": str(storage_type),
+            }
+            normalized.append(item)
+            key = (item["filename"], item["subfolder"], item["type"])
+            if state.output_files.pop(key, None) is None:
+                missing += 1
+            else:
+                deleted += 1
+        state.artifact_cleanup_requests.append(normalized)
+        return {"deleted": deleted, "missing": missing}
 
     @app.get("/api/tags")
     async def ollama_tags() -> dict[str, Any]:
