@@ -27,6 +27,13 @@ Migration `d72f6a8c9e10_add_comfyui_execution_instances.py` adds independent exe
 
 Migration `f3a91c7d2b64_record_prompt_assistant_thinking.py` adds non-null `prompt_assistant_runs.thinking_enabled`. Historical rows are backfilled to `true`, matching the only behavior available before the focused-editor toggle. New failed runs retain bounded model/status, field-presence, response/thinking-length, done-reason, validation-stage, and output-budget attempt/allowance details in `raw_response_json`. Their prompt and creative-direction columns are left empty, and raw reasoning is never copied into diagnostics, so failed composition content is not retained by default.
 
+Migration `b1e7c4a92d60_add_collections.py` adds the owner-scoped `collections` tree,
+nullable `generations.collection_id`, and the per-owner collection-preview preference. Existing
+generation rows are not rewritten and therefore remain unfiled at the gallery root. The generation
+foreign key uses `SET NULL` as a safety net; normal recursive collection deletion explicitly routes
+every contained generation through the established generation deletion lifecycle before removing
+collection rows deepest-first.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -34,12 +41,13 @@ Migration `f3a91c7d2b64_record_prompt_assistant_thinking.py` adds non-null `prom
 | `users` | Local account, role, forced-change state, session epoch |
 | `sessions` | HMAC token ID, CSRF, expiry/revocation, privacy-safe client metadata |
 | `login_throttles` | Username/IP-keyed attempt windows and temporary blocks |
-| `user_preferences` | Owner gallery scale and generation-source star ratings |
+| `user_preferences` | Owner gallery scale, collection-preview switch, and generation-source star ratings |
 | `workflow_profiles` | Immutable accepted publication revisions plus retained legacy snapshots |
 | `workflow_diagnostics` | Safe latest transport/candidate discovery diagnostics |
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |
 | `comfyui_instance_health` | Last bounded availability result for each configured ComfyUI execution ID |
 | `uploads` | Owner-scoped application source/mask metadata |
+| `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |
 | `generation_uploads` | Historical parameter-to-upload/hash links |
@@ -64,7 +72,11 @@ Private `source_id`, the raw manifest, graph, bindings, and runtime dependency s
 
 ## Generation snapshots and rich results
 
-At acceptance, a generation stores its profile foreign key, display/compatibility identity fields, resolved interface, requested/effective parameter maps, seed map, final prompt, compiled graph/hash, selected `comfyui_instance_id`, and a snapshot of that target's safe `comfyui_instance_label`. It also stores a compact publication `generation_source_json` with:
+At acceptance, a generation stores its profile foreign key, nullable owner-validated
+`collection_id`, display/compatibility identity fields, resolved interface, requested/effective
+parameter maps, seed map, final prompt, compiled graph/hash, selected `comfyui_instance_id`, and a
+snapshot of that target's safe `comfyui_instance_label`. It also stores a compact publication
+`generation_source_json` with:
 
 ```text
 source_key, instance_id, publication_id,
@@ -120,13 +132,21 @@ Uploads, original artifacts, and thumbnails are normal files, not database blobs
 
 Removing a favorite deletes only its bookmark. Generation deletion removes exclusive generation rows/files and deletes an upload only when no retained generation references it. User deletion revokes sessions, reconciles active jobs, collects paths, deletes all owner rows, commits, then deletes application files. Normal terminal reconciliation—not later gallery/user deletion—removes frontend-generated `output`/`temp` files from ComfyUI. Userdata publications and ComfyUI history are unchanged.
 
+Deleting a collection collects its bounded-depth subtree, invokes the same generation deletion
+service for every direct or descendant generation, and records one content-free audit row per
+collection. Terminal contents and their owned files are removed immediately. Active contents are
+marked pending deletion and cancelled; the collection rows can then disappear through the nullable
+foreign key without making those pending rows visible at the root, and normal worker reconciliation
+finishes their deletion.
+
 ## Time, indexes, and operations
 
 UTC timestamps are returned as timezone-aware ISO values. Indexes cover owner/newest pagination,
-queue status/order per execution instance, native prompt ID recovery, artifact timelines, events, sessions, publication
-instance/source/revision lookup, and bounded successful-run timing maintenance.
+queue status/order per execution instance, owner/collection/newest gallery pagination,
+owner/parent collection traversal, native prompt ID recovery, artifact timelines, events, sessions,
+publication instance/source/revision lookup, and bounded successful-run timing maintenance.
 
-Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation.
+Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation. Collection listing likewise resolves all direct generation counts in one aggregate and all preview quadrants in one windowed batch query, independent of collection count.
 
 Long-lived SSE iterators never own a SQLAlchemy session. Authentication finishes in one short scope, then the iterator subscribes before loading replay in another short scope so connection setup cannot lose a durable event; queued events through the replay high-water mark are deduplicated. Periodic authorization checks likewise create and close a fresh session. CPU-heavy image work and durable filesystem writes run in worker threads; their short metadata transactions open thread-confined sessions only after the file operation completes.
 

@@ -202,7 +202,7 @@ The authenticated browser renders the gallery shell immediately after the author
 
 Normal bootstrap performs no live ComfyUI or Ollama probe. External probing belongs to the bounded background health/discovery loops. Prompt Assistant status reads a recent `service_health` row and treats an old success as stale; composition still performs authoritative runtime checks. Generate transport uses bounded retry only for transient HTTP statuses, connection failures, and malformed JSON. Separately, the composition layer recognizes a schema-incomplete `done_reason: length` response as generated-token exhaustion because Ollama shares `num_predict` between thinking and final output. It escalates `2048 → 4096 → 8192` without changing thinking, schema, instruction, temperature, or candidate seed. Only a complete normalized unchanged Refine candidate, Create-direction echo, or excluded Create duplicate advances a distinctness candidate; the next candidate receives a new seed and higher temperature. Safe structured logs and failed-run diagnostics retain the operation, failure class, attempts, thinking mode, model/status, output-field presence and lengths, done reason, validation stage, and output-budget metadata without prompt, Creative Direction, or raw reasoning content; non-retryable rejection and terminal timeout/transport/JSON/budget failures remain distinct.
 
-Gallery pages use an explicit scalar projection rather than materializing `Generation` entities. Image counts, display-artifact precedence, favorites, exact-current revision availability, and dependency health are resolved in bounded batch queries. Compiled/submitted graphs, raw history, result diagnostics, and full workflow-profile documents are not selected or JSON-deserialized for cards. Both ordinary and favorite pages use a low constant number of SQL statements independent of page size.
+Gallery pages use an explicit scalar projection rather than materializing `Generation` entities. Image counts, display-artifact precedence, favorites, exact-current revision availability, and dependency health are resolved in bounded batch queries. Compiled/submitted graphs, raw history, result diagnostics, and full workflow-profile documents are not selected or JSON-deserialized for cards. Both ordinary and favorite pages use a low constant number of SQL statements independent of page size. Owner collection lists use one aggregate for all direct generation counts and one windowed preview query for all newest direct thumbnails, avoiding per-collection reads.
 
 Pillow decode/verification, decompressed pixel loading, thumbnail encoding, hashing, and durable filesystem writes run outside the asyncio event loop. Their database ownership transactions use fresh short-lived sessions and clean unowned files on failure or cancellation. Publication validation and catalog commits likewise run off the event loop; SQLite sessions are never passed into those worker threads.
 
@@ -215,18 +215,31 @@ Every HTTP request emits one `http_request_completed` structured log with reques
 The production frontend uses browser-native modules:
 
 - `api.mjs`: same-origin JSON/multipart and CSRF handling.
-- `lib.mjs`: source-input ordering/defaults/validation, finite-choice reconciliation, seed-safe serialization, recall/state helpers.
-- `render.mjs`: escaped semantic HTML for source-driven controls, cards, detail, warnings and service states.
-- `app.mjs`: state transitions, source selection/revision refresh, submission, pagination, SSE and administration.
+- `lib.mjs`: source-input ordering/defaults/validation, finite-choice reconciliation, seed-safe serialization, recall/state and collection-tree helpers.
+- `render.mjs`: escaped semantic HTML for source-driven controls, collection navigation/tiles, cards, detail, warnings and service states.
+- `app.mjs`: state transitions, collection hash routing/CRUD, source selection/revision refresh, submission, pagination, SSE and administration.
 - `styles.css`: design tokens, control geometry, responsive layout, focus and reduced-motion behavior.
 
 The selected source's `interface.inputs` is the only workflow-control schema. Non-advanced controls render before a disclosed Advanced group. The independently configured ComfyUI runtime selector renders beneath **Generate**, **Auto-generate**, and **Creative Direction**, defaults once from `/api/comfyui-instances`, and preserves the user's later choice across health refreshes. Field errors map to public IDs. Warning-only and last-valid cached sources remain usable; loading without a validated cache, unavailable and empty catalogs, or an unavailable selected runtime disable submission with distinct explanations. Automatic Prompt Assistant composition has one in-flight cycle and at most three frontend attempts with bounded exponential backoff. Its retry key includes source/revision, execution runtime, and the Prompt Assistant fingerprint; changes invalidate stale timers and schedule fresh work. Terminal failure unchecks Auto-generate and exposes a persistent accessible paused state with an explicit retry action.
 
-The gallery keeps one object/card per generation and displays its snapshotted execution label in status/history. Changing the current selector never changes existing cards or active-job routing. SSE replaces only the affected durable state. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance. Recall reports whether the historical runtime is still configured and available before restoring the selector; it never submits automatically.
+The gallery is a folder-style collection space. `#/` displays direct top-level collection tiles plus
+unfiled generations; `#/c/<id>` displays direct children and generations of one collection. Each
+generation is accepted with the collection ID captured at submission start, so later navigation
+cannot misfile an in-flight request. Navigation clears the current page and restarts the same
+newest-first keyset pagination under the selected scope. Collection ancestry and subtree displays
+are derived from the owner-scoped flat list, while server checks remain authoritative for ownership,
+cycles, and the five-level limit. Collection preview tiles are fixed 1024px slots; a per-owner switch
+optimistically hides their preview images without changing the global gallery scale.
+
+The gallery keeps one object/card per generation and displays its snapshotted execution label in status/history. Changing the current selector never changes existing cards or active-job routing. SSE replaces only the affected durable state and drops a refreshed card when its `collection_id` does not match the open view. Collection CRUD adds no SSE event in v1: the initiating tab refetches collections after its mutation, while another tab converges on navigation or reload. A terminal generation does not trigger a per-card collection-list refetch, so preview thumbnails may remain stale until that same navigation/reload boundary. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance. Favorites remain global and add the resolved collection name when available. Recall reports whether the historical runtime is still configured and available before restoring the selector; it never submits automatically.
 
 ## Compatibility and migration
 
 Migration `b84f2d6a91c3_add_published_source_results.py` extends existing tables instead of rewriting history. Legacy embedded-contract profiles cease to be current after successful publication discovery, but their generation rows and files remain readable/deletable. New publication revisions coexist immutably so in-flight jobs and exact recall retain the revision they accepted.
+
+Migration `b1e7c4a92d60_add_collections.py` is additive. Historical generations remain unfiled,
+collection previews default on for existing preference rows, and no workflow publication,
+compilation, scheduling, or result-normalization contract changes.
 
 The retired two-file/node-embedded design is not a fallback discovery path. Compatibility fields have a bounded purpose: old stored data and a transitioning frontend, never acceptance of arbitrary or stale graphs. See [`published-workflows.md`](published-workflows.md) for the retirement policy.
 

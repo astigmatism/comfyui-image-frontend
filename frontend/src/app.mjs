@@ -7,6 +7,8 @@ import {
   clientValidate,
   choiceOptions,
   choiceStrengthCompanion,
+  collectionDepth,
+  collectionSubtree,
   comparisonInputs,
   comparisonParametersForRequest,
   createLatestRequestGate,
@@ -35,6 +37,8 @@ import {
   sourceModelSelectors,
 } from "./lib.mjs";
 import {
+  collectionDeleteDialogMarkup,
+  collectionDialogMarkup,
   detailMarkup,
   favoritesMarkup,
   formatGenerationEta,
@@ -45,9 +49,11 @@ import {
   generationRequestBlocked,
   generationSubmissionDisabled,
   loginMarkup,
+  moveDialogMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
+  renderCollectionBar,
   serviceBannerMarkup,
   shellMarkup,
   sourcePickerDialogMarkup,
@@ -103,6 +109,11 @@ const state = {
     error: null,
   },
   speechToText: { available: false, message: null },
+  collections: [],
+  collectionsStatus: "idle",
+  collectionsMessage: null,
+  currentCollectionId: null,
+  collectionPreviewsEnabled: true,
   generations: [],
   nextCursor: null,
   loadingMore: false,
@@ -131,6 +142,7 @@ const state = {
   serviceTimer: null,
   generationEtaTimer: null,
   scaleTimer: null,
+  collectionPreviewsTimer: null,
   observer: null,
   photoViewerGenerationId: null,
   photoViewerTimer: null,
@@ -151,6 +163,9 @@ let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
 let sourcePickerReturnFocus = null;
+let collectionDialogReturnFocus = null;
+let collectionDeleteReturnFocus = null;
+let moveDialogReturnFocus = null;
 let sourceRatingsRevision = 0;
 let sourceRatingsSaveChain = Promise.resolve();
 let sourceColorsRevision = 0;
@@ -168,6 +183,7 @@ let autoGenerateRetryFailures = 0;
 let autoGenerateRetryContext = null;
 let preparedAutoGenerateAssistantFingerprint = null;
 let promptCompositionRequests = 0;
+let collectionNavigationToken = 0;
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
 const TERMINAL_GENERATION_STATUSES = new Set([
@@ -186,6 +202,7 @@ const STARTUP_DEADLINES = {
   services: 8_000,
   comfyuiInstances: 8_000,
   gallery: 15_000,
+  collections: 8_000,
   promptAssistant: 8_000,
   speechToText: 8_000,
   sources: 15_000,
@@ -256,20 +273,40 @@ function bindDelegatedEvents() {
   root.addEventListener("drop", handleDrop);
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
   window.addEventListener("resize", handlePhotoViewerResize);
+  window.addEventListener("hashchange", handleCollectionHashChange);
 }
 
 async function handleSubmit(event) {
+  let submission = null;
   if (event.target.id === "login-form") {
     event.preventDefault();
-    return submitLogin(event.target);
+    submission = submitLogin(event.target);
   }
-  if (event.target.id === "password-form") {
+  else if (event.target.id === "password-form") {
     event.preventDefault();
-    return submitPassword(event.target);
+    submission = submitPassword(event.target);
   }
-  if (event.target.id === "create-user-form") {
+  else if (event.target.id === "create-user-form") {
     event.preventDefault();
-    return submitCreateUser(event.target);
+    submission = submitCreateUser(event.target);
+  }
+  else if (event.target.id === "collection-form") {
+    event.preventDefault();
+    submission = submitCollectionForm(event.target);
+  }
+  else if (event.target.id === "collection-delete-form") {
+    event.preventDefault();
+    submission = submitCollectionDelete(event.target);
+  }
+  else if (event.target.id === "move-generation-form") {
+    event.preventDefault();
+    submission = submitGenerationMove(event.target);
+  }
+  if (!submission) return;
+  try {
+    await submission;
+  } catch (error) {
+    toast(error.message || "Action failed.", "error");
   }
 }
 
@@ -288,6 +325,18 @@ async function handleClick(event) {
   const action = target.dataset.action;
   try {
     if (action === "generate") await generate();
+    else if (action === "open-collection") {
+      event.preventDefault();
+      openCollectionRoute(target.dataset.collectionId || null);
+    }
+    else if (action === "new-collection") openCollectionDialog("create", target);
+    else if (action === "rename-collection") openCollectionDialog("rename", target);
+    else if (action === "cancel-collection-dialog") closeCollectionDialog("cancel");
+    else if (action === "delete-collection") openCollectionDeleteDialog(target);
+    else if (action === "cancel-collection-delete") closeCollectionDeleteDialog("cancel");
+    else if (action === "toggle-collection-previews") toggleCollectionPreviews();
+    else if (action === "move-generation") openMoveDialog(target.dataset.generationId, target);
+    else if (action === "cancel-move-generation") closeMoveDialog("cancel");
     else if (action === "open-generation-source-dialog") openSourcePickerDialog(target);
     else if (action === "cancel-generation-source-dialog") closeSourcePickerDialog("cancel");
     else if (action === "apply-generation-source-dialog") await applySourcePickerDialog();
@@ -447,6 +496,10 @@ async function handleClick(event) {
   }
   if (element.id === "gallery-scale") {
     updateGalleryScale(element.value, true);
+    return;
+  }
+  if (element.matches("#collection-form [name=name]")) {
+    syncCollectionNameValidation(element);
     return;
   }
   if (element.matches("[data-seed-mode]")) {
@@ -899,6 +952,10 @@ function setControlSectionElementOpen(section, open) {
 
 function handleInput(event) {
   const element = event.target;
+  if (element.matches("#collection-form [name=name]")) {
+    syncCollectionNameValidation(element);
+    return;
+  }
   if (
     element.matches(
       "#prompt-editor-dialog [data-prompt-editor-input], #prompt-editor-creative-direction, [name=prompt-editor-assistant-mode], #prompt-editor-thinking-mode",
@@ -1863,6 +1920,8 @@ async function logout() {
   await api("/api/auth/logout", { method: "POST" });
   stopLiveUpdates();
   stopApplicationStartup();
+  window.clearTimeout(state.collectionPreviewsTimer);
+  state.collectionPreviewsTimer = null;
   state.comfyuiInstances = [];
   state.comfyuiInstancesStatus = "idle";
   state.comfyuiInstancesMessage = null;
@@ -1898,6 +1957,11 @@ async function logout() {
   state.servicesMessage = null;
   state.generations = [];
   state.nextCursor = null;
+  state.collections = [];
+  state.collectionsStatus = "idle";
+  state.collectionsMessage = null;
+  state.currentCollectionId = null;
+  state.collectionPreviewsEnabled = true;
   startupGalleryBoundary = null;
   state.galleryStatus = "idle";
   state.galleryMessage = null;
@@ -1930,6 +1994,9 @@ function renderPasswordChange(forced) {
 async function enterApplication() {
   stopLiveUpdates();
   stopApplicationStartup();
+  window.clearTimeout(state.collectionPreviewsTimer);
+  state.collectionPreviewsTimer = null;
+  if (!window.location.hash) window.history.replaceState(null, "", "#/");
   const controller = new AbortController();
   applicationStartupController = controller;
   state.comfyuiInstances = [];
@@ -1947,6 +2014,10 @@ async function enterApplication() {
   state.servicesMessage = null;
   state.generations = [];
   state.nextCursor = null;
+  state.collections = [];
+  state.collectionsStatus = "loading";
+  state.collectionsMessage = null;
+  state.currentCollectionId = collectionIdFromHash();
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
@@ -1974,6 +2045,15 @@ async function enterApplication() {
   document
     .querySelector("#source-picker-dialog")
     ?.addEventListener("close", handleSourcePickerDialogClose);
+  document
+    .querySelector("#collection-dialog")
+    ?.addEventListener("close", handleCollectionDialogClose);
+  document
+    .querySelector("#collection-delete-dialog")
+    ?.addEventListener("close", handleCollectionDeleteDialogClose);
+  document
+    .querySelector("#move-dialog")
+    ?.addEventListener("close", handleMoveDialogClose);
   renderPanel();
   renderGallery();
   renderServiceBanner();
@@ -1992,6 +2072,7 @@ async function enterApplication() {
   });
   const requests = [
     loadStartupPreferences(controller.signal),
+    loadCollections(controller.signal),
     servicesRequest,
     loadStartupComfyuiInstances(controller.signal),
     galleryRequest,
@@ -2022,6 +2103,7 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
     });
     if (signal?.aborted) return;
     state.galleryScale = preferences.gallery_scale;
+    state.collectionPreviewsEnabled = preferences.collection_previews_enabled !== false;
     if (ratingsRevision === sourceRatingsRevision) {
       state.sourceRatings = normalizedSourceRatings(preferences.source_ratings);
       if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
@@ -2032,6 +2114,8 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
       renderGallery();
     }
     applyGalleryScale();
+    renderCollectionBarHost();
+    renderGallery();
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
     toast(`Display preferences unavailable: ${error.message}`, "error");
@@ -2187,6 +2271,96 @@ function selectedComfyuiInstance() {
   );
 }
 
+function collectionIdFromHash(hash = window.location.hash) {
+  const value = String(hash || "");
+  if (!value || value === "#" || value === "#/") return null;
+  const match = value.match(/^#\/c\/([^/?#]+)$/u);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function collectionRouteHash(collectionId) {
+  return collectionId ? `#/c/${encodeURIComponent(collectionId)}` : "#/";
+}
+
+function openCollectionRoute(collectionId) {
+  const nextHash = collectionRouteHash(collectionId);
+  if (window.location.hash === nextHash) {
+    void navigateCollectionView(collectionId);
+    return;
+  }
+  window.history.pushState(null, "", nextHash);
+  void navigateCollectionView(collectionId);
+}
+
+function handleCollectionHashChange() {
+  if (!state.session?.authenticated || !document.querySelector("#collection-bar")) return;
+  const collectionId = collectionIdFromHash();
+  if (window.location.hash && window.location.hash !== collectionRouteHash(collectionId)) {
+    window.history.replaceState(null, "", collectionRouteHash(collectionId));
+  }
+  void navigateCollectionView(collectionId);
+}
+
+async function navigateCollectionView(collectionId) {
+  const token = ++collectionNavigationToken;
+  state.currentCollectionId = collectionId;
+  state.generations = [];
+  state.nextCursor = null;
+  startupGalleryBoundary = null;
+  state.galleryStatus = "loading";
+  state.galleryMessage = null;
+  renderCollectionBarHost();
+  renderGallery();
+  await loadCollections();
+  if (token !== collectionNavigationToken) return;
+  await loadStartupGallery(undefined, { navigationToken: token });
+}
+
+async function loadCollections(signal = applicationStartupController?.signal) {
+  state.collectionsStatus = "loading";
+  state.collectionsMessage = null;
+  renderCollectionBarHost();
+  try {
+    const collections = await startupGet("/api/collections", {
+      operation: "Collections",
+      deadlineMs: STARTUP_DEADLINES.collections,
+      signal,
+    });
+    if (signal?.aborted) return;
+    state.collections = Array.isArray(collections) ? collections : [];
+    state.collectionsStatus = "ready";
+    state.collectionsMessage = null;
+  } catch (error) {
+    if (requestWasAborted(error, signal)) return;
+    state.collectionsStatus = "error";
+    state.collectionsMessage = error.message || "Collections are temporarily unavailable.";
+    toast(state.collectionsMessage, "error");
+  }
+  renderCollectionBarHost();
+  renderGallery();
+}
+
+function renderCollectionBarHost() {
+  const host = document.querySelector("#collection-bar-host");
+  if (!host) return;
+  host.innerHTML = renderCollectionBar(state.collections, state.currentCollectionId, {
+    collectionsStatus: state.collectionsStatus,
+    previewsEnabled: state.collectionPreviewsEnabled,
+  });
+}
+
+function galleryPageUrl(cursor = null, collectionId = state.currentCollectionId) {
+  const parameters = new URLSearchParams({ limit: "24" });
+  if (cursor) parameters.set("cursor", cursor);
+  parameters.set("collection_id", collectionId || "");
+  return `/api/generations?${parameters.toString()}`;
+}
+
 function comfyuiInstancePanelState() {
   return JSON.stringify({
     status: state.comfyuiInstancesStatus,
@@ -2206,17 +2380,26 @@ function comfyuiInstancePanelState() {
   });
 }
 
-async function loadStartupGallery(signal = applicationStartupController?.signal) {
+async function loadStartupGallery(
+  signal = applicationStartupController?.signal,
+  { navigationToken = collectionNavigationToken, allowFallback = true } = {},
+) {
+  const requestCollectionId = state.currentCollectionId;
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   renderGallery();
   try {
-    const page = await startupGet("/api/generations?limit=24", {
+    const page = await startupGet(galleryPageUrl(null, requestCollectionId), {
       operation: "Gallery history",
       deadlineMs: STARTUP_DEADLINES.gallery,
       signal,
     });
-    if (signal?.aborted) return;
+    if (
+      signal?.aborted ||
+      navigationToken !== collectionNavigationToken ||
+      requestCollectionId !== state.currentCollectionId
+    )
+      return;
     const currentById = new Map(state.generations.map((item) => [item.id, item]));
     const incoming = sortGenerationsNewestFirst(Array.isArray(page.items) ? page.items : []);
     startupGalleryBoundary = {
@@ -2231,6 +2414,28 @@ async function loadStartupGallery(signal = applicationStartupController?.signal)
     state.galleryMessage = null;
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
+    if (
+      allowFallback &&
+      requestCollectionId &&
+      error.status === 404 &&
+      navigationToken === collectionNavigationToken
+    ) {
+      toast("That collection is not available. Returning Home.", "error");
+      window.history.replaceState(null, "", "#/");
+      state.currentCollectionId = null;
+      state.generations = [];
+      state.nextCursor = null;
+      await loadCollections(signal);
+      return loadStartupGallery(signal, {
+        navigationToken,
+        allowFallback: false,
+      });
+    }
+    if (
+      navigationToken !== collectionNavigationToken ||
+      requestCollectionId !== state.currentCollectionId
+    )
+      return;
     startupGalleryBoundary = null;
     state.galleryStatus = "error";
     state.galleryMessage = error.message || "Gallery history is temporarily unavailable.";
@@ -3175,6 +3380,7 @@ async function generateSingleSource() {
   const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestCompositionId = state.compositionId;
   const requestComfyuiInstance = selectedComfyuiInstance();
+  const requestCollectionId = state.currentCollectionId;
   if (
     !requestSourceKey ||
     !state.activeSource ||
@@ -3205,6 +3411,7 @@ async function generateSingleSource() {
     const payload = {
       source_key: requestSourceKey,
       comfyui_instance_id: requestComfyuiInstanceId,
+      collection_id: requestCollectionId,
       revision: requestRevision,
       parameters: {
         ...parametersForRequest(contract, state.parameters),
@@ -3216,11 +3423,14 @@ async function generateSingleSource() {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    const belongsToCurrentView = generation.collection_id === state.currentCollectionId;
     const current = state.generations.find((item) => item.id === generation.id);
-    state.generations = sortGenerationsNewestFirst([
-      current || generation,
-      ...state.generations.filter((item) => item.id !== generation.id),
-    ]);
+    if (belongsToCurrentView) {
+      state.generations = sortGenerationsNewestFirst([
+        current || generation,
+        ...state.generations.filter((item) => item.id !== generation.id),
+      ]);
+    }
     if (
       sourceContextIsCurrent(requestSourceKey, requestRevision) &&
       state.compositionId === requestCompositionId
@@ -3228,7 +3438,7 @@ async function generateSingleSource() {
       state.compositionId = null;
       if (requestCompositionId) preparedAutoGenerateAssistantFingerprint = null;
     }
-    upsertGalleryCard(current || generation);
+    if (belongsToCurrentView) upsertGalleryCard(current || generation);
     toast("Generation queued.", "success");
     return true;
   } catch (error) {
@@ -3276,6 +3486,7 @@ async function generateSelectedSources() {
   const requestParameters = structuredClone(state.parameters);
   const sources = selectedGenerationSources();
   const requestComfyuiInstance = selectedComfyuiInstance();
+  const requestCollectionId = state.currentCollectionId;
   if (
     !requestSourceKey ||
     !state.activeSource ||
@@ -3316,6 +3527,7 @@ async function generateSelectedSources() {
       body: JSON.stringify({
         source_key: requestSourceKey,
         comfyui_instance_id: requestComfyuiInstanceId,
+        collection_id: requestCollectionId,
         revision: requestRevision,
         parameters: primaryParameters,
       }),
@@ -3396,6 +3608,7 @@ async function generateSelectedSources() {
         const payload = {
           source_key: targetKey,
           comfyui_instance_id: requestComfyuiInstanceId,
+          collection_id: requestCollectionId,
           revision: structuredClone(sourceRevision(detail)),
           parameters: { ...sharedParameters, ...modelParameters },
         };
@@ -3430,11 +3643,14 @@ async function generateSelectedSources() {
       } else failures.push({ source: target.source, error: result.reason });
     }
 
-    if (queued.length) {
-      const queuedIds = new Set(queued.map((generation) => generation.id));
+    const visibleQueued = queued.filter(
+      (generation) => generation.collection_id === state.currentCollectionId,
+    );
+    if (visibleQueued.length) {
+      const queuedIds = new Set(visibleQueued.map((generation) => generation.id));
       const currentById = new Map(state.generations.map((generation) => [generation.id, generation]));
       state.generations = sortGenerationsNewestFirst([
-        ...queued.map((generation) => currentById.get(generation.id) || generation),
+        ...visibleQueued.map((generation) => currentById.get(generation.id) || generation),
         ...state.generations.filter((generation) => !queuedIds.has(generation.id)),
       ]);
       renderGallery();
@@ -3885,9 +4101,270 @@ function renderGallery() {
     status: state.galleryStatus,
     message: state.galleryMessage,
     sourceColors: state.sourceColors,
+    collections: state.collections,
+    currentCollectionId: state.currentCollectionId,
+    showPreviews: state.collectionPreviewsEnabled,
   });
   const sentinel = document.querySelector("#gallery-sentinel");
   if (sentinel) sentinel.hidden = !state.nextCursor;
+}
+
+function currentCollection() {
+  return (
+    state.collections.find(
+      (collection) => collection.id === state.currentCollectionId,
+    ) || null
+  );
+}
+
+function openCollectionDialog(mode, invokingControl) {
+  const dialog = document.querySelector("#collection-dialog");
+  const collection = mode === "rename" ? currentCollection() : null;
+  if (!dialog || dialog.open || (mode === "rename" && !collection)) return;
+  if (
+    mode === "create" &&
+    state.currentCollectionId &&
+    collectionDepth(state.collections, state.currentCollectionId) >= 5
+  ) {
+    toast("Collections cannot be nested more than 5 levels deep.", "error");
+    return;
+  }
+  collectionDialogReturnFocus = invokingControl;
+  dialog.innerHTML = collectionDialogMarkup({ mode, collection });
+  dialog.showModal();
+  queueMicrotask(() => {
+    const input = dialog.querySelector("[name=name]");
+    input?.focus({ preventScroll: true });
+    if (mode === "rename") input?.select();
+  });
+}
+
+function syncCollectionNameValidation(input) {
+  const form = input?.closest("#collection-form");
+  if (!form) return false;
+  const value = input.value.trim();
+  const error = form.querySelector("#collection-name-error");
+  const submit = form.querySelector('[type="submit"]');
+  let message = "";
+  if (!value) message = "Enter a collection name.";
+  else if (value.length > 100) message = "Use at most 100 characters.";
+  input.setAttribute("aria-invalid", String(Boolean(message)));
+  if (error) error.textContent = message;
+  if (submit) submit.disabled = Boolean(message);
+  return !message;
+}
+
+async function submitCollectionForm(form) {
+  const input = form.elements.name;
+  if (!syncCollectionNameValidation(input)) {
+    input.focus();
+    return;
+  }
+  const mode = form.dataset.collectionMode;
+  const collectionId = form.dataset.collectionId;
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const collection = await api(
+      mode === "rename"
+        ? `/api/collections/${encodeURIComponent(collectionId)}`
+        : "/api/collections",
+      {
+        method: mode === "rename" ? "PATCH" : "POST",
+        body: JSON.stringify({
+          name: input.value.trim(),
+          ...(mode === "rename"
+            ? {}
+            : { parent_id: state.currentCollectionId }),
+        }),
+      },
+    );
+    state.collections = [
+      ...state.collections.filter((item) => item.id !== collection.id),
+      collection,
+    ];
+    closeCollectionDialog("saved");
+    renderCollectionBarHost();
+    renderGallery();
+    await loadCollections();
+    toast(mode === "rename" ? "Collection renamed." : "Collection created.", "success");
+  } catch (error) {
+    submit.disabled = false;
+    throw error;
+  }
+}
+
+function closeCollectionDialog(returnValue) {
+  const dialog = document.querySelector("#collection-dialog");
+  if (dialog?.open) dialog.close(returnValue);
+}
+
+function handleCollectionDialogClose() {
+  const previous = collectionDialogReturnFocus;
+  collectionDialogReturnFocus = null;
+  queueMicrotask(() => {
+    const fallback = document.querySelector('[data-action="new-collection"]');
+    (previous?.isConnected ? previous : fallback)?.focus({ preventScroll: true });
+  });
+}
+
+function openCollectionDeleteDialog(invokingControl) {
+  const dialog = document.querySelector("#collection-delete-dialog");
+  const collection = currentCollection();
+  if (!dialog || dialog.open || !collection) return;
+  const subtree = collectionSubtree(state.collections, collection.id);
+  collectionDeleteReturnFocus = invokingControl;
+  dialog.innerHTML = collectionDeleteDialogMarkup(collection, subtree);
+  dialog.showModal();
+  queueMicrotask(() => dialog.querySelector('[type="submit"]')?.focus());
+}
+
+async function submitCollectionDelete(form) {
+  const collectionId = form.dataset.collectionId;
+  const collection = state.collections.find((item) => item.id === collectionId);
+  if (!collection) return;
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  const response = await fetch(
+    `/api/collections/${encodeURIComponent(collectionId)}`,
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "X-CSRF-Token": state.session.csrf_token },
+    },
+  );
+  if (![202, 204].includes(response.status)) {
+    const payload = await response.json();
+    submit.disabled = false;
+    throw new Error(payload.error?.message || "Collection deletion failed.");
+  }
+  const subtreeIds = new Set(
+    collectionSubtree(state.collections, collectionId).map((item) => item.id),
+  );
+  state.collections = state.collections.filter((item) => !subtreeIds.has(item.id));
+  state.generations = state.generations.filter(
+    (generation) => !subtreeIds.has(generation.collection_id),
+  );
+  closeCollectionDeleteDialog("deleted");
+  toast(
+    response.status === 202
+      ? "Collection removed. Active generations are being cancelled and deleted."
+      : "Collection and its contents were deleted.",
+    "success",
+  );
+  openCollectionRoute(collection.parent_id || null);
+}
+
+function closeCollectionDeleteDialog(returnValue) {
+  const dialog = document.querySelector("#collection-delete-dialog");
+  if (dialog?.open) dialog.close(returnValue);
+}
+
+function handleCollectionDeleteDialogClose() {
+  const previous = collectionDeleteReturnFocus;
+  collectionDeleteReturnFocus = null;
+  queueMicrotask(() => {
+    const fallback = document.querySelector("#collection-bar a, #collection-bar button");
+    (previous?.isConnected ? previous : fallback)?.focus({ preventScroll: true });
+  });
+}
+
+function openMoveDialog(generationId, invokingControl) {
+  const dialog = document.querySelector("#move-dialog");
+  const generation = state.generations.find((item) => item.id === generationId);
+  if (!dialog || dialog.open || !generation) return;
+  moveDialogReturnFocus = invokingControl;
+  dialog.innerHTML = moveDialogMarkup(generation, state.collections);
+  dialog.showModal();
+  queueMicrotask(() => dialog.querySelector("input:checked")?.focus());
+}
+
+async function submitGenerationMove(form) {
+  const generationId = form.dataset.generationId;
+  const generation = state.generations.find((item) => item.id === generationId);
+  const selected = form.querySelector('[name="collection_id"]:checked');
+  if (!generation || !selected) return;
+  const previousCollectionId = generation.collection_id ?? null;
+  const collectionId = selected.value || null;
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const moved = await api(
+      `/api/generations/${encodeURIComponent(generationId)}/move`,
+      {
+        method: "POST",
+        body: JSON.stringify({ collection_id: collectionId }),
+      },
+    );
+    updateCollectionGenerationCount(previousCollectionId, -1);
+    updateCollectionGenerationCount(moved.collection_id, 1);
+    const index = state.generations.findIndex((item) => item.id === generationId);
+    if (index >= 0) state.generations[index] = moved;
+    closeMoveDialog("moved");
+    if (moved.collection_id !== state.currentCollectionId) {
+      removeGalleryGeneration(generationId);
+    } else {
+      upsertGalleryCard(moved);
+    }
+    renderGallery();
+    await loadCollections();
+    const destination = moved.collection_id
+      ? state.collections.find((item) => item.id === moved.collection_id)?.name ||
+        "collection"
+      : "Home";
+    toast(`Moved to ${destination}.`, "success");
+  } catch (error) {
+    submit.disabled = false;
+    throw error;
+  }
+}
+
+function updateCollectionGenerationCount(collectionId, delta) {
+  if (!collectionId) return;
+  state.collections = state.collections.map((collection) =>
+    collection.id === collectionId
+      ? {
+          ...collection,
+          generation_count: Math.max(
+            0,
+            (Number(collection.generation_count) || 0) + delta,
+          ),
+        }
+      : collection,
+  );
+}
+
+function closeMoveDialog(returnValue) {
+  const dialog = document.querySelector("#move-dialog");
+  if (dialog?.open) dialog.close(returnValue);
+}
+
+function handleMoveDialogClose() {
+  const previous = moveDialogReturnFocus;
+  moveDialogReturnFocus = null;
+  queueMicrotask(() => {
+    const fallback = document.querySelector("#gallery [data-action=move-generation]");
+    (previous?.isConnected ? previous : fallback)?.focus({ preventScroll: true });
+  });
+}
+
+function toggleCollectionPreviews() {
+  state.collectionPreviewsEnabled = !state.collectionPreviewsEnabled;
+  renderCollectionBarHost();
+  renderGallery();
+  window.clearTimeout(state.collectionPreviewsTimer);
+  state.collectionPreviewsTimer = window.setTimeout(async () => {
+    try {
+      await api("/api/preferences", {
+        method: "PUT",
+        body: JSON.stringify({
+          collection_previews_enabled: state.collectionPreviewsEnabled,
+        }),
+      });
+    } catch {
+      toast("Collection preview preference could not be saved.", "error");
+    }
+  }, 250);
 }
 
 function upsertGalleryCard(generation) {
@@ -3913,7 +4390,9 @@ async function loadMore() {
   if (!state.nextCursor || state.loadingMore) return;
   state.loadingMore = true;
   try {
-    const page = await api(`/api/generations?limit=24&cursor=${encodeURIComponent(state.nextCursor)}`);
+    const requestCollectionId = state.currentCollectionId;
+    const page = await api(galleryPageUrl(state.nextCursor, requestCollectionId));
+    if (requestCollectionId !== state.currentCollectionId) return;
     const known = new Set(state.generations.map((item) => item.id));
     for (const item of page.items) {
       if (!known.has(item.id)) state.generations.push(item);
@@ -3940,13 +4419,22 @@ function setupPaginationObserver() {
   state.observer.observe(sentinel);
 }
 
-async function refreshGeneration(id, { insertIf = () => true } = {}) {
+async function refreshGeneration(
+  id,
+  {
+    insertIf = (detail) => detail.collection_id === state.currentCollectionId,
+  } = {},
+) {
   const refreshToken = generationRefreshGate.issue(id);
   try {
     let detail = await api(`/api/generations/${id}`);
     if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
     const index = state.generations.findIndex((item) => item.id === id);
     const previous = index >= 0 ? state.generations[index] : null;
+    if (detail.collection_id !== state.currentCollectionId) {
+      if (index >= 0) removeGalleryGeneration(id);
+      return;
+    }
     if (
       previous?.progress &&
       !TERMINAL_GENERATION_STATUSES.has(detail.status) &&
@@ -3960,7 +4448,11 @@ async function refreshGeneration(id, { insertIf = () => true } = {}) {
       state.generations[index].display_artifact?.kind !== "image" &&
       detail.display_artifact?.kind === "image";
     if (index >= 0) state.generations[index] = detail;
-    else if (insertIf(detail)) state.generations.unshift(detail);
+    else if (
+      detail.collection_id === state.currentCollectionId &&
+      insertIf(detail)
+    )
+      state.generations.unshift(detail);
     else return;
     state.generations = sortGenerationsNewestFirst(state.generations);
     upsertGalleryCard(detail);
@@ -4125,7 +4617,11 @@ async function openFavorites() {
 function renderFavoritesDialog() {
   const dialog = document.querySelector("#favorites-dialog");
   if (!dialog) return;
-  dialog.innerHTML = favoritesMarkup(state.favorites, state.favoritesNextCursor);
+  dialog.innerHTML = favoritesMarkup(
+    state.favorites,
+    state.favoritesNextCursor,
+    state.collections,
+  );
 }
 
 async function loadMoreFavorites() {
@@ -4514,6 +5010,7 @@ async function cancelGeneration(id, button) {
       removeGeneration(id);
       const detailDialog = document.querySelector("#detail-dialog");
       if (detailDialog?.dataset.generationId === id) detailDialog.close();
+      await loadCollections();
       toast("Queued generation cancelled and removed.", "success");
       return;
     }
@@ -4548,9 +5045,11 @@ async function deleteGeneration(id) {
   if (response.status === 204) {
     removeGeneration(id);
     document.querySelector("#detail-dialog")?.close();
+    await loadCollections();
     toast("Generation deleted.", "success");
   } else {
     await refreshGeneration(id);
+    await loadCollections();
     toast("Cancellation and deletion are being reconciled.", "success");
   }
 }
@@ -4563,6 +5062,17 @@ function removeGeneration(id) {
   state.favorites = state.favorites.filter((item) => item.generation.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
   if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
+  if (!state.generations.length) renderGallery();
+  else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
+  scheduleAutoGenerate();
+}
+
+function removeGalleryGeneration(id) {
+  generationRefreshGate.invalidate(id);
+  const closesPhotoViewer = state.photoViewerGenerationId === id;
+  if (closesPhotoViewer) closePhotoViewer();
+  state.generations = state.generations.filter((item) => item.id !== id);
+  document.querySelector(`#gallery [data-generation-id="${CSS.escape(id)}"]`)?.remove();
   if (!state.generations.length) renderGallery();
   else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
   scheduleAutoGenerate();

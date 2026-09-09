@@ -335,16 +335,59 @@ Successful validation:
 
 Invalid compilation returns the standard error envelope with field errors rather than queuing. `POST /api/generations` returns HTTP 201 and a generation summary only after the generation/source snapshot, selected execution ID/current label, effective parameters, graph, instance-specific queue item, and initial event are committed. That execution ID pins input upload, prompt submission, WebSocket progress, queue/history polling, `/view` result retrieval, interruption/cancellation, and related errors. Changing the browser selector after HTTP 201 affects only later requests.
 
-Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_outputs`, and `expected_identity` remain in the envelope for the pre-publication browser. New clients must not use them. They resolve only to current validated publications and do not restore legacy discovery.
+`collection_id` is an optional nullable field in the canonical generation request. A non-null value
+must identify a collection owned by the current user and is frozen into the accepted row in the
+same transaction as the request snapshot; omitted or null means unfiled at the gallery root.
+Temporary migration aliases `profile_id`, `controls`, `preset_id`, `requested_outputs`, and
+`expected_identity` remain in the envelope for the pre-publication browser. New clients must not use
+them. They resolve only to current validated publications and do not restore legacy discovery.
+
+## Collections and gallery scope
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/collections` | Flat owner collection list with direct counts and up to four direct image previews |
+| `POST` | `/api/collections` | Create a named top-level or child collection |
+| `PATCH` | `/api/collections/{id}` | Rename and/or move a collection |
+| `DELETE` | `/api/collections/{id}` | Recursively delete a collection subtree and its generations; `202` while active deletion reconciles |
+| `POST` | `/api/generations/{id}/move` | Move an owned generation to a collection or to unfiled root |
+
+Collections are returned as a flat `created_at, id` ordered list; clients construct the tree from
+`parent_id`. Names are trimmed and must contain 1–100 characters. Duplicate sibling names are
+allowed. Parents are owner-scoped, nesting is limited to five collection levels, and moves reject
+self-parenting, descendants, and any placement that would push the moved subtree below level five.
+Cross-owner collection, parent, generation, and move-target IDs return `not_found`/404 even for
+administrators.
+
+A collection response includes `generation_count` for direct, non-pending-delete generations and
+`previews` containing at most four newest direct image artifact thumbnails. Descendant contents do
+not contribute to either field. Collection deletion removes descendants deepest-first, reuses the
+normal generation deletion lifecycle (including owned artifact/upload cleanup), and writes one
+content-free `collection_deleted` audit record per removed collection.
+
+`PATCH` distinguishes an omitted `parent_id` from explicit null: omission leaves the parent
+unchanged, while `{"parent_id": null}` moves the collection to the top level. `GenerationMove`
+uses the same explicit null as the unfiled root destination.
+
+Gallery listing has three compatibility-preserving modes:
+
+- omitted `collection_id`: the historical unscoped owner timeline;
+- present but empty `collection_id=`: only unfiled root generations;
+- non-empty `collection_id=<id>`: only direct generations in that owned collection.
+
+The two scoped modes exclude `pending_delete` rows and preserve the existing newest-first
+`(accepted_at, id)` cursor. The unscoped mode retains its prior pending-row behavior for existing
+consumers.
 
 ## Generation summaries and detail
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/generations?limit=40&cursor=...` | Newest-first owner page |
+| `GET` | `/api/generations?limit=40&cursor=...&collection_id=` | Newest-first owner page; collection parameter scopes to unfiled or one collection |
 | `GET` | `/api/generations/{id}` | Complete owner-scoped generation/result detail |
 | `GET` | `/api/generations/{id}/recall` | Exact current-publication recall payload |
 | `POST` | `/api/generations/{id}/cancel` | Request running cancellation, or cancel and delete a queued item (`204`) |
+| `POST` | `/api/generations/{id}/move` | Move to an owned collection; null unfiles to root |
 | `DELETE` | `/api/generations/{id}` | Delete owned history/files; may return 202 while active deletion reconciles |
 
 A summary contains lifecycle status, source display name, `checkpoint_label` (null when the
@@ -354,7 +397,8 @@ active `progress` snapshot, total artifact count, image count, final-image count
 `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native
 `prompt_id`, `source_key`, and `publication_id`. The active snapshot may include a cached completion
 estimate under `progress.eta`. The display artifact is a gallery convenience selected from the
-workflow-authored final when available.
+workflow-authored final when available. `collection_id` is null for unfiled generations and otherwise
+identifies the generation's current collection.
 
 Determinate progress is explicitly local to the current ComfyUI node:
 
@@ -525,8 +569,8 @@ The transcription request is multipart with one `file` field whose media type is
 | `GET` | `/api/favorites?limit=40&cursor=...` | Newest-first owner favorites |
 | `PUT` | `/api/generations/{id}/favorite` | Idempotently bookmark an owned generation |
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
-| `GET` | `/api/preferences` | Read owner gallery scale and generation-source ratings |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or source ratings from 1 through 5 |
+| `GET` | `/api/preferences` | Read owner gallery scale, collection-preview switch, and generation-source ratings |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100, `collection_previews_enabled`, and/or source ratings from 1 through 5 |
 
 ## Authentication and account routes
 

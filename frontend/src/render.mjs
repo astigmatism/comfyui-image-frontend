@@ -1,5 +1,8 @@
 import {
   controlPresentation,
+  collectionAncestors,
+  collectionDepth,
+  collectionTreeRows,
   escapeHtml,
   formatTimelineMonth,
   formatLocalDate,
@@ -88,6 +91,10 @@ export function shellMarkup(state) {
       <button class="panel-scrim" data-action="close-panel" aria-label="Close generation controls"></button>
       <main class="gallery-viewport" id="gallery-viewport">
         <div id="service-banner"></div>
+        <div id="collection-bar-host">${renderCollectionBar(state.collections, state.currentCollectionId, {
+          collectionsStatus: state.collectionsStatus,
+          previewsEnabled: state.collectionPreviewsEnabled,
+        })}</div>
         <div id="gallery" class="gallery-grid" aria-live="polite"></div>
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
@@ -97,6 +104,9 @@ export function shellMarkup(state) {
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
       <dialog id="source-picker-dialog" class="source-picker-dialog" aria-label="Generation sources"></dialog>
+      <dialog id="collection-dialog" class="collection-dialog"></dialog>
+      <dialog id="collection-delete-dialog" class="collection-delete-dialog"></dialog>
+      <dialog id="move-dialog" class="move-dialog"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     </div>`;
 }
@@ -1418,20 +1428,130 @@ function speechButtonMarkup(targetId, label, controlDisabled = false) {
   return `<button type="button" class="icon-button speech-button" data-action="toggle-speech-recording" data-speech-target="${escapeHtml(targetId)}" data-speech-label="${escapeHtml(label)}" data-speech-control-disabled="${controlDisabled}" aria-label="Start voice input for ${escapeHtml(label)}" aria-pressed="false" title="Start voice input for ${escapeHtml(label)}" ${controlDisabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7" /></svg></button>`;
 }
 
-export function galleryMarkup(generations, { status = "ready", message = null, sourceColors = {} } = {}) {
+export function galleryMarkup(
+  generations,
+  {
+    status = "ready",
+    message = null,
+    sourceColors = {},
+    collections = [],
+    currentCollectionId = null,
+    showPreviews = true,
+  } = {},
+) {
+  const tiles = collections
+    .filter((collection) => (collection.parent_id ?? null) === currentCollectionId)
+    .map((collection) => collectionTileMarkup(collection, { showPreviews }))
+    .join("");
+  const tileGrid = tiles ? `<div class="collection-grid">${tiles}</div>` : "";
   const cards = sortGenerationsNewestFirst(generations)
     .map((generation) => galleryCardMarkup(generation, sourceColors))
     .join("");
   if (status === "loading") {
-    return `<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
+    return `${tileGrid}<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
   }
   if (status === "error") {
-    return `<section class="gallery-status gallery-error" role="alert"><h2>Gallery temporarily unavailable</h2><p>${escapeHtml(message || "Retained history could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry gallery</button></section>${cards}`;
+    return `${tileGrid}<section class="gallery-status gallery-error" role="alert"><h2>Gallery temporarily unavailable</h2><p>${escapeHtml(message || "Retained history could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry gallery</button></section>${cards}`;
   }
-  if (!generations.length) {
+  if (!generations.length && !tiles) {
+    if (currentCollectionId) {
+      return `<section class="empty-gallery empty-collection"><h2>This collection is empty</h2><p>Generate images here, or move cards in.</p></section>`;
+    }
     return `<section class="empty-gallery"><h2>No generations yet</h2><p>Choose a source, set a prompt, and queue the first image.</p></section>`;
   }
-  return cards;
+  return `${tileGrid}${cards}`;
+}
+
+const FOLDER_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6.5h6l2 2H21v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 9h18" /></svg>`;
+
+export function collectionTileMarkup(collection, { showPreviews = true } = {}) {
+  const previews = Array.isArray(collection?.previews)
+    ? collection.previews.slice(0, 4)
+    : [];
+  const count = Math.max(0, Number(collection?.generation_count) || 0);
+  const name = String(collection?.name || "");
+  const showGrid = Boolean(showPreviews && previews.length);
+  const preview = showGrid
+    ? `<div class="collection-preview-grid">${Array.from({ length: 4 }, (_, index) => {
+        const item = previews[index];
+        return item
+          ? `<span class="collection-preview-cell"><img loading="lazy" src="${escapeHtml(item.thumbnail_url)}" alt="" /></span>`
+          : `<span class="collection-preview-cell collection-preview-empty">${index === previews.length ? FOLDER_ICON : ""}</span>`;
+      }).join("")}</div>`
+    : `<div class="collection-folder-glyph">${FOLDER_ICON}</div>`;
+  return `<button type="button" class="collection-tile" data-action="open-collection" data-collection-id="${escapeHtml(collection?.id || "")}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
+    <span class="collection-tile-preview">${preview}</span>
+    <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="collection-count" aria-label="${count} ${count === 1 ? "generation" : "generations"}">${count}</span></span>
+  </button>`;
+}
+
+export function renderCollectionBar(
+  collections,
+  currentCollectionId,
+  { collectionsStatus = "ready", previewsEnabled = true } = {},
+) {
+  const ancestors = collectionAncestors(collections, currentCollectionId);
+  const current = ancestors.at(-1) || null;
+  const crumbs = [
+    currentCollectionId
+      ? '<a href="#/" data-action="open-collection" data-collection-id="">Home</a>'
+      : '<span aria-current="location">Home</span>',
+    ...ancestors.map((collection, index) =>
+      index === ancestors.length - 1
+        ? `<span aria-current="location">${escapeHtml(collection.name)}</span>`
+        : `<a href="#/c/${encodeURIComponent(collection.id)}" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}">${escapeHtml(collection.name)}</a>`,
+    ),
+  ].join('<span class="collection-crumb-separator" aria-hidden="true">/</span>');
+  const loading = collectionsStatus === "loading";
+  const atDepthCap = currentCollectionId && collectionDepth(collections, currentCollectionId) >= 5;
+  return `<nav id="collection-bar" class="collection-bar" aria-label="Collections">
+    <div class="collection-crumbs">${crumbs}</div>
+    <div class="collection-toolbar-actions">
+      <span class="app-switch collection-previews-switch"><span>Previews</span><button type="button" class="app-switch-track" data-action="toggle-collection-previews" role="switch" aria-label="Collection previews" aria-checked="${Boolean(previewsEnabled)}"><span class="app-switch-thumb" aria-hidden="true"></span></button></span>
+      <button type="button" class="button secondary low" data-action="new-collection" ${loading || atDepthCap ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}">New collection</button>
+      ${current ? '<button type="button" class="button low" data-action="rename-collection">Rename collection</button><button type="button" class="button destructive low" data-action="delete-collection">Delete collection</button>' : ""}
+    </div>
+  </nav>`;
+}
+
+export function collectionDialogMarkup({ mode = "create", collection = null } = {}) {
+  const rename = mode === "rename";
+  const value = rename ? String(collection?.name || "") : "";
+  return `<form id="collection-form" class="dialog-frame collection-dialog-frame" data-collection-mode="${rename ? "rename" : "create"}" ${collection?.id ? `data-collection-id="${escapeHtml(collection.id)}"` : ""}>
+    <header class="dialog-header"><div><h2>${rename ? "Rename collection" : "New collection"}</h2><p>${rename ? "Choose a new name for this collection." : "Create a collection in the current location."}</p></div><button type="button" class="icon-button" data-action="cancel-collection-dialog" aria-label="Cancel">×</button></header>
+    <div class="collection-dialog-content"><label class="field"><span>Name</span><input name="name" maxlength="100" value="${escapeHtml(value)}" autocomplete="off" required aria-describedby="collection-name-help collection-name-error" /></label><p id="collection-name-help" class="help-text">1–100 characters. Duplicate names are allowed.</p><p id="collection-name-error" class="field-error" role="alert"></p></div>
+    <footer class="dialog-actions"><button type="button" class="button secondary" data-action="cancel-collection-dialog">Cancel</button><button type="submit" class="button primary" ${value.trim() ? "" : "disabled"}>${rename ? "Save" : "Create collection"}</button></footer>
+  </form>`;
+}
+
+export function collectionDeleteDialogMarkup(collection, subtree) {
+  const items = Array.isArray(subtree) ? subtree : [];
+  const generations = items.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.generation_count) || 0),
+    0,
+  );
+  const descendantCollections = Math.max(0, items.length - 1);
+  return `<form id="collection-delete-form" class="dialog-frame collection-delete-frame" data-collection-id="${escapeHtml(collection?.id || "")}">
+    <header class="dialog-header"><div><h2>Delete collection?</h2><p>This action permanently removes its contents.</p></div><button type="button" class="icon-button" data-action="cancel-collection-delete" aria-label="Cancel">×</button></header>
+    <div class="collection-dialog-content"><p>Delete <strong>‘${escapeHtml(collection?.name || "")}’</strong> and everything inside?</p><p>This permanently deletes <strong>${generations}</strong> ${generations === 1 ? "generation" : "generations"} across <strong>${descendantCollections}</strong> descendant ${descendantCollections === 1 ? "collection" : "collections"}. This cannot be undone.</p></div>
+    <footer class="dialog-actions"><button type="button" class="button secondary" data-action="cancel-collection-delete">Cancel</button><button type="submit" class="button destructive">Delete everything</button></footer>
+  </form>`;
+}
+
+export function moveDialogMarkup(generation, collections) {
+  const selectedId = generation?.collection_id ?? null;
+  const rows = collectionTreeRows(collections);
+  const options = [
+    `<label class="move-option"><input type="radio" name="collection_id" value="" ${selectedId === null ? "checked" : ""} /><span>Home <small>Unfiled</small></span></label>`,
+    ...rows.map(({ collection, depth }) =>
+      `<label class="move-option" style="--collection-depth: ${depth}"><input type="radio" name="collection_id" value="${escapeHtml(collection.id)}" ${collection.id === selectedId ? "checked" : ""} /><span>${escapeHtml(collection.name)}</span></label>`,
+    ),
+  ].join("");
+  return `<form id="move-generation-form" class="dialog-frame move-dialog-frame" data-generation-id="${escapeHtml(generation?.id || "")}">
+    <header class="dialog-header"><div><h2>Move to collection</h2><p>Choose where this generation appears.</p></div><button type="button" class="icon-button" data-action="cancel-move-generation" aria-label="Cancel">×</button></header>
+    <div class="move-dialog-content" role="radiogroup" aria-label="Collection destination">${options}</div>
+    <footer class="dialog-actions"><button type="button" class="button secondary" data-action="cancel-move-generation">Cancel</button><button type="submit" class="button primary">Move</button></footer>
+  </form>`;
 }
 
 export function galleryCardMarkup(generation, sourceColors = {}) {
@@ -1702,6 +1822,8 @@ export function cardFooterMarkup(generation, sourceColors = {}) {
     || "Load this request into the generation panel";
   return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
+  </button><button type="button" class="move-generation-button" data-action="move-generation" data-generation-id="${escapeHtml(generation.id)}" aria-label="Move to collection" title="Move to collection">
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v10H3Z" /><path d="m11 13 2-2 2 2m-2-2v6" /></svg>
   </button>${deleteGenerationButtonMarkup(generation)}</div></footer>`;
 }
 
@@ -1760,14 +1882,14 @@ export function photoViewerMarkup(
       ${deleteGenerationButtonMarkup(generation, "photo-viewer-delete photo-viewer-control")}
       <div class="photo-viewer-toggle photo-viewer-slideshow photo-viewer-control" data-photo-toggle-state="${playbackMode}" role="group" aria-label="Playback mode">
         <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-playback" data-photo-playback-mode="hold" aria-pressed="${playbackMode === "hold"}">Hold</button>
-        <button type="button" class="photo-viewer-toggle-switch" data-action="toggle-photo-slideshow" role="switch" aria-label="Slideshow mode" aria-checked="${playbackMode === "slideshow"}"><span class="photo-viewer-toggle-thumb" aria-hidden="true"></span></button>
+        <button type="button" class="photo-viewer-toggle-switch app-switch-track" data-action="toggle-photo-slideshow" role="switch" aria-label="Slideshow mode" aria-checked="${playbackMode === "slideshow"}"><span class="photo-viewer-toggle-thumb app-switch-thumb" aria-hidden="true"></span></button>
         <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-playback" data-photo-playback-mode="slideshow" aria-pressed="${playbackMode === "slideshow"}">Slideshow</button>
       </div>
       <div class="photo-viewer-view-controls" role="group" aria-label="Image sizing">
         <button type="button" class="photo-viewer-one-to-one photo-viewer-control" data-action="set-photo-view" data-photo-view-mode="actual" aria-pressed="${viewMode === "actual"}" title="Show one image pixel per screen pixel">1:1</button>
         <div class="photo-viewer-toggle photo-viewer-mode photo-viewer-control" data-photo-toggle-state="${viewMode}">
           <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-view" data-photo-view-mode="fit" aria-pressed="${viewMode === "fit"}">Fit</button>
-          <button type="button" class="photo-viewer-toggle-switch" data-action="toggle-photo-view" role="switch" aria-label="Fill image" aria-checked="${viewMode === "fill"}"><span class="photo-viewer-toggle-thumb" aria-hidden="true"></span></button>
+          <button type="button" class="photo-viewer-toggle-switch app-switch-track" data-action="toggle-photo-view" role="switch" aria-label="Fill image" aria-checked="${viewMode === "fill"}"><span class="photo-viewer-toggle-thumb app-switch-thumb" aria-hidden="true"></span></button>
           <button type="button" class="photo-viewer-toggle-label" data-action="set-photo-view" data-photo-view-mode="fill" aria-pressed="${viewMode === "fill"}">Fill</button>
         </div>
       </div>
@@ -1788,9 +1910,9 @@ export function favoriteButtonMarkup(generation, extraClasses = "") {
   </button>`;
 }
 
-export function favoritesMarkup(favorites, nextCursor = null) {
+export function favoritesMarkup(favorites, nextCursor = null, collections = []) {
   const list = favorites.length
-    ? `<div class="favorites-list">${favorites.map(favoriteItemMarkup).join("")}</div>`
+    ? `<div class="favorites-list">${favorites.map((favorite) => favoriteItemMarkup(favorite, collections)).join("")}</div>`
     : '<section class="empty-favorites"><div class="empty-favorite-heart" aria-hidden="true">♡</div><h3>No favorites yet</h3><p>Use the heart on a gallery item to save it here.</p></section>';
   return `<div class="dialog-frame favorites-frame">
     <header class="dialog-header"><div><h2>Favorites</h2><p>Your saved generations, visible only to you.</p></div><button type="button" class="icon-button" data-action="close-favorites" aria-label="Close Favorites">×</button></header>
@@ -1799,7 +1921,7 @@ export function favoritesMarkup(favorites, nextCursor = null) {
   </div>`;
 }
 
-function favoriteItemMarkup(favorite) {
+function favoriteItemMarkup(favorite, collections = []) {
   const generation = favorite.generation;
   const artifact = generation.display_artifact;
   const sourceName = generationSourceName(generation);
@@ -1811,10 +1933,13 @@ function favoriteItemMarkup(favorite) {
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
+  const collectionName = generation.collection_id
+    ? collections.find((collection) => collection.id === generation.collection_id)?.name
+    : null;
   return `<article class="favorite-item" data-favorite-id="${escapeHtml(favorite.id)}" data-generation-id="${escapeHtml(generation.id)}">
     <div class="favorite-thumbnail">${media}</div>
     <div class="favorite-details">
-      <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>${runtimeName ? `${escapeHtml(runtimeName)} · ` : ""}Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}</p></div></div>
+      <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>${runtimeName ? `${escapeHtml(runtimeName)} · ` : ""}Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}${collectionName ? ` · <span class="favorite-collection">${escapeHtml(collectionName)}</span>` : ""}</p></div></div>
       <p class="favorite-prompt">${escapeHtml(favorite.final_prompt || "No prompt was retained.")}</p>
       <div class="favorite-actions">
         <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(recallTitle)}">Recall</button>

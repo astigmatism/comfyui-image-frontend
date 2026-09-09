@@ -9,6 +9,10 @@ import {
   autoGenerationPromptAssistantFingerprint,
   clientValidate,
   choiceStrengthCompanion,
+  collectionAncestors,
+  collectionDepth,
+  collectionSubtree,
+  collectionTreeRows,
   comparisonInputs,
   comparisonInterface,
   comparisonParametersForRequest,
@@ -46,6 +50,36 @@ import {
   sourceModelSelectors,
   validTimelineMonth,
 } from "../src/lib.mjs";
+
+test("collection tree helpers resolve ancestry, subtree membership, depth, and display rows", () => {
+  const collections = [
+    { id: "alpha", parent_id: null, name: "Alpha" },
+    { id: "beta", parent_id: "alpha", name: "Beta" },
+    { id: "gamma", parent_id: "beta", name: "Gamma" },
+    { id: "other", parent_id: null, name: "Other" },
+  ];
+  assert.deepEqual(
+    collectionAncestors(collections, "gamma").map((item) => item.id),
+    ["alpha", "beta", "gamma"],
+  );
+  assert.equal(collectionDepth(collections, "gamma"), 3);
+  assert.deepEqual(
+    collectionSubtree(collections, "alpha").map((item) => item.id),
+    ["alpha", "beta", "gamma"],
+  );
+  assert.deepEqual(
+    collectionTreeRows(collections).map(({ collection, depth }) => [
+      collection.id,
+      depth,
+    ]),
+    [
+      ["alpha", 1],
+      ["beta", 2],
+      ["gamma", 3],
+      ["other", 1],
+    ],
+  );
+});
 
 test("timeline months validate exactly and format without a local-midnight shift", () => {
   assert.equal(validTimelineMonth("2026-01"), "2026-01");

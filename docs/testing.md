@@ -67,6 +67,9 @@ pinned runtime labels in status/history/detail, field errors,
 loading/ready/warning/offline/unavailable/empty source states, multiple artifacts,
 unmapped output provenance, recall, favorites, accessible markup, nested ETA rendering, and a local
 absolute-timestamp countdown that does not require server timer ticks or restart on stale rerenders.
+Collection unit/render coverage includes ancestry, depth, subtree and display-tree helpers; escaped
+fixed-slot tiles and four-image previews; breadcrumbs and the persisted switch; required-name,
+recursive-delete, and move-dialog markup; and collection-specific empty states.
 
 ## Integration coverage
 
@@ -91,6 +94,9 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - exact recall and unavailable/republished source behavior;
 - migration up/down/up with old rows, execution-ID/label backfill, per-instance health, and instance-queue indexes;
 - authentication, CSRF, IDOR/admin content denial, uploads, favorites/preferences, deletion, and Ollama provenance regressions.
+- collection CRUD/name/depth/cycle/subtree rules, owner isolation, direct counts/previews, scoped
+  cursor pagination, generation filing/moves, preview preference migration/defaults, terminal and
+  active recursive deletion, content-free audits, file cleanup, and bounded scoped/list queries;
 - progressive browser bootstrap with optional-service delay/failure, named safe-method deadlines, and mutation single-send behavior;
 - cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, response-only and thinking-only structured output, unchanged-refinement redraw and bounded exhaustion, transient generate recovery, thinking-enabled `done_reason: length` budget escalation for Create and Refine, stable seed/temperature/schema semantics across escalation, distinctness-attempt separation, bounded privacy-safe exhaustion, precise terminal failure diagnostics, authoritative final ComfyUI prompt replacement, and the server-side minor-safety boundary;
 - constant-query gallery/favorites pages, forbidden detail-JSON SQL assertions, summary parity, artifact precedence, and owner isolation;
@@ -107,7 +113,7 @@ silently uses the fake service.
 
 ## Browser journeys
 
-`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. Auto-generate journeys also verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
+`frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. It also covers collection creation/rename/navigation, in-collection generation, preview preference persistence, moving a completed card, and recursive collection deletion. Auto-generate journeys verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
 Run browser tests alone:
 
@@ -124,11 +130,13 @@ PYTHONPATH=backend pytest -q backend/tests/unit/test_comfyui_adapter.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_workflow_registry.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_compiler.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_results.py
+PYTHONPATH=backend pytest -q backend/tests/unit/test_collections.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_workflows_and_prompt_assistant.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_generation_lifecycle.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_comfyui_instance_routing.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_queue_and_recovery.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_gallery_query_performance.py
+PYTHONPATH=backend pytest -q backend/tests/integration/test_collections.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_storage_and_sse_responsiveness.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_shutdown_observability.py
 cd frontend && node --test test/*.test.mjs

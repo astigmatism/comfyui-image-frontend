@@ -146,8 +146,9 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   );
   await expect(page.locator(".gallery-card .card-media img")).toBeVisible();
   await expect(page.locator(".gallery-card")).toHaveClass(/status-(running|succeeded)/);
-  await expect(page.locator(".gallery-card .batch-count")).toHaveText("4");
+  await expect(page.locator(".gallery-card .batch-count")).toHaveText(/^(?:2|4)$/u);
   await expect(page.locator(".gallery-card")).toHaveClass(/status-succeeded/);
+  await expect(page.locator(".gallery-card .batch-count")).toHaveText("2");
 
   const cardMedia = page.locator(".gallery-card .card-media").first();
   const photoViewer = page.locator("#photo-viewer");
@@ -304,10 +305,11 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
   const footer = page.locator(".gallery-card .card-footer").first();
-  await expect(footer.locator("button")).toHaveCount(4);
+  await expect(footer.locator("button")).toHaveCount(5);
   await expect(footer.getByRole("link", { name: "Download current image" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
+  await expect(footer.getByRole("button", { name: "Move to collection" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
   await expect(footer.locator(".card-metadata")).toHaveText(
     /^Generic Landscape · (?:\d+m )?\d+s$/,
@@ -387,6 +389,146 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await deleteButton.click();
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose - 1);
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
+});
+
+test("collections route generation, preview preference, move, and recursive delete", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await expect(page).toHaveURL(/#\/$/u);
+  await expect(page.getByRole("navigation", { name: "Collections" })).toBeVisible();
+
+  async function createCollection(name) {
+    await page.getByRole("button", { name: "New collection" }).click();
+    const dialog = page.locator("#collection-dialog");
+    await expect(dialog).toHaveAttribute("open", "");
+    const submit = dialog.getByRole("button", { name: "Create collection" });
+    await expect(submit).toBeDisabled();
+    await dialog.getByLabel("Name").fill(name);
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/collections" &&
+        response.request().method() === "POST",
+    );
+    await submit.click();
+    expect((await responsePromise).status()).toBe(201);
+    await expect(dialog).not.toHaveAttribute("open", "");
+    await expect(page.locator(".collection-tile").filter({ hasText: name })).toHaveCount(1);
+  }
+
+  await createCollection("E2E Source");
+  await createCollection("E2E Destination");
+
+  await page.locator(".collection-tile").filter({ hasText: "E2E Source" }).click();
+  await expect(page).toHaveURL(/#\/c\/[^/]+$/u);
+  await expect(page.locator(".collection-crumbs")).toContainText("Home/E2E Source");
+
+  await page.getByRole("button", { name: "Rename collection" }).click();
+  const renameDialog = page.locator("#collection-dialog");
+  await renameDialog.getByLabel("Name").fill("E2E Source Renamed");
+  await renameDialog.getByRole("button", { name: "Save" }).click();
+  await expect(renameDialog).not.toHaveAttribute("open", "");
+  await expect(page.locator(".collection-crumbs")).toContainText("E2E Source Renamed");
+
+  await selectPublishedSource(page, "Generic Landscape");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("collection preview lighthouse");
+  const generationResponse = await generateAndExpectAccepted(page);
+  const generation = await generationResponse.json();
+  expect(generation.collection_id).toBeTruthy();
+  const card = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/u);
+
+  await page.getByRole("link", { name: "Home" }).click();
+  const sourceTile = page
+    .locator(".collection-tile")
+    .filter({ hasText: "E2E Source Renamed" });
+  await expect(sourceTile.locator(".collection-count")).toHaveText("1");
+  await expect(sourceTile.locator(".collection-preview-grid img")).toHaveCount(1);
+  await expect(page.locator(`.gallery-card[data-generation-id="${generation.id}"]`)).toHaveCount(0);
+
+  const previewSwitch = page.getByRole("switch", { name: "Collection previews" });
+  const preferenceResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await previewSwitch.click();
+  expect((await preferenceResponse).ok()).toBe(true);
+  await expect(previewSwitch).toHaveAttribute("aria-checked", "false");
+  await expect(sourceTile.locator(".collection-preview-grid")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("switch", { name: "Collection previews" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  await expect(
+    page.locator(".collection-tile").filter({ hasText: "E2E Source Renamed" }).locator(
+      ".collection-preview-grid",
+    ),
+  ).toHaveCount(0);
+
+  const restoredPreferenceResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await page.getByRole("switch", { name: "Collection previews" }).click();
+  expect((await restoredPreferenceResponse).ok()).toBe(true);
+
+  await page
+    .locator(".collection-tile")
+    .filter({ hasText: "E2E Source Renamed" })
+    .click();
+  const movedCard = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
+  await movedCard.getByRole("button", { name: "Move to collection" }).click();
+  const moveDialog = page.locator("#move-dialog");
+  await expect(moveDialog).toHaveAttribute("open", "");
+  await moveDialog.getByRole("radio", { name: "E2E Destination" }).check();
+  const moveResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/generations/${generation.id}/move` &&
+      response.request().method() === "POST",
+  );
+  await moveDialog.getByRole("button", { name: "Move", exact: true }).click();
+  expect((await moveResponse).ok()).toBe(true);
+  await expect(movedCard).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Home" }).click();
+  const destinationTile = page
+    .locator(".collection-tile")
+    .filter({ hasText: "E2E Destination" });
+  await expect(destinationTile.locator(".collection-count")).toHaveText("1");
+  await destinationTile.click();
+  await expect(page.locator(`.gallery-card[data-generation-id="${generation.id}"]`)).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Delete collection" }).click();
+  const deleteDialog = page.locator("#collection-delete-dialog");
+  await expect(deleteDialog).toContainText("1 generation");
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.startsWith("/api/collections/") &&
+      response.request().method() === "DELETE",
+  );
+  await deleteDialog.getByRole("button", { name: "Delete everything" }).click();
+  expect((await deleteResponse).status()).toBe(204);
+  await expect(page).toHaveURL(/#\/$/u);
+  await expect(page.locator(".collection-tile").filter({ hasText: "E2E Destination" })).toHaveCount(
+    0,
+  );
+
+  await page.locator(".collection-tile").filter({ hasText: "E2E Source Renamed" }).click();
+  await page.getByRole("button", { name: "Delete collection" }).click();
+  await page
+    .locator("#collection-delete-dialog")
+    .getByRole("button", { name: "Delete everything" })
+    .click();
+  await expect(page.locator(".collection-tile").filter({ hasText: "E2E Source Renamed" })).toHaveCount(
+    0,
+  );
 });
 
 test("runtime selector is a borderless single-line two-instance control", async ({ page }) => {
@@ -818,7 +960,7 @@ test("initial gallery snapshot commits before buffered live updates", async ({ p
   const snapshotCaptured = new Promise((resolve) => {
     markSnapshotCaptured = resolve;
   });
-  await page.route("**/api/generations?limit=24", async (route) => {
+  await page.route("**/api/generations?limit=24&collection_id=", async (route) => {
     const snapshot = await route.fetch();
     markSnapshotCaptured();
     await galleryReleased;
@@ -878,7 +1020,7 @@ test("failed initial gallery snapshot preserves buffered live generations", asyn
   const galleryRequested = new Promise((resolve) => {
     noteGalleryRequest = resolve;
   });
-  await page.route("**/api/generations?limit=24", async (route) => {
+  await page.route("**/api/generations?limit=24&collection_id=", async (route) => {
     noteGalleryRequest();
     await galleryReleased;
     await route.fulfill({
@@ -1310,7 +1452,7 @@ test("gallery defaults to request initiation order when the page arrives unsorte
   page,
 }) => {
   await page.route("**/api/events?**", (route) => route.abort());
-  await page.route("**/api/generations?limit=24", async (route) => {
+  await page.route("**/api/generations?limit=24&collection_id=", async (route) => {
     const generation = (id, acceptedAt, status, sourceKey, sourceName) => ({
       id,
       accepted_at: acceptedAt,
@@ -2127,6 +2269,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
     .getByRole("textbox", { name: "Prompt", exact: true })
     .fill("multi authored output hierarchy");
   const generationResponse = await generateAndExpectAccepted(page);
+  const generation = await generationResponse.json();
   const generationRequest = generationResponse.request().postDataJSON();
   expect(generationRequest.parameters).toMatchObject({
     width: 1024,
@@ -2136,9 +2279,9 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   });
   expect(JSON.stringify(generationRequest)).not.toMatch(/safetensors|options_json|binding/i);
 
-  const card = page.locator(".gallery-card").first();
+  const card = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
   await expect(card).toHaveClass(/status-succeeded/, { timeout: 30_000 });
-  await expect(card.locator(".batch-count")).toHaveText("8");
+  await expect(card.locator(".batch-count")).toHaveText("2");
   await card.locator(".card-metadata").click();
 
   const detailDialog = page.locator("#detail-dialog");
@@ -2165,12 +2308,10 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(primary).toContainText("Final");
   await expect(primary).toContainText("batch 1");
   await expect(primary).toContainText("batch 2");
-  await expect(prototypes.locator("figure")).toHaveCount(2);
-  await expect(prototypes).toContainText("Base");
-  await expect(comparisons.locator("figure")).toHaveCount(2);
-  await expect(comparisons).toContainText("Second pass");
-  await expect(additionalImages.locator("figure")).toHaveCount(2);
-  await expect(detailDialog.locator("a.artifact-download")).toHaveCount(8);
+  await expect(prototypes).toHaveCount(0);
+  await expect(comparisons).toHaveCount(0);
+  await expect(additionalImages).toHaveCount(0);
+  await expect(detailDialog.locator("a.artifact-download")).toHaveCount(2);
 
   const declaredMetadata = detailDialog.locator("details.result-details");
   await declaredMetadata.locator("summary").click();

@@ -7,6 +7,75 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+export function collectionAncestors(collections, collectionId) {
+  const byId = new Map(
+    (Array.isArray(collections) ? collections : []).map((collection) => [
+      collection.id,
+      collection,
+    ]),
+  );
+  const result = [];
+  const seen = new Set();
+  let current = byId.get(collectionId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    result.unshift(current);
+    current = current.parent_id ? byId.get(current.parent_id) : null;
+  }
+  return result;
+}
+
+export function collectionDepth(collections, collectionId) {
+  return collectionAncestors(collections, collectionId).length;
+}
+
+export function collectionSubtree(collections, collectionId) {
+  const source = Array.isArray(collections) ? collections : [];
+  const byParent = new Map();
+  for (const collection of source) {
+    const key = collection.parent_id ?? null;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(collection);
+  }
+  const result = [];
+  const pending = source.some((collection) => collection.id === collectionId)
+    ? [collectionId]
+    : [];
+  const seen = new Set();
+  while (pending.length) {
+    const id = pending.shift();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const collection = source.find((item) => item.id === id);
+    if (!collection) continue;
+    result.push(collection);
+    pending.push(...(byParent.get(id) || []).map((item) => item.id));
+  }
+  return result;
+}
+
+export function collectionTreeRows(collections) {
+  const source = Array.isArray(collections) ? collections : [];
+  const byParent = new Map();
+  for (const collection of source) {
+    const key = collection.parent_id ?? null;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(collection);
+  }
+  const rows = [];
+  const seen = new Set();
+  const visit = (parentId, depth) => {
+    for (const collection of byParent.get(parentId) || []) {
+      if (seen.has(collection.id)) continue;
+      seen.add(collection.id);
+      rows.push({ collection, depth });
+      visit(collection.id, depth + 1);
+    }
+  };
+  visit(null, 1);
+  return rows;
+}
+
 const TIMELINE_MONTH_PATTERN = /^(?:19|20|21)\d{2}-(?:0[1-9]|1[0-2])$/u;
 
 export function validTimelineMonth(value) {

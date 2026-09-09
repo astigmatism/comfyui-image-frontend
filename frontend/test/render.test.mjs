@@ -3,6 +3,9 @@ import test from "node:test";
 
 import {
   cardFooterMarkup,
+  collectionDeleteDialogMarkup,
+  collectionDialogMarkup,
+  collectionTileMarkup,
   controlMarkup,
   detailMarkup,
   favoritesMarkup,
@@ -15,6 +18,8 @@ import {
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
+  moveDialogMarkup,
+  renderCollectionBar,
   serviceBannerMarkup,
   sourceColorFor,
   sourcePickerDialogMarkup,
@@ -1417,10 +1422,11 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
-  assert.equal((html.match(/<button/g) || []).length, 4);
+  assert.equal((html.match(/<button/g) || []).length, 5);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
+  assert.match(html, /data-action="move-generation"[^>]+aria-label="Move to collection"/);
   assert.match(html, /aria-label="Recall settings"[^>]*>[\s\S]*?<svg[^>]+viewBox="0 0 24 24"/);
   assert.doesNotMatch(html, />Recall settings<\/button>/);
   assert.match(html, /data-action="delete-generation"[^>]+aria-label="Delete generation"/);
@@ -2379,4 +2385,102 @@ test("generation detail retains metadata and presents authored roles with every 
   assert.ok(html.indexOf("Prototypes and earlier passes") < html.indexOf("Comparisons and alternates"));
   assert.match(html, /batch 1/);
   assert.match(html, /batch 2/);
+});
+
+test("collection tiles escape names, cap previews at four, and collapse previews", () => {
+  const collection = {
+    id: "collection-1",
+    name: '<Alpine & "Friends">',
+    generation_count: 7,
+    previews: Array.from({ length: 5 }, (_, index) => ({
+      generation_id: `generation-${index}`,
+      artifact_id: `artifact-${index}`,
+      thumbnail_url: `/api/artifacts/artifact-${index}/thumbnail?x=<unsafe>`,
+    })),
+  };
+  const html = collectionTileMarkup(collection, { showPreviews: true });
+  assert.match(html, /data-action="open-collection"/);
+  assert.match(
+    html,
+    /Open collection &lt;Alpine &amp; &quot;Friends&quot;&gt;, 7 generations/,
+  );
+  assert.equal((html.match(/<img /g) || []).length, 4);
+  assert.doesNotMatch(html, /artifact-4/);
+  assert.match(html, /&lt;Alpine &amp; &quot;Friends&quot;&gt;/);
+  assert.match(html, /aria-label="7 generations"/);
+
+  const partial = collectionTileMarkup(
+    { ...collection, previews: collection.previews.slice(0, 2) },
+    { showPreviews: true },
+  );
+  assert.equal((partial.match(/collection-preview-empty/g) || []).length, 2);
+  const collapsed = collectionTileMarkup(collection, { showPreviews: false });
+  assert.doesNotMatch(collapsed, /<img /);
+  assert.match(collapsed, /collection-folder-glyph/);
+
+  const gallery = galleryMarkup([], { collections: [collection] });
+  assert.match(gallery, /<div class="collection-grid"><button[^>]+collection-tile/);
+});
+
+test("collection bar renders escaped crumbs, current location, and preview switch state", () => {
+  const collections = [
+    { id: "alpha", parent_id: null, name: "Alpha" },
+    { id: "beta", parent_id: "alpha", name: "Beta <private>" },
+  ];
+  const html = renderCollectionBar(collections, "beta", {
+    collectionsStatus: "ready",
+    previewsEnabled: false,
+  });
+  assert.match(html, /aria-label="Collections"/);
+  assert.match(html, /data-collection-id="alpha">Alpha<\/a>/);
+  assert.match(
+    html,
+    /aria-current="location">Beta &lt;private&gt;<\/span>/,
+  );
+  assert.match(html, /role="switch"[^>]+aria-checked="false"/);
+  assert.match(html, /data-action="new-collection"/);
+  assert.match(html, /data-action="rename-collection"/);
+  assert.match(html, /data-action="delete-collection"/);
+});
+
+test("collection dialogs require a name and move destinations render as an indented tree", () => {
+  const create = collectionDialogMarkup({ mode: "create" });
+  assert.match(create, /id="collection-form"/);
+  assert.match(create, /name="name"[^>]+required/);
+  assert.match(create, /type="submit"[^>]+disabled/);
+  assert.doesNotMatch(create, /Untitled|New folder/);
+
+  const collections = [
+    { id: "alpha", parent_id: null, name: "Alpha" },
+    { id: "beta", parent_id: "alpha", name: "Beta & Co" },
+  ];
+  const move = moveDialogMarkup(
+    { id: "generation-1", collection_id: "beta" },
+    collections,
+  );
+  assert.match(move, /Home <small>Unfiled<\/small>/);
+  assert.match(move, /style="--collection-depth: 2"/);
+  assert.match(move, /Beta &amp; Co/);
+  assert.match(move, /value="beta" checked/);
+
+  const removal = collectionDeleteDialogMarkup(
+    { id: "alpha", name: "Alpha" },
+    [
+      { id: "alpha", generation_count: 2 },
+      { id: "beta", generation_count: 3 },
+    ],
+  );
+  assert.match(removal, /permanently deletes <strong>5<\/strong> generations/);
+  assert.match(removal, /<strong>1<\/strong> descendant collection/);
+});
+
+test("an empty collection gets collection-specific empty copy", () => {
+  const html = galleryMarkup([], {
+    status: "ready",
+    collections: [],
+    currentCollectionId: "collection-1",
+  });
+  assert.match(html, /This collection is empty/);
+  assert.match(html, /Generate images here, or move cards in/);
+  assert.doesNotMatch(html, /No generations yet/);
 });

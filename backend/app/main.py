@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .api import (
     admin,
     auth,
+    collections,
     comfyui_instances,
     events,
     favorites,
@@ -347,6 +348,7 @@ def create_app(
     app.include_router(prompt_assistant.router)
     app.include_router(speech_to_text.router)
     app.include_router(preferences.router)
+    app.include_router(collections.router)
     app.include_router(generations.router)
     app.include_router(favorites.router)
     app.include_router(events.router)

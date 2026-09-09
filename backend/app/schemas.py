@@ -64,12 +64,14 @@ class PreferenceResponse(APIModel):
     gallery_scale: int
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
+    collection_previews_enabled: bool = True
 
 
 class PreferenceUpdate(APIModel):
     gallery_scale: int | None = Field(default=None, ge=0, le=100)
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
+    collection_previews_enabled: bool | None = None
 
     @field_validator("source_ratings")
     @classmethod
@@ -110,6 +112,7 @@ class PreferenceUpdate(APIModel):
             self.gallery_scale is None
             and self.source_ratings is None
             and self.source_colors is None
+            and self.collection_previews_enabled is None
         ):
             raise ValueError("at least one preference field is required")
         return self
@@ -195,6 +198,7 @@ class GenerationCreate(APIModel):
     parameters: dict[str, Any] | None = None
     revision: SourceRevision | None = None
     prompt_assistant_run_id: str | None = None
+    collection_id: str | None = None
     comfyui_instance_id: str | None = Field(
         default=None,
         min_length=1,
@@ -332,11 +336,70 @@ class GenerationSummary(APIModel):
     prompt_id: str | None = None
     source_key: str | None = None
     publication_id: str | None = None
+    collection_id: str | None = None
 
 
 class GenerationPage(APIModel):
     items: list[GenerationSummary]
     next_cursor: str | None = None
+
+
+class CollectionCreate(APIModel):
+    name: str = Field(min_length=1, max_length=100)
+    parent_id: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("collection name is required")
+        if len(normalized) > 100:
+            raise ValueError("collection name must be at most 100 characters")
+        return normalized
+
+
+class CollectionUpdate(APIModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_id: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("collection name is required")
+        if len(normalized) > 100:
+            raise ValueError("collection name must be at most 100 characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_update_fields(self) -> CollectionUpdate:
+        if self.name is None and "parent_id" not in self.model_fields_set:
+            raise ValueError("at least one collection field is required")
+        return self
+
+
+class CollectionPreview(APIModel):
+    generation_id: str
+    artifact_id: str
+    thumbnail_url: str
+
+
+class Collection(APIModel):
+    id: str
+    parent_id: str | None
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    generation_count: int
+    previews: list[CollectionPreview] = Field(default_factory=list)
+
+
+class GenerationMove(APIModel):
+    collection_id: str | None = None
 
 
 class GenerationDetail(GenerationSummary):

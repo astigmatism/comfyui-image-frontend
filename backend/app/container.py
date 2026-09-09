@@ -11,6 +11,7 @@ from .db import Database
 from .domain.compiler import WorkflowCompiler
 from .services.assets import AssetStore
 from .services.auth import AuthService
+from .services.collections import CollectionService
 from .services.comfyui import ComfyUIAdapter
 from .services.comfyui_instances import ComfyUIInstances
 from .services.event_broker import EventBroker
@@ -59,6 +60,7 @@ class AppContainer:
             comfyui_instances=self.comfyui_instances,
             broker=self.broker,
         )
+        self.collections = CollectionService(self.generations)
         self.user_deletion = UserDeletionService(
             session_factory=self.db.session_factory,
             auth=self.auth,

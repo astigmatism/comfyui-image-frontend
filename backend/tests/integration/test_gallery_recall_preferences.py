@@ -41,6 +41,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 45,
             "source_ratings": {},
             "source_colors": {},
+            "collection_previews_enabled": True,
         }
 
         saved = first.put(
@@ -49,7 +50,12 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             json={"gallery_scale": 93},
         )
         assert saved.status_code == 200
-        assert saved.json() == {"gallery_scale": 93, "source_ratings": {}, "source_colors": {}}
+        assert saved.json() == {
+            "gallery_scale": 93,
+            "source_ratings": {},
+            "source_colors": {},
+            "collection_previews_enabled": True,
+        }
         ratings_saved = first.put(
             "/api/preferences",
             headers={"X-CSRF-Token": csrf(first)},
@@ -60,7 +66,15 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
+            "collection_previews_enabled": True,
         }
+        previews_saved = first.put(
+            "/api/preferences",
+            headers={"X-CSRF-Token": csrf(first)},
+            json={"collection_previews_enabled": False},
+        )
+        assert previews_saved.status_code == 200
+        assert previews_saved.json()["collection_previews_enabled"] is False
         assert (
             first.put(
                 "/api/preferences",
@@ -100,6 +114,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
+            "collection_previews_enabled": False,
         }
 
 

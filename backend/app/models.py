@@ -153,6 +153,7 @@ class UserPreference(Base):
     gallery_scale: Mapped[int] = mapped_column(Integer, nullable=False, default=45)
     source_ratings_json: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
     source_colors_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    collection_previews_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
@@ -277,6 +278,24 @@ class PromptAssistantRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Collection(Base):
+    __tablename__ = "collections"
+    __table_args__ = (Index("ix_collections_owner_parent", "owner_id", "parent_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("collections.id", ondelete="RESTRICT")
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class Generation(Base):
     __tablename__ = "generations"
     __table_args__ = (
@@ -290,11 +309,21 @@ class Generation(Base):
         ),
         Index("ix_generations_timing_audit", "status", "completed_at", "id"),
         Index("ix_generations_prompt_id", "comfyui_prompt_id"),
+        Index(
+            "ix_generations_owner_collection_accepted",
+            "owner_id",
+            "collection_id",
+            "accepted_at",
+            "id",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     owner_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    collection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("collections.id", ondelete="SET NULL")
     )
     status: Mapped[GenerationStatus] = mapped_column(
         Enum(GenerationStatus), nullable=False, default=GenerationStatus.QUEUED

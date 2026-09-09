@@ -19,6 +19,7 @@ from ..models import Artifact
 from ..schemas import (
     GenerationCreate,
     GenerationDetail,
+    GenerationMove,
     GenerationPage,
     GenerationSummary,
     RecallResponse,
@@ -61,9 +62,31 @@ def list_generations(
     context: Annotated[AuthContext, Depends(require_ready_user)],
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=60)] = 24,
+    collection_id: Annotated[str | None, Query()] = None,
 ) -> GenerationPage:
     return get_container(request).generations.list_page(
-        session, owner_id=context.user.id, cursor=cursor, limit=limit
+        session,
+        owner_id=context.user.id,
+        cursor=cursor,
+        limit=limit,
+        collection_id=collection_id or None,
+        collection_scoped=collection_id is not None,
+    )
+
+
+@router.post("/generations/{generation_id}/move", response_model=GenerationSummary)
+def move_generation(
+    generation_id: str,
+    payload: GenerationMove,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> GenerationSummary:
+    return get_container(request).generations.move(
+        session,
+        owner_id=context.user.id,
+        generation_id=generation_id,
+        payload=payload,
     )
 
 

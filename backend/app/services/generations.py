@@ -24,6 +24,7 @@ from ..models import (
     Artifact,
     ArtifactState,
     AuditLog,
+    Collection,
     ComfyUIInstanceHealth,
     Favorite,
     Generation,
@@ -44,6 +45,7 @@ from ..schemas import (
     FavoriteSummary,
     GenerationCreate,
     GenerationDetail,
+    GenerationMove,
     GenerationPage,
     GenerationProgress,
     GenerationSummary,
@@ -68,6 +70,7 @@ RECALL_SOURCE_WARNING = (
 @dataclass(frozen=True)
 class _GenerationSummaryRow:
     id: str
+    collection_id: str | None
     status: GenerationStatus
     workflow_display_name: str
     checkpoint_label: str | None
@@ -146,6 +149,7 @@ class GenerationService:
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> ValidationResult:
         self._instance_for_request(session, request, require_available=False)
+        self._collection_for_owner(session, user.id, request.collection_id)
         profile = self._profile_for_request(session, request)
         result = self._compile(session, user=user, profile=profile, request=request)
         return ValidationResult(
@@ -159,6 +163,7 @@ class GenerationService:
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> GenerationSummary:
         instance = self._instance_for_request(session, request, require_available=True)
+        collection = self._collection_for_owner(session, user.id, request.collection_id)
         profile = self._profile_for_request(session, request)
         prompt_run = self._verify_prompt_run(session, user, request.prompt_assistant_run_id)
         effective_request = self._apply_prompt_assistant_output(profile, request, prompt_run)
@@ -167,6 +172,7 @@ class GenerationService:
         queue_seq = self._next_queue_sequence(session)
         generation = Generation(
             owner_id=user.id,
+            collection_id=collection.id if collection is not None else None,
             status=GenerationStatus.QUEUED,
             queue_seq=queue_seq,
             comfyui_instance_id=instance.id,
@@ -494,6 +500,24 @@ class GenerationService:
             raise AppError("not_found", "Generation was not found.", status_code=404)
         return generation
 
+    @staticmethod
+    def _collection_for_owner(
+        session: Session,
+        owner_id: str,
+        collection_id: str | None,
+    ) -> Collection | None:
+        if collection_id is None:
+            return None
+        collection = session.scalar(
+            select(Collection).where(
+                Collection.id == collection_id,
+                Collection.owner_id == owner_id,
+            )
+        )
+        if collection is None:
+            raise AppError("not_found", "Collection was not found.", status_code=404)
+        return collection
+
     def list_page(
         self,
         session: Session,
@@ -501,9 +525,18 @@ class GenerationService:
         owner_id: str,
         cursor: str | None,
         limit: int,
+        collection_id: str | None = None,
+        collection_scoped: bool = False,
     ) -> GenerationPage:
         limit = max(1, min(limit, 60))
         statement = select(*_summary_projection()).where(Generation.owner_id == owner_id)
+        if collection_scoped:
+            self._collection_for_owner(session, owner_id, collection_id)
+            statement = statement.where(Generation.pending_delete.is_(False))
+            if collection_id is None:
+                statement = statement.where(Generation.collection_id.is_(None))
+            else:
+                statement = statement.where(Generation.collection_id == collection_id)
         if cursor:
             cursor_time, cursor_id = _decode_cursor(cursor)
             statement = statement.where(
@@ -759,6 +792,7 @@ class GenerationService:
         status = row.status.value if isinstance(row.status, GenerationStatus) else str(row.status)
         return GenerationSummary(
             id=row.id,
+            collection_id=row.collection_id,
             status=status,
             workflow_display_name=row.workflow_display_name,
             checkpoint_label=row.checkpoint_label,
@@ -854,6 +888,7 @@ class GenerationService:
         )
         return GenerationSummary(
             id=generation.id,
+            collection_id=generation.collection_id,
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
             checkpoint_label=_checkpoint_label(
@@ -897,6 +932,20 @@ class GenerationService:
             source_key=(generation.generation_source_json or {}).get("source_key"),
             publication_id=(generation.generation_source_json or {}).get("publication_id"),
         )
+
+    def move(
+        self,
+        session: Session,
+        *,
+        owner_id: str,
+        generation_id: str,
+        payload: GenerationMove,
+    ) -> GenerationSummary:
+        generation = self.get_owned(session, owner_id, generation_id)
+        collection = self._collection_for_owner(session, owner_id, payload.collection_id)
+        generation.collection_id = collection.id if collection is not None else None
+        session.commit()
+        return self.summary(session, generation)
 
     def detail(self, session: Session, generation: Generation) -> GenerationDetail:
         summary = self.summary(session, generation)
@@ -1437,6 +1486,7 @@ def _summary_projection() -> tuple[Any, ...]:
 
     return (
         Generation.id.label("id"),
+        Generation.collection_id.label("collection_id"),
         Generation.status.label("status"),
         Generation.workflow_display_name.label("workflow_display_name"),
         checkpoint_column().label("checkpoint_label"),
@@ -1481,6 +1531,7 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
     values = row._mapping
     return _GenerationSummaryRow(
         id=str(values["id"]),
+        collection_id=values["collection_id"],
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),
         checkpoint_label=values["checkpoint_label"],

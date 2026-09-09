@@ -7,6 +7,7 @@ from alembic import command
 from alembic.config import Config
 from app.models import (
     Artifact,
+    Collection,
     Favorite,
     Generation,
     GenerationStatus,
@@ -22,7 +23,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "c5d7f1a8e392"
+HEAD_REVISION = "b1e7c4a92d60"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -249,6 +250,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert preference.gallery_scale == 73
         assert preference.source_ratings_json == {}
         assert preference.source_colors_json == {}
+        assert preference.collection_previews_enabled is True
         assert profile is not None
         assert profile.instance_id is None
         assert profile.source_key is None
@@ -277,6 +279,8 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert generation.progress_json is None
         assert generation.comfyui_instance_id == "default"
         assert generation.comfyui_instance_label == "default"
+        assert generation.collection_id is None
+        assert session.scalar(select(func.count()).select_from(Collection)) == 0
         assert session.scalar(select(func.count()).select_from(GenerationTimingProfile)) == 0
         assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 0
 
@@ -381,12 +385,19 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "artifacts",
         "workflow_profiles",
         "favorites",
+        "collections",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }
     assert "source_colors_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
+    assert "collection_previews_enabled" in {
+        column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
+    assert "collection_id" in {
+        column["name"] for column in inspect(engine).get_columns("generations")
     }
     assert "thinking_enabled" in {
         column["name"] for column in inspect(engine).get_columns("prompt_assistant_runs")
@@ -396,6 +407,12 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     }
     assert "ix_generations_instance_queue" in {
         index["name"] for index in inspect(engine).get_indexes("generations")
+    }
+    assert "ix_generations_owner_collection_accepted" in {
+        index["name"] for index in inspect(engine).get_indexes("generations")
+    }
+    assert "ix_collections_owner_parent" in {
+        index["name"] for index in inspect(engine).get_indexes("collections")
     }
 
     command.downgrade(config, "base")

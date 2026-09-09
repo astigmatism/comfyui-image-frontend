@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.main import create_app
-from app.models import Artifact, ArtifactState, Favorite, Generation, GenerationStatus
+from app.models import Artifact, ArtifactState, Collection, Favorite, Generation, GenerationStatus
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
 from tests.conftest import change_password, create_user, login
@@ -15,7 +15,12 @@ from tests.helpers import (
 
 
 def _statement_count_for_page(
-    client: TestClient, owner_id: str, limit: int
+    client: TestClient,
+    owner_id: str,
+    limit: int,
+    *,
+    collection_id: str | None = None,
+    collection_scoped: bool = False,
 ) -> tuple[int, list[str]]:
     statements: list[str] = []
     engine = client.app.state.container.db.engine
@@ -38,6 +43,8 @@ def _statement_count_for_page(
                 owner_id=owner_id,
                 cursor=None,
                 limit=limit,
+                collection_id=collection_id,
+                collection_scoped=collection_scoped,
             )
             assert len(page.items) == limit
     finally:
@@ -100,6 +107,31 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
         assert one_count == page_count == 6
 
         with client.app.state.container.db.session_factory() as session:
+            collection = Collection(owner_id=str(user["id"]), name="Performance")
+            session.add(collection)
+            session.flush()
+            session.query(Generation).filter(
+                Generation.id.in_([item["id"] for item in generations])
+            ).update({Generation.collection_id: collection.id}, synchronize_session=False)
+            session.commit()
+            collection_id = collection.id
+        one_scoped_count, scoped_statements = _statement_count_for_page(
+            client,
+            str(user["id"]),
+            1,
+            collection_id=collection_id,
+            collection_scoped=True,
+        )
+        page_scoped_count, page_scoped_statements = _statement_count_for_page(
+            client,
+            str(user["id"]),
+            24,
+            collection_id=collection_id,
+            collection_scoped=True,
+        )
+        assert one_scoped_count == page_scoped_count == 7
+
+        with client.app.state.container.db.session_factory() as session:
             session.add_all(
                 Favorite(owner_id=str(user["id"]), generation_id=item["id"]) for item in generations
             )
@@ -119,6 +151,8 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
             [
                 *one_statements,
                 *page_statements,
+                *scoped_statements,
+                *page_scoped_statements,
                 *one_favorite_statements,
                 *favorite_page_statements,
             ]
