@@ -391,6 +391,81 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
 });
 
+test("collection tiles match square generation cards and follow gallery scale", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+
+  await page.getByRole("button", { name: "New collection" }).click();
+  const dialog = page.locator("#collection-dialog");
+  await dialog.getByLabel("Name").fill("E2E Gallery Scale");
+  const createResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/collections" &&
+      response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Create collection" }).click();
+  expect((await createResponse).status()).toBe(201);
+
+  const tile = page.locator(".collection-tile").filter({ hasText: "E2E Gallery Scale" });
+  await expect(tile).toBeVisible();
+  const scale = page.locator("#gallery-scale");
+  await scale.evaluate((input) => {
+    input.value = "0";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.locator("#gallery").evaluate((gallery) => {
+    const card = document.createElement("article");
+    card.className = "gallery-card collection-size-reference";
+    card.innerHTML = '<div class="card-media-frame"></div><footer class="card-footer"></footer>';
+    gallery.append(card);
+  });
+  const collectionGeometry = async () =>
+    page.evaluate(() => {
+      const tileElement = [...document.querySelectorAll(".collection-tile")].find((element) =>
+        element.textContent.includes("E2E Gallery Scale"),
+      );
+      const preview = tileElement?.querySelector(".collection-tile-preview");
+      const card = document.querySelector(".collection-size-reference");
+      const media = card?.querySelector(".card-media-frame");
+      return {
+        tileWidth: tileElement?.getBoundingClientRect().width || 0,
+        previewWidth: preview?.getBoundingClientRect().width || 0,
+        previewHeight: preview?.getBoundingClientRect().height || 0,
+        cardWidth: card?.getBoundingClientRect().width || 0,
+        mediaHeight: media?.getBoundingClientRect().height || 0,
+      };
+    });
+  const compactGeometry = await collectionGeometry();
+  expect(compactGeometry.tileWidth).toBeCloseTo(compactGeometry.cardWidth, 0);
+  expect(compactGeometry.previewWidth).toBeCloseTo(compactGeometry.previewHeight, 0);
+  expect(compactGeometry.previewHeight).toBeCloseTo(compactGeometry.mediaHeight, 0);
+
+  await scale.evaluate((input) => {
+    input.value = "75";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect.poll(async () => (await collectionGeometry()).tileWidth).toBeGreaterThan(
+    compactGeometry.tileWidth,
+  );
+  const enlargedGeometry = await collectionGeometry();
+  expect(enlargedGeometry.tileWidth).toBeCloseTo(enlargedGeometry.cardWidth, 0);
+  expect(enlargedGeometry.previewWidth).toBeCloseTo(enlargedGeometry.previewHeight, 0);
+  expect(enlargedGeometry.previewHeight).toBeCloseTo(enlargedGeometry.mediaHeight, 0);
+
+  await tile.click();
+  await page.getByRole("button", { name: "Delete collection" }).click();
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.startsWith("/api/collections/") &&
+      response.request().method() === "DELETE",
+  );
+  await page
+    .locator("#collection-delete-dialog")
+    .getByRole("button", { name: "Delete everything" })
+    .click();
+  expect((await deleteResponse).status()).toBe(204);
+});
+
 test("collections route generation, preview preference, move, and recursive delete", async ({
   page,
 }) => {
