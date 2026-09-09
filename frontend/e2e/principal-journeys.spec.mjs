@@ -311,9 +311,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Move to collection" })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
-  await expect(footer.locator(".card-metadata")).toHaveText(
-    /^Generic Landscape · (?:\d+m )?\d+s$/,
-  );
+  await expect(footer.locator(".card-metadata")).toHaveText(/^(?:\d+m )?\d+s$/);
   await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
 
   const downloadPromise = page.waitForEvent("download");
@@ -679,7 +677,7 @@ test("runtime selector is a borderless single-line two-instance control", async 
   expect(completed.comfyui_instance_label).toBe("Secondary");
   await expect(
     page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-metadata`),
-  ).toHaveText(/^Generic Landscape · (?:\d+m )?\d+s$/);
+  ).toHaveText(/^(?:\d+m )?\d+s$/);
 });
 
 test("photo viewer slideshow waits for a generation's final completed image", async ({
@@ -1169,10 +1167,17 @@ test("checked generation sources reuse compatible settings without blocking part
   await page.getByLabel("Seed value", { exact: true }).fill("424242");
 
   const generationRequests = [];
+  const generationResponses = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname === "/api/generations" && request.method() === "POST") {
       generationRequests.push(request.postDataJSON());
+    }
+  });
+  page.on("response", async (response) => {
+    const url = new URL(response.url());
+    if (url.pathname === "/api/generations" && response.request().method() === "POST") {
+      generationResponses.push(await response.json());
     }
   });
 
@@ -1235,12 +1240,12 @@ test("checked generation sources reuse compatible settings without blocking part
   expect(genericRequest.parameters).toEqual({
     prompt: "selected-source comparison lighthouse",
   });
-  await expect(
-    page.locator(".gallery-card").filter({ hasText: "Krea 2 NSFW V4" }).first(),
-  ).toBeVisible();
-  await expect(
-    page.locator(".gallery-card").filter({ hasText: "Generic Landscape" }).first(),
-  ).toBeVisible();
+  await expect.poll(() => generationResponses.length).toBe(2);
+  for (const generation of generationResponses) {
+    await expect(
+      page.locator(`.gallery-card[data-generation-id="${generation.id}"]`),
+    ).toBeVisible();
+  }
 });
 
 test("Moody checkpoint choices are prominent, shared with the modal, and fan out", async ({
@@ -1395,9 +1400,9 @@ test("Moody checkpoint choices are prominent, shared with the modal, and fan out
   }
 
   const checkpointFooterPatterns = [
-    /Moody Krea 2 Mix V4 · Moody Krea 2 V4 INT8 ConvRot(?: · (?:\d+m )?\d+s)?$/,
-    /Moody Krea 2 Mix V4 · Moody Krea 2 TYJR MXFP8(?: · (?:\d+m )?\d+s)?$/,
-    /Moody Krea 2 Mix V4 · Moody Krea 2 V5 BF16(?: · (?:\d+m )?\d+s)?$/,
+    /^Moody Krea 2 V4 INT8 ConvRot(?: · (?:\d+m )?\d+s)?$/,
+    /^Moody Krea 2 TYJR MXFP8(?: · (?:\d+m )?\d+s)?$/,
+    /^Moody Krea 2 V5 BF16(?: · (?:\d+m )?\d+s)?$/,
   ];
   for (const pattern of checkpointFooterPatterns) {
     const footer = page.locator(".gallery-card .card-metadata").filter({ hasText: pattern });
@@ -1565,7 +1570,7 @@ test("gallery defaults to request initiation order when the page arrives unsorte
   expect(cardIds).toEqual(["newest-active", "previous", "oldest"]);
 });
 
-test("generation source color applies, colors only matching cards, persists across reload, and clears", async ({
+test("generation source color applies, persists in preferences across reload, and clears", async ({
   page,
 }) => {
   test.setTimeout(60_000);
@@ -1631,7 +1636,9 @@ test("generation source color applies, colors only matching cards, persists acro
     reopenedRow("Krea 2 NSFW V4").locator(".source-color-hex"),
   ).toHaveText("#2E86C1");
 
-  // Generate a card from the colored source and confirm the source name (only) is colored.
+  // Generate a card from the colored source: the caption leads with the checkpoint name
+  // and the duration (this source has no checkpoint choice) and never shows the
+  // source name, so the stored color has no caption to style.
   await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("colored caption lighthouse");
   await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("384");
@@ -1640,24 +1647,11 @@ test("generation source color applies, colors only matching cards, persists acro
   const generation = await accepted.json();
   const coloredCard = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
   await expect(coloredCard).toHaveClass(/status-succeeded/, { timeout: 30_000 });
-  const coloredName = coloredCard.locator(".card-metadata .source-colored-name");
-  await expect(coloredName).toHaveText("Krea 2 NSFW V4");
-  await expect(coloredName).toHaveAttribute("style", /--source-color: #2e86c1/);
-  // Adjacent caption text (checkpoint/duration) is not itself wrapped in a colored span:
-  // only the source-name span carries the custom color, so the full metadata line must
-  // contain more than just the colored source name.
-  const metadataText = await coloredCard.locator(".card-metadata").innerText();
-  expect(metadataText).not.toBe("Krea 2 NSFW V4");
-  // Every colored-name span in the gallery belongs to the colored source, proving cards
-  // from other sources remain uncolored.
-  const coloredNames = page.locator(".gallery-card .source-colored-name");
-  const coloredCount = await coloredNames.count();
-  expect(coloredCount).toBeGreaterThan(0);
-  for (let i = 0; i < coloredCount; i += 1) {
-    await expect(coloredNames.nth(i)).toHaveText("Krea 2 NSFW V4");
-  }
+  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
+  await expect(coloredCard.locator(".card-metadata")).toHaveText(/^(?:\d+m )?\d+s$/);
+  await expect(coloredCard).not.toContainText("Krea 2 NSFW V4");
 
-  // Reload: the color persists and re-colors the matching card on a fresh gallery render.
+  // Reload: the color preference persists even though the card caption no longer renders it.
   const preferencesLoaded = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/preferences" &&
@@ -1667,9 +1661,8 @@ test("generation source color applies, colors only matching cards, persists acro
   const preferences = await (await preferencesLoaded).json();
   expect(preferences.source_colors[kreaSourceKey]).toBe("#2e86c1");
   await expect(coloredCard).toHaveClass(/status-succeeded/);
-  const reloadedName = coloredCard.locator(".card-metadata .source-colored-name");
-  await expect(reloadedName).toHaveText("Krea 2 NSFW V4");
-  await expect(reloadedName).toHaveAttribute("style", /--source-color: #2e86c1/);
+  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
+  await expect(coloredCard.locator(".card-metadata")).toHaveText(/^(?:\d+m )?\d+s$/);
 
   // Clearing the color restores "No color" and removes the caption styling immediately.
   await page.locator("#workflow-source").click();

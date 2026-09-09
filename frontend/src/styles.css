@@ -2480,6 +2480,32 @@ dialog::backdrop {
   right: auto;
 }
 
+.photo-viewer-checkpoint {
+  display: flex;
+  align-items: center;
+  height: 42px;
+  max-width: min(46vw, 480px);
+  padding: 0 15px;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 999px;
+  background: rgb(6 9 13 / 64%);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 38%);
+  color: #f4f7fb;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(9px);
+  transition: opacity 360ms ease;
+}
+
+.photo-viewer.controls-visible .photo-viewer-checkpoint {
+  opacity: 1;
+}
+
 .photo-viewer-view-controls {
   display: flex;
   align-items: center;
@@ -3267,11 +3293,6 @@ dialog::backdrop {
   background: var(--source-color);
   vertical-align: baseline;
   flex: 0 0 auto;
-}
-
-.source-colored-name {
-  color: var(--source-color);
-  font-weight: 600;
 }
 
 .source-sort-button {

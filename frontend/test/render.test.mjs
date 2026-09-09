@@ -1416,9 +1416,9 @@ test("card footer groups generation actions and exposes permanent deletion", () 
     },
   };
   const html = cardFooterMarkup(generation);
-  assert.match(html, />Portrait Workflow · Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
-  assert.doesNotMatch(html, /Secondary/);
-  assert.match(html, /title="Open generation details for Portrait Workflow with Moody Krea 2 V5 BF16"/);
+  assert.match(html, />Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
+  assert.doesNotMatch(html, /Portrait Workflow|Secondary/);
+  assert.match(html, /title="Open generation details for Moody Krea 2 V5 BF16"/);
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
@@ -1572,7 +1572,7 @@ test("source picker row renders the inline editor with the configured color as i
   assert.match(html, /data-action="apply-source-color-editor"[^>]*data-source-color-key="colored"/);
 });
 
-test("gallery card colors only the source name for a matching stable source key", () => {
+test("gallery card caption leads with the checkpoint name and omits the source name", () => {
   const base = {
     id: "g1",
     status: "succeeded",
@@ -1589,17 +1589,16 @@ test("gallery card colors only the source name for a matching stable source key"
   const sourceColors = { "source-a": "#2E86C1" };
 
   const matched = cardFooterMarkup({ ...base, generation_source: sourceA }, sourceColors);
-  assert.match(matched, /<span class="source-colored-name" style="--source-color: #2e86c1">Source A<\/span>/);
-  assert.match(matched, /Moody Krea 2 V5 BF16 · 1m 30s/);
-  assert.doesNotMatch(matched, /style="--source-color: #2e86c1">Moody/);
+  assert.match(matched, />Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
+  assert.doesNotMatch(matched, /Source A|source-colored-name|source-color/);
 
   const unmatched = cardFooterMarkup({ ...base, generation_source: sourceB }, sourceColors);
-  assert.match(unmatched, /Source B · Moody Krea 2 V5 BF16 · 1m 30s/);
-  assert.doesNotMatch(unmatched, /source-colored-name|source-color/);
+  assert.match(unmatched, />Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
+  assert.doesNotMatch(unmatched, /Source B|source-colored-name|source-color/);
 
-  const noColors = cardFooterMarkup({ ...base, generation_source: sourceA });
-  assert.match(noColors, /Source A · Moody Krea 2 V5 BF16 · 1m 30s/);
-  assert.doesNotMatch(noColors, /source-colored-name|source-color/);
+  const noCheckpoint = cardFooterMarkup({ ...base, checkpoint_label: "", generation_source: sourceA });
+  assert.match(noCheckpoint, />1m 30s<\/button>/);
+  assert.doesNotMatch(noCheckpoint, /Moody Krea 2 V5 BF16|Source A/);
 });
 
 test("generation duration uses only whole minutes and seconds", () => {

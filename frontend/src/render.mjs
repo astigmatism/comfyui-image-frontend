@@ -1581,7 +1581,7 @@ export function galleryCardMarkup(generation, sourceColors = {}) {
       <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
       ${cancel}
     </div>
-    ${cardFooterMarkup(generation, sourceColors)}
+    ${cardFooterMarkup(generation)}
   </article>`;
 }
 
@@ -1757,15 +1757,6 @@ function generationSourceName(generation) {
   );
 }
 
-function generationSourceKey(generation) {
-  return (
-    generation?.generation_source?.source_key ||
-    generation?.source_key ||
-    generation?.generation_source?.source_id ||
-    ""
-  );
-}
-
 export function sourceColorFor(key, sourceColors) {
   if (!sourceColors || typeof sourceColors !== "object" || !key) return null;
   const color = String(sourceColors[key] || "").trim().toLowerCase().replace(/^#/, "");
@@ -1775,11 +1766,6 @@ export function sourceColorFor(key, sourceColors) {
 function sourceColorDot(color, name) {
   if (!color) return "";
   return `<span class="source-color-dot" style="--source-color: ${escapeHtml(color)}" aria-hidden="true" title="${escapeHtml(`Color for ${name}`)}"></span>`;
-}
-
-function coloredSourceName(color, name) {
-  if (!color) return escapeHtml(name);
-  return `<span class="source-colored-name" style="--source-color: ${escapeHtml(color)}">${escapeHtml(name)}</span>`;
 }
 
 function generationComfyuiInstanceName(generation) {
@@ -1810,17 +1796,18 @@ function statusPlaceholderMarkup(generation) {
   return `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${runtimeCopy}${queueCopy}</div>`;
 }
 
-export function cardFooterMarkup(generation, sourceColors = {}) {
-  const sourceName = generationSourceName(generation);
+export function cardFooterMarkup(generation) {
   const checkpointName = generationCheckpointLabel(generation);
   const duration = formatGenerationDuration(generation.generation_duration_seconds);
-  const sourceColor = sourceColorFor(generationSourceKey(generation), sourceColors);
-  const metadata = `${coloredSourceName(sourceColor, sourceName)}${checkpointName ? ` · ${escapeHtml(checkpointName)}` : ""}${duration ? ` · ${escapeHtml(duration)}` : ""}`;
+  const metadataParts = [];
+  if (checkpointName) metadataParts.push(escapeHtml(checkpointName));
+  if (duration) metadataParts.push(escapeHtml(duration));
+  const metadata = metadataParts.join(" · ");
   const artifact = generation.display_artifact;
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details for ${escapeHtml(sourceName)}${checkpointName ? ` with ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details${checkpointName ? ` for ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button><button type="button" class="move-generation-button" data-action="move-generation" data-generation-id="${escapeHtml(generation.id)}" aria-label="Move to collection" title="Move to collection">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v10H3Z" /><path d="m11 13 2-2 2 2m-2-2v6" /></svg>
@@ -1866,6 +1853,10 @@ export function photoViewerMarkup(
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
   const runtimeName = generationComfyuiInstanceName(generation);
+  const checkpointName = generationCheckpointLabel(generation);
+  const checkpointLabel = checkpointName
+    ? `<span class="photo-viewer-checkpoint" title="${escapeHtml(checkpointName)}">${escapeHtml(checkpointName)}</span>`
+    : "";
   const hasImage = artifact?.kind === "image";
   const viewMode = ["actual", "fit"].includes(requestedViewMode) ? requestedViewMode : "fill";
   const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";
@@ -1877,6 +1868,7 @@ export function photoViewerMarkup(
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
     <div class="photo-viewer-toolbar">
+      ${checkpointLabel}
       ${downloadButtonMarkup(artifact, "photo-viewer-download photo-viewer-control")}
       ${favoriteButtonMarkup(generation, "photo-viewer-favorite photo-viewer-control")}
       ${deleteGenerationButtonMarkup(generation, "photo-viewer-delete photo-viewer-control")}
