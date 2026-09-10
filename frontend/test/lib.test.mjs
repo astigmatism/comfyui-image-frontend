@@ -13,9 +13,6 @@ import {
   collectionDepth,
   collectionSubtree,
   collectionTreeRows,
-  comparisonInputs,
-  comparisonInterface,
-  comparisonParametersForRequest,
   controlPresentation,
   createLatestRequestGate,
   defaultsForContract,
@@ -27,7 +24,7 @@ import {
   isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
   migrateInterfaceState,
-  missingComparisonRoles,
+  normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
   normalizeInputValue,
   overwriteWithRecall,
@@ -233,6 +230,31 @@ test("source model selectors ignore projected metadata when detail has no model 
       },
     }),
     [],
+  );
+});
+
+test("checkpoint tier layouts preserve known order and append new choices to Unsorted", () => {
+  const selector = {
+    choices: [
+      { value: "alpha", label: "Alpha" },
+      { value: "beta", label: "Beta" },
+      { value: "new", label: "New" },
+    ],
+  };
+  assert.deepEqual(
+    normalizeCheckpointTierLayout(selector, {
+      top_picks: ["beta", "removed"],
+      preferred: ["alpha", "beta"],
+      occasional: [],
+      unsorted: [],
+      unknown: ["new"],
+    }),
+    {
+      top_picks: ["beta"],
+      preferred: ["alpha"],
+      occasional: [],
+      unsorted: ["new"],
+    },
   );
 });
 
@@ -459,70 +481,6 @@ test("auto-generation retries only recoverable Prompt Assistant failures with bo
     [1, 2, 3, 20].map(autoGenerateCompositionRetryDelayMs),
     [1_000, 2_000, 4_000, AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS],
   );
-});
-
-test("comparison requests map only prompt, resolution, and one concrete seed by semantic role", () => {
-  const target = {
-    inputs: [
-      { id: "text", type: "string", semantic_role: "positive_prompt" },
-      { id: "image_width", type: "integer", semantic_role: "width" },
-      { id: "image_height", type: "integer", semantic_role: "height" },
-      { id: "noise_seed", type: "seed", semantic_role: "seed" },
-      { id: "steps", type: "integer", semantic_role: "iteration_count", default: 20 },
-    ],
-  };
-  const values = {
-    prompt: "same scene",
-    width: 1024,
-    height: 1600,
-    seed: { mode: "random", value: "0" },
-    knpv4_1_strength: 0.7,
-  };
-
-  assert.deepEqual(
-    comparisonParametersForRequest(publishedInterface, values, target, "424242"),
-    {
-      text: "same scene",
-      image_width: 1024,
-      image_height: 1600,
-      noise_seed: "424242",
-    },
-  );
-  assert.deepEqual(
-    comparisonInputs(publishedInterface).map((input) => input.semantic_role),
-    ["height", "positive_prompt", "width", "seed"],
-  );
-  assert.deepEqual(
-    comparisonInterface(publishedInterface).inputs.map((input) => input.semantic_role),
-    ["height", "positive_prompt", "width", "seed"],
-  );
-  assert.deepEqual(missingComparisonRoles(publishedInterface), []);
-});
-
-test("comparison requests omit roles a target does not publish and ignore ambiguous mappings", () => {
-  const source = {
-    inputs: [
-      { id: "prompt_a", type: "string", semantic_role: "positive_prompt" },
-      { id: "prompt_b", type: "string", semantic_role: "positive_prompt" },
-      { id: "width", type: "integer", semantic_role: "width" },
-      { id: "seed", type: "seed", semantic_role: "seed" },
-    ],
-  };
-  const target = {
-    inputs: [
-      { id: "prompt", type: "string", semantic_role: "positive_prompt" },
-      { id: "width", type: "integer", semantic_role: "width" },
-    ],
-  };
-  assert.deepEqual(
-    comparisonParametersForRequest(
-      source,
-      { prompt_a: "one", prompt_b: "two", width: 768, seed: { mode: "fixed", value: "9" } },
-      target,
-    ),
-    { width: 768 },
-  );
-  assert.deepEqual(missingComparisonRoles(target), ["height", "seed"]);
 });
 
 const choiceInterface = {

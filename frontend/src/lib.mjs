@@ -197,6 +197,46 @@ export function sourceModelSelectors(source) {
   return selectors;
 }
 
+export const CHECKPOINT_TIER_DEFINITIONS = Object.freeze([
+  Object.freeze({ id: "top_picks", label: "Top picks" }),
+  Object.freeze({ id: "preferred", label: "Preferred" }),
+  Object.freeze({ id: "occasional", label: "Occasional" }),
+  Object.freeze({ id: "unsorted", label: "Unsorted" }),
+]);
+
+export function normalizeCheckpointTierLayout(selector, value = {}) {
+  const choices = Array.isArray(selector?.choices) ? selector.choices : [];
+  const allowed = new Set(
+    choices
+      .map((choice) => (typeof choice?.value === "string" ? choice.value : ""))
+      .filter(Boolean),
+  );
+  const seen = new Set();
+  const result = Object.fromEntries(
+    CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => {
+      const requested = Array.isArray(value?.[id]) ? value[id] : [];
+      const tierValues = requested.filter((choiceValue) => {
+        if (
+          typeof choiceValue !== "string" ||
+          !allowed.has(choiceValue) ||
+          seen.has(choiceValue)
+        ) {
+          return false;
+        }
+        seen.add(choiceValue);
+        return true;
+      });
+      return [id, tierValues];
+    }),
+  );
+  for (const choice of choices) {
+    if (!choice?.value || seen.has(choice.value)) continue;
+    result.unsorted.push(choice.value);
+    seen.add(choice.value);
+  }
+  return result;
+}
+
 export function normalizeSourceModelSelections(source, selections = {}, fallbackValues = {}) {
   const result = {};
   for (const selector of sourceModelSelectors(source)) {
@@ -552,35 +592,6 @@ export function autoGenerateCompositionRetryDelayMs(failedAttempts) {
     AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
     AUTO_GENERATE_COMPOSITION_RETRY_BASE_MS * 2 ** (normalizedAttempts - 1),
   );
-}
-
-const COMPARISON_INPUT_TYPES = new Map([
-  ["positive_prompt", "string"],
-  ["width", "integer"],
-  ["height", "integer"],
-  ["seed", "seed"],
-]);
-const COMPARISON_SEMANTIC_ROLES = new Set(COMPARISON_INPUT_TYPES.keys());
-
-export function comparisonInputs(contract) {
-  return interfaceInputs(contract).filter((input) =>
-    COMPARISON_SEMANTIC_ROLES.has(input.semantic_role),
-  );
-}
-
-export function comparisonInterface(contract) {
-  if (!contract) return contract;
-  return { ...contract, inputs: comparisonInputs(contract) };
-}
-
-export function missingComparisonRoles(contract) {
-  const inputs = interfaceInputs(contract);
-  return [...COMPARISON_INPUT_TYPES].flatMap(([role, type]) => {
-    const matches = inputs.filter(
-      (input) => input.semantic_role === role && input.type === type,
-    );
-    return matches.length === 1 ? [] : [role];
-  });
 }
 
 function inputConstraint(input, name) {
@@ -941,33 +952,6 @@ export function parametersForRequest(contract, values) {
     } else if (value !== undefined && value !== null) {
       parameters[input.id] = structuredClone(value);
     }
-  }
-  return parameters;
-}
-
-export function comparisonParametersForRequest(
-  sourceContract,
-  sourceValues,
-  targetContract,
-  resolvedSeed = undefined,
-) {
-  const sourceParameters = parametersForRequest(sourceContract, sourceValues);
-  const sourceInputsByRole = new Map();
-  for (const input of comparisonInputs(sourceContract)) {
-    const role = input.semantic_role;
-    sourceInputsByRole.set(role, [...(sourceInputsByRole.get(role) || []), input]);
-  }
-
-  const parameters = {};
-  for (const target of comparisonInputs(targetContract)) {
-    const candidates = sourceInputsByRole.get(target.semantic_role) || [];
-    if (candidates.length !== 1 || candidates[0].type !== target.type) continue;
-    const source = candidates[0];
-    const value =
-      target.semantic_role === "seed" && resolvedSeed !== undefined
-        ? String(resolvedSeed)
-        : sourceParameters[source.id];
-    if (value !== undefined && value !== null) parameters[target.id] = structuredClone(value);
   }
   return parameters;
 }

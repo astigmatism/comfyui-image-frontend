@@ -22,6 +22,7 @@ def get_preferences(
         gallery_scale=preference.gallery_scale if preference else 45,
         source_ratings=preference.source_ratings_json if preference else {},
         source_colors=preference.source_colors_json if preference else {},
+        checkpoint_tiers=preference.checkpoint_tiers_json if preference else {},
     )
 
 
@@ -38,6 +39,7 @@ def update_preferences(
             gallery_scale=45,
             source_ratings_json={},
             source_colors_json={},
+            checkpoint_tiers_json={},
         )
         session.add(preference)
     if payload.gallery_scale is not None:
@@ -46,9 +48,18 @@ def update_preferences(
         preference.source_ratings_json = dict(payload.source_ratings)
     if payload.source_colors is not None:
         preference.source_colors_json = dict(payload.source_colors)
+    if payload.checkpoint_tiers is not None:
+        preference.checkpoint_tiers_json = {
+            source_key: {
+                parameter_id: {tier: list(choices) for tier, choices in tiers.items()}
+                for parameter_id, tiers in selectors.items()
+            }
+            for source_key, selectors in payload.checkpoint_tiers.items()
+        }
     session.commit()
     return PreferenceResponse(
         gallery_scale=preference.gallery_scale,
         source_ratings=preference.source_ratings_json,
         source_colors=preference.source_colors_json,
+        checkpoint_tiers=preference.checkpoint_tiers_json,
     )

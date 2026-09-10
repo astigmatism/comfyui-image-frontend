@@ -569,8 +569,10 @@ The transcription request is multipart with one `file` field whose media type is
 | `GET` | `/api/favorites?limit=40&cursor=...` | Newest-first owner favorites |
 | `PUT` | `/api/generations/{id}/favorite` | Idempotently bookmark an owned generation |
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
-| `GET` | `/api/preferences` | Read owner gallery scale, collection-preview switch, and generation-source ratings |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100, `collection_previews_enabled`, and/or source ratings from 1 through 5 |
+| `GET` | `/api/preferences` | Read owner gallery scale and checkpoint tier/order preferences; legacy source rating/color fields remain for stored-data compatibility |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or per-workflow checkpoint tiers; legacy source rating/color updates remain accepted |
+
+`checkpoint_tiers` is keyed by opaque source key and public selector parameter ID. Each selector maps the fixed tier IDs `top_picks`, `preferred`, `occasional`, and `unsorted` to ordered arrays of stable public checkpoint values. A value may appear at most once per selector. The client reconciles this preference with the current publication so newly published values appear in Unsorted and values no longer published disappear from the dialog.
 
 ## Authentication and account routes
 

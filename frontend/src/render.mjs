@@ -1,4 +1,5 @@
 import {
+  CHECKPOINT_TIER_DEFINITIONS,
   controlPresentation,
   collectionAncestors,
   collectionDepth,
@@ -8,6 +9,7 @@ import {
   formatLocalDate,
   interfaceInputs,
   isAdvancedInput,
+  normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
   resolutionConstraints,
   resolutionGridConstraints,
@@ -68,22 +70,29 @@ export function shellMarkup(state) {
   return `
     <div class="app-shell ${state.panelOpen ? "panel-open" : ""}">
       <header class="topbar">
-        <button class="icon-button panel-toggle" data-action="toggle-panel" aria-label="Open generation controls" aria-expanded="${state.panelOpen}">☰</button>
-        <div class="app-title">${escapeHtml(state.session.app_title)}</div>
-        <div class="topbar-spacer"></div>
-        <button type="button" class="button low favorites-launch-button" data-action="open-favorites" aria-label="Favorites"><span aria-hidden="true">♡</span><span class="favorites-launch-label">Favorites</span></button>
-        <label class="scale-control">
-          <span>Gallery scale</span>
-          <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-valuetext="${state.galleryScale}%" />
-        </label>
-        <details class="account-menu">
-          <summary aria-label="Account menu">${escapeHtml(state.session.user.username)}</summary>
-          <div class="menu-popover" role="menu">
-            <button role="menuitem" data-action="change-password">Change password</button>
-            ${admin ? '<button role="menuitem" data-action="open-admin">Administration</button>' : ""}
-            <button role="menuitem" data-action="logout">Sign out</button>
-          </div>
-        </details>
+        <div class="topbar-left">
+          <button class="icon-button panel-toggle" data-action="toggle-panel" aria-label="Open generation controls" aria-expanded="${state.panelOpen}">☰</button>
+          <div class="app-title">${escapeHtml(state.session.app_title)}</div>
+        </div>
+        <div class="topbar-right">
+          <div id="collection-bar-host" class="collection-bar-host">${renderCollectionBar(state.collections, state.currentCollectionId, {
+            collectionsStatus: state.collectionsStatus,
+          })}</div>
+          <div class="topbar-spacer"></div>
+          <button type="button" class="button low favorites-launch-button" data-action="open-favorites" aria-label="Favorites"><span aria-hidden="true">♡</span><span class="favorites-launch-label">Favorites</span></button>
+          <label class="scale-control">
+            <span>Gallery scale</span>
+            <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-valuetext="${state.galleryScale}%" />
+          </label>
+          <details class="account-menu">
+            <summary aria-label="Account menu">${escapeHtml(state.session.user.username)}</summary>
+            <div class="menu-popover" role="menu">
+              <button role="menuitem" data-action="change-password">Change password</button>
+              ${admin ? '<button role="menuitem" data-action="open-admin">Administration</button>' : ""}
+              <button role="menuitem" data-action="logout">Sign out</button>
+            </div>
+          </details>
+        </div>
       </header>
       <aside class="control-panel" aria-label="Generation controls">
         <div id="generation-panel"></div>
@@ -91,9 +100,6 @@ export function shellMarkup(state) {
       <button class="panel-scrim" data-action="close-panel" aria-label="Close generation controls"></button>
       <main class="gallery-viewport" id="gallery-viewport">
         <div id="service-banner"></div>
-        <div id="collection-bar-host">${renderCollectionBar(state.collections, state.currentCollectionId, {
-          collectionsStatus: state.collectionsStatus,
-        })}</div>
         <div id="gallery" class="gallery-grid" aria-live="polite"></div>
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
@@ -102,7 +108,7 @@ export function shellMarkup(state) {
       <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
-      <dialog id="source-picker-dialog" class="source-picker-dialog" aria-label="Generation sources"></dialog>
+      <dialog id="source-picker-dialog" class="source-picker-dialog" aria-label="Generation source"></dialog>
       <dialog id="collection-dialog" class="collection-dialog"></dialog>
       <dialog id="collection-delete-dialog" class="collection-delete-dialog"></dialog>
       <dialog id="move-dialog" class="move-dialog"></dialog>
@@ -114,13 +120,7 @@ export function generationPanelMarkup(state, profile, contract) {
   const clientErrors = state.fieldErrors || {};
   const sources = state.sources || state.workflows || [];
   const activeKey = state.activeSourceKey || state.activeProfileId;
-  const sharedSourceKeys = new Set(state.comparisonSourceKeys || []);
-  sharedSourceKeys.delete(activeKey);
-  const sharedSourceCount = sources.filter(
-    (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
-  ).length;
-  const selectedSourceCount = activeKey ? sharedSourceCount + 1 : sharedSourceCount;
-  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || selectedSourceCount;
+  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || (activeKey ? 1 : 0);
   const values = state.parameters || state.controls || {};
   const declaredInputs = sortInterfaceInputs(interfaceInputs(contract));
   const modelSource = contract
@@ -166,7 +166,7 @@ export function generationPanelMarkup(state, profile, contract) {
           </div>
           ${comfyuiInstanceSelectorMarkup(state)}
         </div>
-        ${sourcePickerMarkup(state, sources, activeKey, sharedSourceKeys, sourceSelectorDisabled)}
+        ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
         ${activeSourceModelChoicesMarkup(
           modelSource,
           state.activeModelSelections || {},
@@ -354,31 +354,26 @@ function sourcePickerMarkup(
   state,
   sources,
   activeKey,
-  sharedSourceKeys,
   disabled,
 ) {
   const activeSource = sources.find((item) => sourceKey(item) === activeKey) || null;
   const activeName = activeSource ? sourceDisplayName(activeSource) : sourceSelectorLabel(state, sources);
-  const sharedCount = sources.filter(
-    (item) => item.available !== false && sharedSourceKeys.has(sourceKey(item)),
-  ).length;
-  const selectedSourceCount = activeKey ? sharedCount + 1 : sharedCount;
-  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || selectedSourceCount;
+  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || (activeKey ? 1 : 0);
+  const architecture = activeSource
+    ? sourceMetadataPresentation(activeSource).architecture
+    : "";
   const selectionCopy = [
-    sharedCount ? `${selectedSourceCount} sources selected` : "",
-    selectedTargetCount > selectedSourceCount
-      ? `${selectedTargetCount} generations planned`
+    architecture && architecture !== "—" ? architecture : "",
+    selectedTargetCount > 1
+      ? `${selectedTargetCount} checkpoints selected`
       : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const activeColor = activeSource ? sourceColorFor(activeKey, state.sourceColors) : null;
+  ].filter(Boolean).join(" · ");
   return `
     <div class="field compact source-picker-field">
       <span id="generation-source-label">Generation source</span>
       <div class="source-picker">
         <button id="workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
-          <span class="source-picker-current"><span class="source-picker-primary">${sourceColorDot(activeColor, activeName)}<strong id="generation-source-value">${escapeHtml(activeName)}</strong></span>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
+          <span class="source-picker-current"><span class="source-picker-name"><strong id="generation-source-value">${escapeHtml(activeName)}</strong></span>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
           <svg class="source-picker-launch-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h12M4 14.5h12" /><circle cx="7" cy="5.5" r="1.5" /><circle cx="13" cy="10" r="1.5" /><circle cx="9" cy="14.5" r="1.5" /></svg>
         </button>
       </div>
@@ -423,341 +418,191 @@ function activeSourceModelChoicesMarkup(
     .join("");
 }
 
-const SOURCE_SORT_KEYS = new Set([
-  "display_name",
-  "rating",
-  "architecture",
-  "introduced",
-  "generation_type",
-]);
-
 export function sourcePickerDialogMarkup(
   sources,
   {
+    sourceKey: requestedSourceKey,
     primaryKey,
-    selectedKeys = new Set(),
-    sourceRatings = {},
-    sourceColors = {},
-    sortKey = "display_name",
-    sortDirection = "ascending",
-    generationTypeFilters = null,
     modelSelectionsBySource = {},
-    sourceColorEditorKey = null,
+    checkpointTiers = {},
+    searchQuery = "",
   } = {},
 ) {
-  const selected = selectedKeys instanceof Set ? selectedKeys : new Set(selectedKeys || []);
-  const normalizedSortKey = SOURCE_SORT_KEYS.has(sortKey) ? sortKey : "display_name";
-  const normalizedDirection = sortDirection === "descending" ? "descending" : "ascending";
-  const generationTypes = sourceGenerationTypeOptions(sources);
-  const activeGenerationTypes =
-    generationTypeFilters === null
-      ? new Set(generationTypes.map((item) => item.key))
-      : generationTypeFilters instanceof Set
-        ? generationTypeFilters
-        : new Set(generationTypeFilters || []);
-  const availableSources = sources.filter((source) => source.available !== false);
-  const selectedCount = availableSources.filter((source) => selected.has(sourceKey(source))).length;
-  const selectedTargetCount = availableSources
-    .filter((source) => selected.has(sourceKey(source)))
-    .reduce(
-      (count, source) =>
-        count +
-        sourceModelParameterVariants(
-          source,
-          modelSelectionsBySource?.[sourceKey(source)] || {},
-        ).length,
-      0,
-    );
-  const visibleSources = sources.filter((source) =>
-    activeGenerationTypes.has(sourceGenerationTypeKey(source)),
+  const availableSources = (Array.isArray(sources) ? sources : []).filter(
+    (source) => source.available !== false,
   );
-  const visibleAvailableSources = visibleSources.filter((source) => source.available !== false);
-  const everyVisibleSourceSelected = visibleAvailableSources.every((source) =>
-    selected.has(sourceKey(source)),
+  const activeKey = requestedSourceKey || primaryKey || sourceKey(availableSources[0]);
+  const activeSource =
+    availableSources.find((source) => sourceKey(source) === activeKey) ||
+    availableSources[0] ||
+    null;
+  const activeSourceKey = sourceKey(activeSource);
+  const selector = sourceModelSelectors(activeSource)[0] || null;
+  const rawSelections = selector
+    ? modelSelectionsBySource?.[activeSourceKey]?.[selector.parameter_id]
+    : null;
+  const selectedValues = new Set(
+    Array.isArray(rawSelections)
+      ? rawSelections
+      : selector
+        ? normalizeSourceModelSelections(
+            activeSource,
+            modelSelectionsBySource?.[activeSourceKey] || {},
+          )[selector.parameter_id] || []
+        : [],
   );
-  const visibleAdditionalSourceSelected = visibleAvailableSources.some(
-    (source) => sourceKey(source) !== primaryKey && selected.has(sourceKey(source)),
+  const choices = selector?.choices || [];
+  const selectedCount = choices.filter((choice) => selectedValues.has(choice.value)).length;
+  const totalCount = choices.length;
+  const architecture = activeSource
+    ? sourceMetadataPresentation(activeSource).architecture
+    : "—";
+  const layout = normalizeCheckpointTierLayout(
+    selector,
+    checkpointTiers?.[activeSourceKey]?.[selector?.parameter_id] || {},
   );
-  const sortedSources = [...visibleSources].sort((first, second) => {
-    const firstValue = sourceSortValue(first, normalizedSortKey, sourceRatings);
-    const secondValue = sourceSortValue(second, normalizedSortKey, sourceRatings);
-    const firstMissing = !firstValue || firstValue === "—";
-    const secondMissing = !secondValue || secondValue === "—";
-    if (firstMissing !== secondMissing) return firstMissing ? 1 : -1;
-    const compared = firstValue.localeCompare(
-      secondValue,
-      undefined,
-      { numeric: true, sensitivity: "base" },
-    );
-    if (compared) return normalizedDirection === "descending" ? -compared : compared;
-    return sourceDisplayName(first).localeCompare(sourceDisplayName(second), undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
-  });
-  const rows = sortedSources
-    .map((source) =>
-      sourcePickerRowMarkup(
-        source,
-        primaryKey,
-        selected,
-        sourceRatings,
-        modelSelectionsBySource?.[sourceKey(source)] || {},
-        sourceColors,
-        sourceColorEditorKey,
-      ),
-    )
+  const choiceByValue = new Map(choices.map((choice) => [choice.value, choice]));
+  const query = String(searchQuery || "").trim().toLocaleLowerCase();
+  const workflowOptions = availableSources
+    .map((source) => {
+      const optionArchitecture = sourceMetadataPresentation(source).architecture;
+      const label = [source.display_name, optionArchitecture !== "—" ? optionArchitecture : ""]
+        .filter(Boolean)
+        .join(" — ");
+      return `<option value="${escapeHtml(sourceKey(source))}" ${sourceKey(source) === activeSourceKey ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    })
     .join("");
-  const generationTypeFiltersMarkup = generationTypes
-    .map(
-      (item) => `<label class="source-filter-chip"><input type="checkbox" data-source-generation-type-filter="${escapeHtml(item.key)}" aria-label="Show ${escapeHtml(item.label)}" ${activeGenerationTypes.has(item.key) ? "checked" : ""} /><span>${escapeHtml(item.label)}<small>${item.count}</small></span></label>`,
-    )
-    .join("");
-  const countCopy = `${selectedCount} of ${availableSources.length} available source${availableSources.length === 1 ? "" : "s"} selected · ${selectedTargetCount} generation${selectedTargetCount === 1 ? "" : "s"} planned`;
+  const tierMarkup = selector
+    ? CHECKPOINT_TIER_DEFINITIONS.map((tier) =>
+        checkpointTierMarkup({
+          tier,
+          values: layout[tier.id] || [],
+          choiceByValue,
+          selectedValues,
+          sourceKey: activeSourceKey,
+          parameterId: selector.parameter_id,
+          query,
+        }),
+      ).join("")
+    : '<div class="checkpoint-picker-empty">This workflow has no checkpoint choices.</div>';
+  const applyDisabled = !activeSource || (Boolean(selector) && selectedCount === 0);
+  const summary = selector
+    ? `${selectedCount} checkpoint${selectedCount === 1 ? "" : "s"} selected · ${selectedCount} generation${selectedCount === 1 ? "" : "s"} will be queued`
+    : "This workflow will queue one generation.";
+  const architectureCopy = architecture === "—" ? "Architecture not specified" : `${architecture} architecture`;
   return `<form class="dialog-frame source-picker-dialog-frame" method="dialog">
     <header class="dialog-header source-picker-dialog-header">
-      <div><h2 id="source-picker-title">Generation sources</h2><p>Choose one primary source and optional additional sources. Each checked model choice queues a separate generation.</p></div>
+      <div><h2 id="source-picker-title">Generation source</h2><p>Choose one workflow, then select the checkpoints to run.</p></div>
       <button type="button" class="icon-button source-picker-dialog-close" data-action="cancel-generation-source-dialog" aria-label="Cancel source selection" title="Cancel source selection"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
     </header>
     <div class="source-picker-dialog-content">
-      <div class="source-picker-dialog-toolbar">
-        <p data-source-selection-count>${escapeHtml(countCopy)}</p>
-        <div class="source-picker-dialog-controls">
-          <div class="source-type-filters" role="group" aria-label="Filter by generation type"><span>Show</span>${generationTypeFiltersMarkup}</div>
-          <div class="source-picker-dialog-tools" aria-label="Bulk selection">
-            <button type="button" class="button low" data-action="select-all-generation-sources" title="Select all visible sources" ${!visibleAvailableSources.length || everyVisibleSourceSelected ? "disabled" : ""}>Select all</button>
-            <button type="button" class="button low" data-action="deselect-all-generation-sources" title="Deselect all visible additional sources" ${visibleAdditionalSourceSelected ? "" : "disabled"}>Deselect all</button>
-          </div>
+      <div class="source-workflow-field">
+        <span class="source-workflow-label">Workflow</span>
+        <label class="source-workflow-select">
+          <svg class="source-workflow-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="18" r="2" /><path d="M12 7v4M6 16v-2.5h12V16" /></svg>
+          <span><strong>${escapeHtml(activeSource?.display_name || "No workflow available")}</strong><small>${escapeHtml(`${architectureCopy} · ${totalCount} checkpoint${totalCount === 1 ? "" : "s"}`)}</small></span>
+          <svg class="source-workflow-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7.5 5 5 5-5" /></svg>
+          <select data-source-workflow-choice aria-label="Workflow" ${availableSources.length ? "" : "disabled"}>${workflowOptions}</select>
+        </label>
+      </div>
+      <div class="checkpoint-picker-heading">
+        <div><span><h3>Checkpoints</h3><small data-source-selection-count>${escapeHtml(`${selectedCount} of ${totalCount} selected`)}</small></span><p>Drag checkpoints between tiers to rank them.</p></div>
+        <div class="checkpoint-picker-tools">
+          <label class="checkpoint-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input type="search" data-checkpoint-search placeholder="Search checkpoints" value="${escapeHtml(searchQuery)}" aria-label="Search checkpoints" /></label>
+          <button type="button" class="button low" data-action="select-all-checkpoints" ${!totalCount || selectedCount === totalCount ? "disabled" : ""}>Select all</button>
+          <button type="button" class="button low" data-action="clear-all-checkpoints" ${!selectedCount ? "disabled" : ""}>Clear all</button>
         </div>
       </div>
-      <div class="source-picker-table-wrap">
-        <table class="source-picker-table">
-          <thead><tr>
-            <th class="source-picker-include-column" scope="col">Include</th>
-            <th class="source-picker-primary-column" scope="col">Primary</th>
-            ${sourceSortHeading("display_name", "Source", normalizedSortKey, normalizedDirection)}
-            <th class="source-picker-model-column" scope="col"><span class="source-column-heading">Model choices</span></th>
-            ${sourceSortHeading("rating", "Rating", normalizedSortKey, normalizedDirection, "source-picker-rating-column")}
-            <th class="source-picker-color-column" scope="col"><span class="source-column-heading">Color</span></th>
-            ${sourceSortHeading("architecture", "Architecture", normalizedSortKey, normalizedDirection)}
-            ${sourceSortHeading("introduced", "Introduced", normalizedSortKey, normalizedDirection)}
-            ${sourceSortHeading("generation_type", "Generation type", normalizedSortKey, normalizedDirection)}
-            <th scope="col"><span class="source-column-heading">Technologies</span></th>
-          </tr></thead>
-          <tbody>${rows || `<tr><td class="source-picker-empty" colspan="10">${sources.length ? "No generation sources match the selected generation types." : "No generation sources are available."}</td></tr>`}</tbody>
-        </table>
-      </div>
-      <p class="source-picker-dialog-help">Each selected source and model choice is queued separately. The primary source provides the control values; additional sources reuse compatible prompt, resolution, and seed settings when available.</p>
+      <div class="checkpoint-tier-board" data-checkpoint-tier-board>${tierMarkup}</div>
     </div>
     <footer class="dialog-actions">
+      <p class="source-picker-summary">${escapeHtml(summary)}</p>
       <button type="button" class="button secondary" data-action="cancel-generation-source-dialog">Cancel</button>
-      <button type="button" class="button primary" data-action="apply-generation-source-dialog" ${primaryKey ? "" : "disabled"}>Apply</button>
+      <button type="button" class="button primary" data-action="apply-generation-source-dialog" ${applyDisabled ? "disabled" : ""}>Apply</button>
     </footer>
   </form>`;
 }
 
-function sourceSortHeading(key, label, activeKey, direction, className = "") {
-  const active = key === activeKey;
-  const nextDirection = active && direction === "ascending" ? "descending" : "ascending";
-  const indicator = active
-    ? direction === "ascending"
-      ? '<svg class="source-sort-indicator" data-sort-direction-indicator="ascending" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" /></svg>'
-      : '<svg class="source-sort-indicator" data-sort-direction-indicator="descending" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10m-4-4 4 4 4-4" /></svg>'
-    : "";
-  return `<th${className ? ` class="${escapeHtml(className)}"` : ""} scope="col" ${active ? `aria-sort="${direction}"` : ""}><button type="button" class="source-sort-button" data-action="sort-generation-sources" data-source-sort-key="${escapeHtml(key)}" data-source-sort-direction="${nextDirection}"><span>${escapeHtml(label)}</span>${indicator}</button></th>`;
-}
-
-function sourcePickerRowMarkup(
-  source,
-  primaryKey,
-  selectedKeys,
-  sourceRatings,
-  modelSelections,
-  sourceColors = {},
-  sourceColorEditorKey = null,
-) {
-  const key = sourceKey(source);
-  const primary = key === primaryKey;
-  const selected = selectedKeys.has(key) || primary;
-  const unavailable = source.available === false;
-  const metadata = sourceMetadataPresentation(source);
-  const status = unavailable ? source.message || "Unavailable" : source.cached ? "Cached" : "Available";
-  return `<tr class="${selected ? "is-selected " : ""}${primary ? "is-primary " : ""}${unavailable ? "is-unavailable" : ""}" data-source-row-key="${escapeHtml(key)}">
-    <td class="source-picker-include-column"><label class="source-dialog-choice" title="${escapeHtml(primary ? `${source.display_name} is always included as the primary source` : `Include ${source.display_name}`)}"><input type="checkbox" data-source-draft-key="${escapeHtml(key)}" aria-label="Include ${escapeHtml(source.display_name)}" ${selected ? "checked" : ""} ${primary || unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
-    <td class="source-picker-primary-column"><label class="source-dialog-primary" title="Make ${escapeHtml(source.display_name)} the primary source"><input type="radio" name="source-picker-primary" data-source-primary-key="${escapeHtml(key)}" aria-label="Make ${escapeHtml(source.display_name)} the primary source" ${primary ? "checked" : ""} ${unavailable ? "disabled" : ""} /><span aria-hidden="true"></span></label></td>
-    <th class="source-picker-name-cell" scope="row"><strong>${escapeHtml(sourceDisplayName(source))}</strong><small>${escapeHtml(status)}</small></th>
-    <td class="source-picker-model-column">${sourceModelChoicesMarkup(source, modelSelections, unavailable || !selected)}</td>
-    <td class="source-picker-rating-column">${sourceRatingMarkup(source, sourceRatings)}</td>
-    <td class="source-picker-color-column">${sourceColorPickerMarkup(source, sourceColors, sourceColorEditorKey)}</td>
-    <td>${escapeHtml(metadata.architecture)}</td>
-    <td>${escapeHtml(metadata.introduced)}</td>
-    <td>${escapeHtml(metadata.generationType)}</td>
-    <td class="source-picker-technologies-cell">${escapeHtml(metadata.technologies)}</td>
-  </tr>`;
-}
-
-function sourceColorEditorMarkup(source, sourceColors) {
-  const key = sourceKey(source);
-  const name = source.display_name;
-  const current = sourceColorFor(key, sourceColors);
-  const inputColor = (current ? current.slice(1) : "000000").toLowerCase();
-  const previewColor = current || "#000000";
-  return `<div class="source-color-editor" data-source-color-editor="${escapeHtml(key)}" role="group" aria-label="Edit color for ${escapeHtml(name)}">
-    <span class="source-color-editor-caption">Color for ${escapeHtml(name)}</span>
-    <input id="source-color-input-${escapeHtml(key)}" class="source-color-editor-well" type="color" data-source-editor-color-input="${escapeHtml(key)}" value="${escapeHtml(inputColor)}" aria-label="Custom color for ${escapeHtml(name)}" />
-    <code class="source-color-hex source-color-editor-hex" id="source-color-hex-${escapeHtml(key)}">${escapeHtml(`#${inputColor.toUpperCase()}`)}</code>
-    <div class="source-color-editor-actions">
-      <button type="button" class="button low" data-action="cancel-source-color-editor" aria-label="Cancel color change for ${escapeHtml(name)}" title="Cancel">Cancel</button>
-      <button type="button" class="button primary low" data-action="apply-source-color-editor" data-source-color-key="${escapeHtml(key)}" title="Apply this color">Apply</button>
-    </div>
-  </div>`;
-}
-
-function sourceColorPickerMarkup(source, sourceColors, sourceColorEditorKey = null) {
-  const key = sourceKey(source);
-  const name = source.display_name;
-  if (sourceColorEditorKey === key) return sourceColorEditorMarkup(source, sourceColors);
-  const current = sourceColorFor(key, sourceColors);
-  const currentIndicator = current
-    ? `<span class="source-color-current is-set" style="--source-color: ${escapeHtml(current)}" aria-hidden="true"></span><code class="source-color-hex">${escapeHtml(current.toUpperCase())}</code>`
-    : `<span class="source-color-current is-empty" aria-hidden="true"></span><span class="source-color-none">No color</span>`;
-  const picker = `<button type="button" class="source-color-picker-trigger" data-action="open-source-color-editor" data-source-color-key="${escapeHtml(key)}" title="Choose a custom color" aria-label="Choose a custom color for ${escapeHtml(name)}" aria-haspopup="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 2-.9 2-2 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.5 1.8-1.5H16a5 5 0 0 0 5-5c0-3.9-4-7-9-7Z" /><circle cx="7.5" cy="11.5" r="1.1" /><circle cx="10.5" cy="7.5" r="1.1" /><circle cx="15" cy="7.5" r="1.1" /><circle cx="17.5" cy="11" r="1.1" /></svg></button>`;
-  const clear = current
-    ? `<button type="button" class="source-color-clear" data-action="clear-generation-source-color" data-source-color-key="${escapeHtml(key)}" aria-label="Remove color from ${escapeHtml(name)}" title="Remove color">×</button>`
-    : "";
-  return `<div class="source-color-picker" role="group" aria-label="Color for ${escapeHtml(name)}">${currentIndicator}${picker}${clear}</div>`;
-}
-
-function sourceModelChoicesMarkup(source, modelSelections, sourceDisabled) {
-  const selectors = sourceModelSelectors(source);
-  if (!selectors.length) return '<span class="source-model-empty">—</span>';
-  const normalized = normalizeSourceModelSelections(source, modelSelections);
-  return selectors
-    .map((selector) => {
-      const selected = new Set(normalized[selector.parameter_id] || []);
-      const choices = selector.choices
-        .map((choice) => {
-          const checked = selected.has(choice.value);
-          const onlyChoice = selector.choices.length === 1;
-          const requiredSelection = checked && selected.size === 1;
-          const disabled = sourceDisabled || onlyChoice || requiredSelection;
-          const month = validTimelineMonth(choice.released_month);
-          const metadata = [
-            month ? formatTimelineMonth(month) : "",
-            onlyChoice ? "Only option" : "",
-          ]
-            .filter(Boolean)
-            .join(" · ");
-          const accessibleName = `Generate ${source.display_name} with ${selector.label}: ${choice.label}`;
-          return `<label class="source-model-choice${checked ? " is-selected" : ""}"><input type="checkbox" data-source-model-choice data-source-model-source-key="${escapeHtml(sourceKey(source))}" data-source-model-parameter-id="${escapeHtml(selector.parameter_id)}" data-source-model-value="${escapeHtml(choice.value)}" aria-label="${escapeHtml(accessibleName)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><span><strong>${escapeHtml(choice.label)}</strong>${metadata ? `<small>${escapeHtml(metadata)}</small>` : ""}</span></label>`;
-        })
-        .join("");
-      return `<fieldset class="source-model-selector"><legend>${escapeHtml(selector.label)}</legend>${selector.description ? `<p>${escapeHtml(selector.description)}</p>` : ""}<div class="source-model-choice-list">${choices}</div></fieldset>`;
-    })
+function checkpointTierMarkup({
+  tier,
+  values,
+  choiceByValue,
+  selectedValues,
+  sourceKey: activeSourceKey,
+  parameterId,
+  query,
+}) {
+  const choices = values.map((value) => choiceByValue.get(value)).filter(Boolean);
+  const visibleChoices = choices.filter((choice) => {
+    if (!query) return true;
+    return `${choice.label} ${choice.value}`.toLocaleLowerCase().includes(query);
+  });
+  const selectedCount = choices.filter((choice) => selectedValues.has(choice.value)).length;
+  const allSelected = choices.length > 0 && selectedCount === choices.length;
+  const indeterminate = selectedCount > 0 && selectedCount < choices.length;
+  const selectionAction = allSelected ? "Clear" : "Select";
+  const cards = visibleChoices
+    .map((choice) =>
+      checkpointCardMarkup({
+        choice,
+        selected: selectedValues.has(choice.value),
+        sourceKey: activeSourceKey,
+        parameterId,
+        tierId: tier.id,
+        reorderDisabled: Boolean(query),
+      }),
+    )
     .join("");
+  const emptyCopy = choices.length
+    ? "No matching checkpoints"
+    : "Drop checkpoints here";
+  return `<section class="checkpoint-tier checkpoint-tier-${escapeHtml(tier.id)}" data-checkpoint-tier="${escapeHtml(tier.id)}" data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" aria-label="${escapeHtml(tier.label)} tier">
+    <div class="checkpoint-tier-rail">
+      <strong>${escapeHtml(tier.label)}</strong>
+      <label class="checkpoint-tier-toggle" title="${escapeHtml(`${selectionAction} every checkpoint in ${tier.label}`)}">
+        <input type="checkbox" data-checkpoint-tier-toggle data-checkpoint-tier-id="${escapeHtml(tier.id)}" aria-label="${escapeHtml(`${selectionAction} every checkpoint in ${tier.label}`)}" ${allSelected ? "checked" : ""} ${indeterminate ? 'data-indeterminate="true"' : ""} ${choices.length ? "" : "disabled"} />
+        <span aria-hidden="true"></span><small>${selectedCount}/${choices.length}</small>
+      </label>
+    </div>
+    <div class="checkpoint-tier-grid" role="list">${cards || `<p class="checkpoint-tier-empty">${escapeHtml(emptyCopy)}</p>`}</div>
+  </section>`;
 }
 
-function sourceRatingMarkup(source, sourceRatings) {
-  const key = sourceKey(source);
-  const rating = sourceRatingValue(sourceRatings, key);
-  const name = source.display_name;
-  const stars = Array.from({ length: 5 }, (_, index) => {
-    const value = index + 1;
-    const label = `Set ${name} rating to ${value} star${value === 1 ? "" : "s"}`;
-    return `<button type="button" class="source-rating-star${value <= rating ? " is-filled" : ""}" data-action="rate-generation-source" data-source-rating-key="${escapeHtml(key)}" data-source-rating="${value}" aria-label="${escapeHtml(label)}" aria-pressed="${value === rating}" title="${escapeHtml(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.25 2.7 5.47 6.04.88-4.37 4.26 1.03 6.02L12 17.04l-5.4 2.84 1.03-6.02L3.26 9.6l6.04-.88L12 3.25Z" /></svg></button>`;
-  }).join("");
-  return `<div class="source-rating-stars" role="group" aria-label="Rating for ${escapeHtml(name)}" data-source-rating-value="${rating}">${stars}</div>`;
+function checkpointCardMarkup({
+  choice,
+  selected,
+  sourceKey: activeSourceKey,
+  parameterId,
+  tierId,
+  reorderDisabled,
+}) {
+  const presentation = checkpointChoicePresentation(choice);
+  const dragTitle = reorderDisabled
+    ? "Clear search to reorder checkpoints"
+    : `Drag ${choice.label} to reorder`;
+  return `<article class="checkpoint-card${selected ? " is-selected" : ""}" data-checkpoint-card data-checkpoint-value="${escapeHtml(choice.value)}" role="listitem">
+    <button type="button" class="checkpoint-drag-handle" data-checkpoint-drag-handle data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" data-checkpoint-tier-id="${escapeHtml(tierId)}" data-checkpoint-value="${escapeHtml(choice.value)}" draggable="${reorderDisabled ? "false" : "true"}" aria-label="${escapeHtml(dragTitle)}" title="${escapeHtml(dragTitle)}" ${reorderDisabled ? "disabled" : ""}><span aria-hidden="true"></span></button>
+    <label class="checkpoint-choice-body"><input type="checkbox" data-source-model-choice data-source-model-source-key="${escapeHtml(activeSourceKey)}" data-source-model-parameter-id="${escapeHtml(parameterId)}" data-source-model-value="${escapeHtml(choice.value)}" aria-label="${escapeHtml(choice.label)}" ${selected ? "checked" : ""} /><span aria-hidden="true"></span><strong title="${escapeHtml(choice.label)}">${escapeHtml(presentation.label)}</strong>${presentation.badge ? `<small>${escapeHtml(presentation.badge)}</small>` : ""}</label>
+  </article>`;
 }
 
-function sourceRatingValue(sourceRatings, key) {
-  const rating = Number(sourceRatings?.[key]);
-  return Number.isInteger(rating) && rating >= 1 && rating <= 5 ? rating : 0;
-}
-
-function sourceMetadataPresentation(source) {
-  const generation = source?.generation_source || {};
-  const baseModel = generation.base_model || {};
-  const introduction = modelIntroductionPresentation(baseModel, generation);
-  const technologies = Array.isArray(generation.technologies)
-    ? generation.technologies
-    : Array.isArray(source?.technical_inventory?.technologies)
-      ? source.technical_inventory.technologies
-      : [];
+function checkpointChoicePresentation(choice) {
+  const label = String(choice?.label || choice?.value || "").trim();
+  const parenthetical = label.match(/\s*\(([^()]*)\)\s*$/u);
+  if (!parenthetical) return { label, badge: "" };
+  const precision = parenthetical[1].match(/\b(?:BF16|FP16|FP8|NVFP4|INT8|MXFP8)\b/iu)?.[0];
+  if (!precision) return { label, badge: "" };
   return {
-    architecture: metadataLabel(baseModel.architecture_label || baseModel.architecture),
-    introduced: introduction.label,
-    introducedSortValue: introduction.sortValue,
-    generationType: metadataLabel(generation.generation_type),
-    technologies:
-      technologies
-        .map((technology) => metadataLabel(technology?.label || technology?.id, ""))
-        .filter(Boolean)
-        .join(", ") || "—",
+    label: label.slice(0, parenthetical.index).trim(),
+    badge: precision.toUpperCase(),
   };
 }
 
-function modelIntroductionPresentation(baseModel, generation) {
-  const canonicalMonth = validTimelineMonth(
-    baseModel?.timeline?.architecture?.introduced_month,
-  );
-  if (canonicalMonth) {
-    return {
-      label: formatTimelineMonth(canonicalMonth),
-      sortValue: canonicalMonth,
-    };
-  }
-
-  const candidates = [
-    baseModel.introduced_at,
-    baseModel.introduced,
-    baseModel.introduction_date,
-    baseModel.release_date,
-    baseModel.released_at,
-    baseModel.released,
-    baseModel.first_released_at,
-    baseModel.launch_date,
-    baseModel.release_year,
-    generation.model_introduced_at,
-    generation.model_release_date,
-    generation.model_release_year,
-  ];
-  for (const candidate of candidates) {
-    const year = modelIntroductionYear(candidate);
-    if (year) return { label: year, sortValue: year };
-  }
-  return { label: "—", sortValue: "" };
-}
-
-function modelIntroductionYear(value) {
-  if (typeof value === "number" && Number.isInteger(value)) {
-    return value >= 1900 && value <= 2200 ? String(value) : "";
-  }
-  const text = String(value ?? "").trim();
-  if (!text) return "";
-  const yearMatch = text.match(/(?:^|\D)(19\d{2}|20\d{2}|21\d{2})(?:\D|$)/u);
-  if (yearMatch) return yearMatch[1];
-  const timestamp = Date.parse(text);
-  return Number.isNaN(timestamp) ? "" : String(new Date(timestamp).getUTCFullYear());
-}
-
-function sourceGenerationTypeKey(source) {
-  const value = String(source?.generation_source?.generation_type || "").trim().toLowerCase();
-  return value || "__unknown__";
-}
-
-function sourceGenerationTypeOptions(sources) {
-  const counts = new Map();
-  for (const source of sources) {
-    const key = sourceGenerationTypeKey(source);
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-  return [...counts]
-    .map(([key, count]) => ({
-      key,
-      count,
-      label: key === "__unknown__" ? "Unknown" : metadataLabel(key),
-    }))
-    .sort((first, second) => first.label.localeCompare(second.label, undefined, { sensitivity: "base" }));
+function sourceMetadataPresentation(source) {
+  const baseModel = source?.generation_source?.base_model || {};
+  return {
+    architecture: metadataLabel(baseModel.architecture_label || baseModel.architecture),
+  };
 }
 
 function metadataLabel(value, fallback = "—") {
@@ -767,18 +612,6 @@ function metadataLabel(value, fallback = "—") {
     .replaceAll("_", " ")
     .replaceAll("-", " ")
     .replace(/\b\w/gu, (character) => character.toUpperCase());
-}
-
-function sourceSortValue(source, key, sourceRatings) {
-  const metadata = sourceMetadataPresentation(source);
-  if (key === "rating") {
-    const rating = sourceRatingValue(sourceRatings, sourceKey(source));
-    return rating ? String(rating) : "";
-  }
-  if (key === "architecture") return metadata.architecture;
-  if (key === "introduced") return metadata.introducedSortValue;
-  if (key === "generation_type") return metadata.generationType;
-  return sourceDisplayName(source);
 }
 
 function warningText(warning) {
@@ -1432,7 +1265,6 @@ export function galleryMarkup(
   {
     status = "ready",
     message = null,
-    sourceColors = {},
     collections = [],
     currentCollectionId = null,
   } = {},
@@ -1443,7 +1275,7 @@ export function galleryMarkup(
     .join("");
   const tileGrid = tiles ? `<div class="collection-grid">${tiles}</div>` : "";
   const cards = sortGenerationsNewestFirst(generations)
-    .map((generation) => galleryCardMarkup(generation, sourceColors))
+    .map((generation) => galleryCardMarkup(generation))
     .join("");
   if (status === "loading") {
     return `${tileGrid}<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
@@ -1521,7 +1353,7 @@ export function renderCollectionBar(
   return `<nav id="collection-bar" class="collection-bar" aria-label="Collections">
     <div class="collection-crumbs">${crumbs}</div>
     <div class="collection-toolbar-actions">
-      <button type="button" class="button secondary low" data-action="new-collection" ${loading || atDepthCap ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}">New collection</button>
+      <button type="button" class="button low new-collection-launch-button" data-action="new-collection" ${loading || atDepthCap ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}"><span class="new-collection-plus" aria-hidden="true">+</span><span class="new-collection-label">New collection</span></button>
     </div>
   </nav>`;
 }
@@ -1566,7 +1398,7 @@ export function moveDialogMarkup(generation, collections) {
   </form>`;
 }
 
-export function galleryCardMarkup(generation, sourceColors = {}) {
+export function galleryCardMarkup(generation) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
   const sourceName = generationSourceName(generation);
@@ -1767,17 +1599,6 @@ function generationSourceName(generation) {
     generation?.generation_source?.source_key ||
     "Published source"
   );
-}
-
-export function sourceColorFor(key, sourceColors) {
-  if (!sourceColors || typeof sourceColors !== "object" || !key) return null;
-  const color = String(sourceColors[key] || "").trim().toLowerCase().replace(/^#/, "");
-  return /^[0-9a-f]{6}$/.test(color) ? `#${color}` : null;
-}
-
-function sourceColorDot(color, name) {
-  if (!color) return "";
-  return `<span class="source-color-dot" style="--source-color: ${escapeHtml(color)}" aria-hidden="true" title="${escapeHtml(`Color for ${name}`)}"></span>`;
 }
 
 function generationComfyuiInstanceName(generation) {

@@ -41,6 +41,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 45,
             "source_ratings": {},
             "source_colors": {},
+            "checkpoint_tiers": {},
         }
 
         saved = first.put(
@@ -53,6 +54,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 93,
             "source_ratings": {},
             "source_colors": {},
+            "checkpoint_tiers": {},
         }
         ratings_saved = first.put(
             "/api/preferences",
@@ -64,7 +66,25 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
+            "checkpoint_tiers": {},
         }
+        checkpoint_tiers = {
+            "source-alpha": {
+                "checkpoint": {
+                    "top_picks": ["model-v2"],
+                    "preferred": ["model-v1"],
+                    "occasional": [],
+                    "unsorted": ["model-new"],
+                }
+            }
+        }
+        tiers_saved = first.put(
+            "/api/preferences",
+            headers={"X-CSRF-Token": csrf(first)},
+            json={"checkpoint_tiers": checkpoint_tiers},
+        )
+        assert tiers_saved.status_code == 200
+        assert tiers_saved.json()["checkpoint_tiers"] == checkpoint_tiers
         assert (
             first.put(
                 "/api/preferences",
@@ -93,6 +113,25 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             first.put(
                 "/api/preferences",
                 headers={"X-CSRF-Token": csrf(first)},
+                json={
+                    "checkpoint_tiers": {
+                        "source-alpha": {
+                            "checkpoint": {
+                                "top_picks": ["duplicate"],
+                                "preferred": ["duplicate"],
+                                "occasional": [],
+                                "unsorted": [],
+                            }
+                        }
+                    }
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            first.put(
+                "/api/preferences",
+                headers={"X-CSRF-Token": csrf(first)},
                 json={},
             ).status_code
             == 422
@@ -104,6 +143,7 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
+            "checkpoint_tiers": checkpoint_tiers,
         }
 
 

@@ -23,7 +23,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "c9e3b17d4f28"
+HEAD_REVISION = "2f8d6a1c4b90"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -250,6 +250,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert preference.gallery_scale == 73
         assert preference.source_ratings_json == {}
         assert preference.source_colors_json == {}
+        assert preference.checkpoint_tiers_json == {}
         assert profile is not None
         assert profile.instance_id is None
         assert profile.source_key is None
@@ -390,6 +391,9 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }
     assert "source_colors_json" in {
+        column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
+    assert "checkpoint_tiers_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }
     assert "collection_previews_enabled" not in {

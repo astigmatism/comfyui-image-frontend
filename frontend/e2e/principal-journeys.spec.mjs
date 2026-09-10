@@ -47,12 +47,12 @@ async function selectPublishedSource(page, name) {
   await selector.click();
   const dialog = page.locator("#source-picker-dialog");
   await expect(dialog).toBeVisible();
-  const row = dialog.locator("[data-source-row-key]").filter({ hasText: name });
-  await expect(row).toHaveCount(1);
-  const option = row.locator("[data-source-primary-key]");
-  const value = await option.getAttribute("data-source-primary-key");
+  const workflow = dialog.locator("[data-source-workflow-choice]");
+  const option = workflow.locator("option").filter({ hasText: name });
+  await expect(option).toHaveCount(1);
+  const value = await option.getAttribute("value");
   expect(value).toBeTruthy();
-  await option.check();
+  await workflow.selectOption(value);
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
   await expect(selector).toBeFocused();
@@ -1155,197 +1155,90 @@ test("failed initial gallery snapshot preserves buffered live generations", asyn
   }
 });
 
-test("checked generation sources reuse compatible settings without blocking partial interfaces", async ({
-  page,
-}) => {
+test("generation source selection is singular and transactional", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Krea 2 NSFW V4");
 
-  await page
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("selected-source comparison lighthouse");
-  await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("768");
-  await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("1024");
-  await page.getByLabel("Seed mode", { exact: true }).selectOption("fixed");
-  await page.getByLabel("Seed value", { exact: true }).fill("424242");
+  const trigger = page.locator("#workflow-source");
+  await trigger.click();
+  const dialog = page.locator("#source-picker-dialog");
+  const workflow = dialog.locator("[data-source-workflow-choice]");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Generation source" })).toBeVisible();
+  await expect(dialog.locator("table")).toHaveCount(0);
+  await expect(dialog.getByText(/Primary|Include|Rating|Technologies/, { exact: true })).toHaveCount(0);
 
-  const generationRequests = [];
-  const generationResponses = [];
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.pathname === "/api/generations" && request.method() === "POST") {
-      generationRequests.push(request.postDataJSON());
-    }
-  });
-  page.on("response", async (response) => {
-    const url = new URL(response.url());
-    if (url.pathname === "/api/generations" && response.request().method() === "POST") {
-      generationResponses.push(await response.json());
-    }
-  });
+  const genericOption = workflow.locator("option").filter({ hasText: "Generic Landscape" });
+  const genericKey = await genericOption.getAttribute("value");
+  expect(genericKey).toBeTruthy();
+  await workflow.selectOption(genericKey);
+  await expect(dialog.locator(".source-workflow-select strong")).toHaveText("Generic Landscape");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(trigger).toContainText("Krea 2 NSFW V4");
 
-  await page.locator("#workflow-source").click();
-  const sourceDialog = page.locator("#source-picker-dialog");
-  await expect(sourceDialog.locator(".source-picker-dialog-close svg")).toBeVisible();
-  let genericCheckbox = page.getByLabel(
-    "Include Generic Landscape",
-    { exact: true },
-  );
-  await genericCheckbox.check();
-  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.locator("#workflow-source")).not.toContainText("2 sources");
+  await trigger.click();
+  await expect(dialog.locator("[data-source-workflow-choice]")).not.toHaveValue(genericKey);
+  await dialog.locator("[data-source-workflow-choice]").selectOption(genericKey);
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(trigger).toHaveAttribute("data-source-key", genericKey);
+  await expect(trigger).toContainText("Generic Landscape");
 
-  await page.locator("#workflow-source").click();
-  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
-  await expect(genericCheckbox).not.toBeChecked();
-  const architectureHeading = sourceDialog.getByRole("columnheader", { name: "Architecture" });
-  await architectureHeading.getByRole("button").click();
-  await expect(architectureHeading).toHaveAttribute("aria-sort", "ascending");
-  await expect(
-    architectureHeading.locator('[data-sort-direction-indicator="ascending"]'),
-  ).toBeVisible();
-  await sourceDialog.getByLabel("Show Unknown", { exact: true }).uncheck();
-  await expect(genericCheckbox).toHaveCount(0);
-  await sourceDialog.getByLabel("Show Unknown", { exact: true }).check();
-  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
-  await expect(genericCheckbox).toBeVisible();
-  await sourceDialog.getByRole("button", { name: "Select all", exact: true }).click();
-  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
-  await expect(genericCheckbox).toBeChecked();
-  await sourceDialog.getByRole("button", { name: "Deselect all", exact: true }).click();
-  genericCheckbox = page.getByLabel("Include Generic Landscape", { exact: true });
-  await expect(genericCheckbox).not.toBeChecked();
-
-  const genericSourceKey = await genericCheckbox.getAttribute("data-source-draft-key");
-  const primarySourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
-  await genericCheckbox.check();
-  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.locator("#workflow-source")).toContainText("2 sources");
-  await page.getByRole("button", { name: "Generate" }).click();
-  await expect(page.locator("#toast-region")).toContainText(
-    "2 generations queued across 2 selected sources.",
-  );
-  await expect.poll(() => generationRequests.length).toBe(2);
-
-  const kreaRequest = generationRequests.find((request) => request.source_key === primarySourceKey);
-  const genericRequest = generationRequests.find((request) => request.source_key === genericSourceKey);
-  expect(kreaRequest).toBeTruthy();
-  expect(genericRequest).toBeTruthy();
-  expect(kreaRequest.parameters).toEqual({
-    prompt: "selected-source comparison lighthouse",
-    width: 768,
-    height: 1024,
-    seed: "424242",
-    enable_seedvr2_upscale: false,
-    lora: "knp_v4_1",
-    lora_strength: 1,
-  });
-  expect(genericRequest.parameters).toEqual({
-    prompt: "selected-source comparison lighthouse",
-  });
-  await expect.poll(() => generationResponses.length).toBe(2);
-  for (const generation of generationResponses) {
-    await expect(
-      page.locator(`.gallery-card[data-generation-id="${generation.id}"]`),
-    ).toBeVisible();
-  }
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
 });
 
-test("Moody checkpoint choices are prominent, shared with the modal, and fan out", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 326, height: 1265 });
-  await page.route("**/api/workflows/*", async (route) => {
-    const response = await route.fetch();
-    const detail = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...detail,
-        model_selectors: [
-          {
-            parameter_id: "stale_model",
-            label: "Stale model selector",
-            default: "stale",
-            choices: [{ value: "stale", label: "Stale" }],
-          },
-        ],
-      },
-    });
-  });
 
+test("tiered checkpoint choices reorder, persist, and fan out", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
-  await page.getByRole("button", { name: "Open generation controls", exact: true }).click();
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
   await page
     .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("checkpoint comparison lighthouse");
+    .fill("checkpoint tier lighthouse");
 
-  const activeCheckpointGroup = page.locator(".active-source-model-control");
-  await expect(activeCheckpointGroup).toBeVisible();
-  await expect(activeCheckpointGroup.getByText("Checkpoint", { exact: true })).toBeVisible();
-  const v4Checkpoint = activeCheckpointGroup.getByRole("checkbox", {
-    name: "Moody Krea 2 V4 INT8 ConvRot",
-    exact: true,
-  });
-  const tyjrCheckpoint = activeCheckpointGroup.getByRole("checkbox", {
-    name: "Moody Krea 2 TYJR MXFP8",
-    exact: true,
-  });
-  const v5Checkpoint = activeCheckpointGroup.getByRole("checkbox", {
-    name: "Moody Krea 2 V5 BF16",
-    exact: true,
-  });
-  await expect(v4Checkpoint).toBeChecked();
-  await expect(v5Checkpoint).not.toBeChecked();
-  await v5Checkpoint.check();
-  await expect(page.locator("#workflow-source")).toContainText("2 generations planned");
-  await tyjrCheckpoint.check();
-  await expect(page.locator("#workflow-source")).toContainText("3 generations planned");
-
-  const advanced = page.getByRole("button", { name: "Advanced", exact: true });
-  if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
-  await expect(page.getByRole("combobox", { name: "Checkpoint", exact: true })).toHaveCount(0);
-  await expect(
-    page.getByRole("spinbutton", { name: "Guidance strength", exact: true }),
-  ).toBeVisible();
-
-  await page.locator("#workflow-source").click();
-  const sourceDialog = page.locator("#source-picker-dialog");
-  const moodyRow = sourceDialog
-    .locator('[data-source-row-key]')
-    .filter({ hasText: "Moody Krea 2 Mix V4" });
-  await expect(moodyRow).toHaveCount(1);
-  const modalV5Checkpoint = moodyRow.getByRole("checkbox", {
-    name: "Generate Moody Krea 2 Mix V4 with Checkpoint: Moody Krea 2 V5 BF16",
-    exact: true,
-  });
-  await expect(modalV5Checkpoint).toBeChecked();
-  const modalTyjrCheckpoint = moodyRow.getByRole("checkbox", {
-    name: "Generate Moody Krea 2 Mix V4 with Checkpoint: Moody Krea 2 TYJR MXFP8",
-    exact: true,
-  });
-  await expect(modalTyjrCheckpoint).toBeChecked();
-  await modalV5Checkpoint.uncheck();
-  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(v5Checkpoint).toBeChecked();
-
-  await page.locator("#workflow-source").click();
-  await expect(modalV5Checkpoint).toBeChecked();
-  await expect(modalTyjrCheckpoint).toBeChecked();
-  const genericRow = sourceDialog
-    .locator('[data-source-row-key]')
-    .filter({ hasText: "Generic Landscape" });
-  await expect(genericRow.locator(".source-model-empty")).toBeVisible();
-  await expect(sourceDialog.locator("[data-source-selection-count]")).toContainText(
-    "3 generations planned",
+  const trigger = page.locator("#workflow-source");
+  await trigger.click();
+  const dialog = page.locator("#source-picker-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("[data-checkpoint-tier]")).toHaveCount(4);
+  await expect(dialog.locator(".checkpoint-tier-rail > strong")).toHaveText([
+    "Top picks",
+    "Preferred",
+    "Occasional",
+    "Unsorted",
+  ]);
+  await expect(dialog.locator(".checkpoint-tier-occasional .checkpoint-tier-empty")).toHaveText(
+    "Drop checkpoints here",
   );
-  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(tyjrCheckpoint).toBeChecked();
-  await expect(v5Checkpoint).toBeChecked();
-  await expect(page.locator("#workflow-source")).toContainText("3 generations planned");
+
+  const v4Card = dialog
+    .locator("[data-checkpoint-card]")
+    .filter({ hasText: "Moody Krea 2 V4 INT8 ConvRot" });
+  const topGrid = dialog.locator(".checkpoint-tier-top_picks .checkpoint-tier-grid");
+  await v4Card.locator("[data-checkpoint-drag-handle]").dragTo(topGrid);
+  await expect(topGrid).toContainText("Moody Krea 2 V4 INT8 ConvRot");
+  await expect(dialog.locator(".checkpoint-tier-unsorted")).not.toContainText(
+    "Moody Krea 2 V4 INT8 ConvRot",
+  );
+
+  await dialog.getByRole("button", { name: "Select all", exact: true }).click();
+  await expect(dialog.locator("[data-source-selection-count]")).toHaveText("5 of 5 selected");
+  const preferenceSave = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  const savedBody = (await preferenceSave).request().postDataJSON();
+  expect(savedBody.checkpoint_tiers).toBeTruthy();
+  await expect(trigger).toContainText("5 checkpoints selected");
+
+  await trigger.click();
+  await expect(dialog.locator(".checkpoint-tier-top_picks")).toContainText(
+    "Moody Krea 2 V4 INT8 ConvRot",
+  );
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 
   const generationRequests = [];
   page.on("request", (request) => {
@@ -1354,40 +1247,15 @@ test("Moody checkpoint choices are prominent, shared with the modal, and fan out
       generationRequests.push(request.postDataJSON());
     }
   });
-
-  let releaseValidation;
-  const validationGate = new Promise((resolve) => {
-    releaseValidation = resolve;
-  });
-  const holdValidation = async (route) => {
-    await validationGate;
-    await route.continue();
-  };
-  await page.route("**/api/generations/validate", holdValidation);
   await page.getByRole("button", { name: "Generate", exact: true }).click();
-  await expect(v4Checkpoint).toBeDisabled();
-  await expect(tyjrCheckpoint).toBeDisabled();
-  await expect(v5Checkpoint).toBeDisabled();
-  releaseValidation();
-  await expect(page.locator("#toast-region")).toContainText(
-    "3 generations queued across 1 selected source.",
-  );
-  await page.unroute("**/api/generations/validate", holdValidation);
-  await expect(tyjrCheckpoint).toBeEnabled();
-  await expect(v5Checkpoint).toBeEnabled();
-  await expect.poll(() => generationRequests.length).toBe(3);
-
-  generationRequests.sort((first, second) =>
-    first.parameters.checkpoint.localeCompare(second.parameters.checkpoint),
-  );
-  expect(generationRequests.map((request) => request.parameters.checkpoint)).toEqual([
-    "tyjr_mxfp8",
-    "v4_int8",
-    "v5_bf16",
-  ]);
-  const seeds = new Set(generationRequests.map((request) => request.parameters.seed));
-  expect(seeds.size).toBe(1);
-  expect([...seeds][0]).toMatch(/^\d+$/);
+  await expect(page.locator("#toast-region")).toContainText("5 generations queued.");
+  await expect.poll(() => generationRequests.length).toBe(5);
+  expect(
+    generationRequests
+      .map((request) => request.parameters.checkpoint)
+      .sort((first, second) => first.localeCompare(second)),
+  ).toEqual(["cutie_x_int8", "tyjr_mxfp8", "v4_bf16", "v4_int8", "v5_bf16"]);
+  expect(new Set(generationRequests.map((request) => request.parameters.seed)).size).toBe(1);
   expect(
     generationRequests.every(
       (request) =>
@@ -1395,122 +1263,71 @@ test("Moody checkpoint choices are prominent, shared with the modal, and fan out
         !Array.isArray(request.parameters.checkpoint),
     ),
   ).toBe(true);
-  const sharedParameters = { ...generationRequests[0].parameters };
-  delete sharedParameters.checkpoint;
-  for (const request of generationRequests.slice(1)) {
-    const comparable = { ...request.parameters };
-    delete comparable.checkpoint;
-    expect(comparable).toEqual(sharedParameters);
-  }
-
-  const checkpointFooterPatterns = [
-    /^Moody Krea 2 V4 INT8 ConvRot(?: · (?:\d+m )?\d+s)?$/,
-    /^Moody Krea 2 TYJR MXFP8(?: · (?:\d+m )?\d+s)?$/,
-    /^Moody Krea 2 V5 BF16(?: · (?:\d+m )?\d+s)?$/,
-  ];
-  for (const pattern of checkpointFooterPatterns) {
-    const footer = page.locator(".gallery-card .card-metadata").filter({ hasText: pattern });
-    await expect(footer).toHaveCount(1);
-    await expect(footer).toHaveText(pattern);
-  }
 });
 
-test("comparison fanout rejects a secondary source that was republished after selection", async ({
+
+test("checkpoint search is non-destructive and Clear all prevents Apply", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+
+  await page.locator("#workflow-source").click();
+  const dialog = page.locator("#source-picker-dialog");
+  const search = dialog.getByRole("searchbox", { name: "Search checkpoints" });
+  await search.fill("TYJR");
+  await expect(dialog.locator("[data-checkpoint-card]")).toHaveCount(1);
+  await expect(dialog.locator("[data-checkpoint-drag-handle]")).toBeDisabled();
+  await search.fill("");
+  await expect(dialog.locator("[data-checkpoint-card]")).toHaveCount(5);
+
+  await dialog.getByRole("button", { name: "Clear all", exact: true }).click();
+  await expect(dialog.locator("[data-source-selection-count]")).toHaveText("0 of 5 selected");
+  await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
+
+  const unsortedToggle = dialog
+    .locator(".checkpoint-tier-unsorted")
+    .getByRole("checkbox", { name: /every checkpoint in Unsorted/ });
+  if (await unsortedToggle.isEnabled()) await unsortedToggle.check();
+  const topToggle = dialog
+    .locator(".checkpoint-tier-top_picks")
+    .getByRole("checkbox", { name: /every checkpoint in Top picks/ });
+  if (await topToggle.isEnabled()) await topToggle.check();
+  await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+
+test("checkpoint tier preference persists across reload and supports keyboard moves", async ({
   page,
 }) => {
-  await page.route("**/api/workflows/*", async (route) => {
-    const response = await route.fetch();
-    const source = await response.json();
-    if (source?.display_name === "Generic Landscape") {
-      source.revision = {
-        ...source.revision,
-        publication_id: `${source.revision.publication_id}-republished`,
-      };
-    }
-    await route.fulfill({ response, json: source });
-  });
-
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
-  await selectPublishedSource(page, "Krea 2 NSFW V4");
-  await page
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("revision-safe comparison lighthouse");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
 
   await page.locator("#workflow-source").click();
-  const sourceDialog = page.locator("#source-picker-dialog");
-  await sourceDialog.getByLabel("Include Generic Landscape", { exact: true }).check();
-  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.locator("#workflow-source")).toContainText("2 sources selected");
-
-  const generationRequests = [];
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.pathname === "/api/generations" && request.method() === "POST") {
-      generationRequests.push(request.postDataJSON());
-    }
-  });
-
-  await page.getByRole("button", { name: "Generate", exact: true }).click();
-  await expect(page.locator("#toast-region")).toContainText(
-    "Generic Landscape was republished after it was selected",
-  );
-  await expect.poll(() => generationRequests.length).toBe(1);
-  expect(generationRequests[0].source_key).toBe(
-    await page.locator("#workflow-source").getAttribute("data-source-key"),
-  );
-});
-
-test("generation source ratings persist and sort in both directions", async ({ page }) => {
-  await page.goto("/");
-  await signInAdminWithCurrentFixturePassword(page);
-  await selectPublishedSource(page, "Krea 2 NSFW V4");
-
-  await page.locator("#workflow-source").click();
-  let sourceDialog = page.locator("#source-picker-dialog");
-  const sourceRow = (name) =>
-    sourceDialog.locator("[data-source-row-key]").filter({ hasText: name });
-  const kreaSourceKey = await sourceRow("Krea 2 NSFW V4").getAttribute("data-source-row-key");
-  const genericSourceKey = await sourceRow("Generic Landscape").getAttribute(
-    "data-source-row-key",
-  );
-  expect(kreaSourceKey).toBeTruthy();
-  expect(genericSourceKey).toBeTruthy();
-  const setRating = async (name, rating) => {
-    const saved = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/preferences" &&
-        response.request().method() === "PUT",
-    );
-    await sourceRow(name)
-      .getByRole("button", { name: `Set ${name} rating to ${rating} stars`, exact: true })
-      .click();
-    expect((await saved).ok()).toBe(true);
-    await expect(sourceRow(name).locator(".source-rating-star.is-filled")).toHaveCount(rating);
-  };
-
-  await setRating("Krea 2 NSFW V4", 3);
-  await setRating("Generic Landscape", 5);
-
-  const ratingHeading = sourceDialog.getByRole("columnheader", { name: "Rating" });
-  await ratingHeading.getByRole("button").click();
-  await expect(ratingHeading).toHaveAttribute("aria-sort", "ascending");
-  let names = await sourceDialog
-    .locator("[data-source-row-key] .source-picker-name-cell strong")
-    .allTextContents();
-  expect(names.findIndex((name) => name.includes("Krea 2 NSFW V4"))).toBeLessThan(
-    names.findIndex((name) => name.includes("Generic Landscape")),
+  let dialog = page.locator("#source-picker-dialog");
+  let tyjrHandle = dialog
+    .locator("[data-checkpoint-card]")
+    .filter({ hasText: "Moody Krea 2 TYJR MXFP8" })
+    .locator("[data-checkpoint-drag-handle]");
+  await tyjrHandle.focus();
+  await tyjrHandle.press("Alt+ArrowUp");
+  tyjrHandle = dialog
+    .locator("[data-checkpoint-card]")
+    .filter({ hasText: "Moody Krea 2 TYJR MXFP8" })
+    .locator("[data-checkpoint-drag-handle]");
+  await tyjrHandle.press("Alt+ArrowUp");
+  await expect(dialog.locator(".checkpoint-tier-preferred")).toContainText(
+    "Moody Krea 2 TYJR MXFP8",
   );
 
-  await ratingHeading.getByRole("button").click();
-  await expect(ratingHeading).toHaveAttribute("aria-sort", "descending");
-  names = await sourceDialog
-    .locator("[data-source-row-key] .source-picker-name-cell strong")
-    .allTextContents();
-  expect(names.findIndex((name) => name.includes("Generic Landscape"))).toBeLessThan(
-    names.findIndex((name) => name.includes("Krea 2 NSFW V4")),
+  const saved = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
   );
-  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  expect((await saved).ok()).toBe(true);
 
   const preferencesLoaded = page.waitForResponse(
     (response) =>
@@ -1519,18 +1336,21 @@ test("generation source ratings persist and sort in both directions", async ({ p
   );
   await page.reload();
   const preferences = await (await preferencesLoaded).json();
-  expect(preferences.source_ratings[kreaSourceKey]).toBe(3);
-  expect(preferences.source_ratings[genericSourceKey]).toBe(5);
+  expect(
+    Object.values(preferences.checkpoint_tiers)
+      .flatMap((selectors) => Object.values(selectors))
+      .some((tiers) => tiers.preferred?.includes("tyjr_mxfp8")),
+  ).toBe(true);
+
   await expect(page.locator("#workflow-source")).toBeEnabled();
   await page.locator("#workflow-source").click();
-  sourceDialog = page.locator("#source-picker-dialog");
-  await expect(
-    sourceRow("Krea 2 NSFW V4").locator('[data-source-rating-value="3"]'),
-  ).toBeVisible();
-  await expect(
-    sourceRow("Generic Landscape").locator('[data-source-rating-value="5"]'),
-  ).toBeVisible();
+  dialog = page.locator("#source-picker-dialog");
+  await expect(dialog.locator(".checkpoint-tier-preferred")).toContainText(
+    "Moody Krea 2 TYJR MXFP8",
+  );
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
+
 
 test("gallery defaults to request initiation order when the page arrives unsorted", async ({
   page,
@@ -1574,198 +1394,42 @@ test("gallery defaults to request initiation order when the page arrives unsorte
   expect(cardIds).toEqual(["newest-active", "previous", "oldest"]);
 });
 
-test("generation source color applies, persists in preferences across reload, and clears", async ({
-  page,
-}) => {
-  test.setTimeout(60_000);
+test("empty checkpoint tiers retain their drop area and vertical rail label", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
-  await selectPublishedSource(page, "Krea 2 NSFW V4");
-
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
   await page.locator("#workflow-source").click();
-  const sourceDialog = page.locator("#source-picker-dialog");
-  const sourceRow = (name) =>
-    sourceDialog.locator("[data-source-row-key]").filter({ hasText: name });
-  const kreaSourceKey = await sourceRow("Krea 2 NSFW V4").getAttribute("data-source-row-key");
-  const genericSourceKey = await sourceRow("Generic Landscape").getAttribute("data-source-row-key");
-  expect(kreaSourceKey).toBeTruthy();
-  expect(genericSourceKey).toBeTruthy();
 
-  // No color initially: row shows the "No color" state and there is no clear button.
-  await expect(sourceRow("Krea 2 NSFW V4").locator(".source-color-none")).toHaveText("No color");
-  await expect(sourceRow("Krea 2 NSFW V4").locator(".source-color-clear")).toHaveCount(0);
-
-  // Open the inline editor and apply a specific color through the real interaction.
-  const savedColor = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "PUT",
-  );
-  await sourceRow("Krea 2 NSFW V4")
-    .getByRole("button", { name: "Choose a custom color for Krea 2 NSFW V4" })
-    .click();
-  await sourceRow("Krea 2 NSFW V4")
-    .locator('input[type="color"]')
-    .evaluate((input) => {
-      input.value = "#2e86c1";
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-  await sourceRow("Krea 2 NSFW V4")
-    .getByRole("button", { name: "Apply", exact: true })
-    .click();
-
-  const colorSave = await savedColor;
-  expect(colorSave.ok()).toBe(true);
-  expect(colorSave.request().postDataJSON().source_colors[kreaSourceKey]).toBe("#2e86c1");
-  expect(colorSave.request().postDataJSON().source_colors[genericSourceKey]).toBeUndefined();
-
-  // The row now shows the configured swatch + uppercase hex, not "No color".
-  const kreaColorCell = sourceRow("Krea 2 NSFW V4").locator(".source-color-picker");
-  await expect(kreaColorCell.locator(".source-color-current.is-set")).toHaveCount(1);
-  await expect(kreaColorCell.locator(".source-color-hex")).toHaveText("#2E86C1");
-  await expect(kreaColorCell.locator(".source-color-none")).toHaveCount(0);
-  // The other source is untouched.
-  await expect(sourceRow("Generic Landscape").locator(".source-color-none")).toHaveText("No color");
-
-  // Color survives closing and reopening the modal.
-  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.locator("#workflow-source").click();
-  const reopenedDialog = page.locator("#source-picker-dialog");
-  const reopenedRow = (name) =>
-    reopenedDialog.locator("[data-source-row-key]").filter({ hasText: name });
+  const occasional = page.locator("#source-picker-dialog .checkpoint-tier-occasional");
+  await expect(occasional.locator(".checkpoint-tier-empty")).toHaveText("Drop checkpoints here");
   await expect(
-    reopenedRow("Krea 2 NSFW V4").locator(".source-color-current.is-set"),
-  ).toHaveCount(1);
-  await expect(
-    reopenedRow("Krea 2 NSFW V4").locator(".source-color-hex"),
-  ).toHaveText("#2E86C1");
-
-  // Generate a card from the colored source: the caption leads with the checkpoint name
-  // and the duration (this source has no checkpoint choice) and never shows the
-  // source name, so the stored color has no caption to style.
-  await sourceDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("colored caption lighthouse");
-  await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("384");
-  await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("512");
-  const accepted = await generateAndExpectAccepted(page);
-  const generation = await accepted.json();
-  const coloredCard = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
-  await expect(coloredCard).toHaveClass(/status-succeeded/, { timeout: 30_000 });
-  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
-  await expect(coloredCard.locator(".card-metadata")).toHaveText(/^(?:\d+m )?\d+s$/);
-  await expect(coloredCard).not.toContainText("Krea 2 NSFW V4");
-
-  // Reload: the color preference persists even though the card caption no longer renders it.
-  const preferencesLoaded = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "GET",
-  );
-  await page.reload();
-  const preferences = await (await preferencesLoaded).json();
-  expect(preferences.source_colors[kreaSourceKey]).toBe("#2e86c1");
-  await expect(coloredCard).toHaveClass(/status-succeeded/);
-  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
-  await expect(coloredCard.locator(".card-metadata")).toHaveText(/^(?:\d+m )?\d+s$/);
-
-  // Clearing the color restores "No color" and removes the caption styling immediately.
-  await page.locator("#workflow-source").click();
-  const clearDialog = page.locator("#source-picker-dialog");
-  const clearRow = (name) =>
-    clearDialog.locator("[data-source-row-key]").filter({ hasText: name });
-  const clearSaved = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "PUT",
-  );
-  await clearRow("Krea 2 NSFW V4")
-    .getByRole("button", { name: "Remove color from Krea 2 NSFW V4" })
-    .click();
-  const clearSave = await clearSaved;
-  expect(clearSave.ok()).toBe(true);
-  expect(clearSave.request().postDataJSON().source_colors[kreaSourceKey]).toBeUndefined();
-  await expect(clearRow("Krea 2 NSFW V4").locator(".source-color-none")).toHaveText("No color");
-  await expect(clearRow("Krea 2 NSFW V4").locator(".source-color-current.is-set")).toHaveCount(0);
-  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
-
-  // Reload: the cleared state persists (no color in preferences, no colored caption).
-  const clearPreferencesLoaded = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "GET",
-  );
-  await page.reload();
-  const clearPreferences = await (await clearPreferencesLoaded).json();
-  expect(clearPreferences.source_colors[kreaSourceKey]).toBeUndefined();
-  await expect(coloredCard).toHaveClass(/status-succeeded/);
-  await expect(coloredCard.locator(".card-metadata .source-colored-name")).toHaveCount(0);
+    occasional.getByRole("checkbox", { name: /every checkpoint in Occasional/ }),
+  ).toBeDisabled();
+  expect((await occasional.boundingBox())?.height).toBeGreaterThanOrEqual(90);
+  expect(
+    await occasional
+      .locator(".checkpoint-tier-rail > strong")
+      .evaluate((element) => getComputedStyle(element).writingMode),
+  ).toBe("vertical-rl");
 });
 
-test("generation source trigger keeps the color dot on the name line with details below it", async ({
-  page,
-}) => {
-  test.setTimeout(60_000);
+
+test("generation source trigger shows only workflow and checkpoint count", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
-  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
 
-  // No color: the name itself opens the primary line — no dot, no placeholder indent.
-  await expect(page.locator("#workflow-source .source-color-dot")).toHaveCount(0);
-  expect(
-    await page
-      .locator("#workflow-source .source-picker-primary > :first-child")
-      .evaluate((el) => el.id || el.className),
-  ).toBe("generation-source-value");
-
-  // Add a secondary source so the trigger carries secondary detail text.
-  await page.locator("#workflow-source").click();
-  const sourceDialog = page.locator("#source-picker-dialog");
-  await page.getByLabel("Include Generic Landscape", { exact: true }).check();
-  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.locator("#workflow-source")).toContainText("2 sources selected");
-
-  // Assign a color to the selected source through the dialog color editor.
-  await page.locator("#workflow-source").click();
-  await expect(sourceDialog).toBeVisible();
-  const kreaRow = sourceDialog
-    .locator("[data-source-row-key]")
-    .filter({ hasText: "Krea 2 NSFW V4" });
-  await kreaRow
-    .getByRole("button", { name: "Choose a custom color for Krea 2 NSFW V4" })
-    .click();
-  await kreaRow.locator('input[type="color"]').evaluate((input) => {
-    input.value = "#2e86c1";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await kreaRow.getByRole("button", { name: "Apply", exact: true }).click();
-  await sourceDialog.getByRole("button", { name: "Apply", exact: true }).click();
-
-  const dot = page.locator("#workflow-source .source-color-dot");
-  const name = page.locator("#generation-source-value");
-  const detail = page.locator("#workflow-source .source-picker-current small");
-  await expect(dot).toBeVisible();
-  await expect(name).toHaveText("Krea 2 NSFW V4");
-  await expect(detail).toHaveText("2 sources selected", { exact: true });
-
-  // The dot and the source name share the same first line: matching vertical centers.
-  const dotBox = await dot.boundingBox();
-  const nameBox = await name.boundingBox();
-  expect(dotBox).toBeTruthy();
-  expect(nameBox).toBeTruthy();
-  expect(Math.abs(dotBox.y + dotBox.height / 2 - (nameBox.y + nameBox.height / 2))).toBeLessThanOrEqual(1);
-
-  // The secondary details stay on their own line below the primary line.
-  const primaryBox = await page.locator("#workflow-source .source-picker-primary").boundingBox();
-  const detailBox = await detail.boundingBox();
-  expect(primaryBox).toBeTruthy();
-  expect(detailBox).toBeTruthy();
-  expect(detailBox.y).toBeGreaterThan(primaryBox.y + primaryBox.height - 1);
-
-  // The control does not overflow horizontally at the narrow left-panel width.
-  expect(
-    await page.locator("#workflow-source").evaluate((el) => el.scrollWidth > el.clientWidth),
-  ).toBe(false);
+  const trigger = page.locator("#workflow-source");
+  await expect(trigger.locator("#generation-source-value")).toHaveText("Moody Krea 2 Mix V4");
+  await expect(trigger.locator(".source-picker-current small")).toHaveText(
+    /checkpoints? selected/,
+  );
+  await expect(trigger.locator(".source-color-dot")).toHaveCount(0);
+  await expect(trigger).not.toContainText(/sources selected|generations planned|Available/);
+  expect(await trigger.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(false);
 });
+
 
 test("focused prompt editor isolates canceled drafts and applies composed prompts and assistant settings", async ({
   page,

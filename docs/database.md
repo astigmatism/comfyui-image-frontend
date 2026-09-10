@@ -34,6 +34,11 @@ foreign key uses `SET NULL` as a safety net; normal recursive collection deletio
 every contained generation through the established generation deletion lifecycle before removing
 collection rows deepest-first.
 
+Migration `2f8d6a1c4b90_add_checkpoint_tiers.py` adds the JSON preference that stores ordered
+checkpoint values under each source and public selector ID. Existing users receive an empty object;
+the browser reconciles it with the currently published choices and initially places every choice in
+Unsorted.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -41,7 +46,7 @@ collection rows deepest-first.
 | `users` | Local account, role, forced-change state, session epoch |
 | `sessions` | HMAC token ID, CSRF, expiry/revocation, privacy-safe client metadata |
 | `login_throttles` | Username/IP-keyed attempt windows and temporary blocks |
-| `user_preferences` | Owner gallery scale, collection-preview switch, and generation-source star ratings |
+| `user_preferences` | Owner gallery scale, persisted checkpoint tier/order layout, and retained legacy source rating/color data |
 | `workflow_profiles` | Immutable accepted publication revisions plus retained legacy snapshots |
 | `workflow_diagnostics` | Safe latest transport/candidate discovery diagnostics |
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |

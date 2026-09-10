@@ -1,6 +1,7 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
 import {
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
+  CHECKPOINT_TIER_DEFINITIONS,
   applyChoiceStrengthDefaults,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
@@ -9,8 +10,6 @@ import {
   choiceStrengthCompanion,
   collectionDepth,
   collectionSubtree,
-  comparisonInputs,
-  comparisonParametersForRequest,
   createLatestRequestGate,
   defaultsForInterface,
   hasActiveGeneration,
@@ -19,6 +18,7 @@ import {
   isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
   migrateInterfaceState,
+  normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
   normalizeInputValue,
   overwriteWithRecall,
@@ -82,14 +82,9 @@ const state = {
   sourceLoadToken: 0,
   activeSourceKey: null,
   activeSource: null,
-  comparisonSourceKeys: new Set(),
   sourcePickerDialogOpen: false,
   sourcePickerDraft: null,
-  sourceColorEditorKey: null,
-  sourcePickerSortKey: "display_name",
-  sourcePickerSortDirection: "ascending",
-  sourceRatings: {},
-  sourceColors: {},
+  checkpointTiers: {},
   modelSelectionsBySourceRevision: new Map(),
   activeModelSelections: {},
   selectedGenerationTargetCount: 0,
@@ -164,10 +159,8 @@ let sourcePickerReturnFocus = null;
 let collectionDialogReturnFocus = null;
 let collectionDeleteReturnFocus = null;
 let moveDialogReturnFocus = null;
-let sourceRatingsRevision = 0;
-let sourceRatingsSaveChain = Promise.resolve();
-let sourceColorsRevision = 0;
-let sourceColorsSaveChain = Promise.resolve();
+let checkpointTiersRevision = 0;
+let checkpointTiersSaveChain = Promise.resolve();
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
 let applicationStartupController = null;
@@ -193,6 +186,7 @@ const TERMINAL_GENERATION_STATUSES = new Set([
   "interrupted",
 ]);
 const GALLERY_ARTIFACT_DRAG_TYPE = "application/x-comfyui-image-frontend-artifact";
+const CHECKPOINT_DRAG_TYPE = "application/x-comfyui-image-frontend-checkpoint";
 
 const STARTUP_DEADLINES = {
   session: 10_000,
@@ -338,28 +332,8 @@ async function handleClick(event) {
     else if (action === "open-generation-source-dialog") openSourcePickerDialog(target);
     else if (action === "cancel-generation-source-dialog") closeSourcePickerDialog("cancel");
     else if (action === "apply-generation-source-dialog") await applySourcePickerDialog();
-    else if (action === "select-all-generation-sources") selectAllSourcePickerDraft();
-    else if (action === "deselect-all-generation-sources") deselectAllSourcePickerDraft();
-    else if (action === "sort-generation-sources") sortSourcePickerDialog(target);
-    else if (action === "rate-generation-source") await updateSourceRating(target);
-    else if (action === "open-source-color-editor") {
-      state.sourceColorEditorKey = target.dataset.sourceColorKey;
-      renderSourcePickerDialog();
-    } else if (action === "cancel-source-color-editor") {
-      state.sourceColorEditorKey = null;
-      renderSourcePickerDialog();
-    } else if (action === "apply-source-color-editor") {
-      const key = target.dataset.sourceColorKey;
-      const editor = document.querySelector(
-        `#source-picker-dialog [data-source-color-editor="${CSS.escape(key)}"]`,
-      );
-      const colorValue = editor?.querySelector("[type=color]")?.value || "";
-      state.sourceColorEditorKey = null;
-      await applySourceColor(key, colorValue);
-    } else if (action === "clear-generation-source-color") {
-      state.sourceColorEditorKey = null;
-      await applySourceColor(target.dataset.sourceColorKey, "");
-    }
+    else if (action === "select-all-checkpoints") updateAllSourcePickerCheckpoints(true);
+    else if (action === "clear-all-checkpoints") updateAllSourcePickerCheckpoints(false);
     else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
@@ -456,12 +430,8 @@ async function handleClick(event) {
     scheduleAutoGenerate();
     return;
   }
-  if (element.matches("[data-source-draft-key]")) {
-    updateSourcePickerDraftSelection(element.dataset.sourceDraftKey, element.checked);
-    return;
-  }
-  if (element.matches("[data-source-primary-key]")) {
-    updateSourcePickerDraftPrimary(element.dataset.sourcePrimaryKey);
+  if (element.matches("[data-source-workflow-choice]")) {
+    updateSourcePickerDraftWorkflow(element.value);
     return;
   }
   if (element.matches("[data-active-source-model-choice]")) {
@@ -481,9 +451,9 @@ async function handleClick(event) {
     );
     return;
   }
-  if (element.matches("[data-source-generation-type-filter]")) {
-    updateSourcePickerGenerationTypeFilter(
-      element.dataset.sourceGenerationTypeFilter,
+  if (element.matches("[data-checkpoint-tier-toggle]")) {
+    updateSourcePickerTierSelection(
+      element.dataset.checkpointTierId,
       element.checked,
     );
     return;
@@ -613,23 +583,24 @@ function openSourcePickerDialog(button) {
   const sources = sourcesForPicker();
   sourcePickerReturnFocus = button;
   state.sourcePickerDraft = {
-    primaryKey: state.activeSourceKey,
-    selectedKeys: new Set([state.activeSourceKey, ...selectedComparisonSourceKeys()]),
+    sourceKey: state.activeSourceKey,
     modelSelectionsBySource: Object.fromEntries(
       sources.map((source) => [
         sourceKey(source),
         structuredClone(modelSelectionsForSource(source)),
       ]),
     ),
-    generationTypeFilters: new Set(
-      sources.map((source) => sourceGenerationTypeKey(source)),
-    ),
+    checkpointTiers: structuredClone(state.checkpointTiers),
+    searchQuery: "",
   };
+  ensureSourcePickerDraftPreferences(
+    sources.find((source) => sourceKey(source) === state.activeSourceKey),
+  );
   state.sourcePickerDialogOpen = true;
   renderSourcePickerDialog();
   dialog.showModal();
   queueMicrotask(() => {
-    dialog.querySelector("[data-source-sort-key]")?.focus({ preventScroll: true });
+    dialog.querySelector("[data-source-workflow-choice]")?.focus({ preventScroll: true });
   });
 }
 
@@ -637,81 +608,70 @@ function renderSourcePickerDialog() {
   const dialog = document.querySelector("#source-picker-dialog");
   const draft = state.sourcePickerDraft;
   if (!dialog || !draft) return;
-  const scrollLeft = dialog.querySelector(".source-picker-table-wrap")?.scrollLeft || 0;
-  const scrollTop = dialog.querySelector(".source-picker-table-wrap")?.scrollTop || 0;
+  const scrollTop = dialog.querySelector("[data-checkpoint-tier-board]")?.scrollTop || 0;
   dialog.innerHTML = sourcePickerDialogMarkup(sourcesForPicker(), {
-    primaryKey: draft.primaryKey,
-    selectedKeys: draft.selectedKeys,
-    sourceRatings: state.sourceRatings,
-    sourceColors: state.sourceColors,
-    sortKey: state.sourcePickerSortKey,
-    sortDirection: state.sourcePickerSortDirection,
-    generationTypeFilters: draft.generationTypeFilters,
+    sourceKey: draft.sourceKey,
     modelSelectionsBySource: draft.modelSelectionsBySource,
-    sourceColorEditorKey: state.sourceColorEditorKey,
+    checkpointTiers: draft.checkpointTiers,
+    searchQuery: draft.searchQuery,
   });
-  const scroller = dialog.querySelector(".source-picker-table-wrap");
-  if (scroller) {
-    scroller.scrollLeft = scrollLeft;
-    scroller.scrollTop = scrollTop;
-  }
-  if (state.sourceColorEditorKey) {
-    const input = dialog.querySelector(
-      `[data-source-color-editor="${CSS.escape(state.sourceColorEditorKey)}"] [type="color"]`,
-    );
-    input?.focus({ preventScroll: true });
+  const scroller = dialog.querySelector("[data-checkpoint-tier-board]");
+  if (scroller) scroller.scrollTop = scrollTop;
+  for (const input of dialog.querySelectorAll('[data-indeterminate="true"]')) {
+    input.indeterminate = true;
   }
 }
 
-function sourceGenerationTypeKey(source) {
-  const value = String(source?.generation_source?.generation_type || "").trim().toLowerCase();
-  return value || "__unknown__";
+function sourcePickerDraftSource() {
+  const key = state.sourcePickerDraft?.sourceKey;
+  return sourcesForPicker().find(
+    (source) => sourceKey(source) === key && source.available !== false,
+  ) || null;
 }
 
-function updateSourcePickerGenerationTypeFilter(key, checked) {
+function ensureSourcePickerDraftPreferences(source) {
   const draft = state.sourcePickerDraft;
+  const key = sourceKey(source);
+  const selector = sourceModelSelectors(source)[0];
   if (!draft || !key) return;
-  if (checked) draft.generationTypeFilters.add(key);
-  else draft.generationTypeFilters.delete(key);
-  renderSourcePickerDialog();
-  queueMicrotask(() => {
-    document
-      .querySelector(
-        `#source-picker-dialog [data-source-generation-type-filter="${CSS.escape(key)}"]`,
-      )
-      ?.focus({ preventScroll: true });
-  });
-}
-
-function updateSourcePickerDraftSelection(key, checked) {
-  const draft = state.sourcePickerDraft;
-  const source = sourcesForPicker().find((item) => sourceKey(item) === key);
-  if (!draft || !key || key === draft.primaryKey || source?.available === false) return;
-  if (checked) draft.selectedKeys.add(key);
-  else draft.selectedKeys.delete(key);
-  renderSourcePickerDialog();
-  queueMicrotask(() => {
-    document
-      .querySelector(`#source-picker-dialog [data-source-draft-key="${CSS.escape(key)}"]`)
-      ?.focus({ preventScroll: true });
-  });
-}
-
-function updateSourcePickerDraftPrimary(key) {
-  const draft = state.sourcePickerDraft;
-  const source = sourcesForPicker().find((item) => sourceKey(item) === key);
-  if (!draft || !key || source?.available === false) return;
-  const previousPrimaryKey = draft.primaryKey;
-  draft.primaryKey = key;
-  draft.selectedKeys.add(key);
-  if (previousPrimaryKey && previousPrimaryKey !== key) {
-    draft.selectedKeys.delete(previousPrimaryKey);
+  if (!draft.modelSelectionsBySource[key]) {
+    draft.modelSelectionsBySource[key] = structuredClone(modelSelectionsForSource(source));
   }
+  if (!selector) return;
+  if (!draft.checkpointTiers[key]) draft.checkpointTiers[key] = {};
+  draft.checkpointTiers[key][selector.parameter_id] = normalizeCheckpointTierLayout(
+    selector,
+    draft.checkpointTiers[key][selector.parameter_id] || {},
+  );
+}
+
+function updateSourcePickerDraftWorkflow(key) {
+  const draft = state.sourcePickerDraft;
+  const source = sourcesForPicker().find(
+    (item) => sourceKey(item) === key && item.available !== false,
+  );
+  if (!draft || !source) return;
+  draft.sourceKey = key;
+  draft.searchQuery = "";
+  ensureSourcePickerDraftPreferences(source);
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document
-      .querySelector(`#source-picker-dialog [data-source-primary-key="${CSS.escape(key)}"]`)
+      .querySelector("#source-picker-dialog [data-source-workflow-choice]")
       ?.focus({ preventScroll: true });
+  });
+}
+
+function updateSourcePickerSearch(value) {
+  const draft = state.sourcePickerDraft;
+  if (!draft) return;
+  draft.searchQuery = String(value || "");
+  const selectionStart = document.querySelector("[data-checkpoint-search]")?.selectionStart;
+  renderSourcePickerDialog();
+  queueMicrotask(() => {
+    const input = document.querySelector("#source-picker-dialog [data-checkpoint-search]");
+    input?.focus({ preventScroll: true });
+    if (Number.isInteger(selectionStart)) input?.setSelectionRange(selectionStart, selectionStart);
   });
 }
 
@@ -722,30 +682,32 @@ function updateSourcePickerDraftModelSelection(
   checked,
 ) {
   const draft = state.sourcePickerDraft;
-  const source = sourcesForPicker().find((item) => sourceKey(item) === key);
+  const source = sourcePickerDraftSource();
   const selector = sourceModelSelectors(source).find(
     (item) => item.parameter_id === parameterId,
   );
   if (
     !draft ||
     !source ||
+    sourceKey(source) !== key ||
     source.available === false ||
     !selector ||
     !selector.choices.some((choice) => choice.value === value)
   ) {
     return;
   }
-  const normalized = normalizeSourceModelSelections(
-    source,
-    draft.modelSelectionsBySource?.[key] || {},
+  const stored = draft.modelSelectionsBySource?.[key]?.[parameterId];
+  const selected = new Set(
+    Array.isArray(stored)
+      ? stored
+      : modelSelectionsForSource(source)[parameterId] || [],
   );
-  const selected = new Set(normalized[parameterId] || []);
   if (checked) selected.add(value);
-  else if (selected.size > 1) selected.delete(value);
-  draft.modelSelectionsBySource[key] = normalizeSourceModelSelections(source, {
-    ...normalized,
+  else selected.delete(value);
+  draft.modelSelectionsBySource[key] = {
+    ...draft.modelSelectionsBySource[key],
     [parameterId]: [...selected],
-  });
+  };
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document
@@ -756,121 +718,76 @@ function updateSourcePickerDraftModelSelection(
   });
 }
 
-function selectAllSourcePickerDraft() {
+function updateAllSourcePickerCheckpoints(checked, tierId = null) {
   const draft = state.sourcePickerDraft;
-  if (!draft) return;
-  for (const source of sourcesForPicker()) {
-    if (
-      source.available !== false &&
-      draft.generationTypeFilters.has(sourceGenerationTypeKey(source))
-    ) {
-      draft.selectedKeys.add(sourceKey(source));
-    }
+  const source = sourcePickerDraftSource();
+  const selector = sourceModelSelectors(source)[0];
+  if (!draft || !source || !selector) return;
+  ensureSourcePickerDraftPreferences(source);
+  const key = sourceKey(source);
+  const current = new Set(draft.modelSelectionsBySource[key]?.[selector.parameter_id] || []);
+  const layout = draft.checkpointTiers[key][selector.parameter_id];
+  const values = tierId
+    ? layout[tierId] || []
+    : selector.choices.map((choice) => choice.value);
+  for (const value of values) {
+    if (checked) current.add(value);
+    else current.delete(value);
   }
+  draft.modelSelectionsBySource[key] = {
+    ...draft.modelSelectionsBySource[key],
+    [selector.parameter_id]: [...current],
+  };
   renderSourcePickerDialog();
   queueMicrotask(() => {
-    document
-      .querySelector('#source-picker-dialog [data-action="deselect-all-generation-sources"]')
-      ?.focus({ preventScroll: true });
+    const selectorText = tierId
+      ? `[data-checkpoint-tier-toggle][data-checkpoint-tier-id="${CSS.escape(tierId)}"]`
+      : `[data-action="${checked ? "clear-all-checkpoints" : "select-all-checkpoints"}"]`;
+    document.querySelector(`#source-picker-dialog ${selectorText}`)?.focus({ preventScroll: true });
   });
 }
 
-function deselectAllSourcePickerDraft() {
+function updateSourcePickerTierSelection(tierId, checked) {
+  if (!CHECKPOINT_TIER_DEFINITIONS.some((tier) => tier.id === tierId)) return;
+  updateAllSourcePickerCheckpoints(checked, tierId);
+}
+
+function moveSourcePickerCheckpoint(value, destinationTierId, beforeValue = null) {
   const draft = state.sourcePickerDraft;
-  if (!draft) return;
-  for (const source of sourcesForPicker()) {
-    const key = sourceKey(source);
-    if (
-      key !== draft.primaryKey &&
-      draft.generationTypeFilters.has(sourceGenerationTypeKey(source))
-    ) {
-      draft.selectedKeys.delete(key);
-    }
-  }
-  renderSourcePickerDialog();
-  queueMicrotask(() => {
-    document
-      .querySelector('#source-picker-dialog [data-action="select-all-generation-sources"]')
-      ?.focus({ preventScroll: true });
-  });
-}
-
-function sortSourcePickerDialog(button) {
-  state.sourcePickerSortKey = button.dataset.sourceSortKey || "display_name";
-  state.sourcePickerSortDirection =
-    button.dataset.sourceSortDirection === "descending" ? "descending" : "ascending";
-  renderSourcePickerDialog();
-  queueMicrotask(() => {
-    document
-      .querySelector(
-        `#source-picker-dialog [data-source-sort-key="${CSS.escape(state.sourcePickerSortKey)}"]`,
-      )
-      ?.focus({ preventScroll: true });
-  });
-}
-
-async function updateSourceRating(button) {
-  const key = button.dataset.sourceRatingKey;
-  const rating = Number(button.dataset.sourceRating);
+  const source = sourcePickerDraftSource();
+  const selector = sourceModelSelectors(source)[0];
   if (
-    !key ||
-    !state.sources.some((source) => sourceKey(source) === key) ||
-    !Number.isInteger(rating) ||
-    rating < 1 ||
-    rating > 5
+    !draft ||
+    !source ||
+    !selector ||
+    draft.searchQuery ||
+    !CHECKPOINT_TIER_DEFINITIONS.some((tier) => tier.id === destinationTierId) ||
+    !selector.choices.some((choice) => choice.value === value)
   ) {
-    return;
+    return false;
   }
-  state.sourceRatings = { ...state.sourceRatings, [key]: rating };
-  sourceRatingsRevision += 1;
+  ensureSourcePickerDraftPreferences(source);
+  const key = sourceKey(source);
+  const layout = normalizeCheckpointTierLayout(
+    selector,
+    draft.checkpointTiers[key][selector.parameter_id],
+  );
+  for (const tier of CHECKPOINT_TIER_DEFINITIONS) {
+    layout[tier.id] = layout[tier.id].filter((candidate) => candidate !== value);
+  }
+  const destination = layout[destinationTierId];
+  const beforeIndex = beforeValue ? destination.indexOf(beforeValue) : -1;
+  destination.splice(beforeIndex >= 0 ? beforeIndex : destination.length, 0, value);
+  draft.checkpointTiers[key][selector.parameter_id] = layout;
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document
       .querySelector(
-        `#source-picker-dialog [data-source-rating-key="${CSS.escape(key)}"][data-source-rating="${rating}"]`,
+        `#source-picker-dialog [data-checkpoint-drag-handle][data-checkpoint-value="${CSS.escape(value)}"]`,
       )
       ?.focus({ preventScroll: true });
   });
-
-  const ratings = { ...state.sourceRatings };
-  const save = sourceRatingsSaveChain.then(() =>
-    api("/api/preferences", {
-      method: "PUT",
-      body: JSON.stringify({ source_ratings: ratings }),
-    }),
-  );
-  sourceRatingsSaveChain = save.catch(() => {});
-  try {
-    await save;
-  } catch {
-    toast("Source rating could not be saved.", "error");
-  }
-}
-
-async function applySourceColor(key, color) {
-  if (!key || !state.sources.some((source) => sourceKey(source) === key)) return;
-  const normalized = String(color || "").trim().toLowerCase();
-  const hex = normalized.replace(/^#/, "");
-  const next = { ...state.sourceColors };
-  if (hex && /^[0-9a-f]{6}$/.test(hex)) next[key] = `#${hex}`;
-  else delete next[key];
-  state.sourceColors = next;
-  sourceColorsRevision += 1;
-  renderSourcePickerDialog();
-  renderGallery();
-  const colors = { ...state.sourceColors };
-  const save = sourceColorsSaveChain.then(() =>
-    api("/api/preferences", {
-      method: "PUT",
-      body: JSON.stringify({ source_colors: colors }),
-    }),
-  );
-  sourceColorsSaveChain = save.catch(() => {});
-  try {
-    await save;
-  } catch {
-    toast("Source color could not be saved.", "error");
-  }
+  return true;
 }
 
 function closeSourcePickerDialog(returnValue, { flushDeferredUpdates = true } = {}) {
@@ -885,35 +802,48 @@ function closeSourcePickerDialog(returnValue, { flushDeferredUpdates = true } = 
 async function applySourcePickerDialog() {
   const draft = state.sourcePickerDraft;
   const sources = sourcesForPicker();
-  const primary = sources.find(
-    (source) => sourceKey(source) === draft?.primaryKey && source.available !== false,
+  const selectedSource = sources.find(
+    (source) => sourceKey(source) === draft?.sourceKey && source.available !== false,
   );
-  if (!draft || !primary) return;
-  const availableKeys = new Set(
-    sources
-      .filter((source) => source.available !== false)
-      .map((source) => sourceKey(source)),
-  );
-  const comparisonKeys = new Set(
-    [...draft.selectedKeys].filter(
-      (key) => key !== draft.primaryKey && availableKeys.has(key),
-    ),
-  );
-  const primaryChanged = draft.primaryKey !== state.activeSourceKey;
+  if (!draft || !selectedSource) return;
+  const selector = sourceModelSelectors(selectedSource)[0];
+  const selectedValues = selector
+    ? draft.modelSelectionsBySource?.[draft.sourceKey]?.[selector.parameter_id] || []
+    : [];
+  if (selector && !selectedValues.length) return;
+  const sourceChanged = draft.sourceKey !== state.activeSourceKey;
   for (const source of sources) {
     setModelSelectionsForSource(
       source,
       draft.modelSelectionsBySource?.[sourceKey(source)] || {},
     );
   }
+  state.checkpointTiers = normalizedCheckpointTiers(draft.checkpointTiers);
+  checkpointTiersRevision += 1;
   closeSourcePickerDialog("apply", { flushDeferredUpdates: false });
-  state.comparisonSourceKeys = comparisonKeys;
   state.serverFieldErrors = {};
   state.formError = null;
-  if (primaryChanged) await selectSource(draft.primaryKey, { summary: primary });
+  if (sourceChanged) await selectSource(draft.sourceKey, { summary: selectedSource });
   applyStoredModelSelectionsToActiveParameters();
   renderPanel();
+  await saveCheckpointTierPreferences();
   await flushDeferredSourcePickerUpdates({ panelAlreadyRendered: true });
+}
+
+async function saveCheckpointTierPreferences() {
+  const checkpointTiers = structuredClone(state.checkpointTiers);
+  const save = checkpointTiersSaveChain.then(() =>
+    api("/api/preferences", {
+      method: "PUT",
+      body: JSON.stringify({ checkpoint_tiers: checkpointTiers }),
+    }),
+  );
+  checkpointTiersSaveChain = save.catch(() => {});
+  try {
+    await save;
+  } catch {
+    toast("Checkpoint tiers could not be saved.", "error");
+  }
 }
 
 function handleSourcePickerDialogClose(event) {
@@ -950,6 +880,10 @@ function setControlSectionElementOpen(section, open) {
 
 function handleInput(event) {
   const element = event.target;
+  if (element.matches("[data-checkpoint-search]")) {
+    updateSourcePickerSearch(element.value);
+    return;
+  }
   if (element.matches("#collection-form [name=name]")) {
     syncCollectionNameValidation(element);
     return;
@@ -963,11 +897,6 @@ function handleInput(event) {
   }
   if (element.matches("[data-prompt-editor-input]")) {
     updatePromptEditorStats(element.value);
-    return;
-  }
-  if (element.matches("[data-source-editor-color-input]")) {
-    const hex = element.closest("[data-source-color-editor]")?.querySelector(".source-color-editor-hex");
-    if (hex) hex.textContent = `#${String(element.value || "").replace(/^#/, "").toUpperCase()}`;
     return;
   }
   if (element.id === "gallery-scale") {
@@ -1496,6 +1425,13 @@ function handleKeyDown(event) {
   }
   const photoViewer = document.querySelector("#photo-viewer");
   if (photoViewer?.open) return;
+  const checkpointHandle = event.target.closest("[data-checkpoint-drag-handle]");
+  if (checkpointHandle && event.altKey) {
+    if (moveSourcePickerCheckpointFromKeyboard(checkpointHandle, event.key)) {
+      event.preventDefault();
+    }
+    return;
+  }
   const handle = event.target.closest("[data-resolution-handle]");
   if (!handle || handle.disabled) return;
   const grid = handle.closest("[data-resolution-grid]");
@@ -1528,6 +1464,36 @@ function handleKeyDown(event) {
   if (!handled) return;
   event.preventDefault();
   setResolutionValue(grid, width, height);
+}
+
+function moveSourcePickerCheckpointFromKeyboard(handle, key) {
+  if (!state.sourcePickerDraft || state.sourcePickerDraft.searchQuery) return false;
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) return false;
+  const source = sourcePickerDraftSource();
+  const selector = sourceModelSelectors(source)[0];
+  if (!source || !selector) return false;
+  ensureSourcePickerDraftPreferences(source);
+  const sourcePreference =
+    state.sourcePickerDraft.checkpointTiers[sourceKey(source)][selector.parameter_id];
+  const layout = normalizeCheckpointTierLayout(selector, sourcePreference);
+  const value = handle.dataset.checkpointValue;
+  const tierId = handle.dataset.checkpointTierId;
+  const tierIndex = CHECKPOINT_TIER_DEFINITIONS.findIndex((tier) => tier.id === tierId);
+  const values = layout[tierId] || [];
+  const valueIndex = values.indexOf(value);
+  if (tierIndex < 0 || valueIndex < 0) return false;
+  if (key === "ArrowLeft") {
+    if (valueIndex === 0) return false;
+    return moveSourcePickerCheckpoint(value, tierId, values[valueIndex - 1]);
+  }
+  if (key === "ArrowRight") {
+    if (valueIndex === values.length - 1) return false;
+    return moveSourcePickerCheckpoint(value, tierId, values[valueIndex + 2] || null);
+  }
+  const destinationIndex = tierIndex + (key === "ArrowUp" ? -1 : 1);
+  const destination = CHECKPOINT_TIER_DEFINITIONS[destinationIndex];
+  if (!destination) return false;
+  return moveSourcePickerCheckpoint(value, destination.id);
 }
 
 function handlePhotoViewerKeyDown(event) {
@@ -1929,16 +1895,13 @@ async function logout() {
   state.sources = [];
   state.activeSourceKey = null;
   state.activeSource = null;
-  state.comparisonSourceKeys = new Set();
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
-  state.sourceRatings = {};
-  state.sourceColors = {};
+  state.checkpointTiers = {};
   state.modelSelectionsBySourceRevision = new Map();
   state.activeModelSelections = {};
   state.selectedGenerationTargetCount = 0;
-  sourceRatingsRevision += 1;
-  sourceColorsRevision += 1;
+  checkpointTiersRevision += 1;
   state.parameters = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
@@ -2018,10 +1981,8 @@ async function enterApplication() {
   resetAutoGenerateRetryState();
   state.favorites = [];
   state.favoritesNextCursor = null;
-  state.sourceRatings = {};
-  state.sourceColors = {};
-  sourceRatingsRevision += 1;
-  sourceColorsRevision += 1;
+  state.checkpointTiers = {};
+  checkpointTiersRevision += 1;
   state.promptAssistant = {
     ...state.promptAssistant,
     available: false,
@@ -2086,8 +2047,7 @@ function requestWasAborted(error, signal) {
 }
 
 async function loadStartupPreferences(signal = applicationStartupController?.signal) {
-  const ratingsRevision = sourceRatingsRevision;
-  const colorsRevision = sourceColorsRevision;
+  const tiersRevision = checkpointTiersRevision;
   try {
     const preferences = await startupGet("/api/preferences", {
       operation: "Display preferences",
@@ -2096,14 +2056,9 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
     });
     if (signal?.aborted) return;
     state.galleryScale = preferences.gallery_scale;
-    if (ratingsRevision === sourceRatingsRevision) {
-      state.sourceRatings = normalizedSourceRatings(preferences.source_ratings);
+    if (tiersRevision === checkpointTiersRevision) {
+      state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
       if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
-    }
-    if (colorsRevision === sourceColorsRevision) {
-      state.sourceColors = normalizedSourceColors(preferences.source_colors);
-      if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
-      renderGallery();
     }
     applyGalleryScale();
     renderCollectionBarHost();
@@ -2114,22 +2069,27 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
   }
 }
 
-function normalizedSourceRatings(value) {
+function normalizedCheckpointTiers(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([key, rating]) => [key, Number(rating)])
-      .filter(([, rating]) => Number.isInteger(rating) && rating >= 1 && rating <= 5),
-  );
-}
-
-function normalizedSourceColors(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, color]) => typeof color === "string" && /^#?[0-9a-f]{6}$/i.test(color.trim()))
-      .map(([key, color]) => [key, `#${color.trim().replace(/^#/, "").toLowerCase()}`]),
-  );
+  const result = {};
+  const tierIds = new Set(CHECKPOINT_TIER_DEFINITIONS.map((tier) => tier.id));
+  for (const [key, selectors] of Object.entries(value)) {
+    if (!key || !selectors || typeof selectors !== "object" || Array.isArray(selectors)) continue;
+    const normalizedSelectors = {};
+    for (const [parameterId, tiers] of Object.entries(selectors)) {
+      if (!parameterId || !tiers || typeof tiers !== "object" || Array.isArray(tiers)) continue;
+      normalizedSelectors[parameterId] = Object.fromEntries(
+        Object.entries(tiers)
+          .filter(([tierId, choices]) => tierIds.has(tierId) && Array.isArray(choices))
+          .map(([tierId, choices]) => [
+            tierId,
+            [...new Set(choices.filter((choice) => typeof choice === "string" && choice))],
+          ]),
+      );
+    }
+    if (Object.keys(normalizedSelectors).length) result[key] = normalizedSelectors;
+  }
+  return result;
 }
 
 async function loadStartupServices(signal = applicationStartupController?.signal) {
@@ -2483,16 +2443,6 @@ function sourceKey(source) {
   return source?.source_key || source?.profile_id || null;
 }
 
-function selectedComparisonSourceKeys() {
-  return new Set(
-    [...state.comparisonSourceKeys].filter((key) => key && key !== state.activeSourceKey),
-  );
-}
-
-function hasComparisonSources() {
-  return selectedComparisonSourceKeys().size > 0;
-}
-
 function sourceInterface(source) {
   return source?.interface || source?.contract || null;
 }
@@ -2655,23 +2605,20 @@ function orderedModelParameterVariants(source, contract, preferredValues = {}) {
   );
 }
 
-function selectedGenerationSources() {
-  const keys = selectedComparisonSourceKeys();
-  if (state.activeSourceKey) keys.add(state.activeSourceKey);
-  return state.sources
-    .filter((source) => source.available !== false && keys.has(sourceKey(source)))
-    .map((source) =>
-      sourceKey(source) === state.activeSourceKey && state.activeSource
-        ? { ...source, ...state.activeSource }
-        : source,
-    );
+function selectedGenerationSource() {
+  if (!state.activeSourceKey || state.activeSource?.available === false) return null;
+  const summary = state.sources.find(
+    (source) => sourceKey(source) === state.activeSourceKey && source.available !== false,
+  );
+  if (!summary && !state.activeSource) return null;
+  return summary && state.activeSource
+    ? { ...summary, ...state.activeSource }
+    : state.activeSource || summary;
 }
 
 function plannedGenerationTargetCount() {
-  return selectedGenerationSources().reduce(
-    (count, source) => count + modelParameterVariantsForSource(source).length,
-    0,
-  );
+  const source = selectedGenerationSource();
+  return source ? modelParameterVariantsForSource(source).length : 0;
 }
 
 function sourceContextIsCurrent(key, revision) {
@@ -2740,16 +2687,6 @@ async function loadSources({ signal, diagnostic = false } = {}) {
     if (signal?.aborted || catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
     pruneModelSelectionsForCurrentSources();
-    const availableKeys = new Set(
-      state.sources
-        .filter((item) => item.available !== false)
-        .map((item) => sourceKey(item)),
-    );
-    state.comparisonSourceKeys = new Set(
-      [...state.comparisonSourceKeys].filter(
-        (key) => key !== state.activeSourceKey && availableKeys.has(key),
-      ),
-    );
     state.sourceCatalogStatus = "ready";
     const selected = state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
     const next = selected || state.sources.find((item) => item.available !== false) || state.sources[0] || null;
@@ -2797,7 +2734,6 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
   persistActiveParameterState();
   const token = ++state.sourceLoadToken;
   const resolvedSummary = summary || state.sources.find((item) => sourceKey(item) === key) || null;
-  state.comparisonSourceKeys.delete(key);
   state.activeSourceKey = key || null;
   state.activeSource = resolvedSummary;
   state.pendingSourceMigration = migration;
@@ -3358,8 +3294,8 @@ async function generate({ automatic = false } = {}) {
     syncPromptAssistantDraftFromPanel();
     if (autoGenerationNeedsPromptAssistant()) return false;
   }
-  if (hasComparisonSources() || plannedGenerationTargetCount() > 1) {
-    return generateSelectedSources();
+  if (plannedGenerationTargetCount() > 1) {
+    return generateSelectedCheckpoints();
   }
   return generateSingleSource();
 }
@@ -3468,31 +3404,31 @@ async function generateSingleSource() {
   }
 }
 
-async function generateSelectedSources() {
+async function generateSelectedCheckpoints() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestCompositionId = state.compositionId;
   const requestParameters = structuredClone(state.parameters);
-  const sources = selectedGenerationSources();
+  const requestSource = selectedGenerationSource();
   const requestComfyuiInstance = selectedComfyuiInstance();
   const requestCollectionId = state.currentCollectionId;
   if (
     !requestSourceKey ||
-    !state.activeSource ||
+    !requestSource ||
     !contract ||
-    state.activeSource.available === false ||
+    requestSource.available === false ||
     !requestComfyuiInstanceId ||
-    requestComfyuiInstance?.available !== true ||
-    !sources.length
-  )
+    requestComfyuiInstance?.available !== true
+  ) {
     return false;
+  }
 
   const errors = clientValidate(contract, requestParameters);
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
-    state.formError = "Review the highlighted comparison controls.";
+    state.formError = "Review the highlighted generation controls.";
     syncGenerationSubmissionState();
     focusFirstInvalid();
     return false;
@@ -3504,14 +3440,14 @@ async function generateSelectedSources() {
   syncGenerationSubmissionState();
   let focusErrors = false;
   try {
-    const primaryModelVariants = orderedModelParameterVariants(
-      state.activeSource,
+    const modelVariants = orderedModelParameterVariants(
+      requestSource,
       contract,
       requestParameters,
     );
-    const primaryParameters = {
+    const sharedParameters = {
       ...parametersForRequest(contract, requestParameters),
-      ...primaryModelVariants[0],
+      ...modelVariants[0],
     };
     const validation = await api("/api/generations/validate", {
       method: "POST",
@@ -3520,118 +3456,47 @@ async function generateSelectedSources() {
         comfyui_instance_id: requestComfyuiInstanceId,
         collection_id: requestCollectionId,
         revision: requestRevision,
-        parameters: primaryParameters,
+        parameters: sharedParameters,
       }),
     });
-    const primaryInputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
+    const inputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
     for (const [parameterId, value] of Object.entries(validation.resolved_seeds || {})) {
-      if (primaryInputs.get(parameterId)?.type === "seed") {
-        primaryParameters[parameterId] = String(value);
-      }
-    }
-    const seedInput = comparisonInputs(contract).find(
-      (input) => input.semantic_role === "seed",
-    );
-    const resolvedSeed = seedInput ? validation.resolved_seeds?.[seedInput.id] : undefined;
-    const plannedTargetCount = sources.reduce(
-      (count, source) => count + modelParameterVariantsForSource(source).length,
-      0,
-    );
-
-    const detailResults = await Promise.allSettled(
-      sources.map(async (summary) => {
-        const key = sourceKey(summary);
-        if (
-          key === requestSourceKey &&
-          sourceInterface(state.activeSource) &&
-          revisionsMatch(summary, state.activeSource)
-        ) {
-          return { ...summary, ...state.activeSource };
-        }
-        return api(`/api/workflows/${encodeURIComponent(key)}`);
-      }),
-    );
-    const queueTargets = [];
-    const failures = [];
-    let promptAssistantAssigned = false;
-    for (let index = 0; index < detailResults.length; index += 1) {
-      const result = detailResults[index];
-      const summary = sources[index];
-      if (result.status === "rejected") {
-        failures.push({ source: summary, error: result.reason });
-        continue;
-      }
-      const detail = result.value;
-      if (!revisionsMatch(summary, detail)) {
-        const error = new Error(
-          `${summary.display_name || "A selected generation source"} was republished after it was selected. Review its model choices and generate again.`,
-        );
-        error.code = "source_republished";
-        failures.push({ source: summary, error });
-        continue;
-      }
-      const targetContract = sourceInterface(detail);
-      if (!targetContract) {
-        failures.push({ source: summary, error: new Error("No public interface is available.") });
-        continue;
-      }
-      const targetKey = sourceKey(detail);
-      let modelVariants;
-      try {
-        modelVariants =
-          targetKey === requestSourceKey
-            ? orderedModelParameterVariants(detail, targetContract, requestParameters)
-            : modelParameterVariantsForSource(detail, targetContract);
-      } catch (error) {
-        failures.push({ source: summary, error });
-        continue;
-      }
-      const sharedParameters =
-        targetKey === requestSourceKey
-          ? primaryParameters
-          : comparisonParametersForRequest(
-              contract,
-              requestParameters,
-              targetContract,
-              resolvedSeed,
-            );
-      for (const modelParameters of modelVariants) {
-        const payload = {
-          source_key: targetKey,
-          comfyui_instance_id: requestComfyuiInstanceId,
-          collection_id: requestCollectionId,
-          revision: structuredClone(sourceRevision(detail)),
-          parameters: { ...sharedParameters, ...modelParameters },
-        };
-        const usesPromptAssistant = Boolean(
-          targetKey === requestSourceKey &&
-            requestCompositionId &&
-            !promptAssistantAssigned,
-        );
-        if (usesPromptAssistant) {
-          payload.prompt_assistant_run_id = requestCompositionId;
-          promptAssistantAssigned = true;
-        }
-        queueTargets.push({ source: summary, payload, usesPromptAssistant });
+      if (inputs.get(parameterId)?.type === "seed") {
+        sharedParameters[parameterId] = String(value);
       }
     }
 
+    const queueTargets = modelVariants.map((modelParameters, index) => {
+      const payload = {
+        source_key: requestSourceKey,
+        comfyui_instance_id: requestComfyuiInstanceId,
+        collection_id: requestCollectionId,
+        revision: structuredClone(requestRevision),
+        parameters: { ...sharedParameters, ...modelParameters },
+      };
+      const usesPromptAssistant = Boolean(requestCompositionId && index === 0);
+      if (usesPromptAssistant) payload.prompt_assistant_run_id = requestCompositionId;
+      return { payload, usesPromptAssistant };
+    });
     const queueResults = await Promise.allSettled(
       queueTargets.map(({ payload }) =>
-        api("/api/generations", { method: "POST", body: JSON.stringify(payload) }),
+        api("/api/generations", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
       ),
     );
     const queued = [];
-    let primaryQueued = false;
+    const failures = [];
     let promptAssistantQueued = false;
     for (let index = 0; index < queueResults.length; index += 1) {
       const result = queueResults[index];
-      const target = queueTargets[index];
       if (result.status === "fulfilled") {
         queued.push(result.value);
-        if (target.payload.source_key === requestSourceKey) primaryQueued = true;
-        if (target.usesPromptAssistant) promptAssistantQueued = true;
-      } else failures.push({ source: target.source, error: result.reason });
+        if (queueTargets[index].usesPromptAssistant) promptAssistantQueued = true;
+      } else {
+        failures.push(result.reason);
+      }
     }
 
     const visibleQueued = queued.filter(
@@ -3639,15 +3504,20 @@ async function generateSelectedSources() {
     );
     if (visibleQueued.length) {
       const queuedIds = new Set(visibleQueued.map((generation) => generation.id));
-      const currentById = new Map(state.generations.map((generation) => [generation.id, generation]));
+      const currentById = new Map(
+        state.generations.map((generation) => [generation.id, generation]),
+      );
       state.generations = sortGenerationsNewestFirst([
-        ...visibleQueued.map((generation) => currentById.get(generation.id) || generation),
+        ...visibleQueued.map(
+          (generation) => currentById.get(generation.id) || generation,
+        ),
         ...state.generations.filter((generation) => !queuedIds.has(generation.id)),
       ]);
       renderGallery();
     }
+
     if (
-      (requestCompositionId ? promptAssistantQueued : primaryQueued) &&
+      (requestCompositionId ? promptAssistantQueued : queued.length > 0) &&
       sourceContextIsCurrent(requestSourceKey, requestRevision) &&
       state.compositionId === requestCompositionId
     ) {
@@ -3658,18 +3528,16 @@ async function generateSelectedSources() {
     if (failures.length) {
       const failureSummary = failures
         .slice(0, 3)
-        .map(({ source, error }) => `${source.display_name}: ${error.message}`)
+        .map((error) => error.message)
         .join(" ");
-      const omitted = failures.length > 3 ? ` ${failures.length - 3} more failed.` : "";
-      state.formError = `Queued ${queued.length} of ${plannedTargetCount} planned generation${plannedTargetCount === 1 ? "" : "s"}. ${failureSummary}${omitted}`;
-      const activeFailure = failures.find(({ source }) => sourceKey(source) === requestSourceKey);
-      if (activeFailure) {
-        state.serverFieldErrors = normalizeParameterErrors(activeFailure.error.fields);
-        focusErrors = Object.keys(state.serverFieldErrors).length > 0;
-      }
+      const omitted =
+        failures.length > 3 ? ` ${failures.length - 3} more failed.` : "";
+      state.formError = `Queued ${queued.length} of ${modelVariants.length} planned generations. ${failureSummary}${omitted}`;
+      state.serverFieldErrors = normalizeParameterErrors(failures[0]?.fields);
+      focusErrors = Object.keys(state.serverFieldErrors).length > 0;
       toast(state.formError, "error");
       if (
-        failures.some(({ error }) =>
+        failures.some((error) =>
           ["source_republished", "source_unavailable"].includes(error?.code),
         )
       ) {
@@ -3680,7 +3548,7 @@ async function generateSelectedSources() {
           renderPanel();
         }
       }
-      const instanceFailure = failures.find(({ error }) =>
+      const instanceFailure = failures.find((error) =>
         isComfyuiInstanceError(error),
       );
       if (
@@ -3692,17 +3560,21 @@ async function generateSelectedSources() {
         )
       ) {
         await refreshComfyuiInstancesAfterError(
-          instanceFailure.error.message,
+          instanceFailure.message,
           requestComfyuiInstanceId,
         );
       }
     } else {
       toast(
-        `${queued.length} generation${queued.length === 1 ? "" : "s"} queued across ${sources.length} selected source${sources.length === 1 ? "" : "s"}.`,
+        `${queued.length} generation${queued.length === 1 ? "" : "s"} queued.`,
         "success",
       );
     }
-    return queued.length > 0 && failures.length === 0 && queued.length === plannedTargetCount;
+    return (
+      queued.length > 0 &&
+      failures.length === 0 &&
+      queued.length === modelVariants.length
+    );
   } catch (error) {
     if (
       !generationContextIsCurrent(
@@ -3712,7 +3584,7 @@ async function generateSelectedSources() {
       )
     ) {
       toast(
-        `Comparison request for the previous source or runtime failed: ${error.message}`,
+        `Checkpoint batch for the previous source or runtime failed: ${error.message}`,
         "error",
       );
       return false;
@@ -3738,6 +3610,7 @@ async function generateSelectedSources() {
     if (focusErrors) focusFirstInvalid();
   }
 }
+
 
 async function composePrompt(
   button,
@@ -3927,6 +3800,21 @@ async function handleUpload(input) {
 }
 
 function handleDragStart(event) {
+  const checkpointHandle = event.target.closest("[data-checkpoint-drag-handle]");
+  if (checkpointHandle && event.dataTransfer && !checkpointHandle.disabled) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(
+      CHECKPOINT_DRAG_TYPE,
+      JSON.stringify({
+        sourceKey: checkpointHandle.dataset.checkpointSourceKey,
+        parameterId: checkpointHandle.dataset.checkpointParameterId,
+        tierId: checkpointHandle.dataset.checkpointTierId,
+        value: checkpointHandle.dataset.checkpointValue,
+      }),
+    );
+    checkpointHandle.closest("[data-checkpoint-card]")?.classList.add("is-dragging");
+    return;
+  }
   const image = event.target.closest("[data-gallery-artifact-id]");
   if (!image || !event.dataTransfer) return;
   event.dataTransfer.effectAllowed = "copy";
@@ -3935,6 +3823,8 @@ function handleDragStart(event) {
 }
 
 function handleDragEnd(event) {
+  event.target.closest("[data-checkpoint-card]")?.classList.remove("is-dragging");
+  clearCheckpointDropIndicators();
   event.target.closest("[data-gallery-artifact-id]")?.classList.remove("is-dragging");
   document
     .querySelectorAll(".image-input-dropzone.is-drag-over")
@@ -3952,7 +3842,61 @@ function transferHasImageCandidate(dataTransfer) {
   return types.includes("Files") || types.includes(GALLERY_ARTIFACT_DRAG_TYPE);
 }
 
+function transferHasCheckpoint(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes(CHECKPOINT_DRAG_TYPE);
+}
+
+function checkpointTierForEvent(event) {
+  const tier = event.target.closest("[data-checkpoint-tier]");
+  const draft = state.sourcePickerDraft;
+  if (
+    !tier ||
+    !draft ||
+    draft.searchQuery ||
+    tier.dataset.checkpointSourceKey !== draft.sourceKey
+  ) {
+    return null;
+  }
+  return tier;
+}
+
+function clearCheckpointDropIndicators() {
+  document
+    .querySelectorAll(".checkpoint-card.is-drop-before, .checkpoint-tier.is-drop-at-end")
+    .forEach((element) => element.classList.remove("is-drop-before", "is-drop-at-end"));
+}
+
+function checkpointDropBeforeValue(event, tier) {
+  const card = event.target.closest("[data-checkpoint-card]");
+  if (!card || !tier.contains(card)) return null;
+  const cards = [...tier.querySelectorAll("[data-checkpoint-card]")];
+  const index = cards.indexOf(card);
+  const rect = card.getBoundingClientRect();
+  const after = event.clientX > rect.left + rect.width / 2;
+  return after ? cards[index + 1]?.dataset.checkpointValue || null : card.dataset.checkpointValue;
+}
+
+function showCheckpointDropIndicator(event, tier) {
+  clearCheckpointDropIndicators();
+  const beforeValue = checkpointDropBeforeValue(event, tier);
+  if (beforeValue) {
+    tier
+      .querySelector(
+        `[data-checkpoint-card][data-checkpoint-value="${CSS.escape(beforeValue)}"]`,
+      )
+      ?.classList.add("is-drop-before");
+  } else {
+    tier.classList.add("is-drop-at-end");
+  }
+}
+
 function handleDragEnter(event) {
+  const checkpointTier = checkpointTierForEvent(event);
+  if (checkpointTier && transferHasCheckpoint(event.dataTransfer)) {
+    event.preventDefault();
+    showCheckpointDropIndicator(event, checkpointTier);
+    return;
+  }
   const zone = imageDropzoneForEvent(event);
   if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
   event.preventDefault();
@@ -3960,6 +3904,13 @@ function handleDragEnter(event) {
 }
 
 function handleDragOver(event) {
+  const checkpointTier = checkpointTierForEvent(event);
+  if (checkpointTier && transferHasCheckpoint(event.dataTransfer)) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    showCheckpointDropIndicator(event, checkpointTier);
+    return;
+  }
   const zone = imageDropzoneForEvent(event);
   if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
   event.preventDefault();
@@ -3968,12 +3919,43 @@ function handleDragOver(event) {
 }
 
 function handleDragLeave(event) {
+  const checkpointTier = checkpointTierForEvent(event);
+  if (checkpointTier && transferHasCheckpoint(event.dataTransfer)) {
+    if (!checkpointTier.contains(event.relatedTarget)) clearCheckpointDropIndicators();
+    return;
+  }
   const zone = imageDropzoneForEvent(event);
   if (!zone || zone.contains(event.relatedTarget)) return;
   zone.classList.remove("is-drag-over");
 }
 
 async function handleDrop(event) {
+  const checkpointTier = checkpointTierForEvent(event);
+  if (checkpointTier && transferHasCheckpoint(event.dataTransfer)) {
+    event.preventDefault();
+    const beforeValue = checkpointDropBeforeValue(event, checkpointTier);
+    clearCheckpointDropIndicators();
+    let payload = null;
+    try {
+      payload = JSON.parse(event.dataTransfer.getData(CHECKPOINT_DRAG_TYPE));
+    } catch {
+      return;
+    }
+    if (
+      payload?.sourceKey === checkpointTier.dataset.checkpointSourceKey &&
+      payload?.parameterId === checkpointTier.dataset.checkpointParameterId &&
+      typeof payload?.value === "string"
+    ) {
+      if (beforeValue !== payload.value) {
+        moveSourcePickerCheckpoint(
+          payload.value,
+          checkpointTier.dataset.checkpointTier,
+          beforeValue,
+        );
+      }
+    }
+    return;
+  }
   const zone = imageDropzoneForEvent(event);
   if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
   event.preventDefault();
@@ -4091,7 +4073,6 @@ function renderGallery() {
   gallery.innerHTML = galleryMarkup(state.generations, {
     status: state.galleryStatus,
     message: state.galleryMessage,
-    sourceColors: state.sourceColors,
     collections: state.collections,
     currentCollectionId: state.currentCollectionId,
   });
@@ -4358,15 +4339,15 @@ function upsertGalleryCard(generation) {
   empty?.remove();
   const existing = gallery.querySelector(`[data-generation-id="${CSS.escape(generation.id)}"]`);
   if (existing) {
-    existing.outerHTML = galleryCardMarkup(generation, state.sourceColors);
+    existing.outerHTML = galleryCardMarkup(generation);
   } else {
     const index = state.generations.findIndex((item) => item.id === generation.id);
     const nextGeneration = index >= 0 ? state.generations[index + 1] : null;
     const nextCard = nextGeneration
       ? gallery.querySelector(`[data-generation-id="${CSS.escape(nextGeneration.id)}"]`)
       : null;
-    if (nextCard) nextCard.insertAdjacentHTML("beforebegin", galleryCardMarkup(generation, state.sourceColors));
-    else gallery.insertAdjacentHTML("beforeend", galleryCardMarkup(generation, state.sourceColors));
+    if (nextCard) nextCard.insertAdjacentHTML("beforebegin", galleryCardMarkup(generation));
+    else gallery.insertAdjacentHTML("beforeend", galleryCardMarkup(generation));
   }
 }
 
@@ -4503,7 +4484,6 @@ async function recall(id) {
   const contract = sourceInterface(source);
   state.activeSourceKey = key;
   state.activeSource = { ...source, interface: contract };
-  state.comparisonSourceKeys = new Set();
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.pendingSourceMigration = null;

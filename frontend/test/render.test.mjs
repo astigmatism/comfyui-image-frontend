@@ -21,7 +21,6 @@ import {
   moveDialogMarkup,
   renderCollectionBar,
   serviceBannerMarkup,
-  sourceColorFor,
   sourcePickerDialogMarkup,
 } from "../src/render.mjs";
 
@@ -1046,7 +1045,6 @@ test("generation panel turns a Basic group into a divider section while preservi
 test("source picker launcher shows the selected queue count while submitting", () => {
   const state = {
     submitting: true,
-    comparisonSourceKeys: new Set(["two"]),
     services: [{ service: "comfyui", available: true }],
     sources: [
       { source_key: "one", display_name: "One", available: true },
@@ -1061,29 +1059,30 @@ test("source picker launcher shows the selected queue count while submitting", (
   const html = generationPanelMarkup(state, state.sources[0], publishedInterface);
   assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /disabled/);
   assert.match(html, /Queueing 4…/);
-  assert.match(html, /2 sources selected/);
-  assert.match(html, /4 generations planned/);
+  assert.match(html, /4 checkpoints selected/);
+  assert.doesNotMatch(html, /sources selected|generations planned/);
   assert.doesNotMatch(html, /data-source-draft-key|data-source-primary-key/);
 });
 
 test("source picker leaves ordinary sources as one planned generation without model controls", () => {
   const html = sourcePickerDialogMarkup(
     [{ source_key: "plain", display_name: "Plain", available: true }],
-    { primaryKey: "plain", selectedKeys: ["plain"] },
+    { sourceKey: "plain" },
   );
 
-  assert.match(html, /1 of 1 available source selected · 1 generation planned/);
-  assert.match(html, /class="source-model-empty">—/);
+  assert.match(html, /Generation source/);
+  assert.match(html, /This workflow will queue one generation/);
+  assert.match(html, /This workflow has no checkpoint choices/);
   assert.doesNotMatch(html, /data-source-model-choice/);
+  assert.doesNotMatch(html, /Primary|Include|Rating|Color|Generation type|Technologies/);
 });
 
-test("source picker disables model choices until an additional source is included", () => {
+test("source picker presents every checkpoint as a draggable selectable card", () => {
   const html = sourcePickerDialogMarkup(
     [
-      { source_key: "primary", display_name: "Primary", available: true },
       {
-        source_key: "extra",
-        display_name: "Extra",
+        source_key: "workflow",
+        display_name: "Portrait Workflow",
         available: true,
         model_selectors: [
           {
@@ -1091,28 +1090,31 @@ test("source picker disables model choices until an additional source is include
             label: "Checkpoint",
             default: "v1",
             choices: [
-              { value: "v1", label: "Version 1" },
-              { value: "v2", label: "Version 2" },
+              { value: "v1", label: "Version 1 (FP8)" },
+              { value: "v2", label: "Version 2 (INT8 ConvRot)" },
             ],
           },
         ],
       },
     ],
-    { primaryKey: "primary", selectedKeys: ["primary"] },
+    { sourceKey: "workflow", modelSelectionsBySource: { workflow: { checkpoint: ["v1"] } } },
   );
 
-  assert.match(
-    html,
-    /aria-label="Generate Extra with Checkpoint: Version 1"[^>]*disabled/,
+  assert.match(html, /data-source-workflow-choice/);
+  assert.equal((html.match(/data-checkpoint-card/g) || []).length, 2);
+  assert.equal((html.match(/data-checkpoint-drag-handle/g) || []).length, 2);
+  assert.match(html, /data-source-model-value="v1"[^>]*checked/);
+  assert.doesNotMatch(
+    html.match(/data-source-model-value="v2"[^>]*>/)?.[0] || "",
+    /checked/,
   );
-  assert.match(
-    html,
-    /aria-label="Generate Extra with Checkpoint: Version 2"[^>]*disabled/,
-  );
-  assert.match(html, /1 of 2 available sources selected · 1 generation planned/);
+  assert.match(html, />FP8<\/small>/);
+  assert.match(html, />INT8<\/small>/);
+  assert.match(html, /1 of 2 selected/);
+  assert.match(html, /1 checkpoint selected · 1 generation will be queued/);
 });
 
-test("source picker dialog supports transactional primary and additional source selection", () => {
+test("source picker renders persisted preference tiers without legacy metadata", () => {
   const sources = [
     {
       source_key: "one",
@@ -1143,257 +1145,155 @@ test("source picker dialog supports transactional primary and additional source 
         },
       ],
     },
-    {
-      source_key: "two",
-      display_name: "Two",
-      instance_id: "default",
-      available: true,
-      model_selectors: [
-        {
-          parameter_id: "checkpoint",
-          label: "Checkpoint",
-          default: "only",
-          choices: [{ value: "only", label: "Only model" }],
-        },
-      ],
-    },
     { source_key: "offline", display_name: "Offline", available: false },
   ];
   const html = sourcePickerDialogMarkup(sources, {
-    primaryKey: "one",
-    selectedKeys: new Set(["one", "two"]),
-    sourceRatings: { one: 3 },
+    sourceKey: "one",
     modelSelectionsBySource: {
       one: { checkpoint: ["v1", "v2"] },
-      two: { checkpoint: ["only"] },
     },
-  });
-
-  const primaryCheckbox = html.match(/<input[^>]*data-source-draft-key="one"[^>]*>/)?.[0] || "";
-  const additionalCheckbox = html.match(/<input[^>]*data-source-draft-key="two"[^>]*>/)?.[0] || "";
-  const unavailableCheckbox =
-    html.match(/<input[^>]*data-source-draft-key="offline"[^>]*>/)?.[0] || "";
-  assert.match(primaryCheckbox, /checked[^>]*disabled/);
-  assert.ok(additionalCheckbox);
-  assert.match(additionalCheckbox, /checked/);
-  assert.doesNotMatch(additionalCheckbox, /disabled/);
-  assert.match(unavailableCheckbox, /disabled/);
-  assert.match(html, /data-source-primary-key="one"[^>]*checked/);
-  assert.match(html, />Rating</);
-  assert.match(html, />Architecture</);
-  assert.match(html, />Introduced</);
-  assert.match(html, />Generation type</);
-  assert.match(html, />Technologies</);
-  assert.match(html, /FLUX Dev/);
-  assert.match(html, />2023</);
-  assert.match(html, /Text To Image/);
-  assert.match(html, /ControlNet/);
-  assert.match(html, /data-source-generation-type-filter="text_to_image"[^>]*checked/);
-  assert.match(html, /data-source-generation-type-filter="__unknown__"[^>]*checked/);
-  assert.match(html, /Show Text To Image/);
-  assert.match(html, /Show Unknown/);
-  assert.match(html, /2 of 2 available sources selected/);
-  assert.match(html, /3 generations planned/);
-  assert.match(html, />Model choices</);
-  assert.match(html, />Checkpoint</);
-  assert.match(html, /Choose one or more model releases/);
-  assert.match(html, /Version 1/);
-  assert.match(html, /January 2026/);
-  assert.match(
-    html,
-    /aria-label="Generate One with Checkpoint: Version 1"[^>]*checked/,
-  );
-  assert.match(
-    html,
-    /aria-label="Generate One with Checkpoint: Version 2"[^>]*checked/,
-  );
-  assert.match(
-    html,
-    /aria-label="Generate Two with Checkpoint: Only model"[^>]*checked[^>]*disabled/,
-  );
-  assert.match(html, /Only option/);
-  assert.match(html, /data-action="select-all-generation-sources"/);
-  assert.match(html, /data-action="deselect-all-generation-sources"/);
-  assert.match(html, /data-action="cancel-generation-source-dialog">Cancel/);
-  assert.match(html, /data-action="apply-generation-source-dialog"[^>]*>Apply/);
-  assert.match(html, /source-picker-dialog-close[\s\S]*?<svg[^>]*>[\s\S]*?<path/);
-  assert.doesNotMatch(html, /data-source-sort-key="technologies"/);
-  assert.match(html, /Each checked model choice queues a separate generation/);
-  assert.match(html, /reuse compatible prompt, resolution, and seed settings when available/);
-
-  const primaryRow = html.match(/<tr[^>]*data-source-row-key="one"[\s\S]*?<\/tr>/)?.[0] || "";
-  assert.equal(Array.from(primaryRow.matchAll(/data-source-rating-key="one"/g)).length, 5);
-  assert.equal(Array.from(primaryRow.matchAll(/source-rating-star is-filled/g)).length, 3);
-  assert.match(primaryRow, /data-source-rating="3"[^>]*aria-pressed="true"/);
-  assert.match(primaryRow, /data-source-rating-value="3"/);
-});
-
-test("source picker sorts rated sources while keeping unrated sources last", () => {
-  const sources = [
-    { source_key: "five", display_name: "Five", available: true },
-    { source_key: "unrated", display_name: "Unrated", available: true },
-    { source_key: "three", display_name: "Three", available: true },
-  ];
-  const rowKeys = (html) =>
-    Array.from(html.matchAll(/data-source-row-key="([^"]+)"/g), (match) => match[1]);
-  const ascending = sourcePickerDialogMarkup(sources, {
-    primaryKey: "three",
-    selectedKeys: ["three"],
-    sourceRatings: { five: 5, three: 3 },
-    sortKey: "rating",
-    sortDirection: "ascending",
-  });
-  const descending = sourcePickerDialogMarkup(sources, {
-    primaryKey: "three",
-    selectedKeys: ["three"],
-    sourceRatings: { five: 5, three: 3 },
-    sortKey: "rating",
-    sortDirection: "descending",
-  });
-
-  assert.deepEqual(rowKeys(ascending), ["three", "five", "unrated"]);
-  assert.deepEqual(rowKeys(descending), ["five", "three", "unrated"]);
-  assert.match(ascending, /aria-sort="ascending"[^>]*>[\s\S]*?data-source-sort-key="rating"/);
-  assert.match(
-    ascending,
-    /data-source-sort-key="rating"[^>]*data-source-sort-direction="descending"/,
-  );
-});
-
-test("source picker dialog sorts model introduction metadata and filters generation types", () => {
-  const sources = [
-    {
-      source_key: "zeta",
-      display_name: "Zeta",
-      available: true,
-      generation_source: {
-        generation_type: "image_to_image",
-        base_model: { architecture: "sdxl", release_year: 2024 },
-        technologies: [],
-      },
-    },
-    { source_key: "legacy", display_name: "Legacy", available: true },
-    {
-      source_key: "alpha",
-      display_name: "Alpha",
-      available: true,
-      generation_source: {
-        generation_type: "text_to_image",
-        base_model: { architecture: "auraflow", release_date: "2023-10-01" },
-        technologies: [],
-      },
-    },
-  ];
-  const html = sourcePickerDialogMarkup(sources, {
-    primaryKey: "alpha",
-    selectedKeys: ["alpha"],
-    sortKey: "introduced",
-    sortDirection: "ascending",
-  });
-
-  assert.match(html, /data-source-sort-key="introduced"[^>]*data-source-sort-direction="descending"/);
-  assert.match(html, /aria-sort="ascending"/);
-  assert.ok(html.indexOf('data-source-row-key="alpha"') < html.indexOf('data-source-row-key="zeta"'));
-  assert.match(html, /data-sort-direction-indicator="ascending"/);
-  assert.match(html, />2023<\/td>/);
-  assert.match(html, />2024<\/td>/);
-  assert.match(html, /Image To Image/);
-  assert.match(html, /<td>—<\/td>/);
-
-  const filtered = sourcePickerDialogMarkup(sources, {
-    primaryKey: "alpha",
-    selectedKeys: ["alpha"],
-    generationTypeFilters: new Set(["text_to_image"]),
-  });
-  assert.match(filtered, /data-source-row-key="alpha"/);
-  assert.doesNotMatch(filtered, /data-source-row-key="zeta"|data-source-row-key="legacy"/);
-  assert.match(filtered, /data-source-generation-type-filter="text_to_image"[^>]*checked/);
-  assert.doesNotMatch(
-    filtered.match(/<input[^>]*data-source-generation-type-filter="image_to_image"[^>]*>/)?.[0] || "",
-    /checked/,
-  );
-});
-
-test("source picker renders and sorts canonical architecture introduction months", () => {
-  const source = (sourceKey, introducedMonth, defaultModelMonth = undefined) => ({
-    source_key: sourceKey,
-    display_name: sourceKey,
-    available: true,
-    generation_source: {
-      generation_type: "text_to_image",
-      base_model: {
-        architecture: sourceKey,
-        timeline: {
-          ...(introducedMonth
-            ? { architecture: { introduced_month: introducedMonth } }
-            : {}),
-          ...(defaultModelMonth
-            ? { default_model: { released_month: defaultModelMonth } }
-            : {}),
-          model_variants: [
-            {
-              parameter_id: "checkpoint",
-              value: "public-v1",
-              path: "/private/models/never-render-this.safetensors",
-            },
-          ],
+    checkpointTiers: {
+      one: {
+        checkpoint: {
+          top_picks: ["v2"],
+          preferred: ["v1"],
+          occasional: [],
+          unsorted: [],
         },
       },
-      technologies: [],
     },
   });
-  const sources = [
-    source("january", "2026-01", "2026-12"),
-    source("june", "2026-06"),
-    source("december", "2025-12"),
-    source("missing", undefined, "2024-01"),
-  ];
 
-  const ascending = sourcePickerDialogMarkup(sources, {
-    primaryKey: "january",
-    selectedKeys: ["january"],
-    sortKey: "introduced",
-    sortDirection: "ascending",
-  });
-  const descending = sourcePickerDialogMarkup(sources, {
-    primaryKey: "january",
-    selectedKeys: ["january"],
-    sortKey: "introduced",
-    sortDirection: "descending",
-  });
-  const rowKeys = (html) =>
-    Array.from(html.matchAll(/data-source-row-key="([^"]+)"/g), (match) => match[1]);
-
-  assert.deepEqual(rowKeys(ascending), ["december", "january", "june", "missing"]);
-  assert.deepEqual(rowKeys(descending), ["june", "january", "december", "missing"]);
-  assert.match(ascending, />January 2026<\/td>/);
-  assert.match(ascending, />June 2026<\/td>/);
-  assert.match(ascending, />December 2025<\/td>/);
-  assert.doesNotMatch(ascending, /December 2026|January 2024/);
-  assert.doesNotMatch(ascending, /never-render-this|safetensors|private\/models/);
+  const top = html.match(/data-checkpoint-tier="top_picks"[\s\S]*?<\/section>/)?.[0] || "";
+  const preferred = html.match(/data-checkpoint-tier="preferred"[\s\S]*?<\/section>/)?.[0] || "";
+  const occasional = html.match(/data-checkpoint-tier="occasional"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(top, /Version 2/);
+  assert.doesNotMatch(top, /Version 1/);
+  assert.match(preferred, /Version 1/);
+  assert.match(occasional, /Drop checkpoints here/);
+  assert.match(occasional, /data-checkpoint-tier-toggle[^>]*disabled/);
+  assert.match(html, /FLUX Dev architecture · 2 checkpoints/);
+  assert.match(html, /data-action="select-all-checkpoints"/);
+  assert.match(html, /data-action="clear-all-checkpoints"/);
+  assert.match(html, /data-action="cancel-generation-source-dialog">Cancel/);
+  assert.match(html, /data-action="apply-generation-source-dialog"[^>]*>Apply/);
+  assert.doesNotMatch(
+    html,
+    /Primary|Include|Rating|Color|Available|Introduced|Generation type|Technologies|ControlNet|2023/,
+  );
 });
 
-test("source picker falls back to legacy aliases when a canonical month is malformed", () => {
+test("source picker offers one available workflow at a time", () => {
+  const sources = [
+    { source_key: "one", display_name: "One", available: true },
+    { source_key: "two", display_name: "Two", available: true },
+    { source_key: "offline", display_name: "Offline", available: false },
+  ];
+  const html = sourcePickerDialogMarkup(sources, { sourceKey: "two" });
+  const select = html.match(/<select data-source-workflow-choice[\s\S]*?<\/select>/)?.[0] || "";
+
+  assert.match(select, /value="one"/);
+  assert.match(select, /value="two" selected/);
+  assert.doesNotMatch(select, /offline|Offline/);
+  assert.doesNotMatch(html, /data-source-draft-key|data-source-primary-key/);
+});
+
+test("source picker search filters cards and temporarily disables reordering", () => {
   const html = sourcePickerDialogMarkup(
     [
       {
-        source_key: "fallback",
-        display_name: "Fallback",
+        source_key: "models",
+        display_name: "Models",
+        available: true,
+        model_selectors: [
+          {
+            parameter_id: "checkpoint",
+            default: "alpha",
+            choices: [
+              { value: "alpha", label: "Alpha portrait" },
+              { value: "beta", label: "Beta landscape" },
+            ],
+          },
+        ],
+      },
+    ],
+    {
+      sourceKey: "models",
+      searchQuery: "portrait",
+      modelSelectionsBySource: { models: { checkpoint: ["alpha", "beta"] } },
+    },
+  );
+
+  assert.match(html, /value="portrait"/);
+  assert.match(html, /Alpha portrait/);
+  assert.doesNotMatch(html, /Beta landscape/);
+  assert.match(html, /data-checkpoint-drag-handle[^>]*draggable="false"[^>]*disabled/);
+  assert.match(html, /Clear search to reorder checkpoints/);
+});
+
+test("source picker exposes tri-state tier controls and disables Apply at zero selections", () => {
+  const html = sourcePickerDialogMarkup(
+    [
+      {
+        source_key: "tiered",
+        display_name: "Tiered",
+        available: true,
+        model_selectors: [
+          {
+            parameter_id: "checkpoint",
+            default: "one",
+            choices: [
+              { value: "one", label: "One" },
+              { value: "two", label: "Two" },
+            ],
+          },
+        ],
+      },
+    ],
+    {
+      sourceKey: "tiered",
+      modelSelectionsBySource: { tiered: { checkpoint: [] } },
+      checkpointTiers: {
+        tiered: {
+          checkpoint: {
+            top_picks: ["one", "two"],
+            preferred: [],
+            occasional: [],
+            unsorted: [],
+          },
+        },
+      },
+    },
+  );
+
+  const top = html.match(/data-checkpoint-tier="top_picks"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(top, />0\/2<\/small>/);
+  assert.doesNotMatch(top, /data-indeterminate|checked/);
+  assert.match(html, /data-action="apply-generation-source-dialog" disabled/);
+  assert.match(html, /0 checkpoints selected · 0 generations will be queued/);
+});
+
+test("source picker shows architecture only as workflow subtitle metadata", () => {
+  const html = sourcePickerDialogMarkup(
+    [
+      {
+        source_key: "krea",
+        display_name: "Krea Workflow",
         available: true,
         generation_source: {
           base_model: {
-            architecture: "fixture",
-            release_year: 2024,
-            timeline: { architecture: { introduced_month: "2026-13" } },
+            architecture: "krea_2",
+            architecture_label: "Krea 2",
+            timeline: { architecture: { introduced_month: "2026-06" } },
           },
         },
       },
     ],
-    { primaryKey: "fallback", selectedKeys: ["fallback"], sortKey: "introduced" },
+    { sourceKey: "krea" },
   );
 
-  assert.match(html, />2024<\/td>/);
-  assert.doesNotMatch(html, /2026|Invalid Date/);
+  assert.match(html, /Krea 2 architecture · 0 checkpoints/);
+  assert.doesNotMatch(html, /June 2026|Introduced|Generation type|Technologies/);
 });
 
 test("card footer groups generation actions and exposes permanent deletion", () => {
@@ -1450,126 +1350,35 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   assert.match(pending, /data-action="delete-generation"[^>]+disabled[^>]+aria-label="Deletion pending"/);
 });
 
-test("sourceColorFor returns a normalized #rrggbb value for configured colors", () => {
-  assert.equal(sourceColorFor("one", { one: "#2E86C1" }), "#2e86c1");
-  assert.equal(sourceColorFor("one", { one: "#2E86C1".toLowerCase() }), "#2e86c1");
-  assert.equal(sourceColorFor("one", { one: "2e86c1" }), "#2e86c1");
-  assert.equal(sourceColorFor("one", { one: "  #2E86C1 " }), "#2e86c1");
-});
-
-test("sourceColorFor returns null for missing or malformed colors", () => {
-  assert.equal(sourceColorFor("one", {}), null);
-  assert.equal(sourceColorFor("one", { other: "#2e86c1" }), null);
-  assert.equal(sourceColorFor("one", { one: "" }), null);
-  assert.equal(sourceColorFor("one", { one: "#2e8" }), null);
-  assert.equal(sourceColorFor("one", { one: "#gggggg" }), null);
-  assert.equal(sourceColorFor("one", { one: null }), null);
-  assert.equal(sourceColorFor("", { one: "#2e86c1" }), null);
-  assert.equal(sourceColorFor("one", null), null);
-});
-
-test("source picker row renders a configured source color instead of No color", () => {
-  const sources = [
-    { source_key: "colored", display_name: "Colored", available: true },
-    { source_key: "uncolored", display_name: "Uncolored", available: true },
-  ];
-  const html = sourcePickerDialogMarkup(sources, {
-    primaryKey: "colored",
-    selectedKeys: ["colored", "uncolored"],
-    sourceColors: { colored: "#2E86C1" },
-  });
-
-  const coloredRow = html.match(/<tr[^>]*data-source-row-key="colored"[\s\S]*?<\/tr>/)?.[0] || "";
-  const uncoloredRow = html.match(/<tr[^>]*data-source-row-key="uncolored"[\s\S]*?<\/tr>/)?.[0] || "";
-
-  assert.match(coloredRow, /class="source-color-current is-set" style="--source-color: #2e86c1"/);
-  assert.match(coloredRow, /<code class="source-color-hex">#2E86C1<\/code>/);
-  assert.doesNotMatch(coloredRow, /No color/);
-  assert.match(coloredRow, /data-action="clear-generation-source-color"[^>]*data-source-color-key="colored"/);
-
-  assert.match(uncoloredRow, /class="source-color-current is-empty"/);
-  assert.match(uncoloredRow, /<span class="source-color-none">No color<\/span>/);
-  assert.doesNotMatch(uncoloredRow, /data-action="clear-generation-source-color"/);
-});
-
-test("generation source trigger keeps the color dot with the name on the primary line above details", () => {
-  const secondarySource = {
-    source_key: "local::workflows/comfyui-image-frontend/Generic Landscape.json",
-    display_name: "Generic Landscape",
-    instance_id: "local",
-    readiness: "ready",
-    available: true,
-    cached: false,
-    warnings: [],
-    revision: {
-      publication_id: "publication-2",
-      workflow_sha256: "workflow-hash-2",
-      api_sha256: "api-hash-2",
-      manifest_sha256: "manifest-hash-2",
-    },
-  };
+test("generation source controls omit legacy color and comparison presentation", () => {
   const baseState = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
-    sources: [publishedSource, secondarySource],
+    sources: [publishedSource],
     activeSourceKey: publishedSource.source_key,
     sourceCatalogStatus: "ready",
     sourceDetailLoading: false,
     parameters: { prompt: "a tree with chickens" },
     fieldErrors: {},
     formError: null,
-    comparisonSourceKeys: [secondarySource.source_key],
     selectedGenerationTargetCount: 3,
+    sourceColors: { [publishedSource.source_key]: "#2E86C1" },
   };
-  const currentMarkup = (html) =>
-    html.match(
-      /<span class="source-picker-current">([\s\S]*?)<\/span>\s*<svg class="source-picker-launch-icon"/,
-    )?.[1] || "";
+  const panel = generationPanelMarkup(baseState, publishedSource, publishedInterface);
+  const dialog = sourcePickerDialogMarkup([publishedSource], {
+    sourceKey: publishedSource.source_key,
+    sourceColors: baseState.sourceColors,
+    sourceColorEditorKey: publishedSource.source_key,
+  });
 
-  const colored = generationPanelMarkup(
-    { ...baseState, sourceColors: { [publishedSource.source_key]: "#2E86C1" } },
-    publishedSource,
-    publishedInterface,
+  assert.match(panel, /Krea 2 NSFW V4/);
+  assert.match(panel, /3 checkpoints selected/);
+  assert.match(panel, /aria-labelledby="generation-source-label generation-source-value"/);
+  assert.doesNotMatch(panel, /source-color-dot|sources selected|generations planned/);
+  assert.doesNotMatch(
+    dialog,
+    /source-color|type="color"|data-source-rating|data-source-primary|data-source-draft/,
   );
-  const coloredLine = currentMarkup(colored);
-  const coloredPrimary = coloredLine.match(
-    /<span class="source-picker-primary">[\s\S]*?<\/span>\s*(?=<small>|$)/,
-  )?.[0] || "";
-  assert.ok(coloredPrimary.startsWith('<span class="source-picker-primary">'));
-  assert.match(
-    coloredPrimary,
-    /<span class="source-color-dot" style="--source-color: #2e86c1" aria-hidden="true" title="Color for Krea 2 NSFW V4"><\/span><strong id="generation-source-value">Krea 2 NSFW V4<\/strong><\/span>$/,
-  );
-  assert.doesNotMatch(coloredPrimary, /<small>/);
-  assert.match(coloredLine, /<small>2 sources selected · 3 generations planned<\/small>$/);
-  assert.ok(coloredLine.startsWith(coloredPrimary));
-  assert.ok(coloredLine.slice(coloredPrimary.length).startsWith("<small>"));
-
-  const uncolored = generationPanelMarkup(baseState, publishedSource, publishedInterface);
-  const uncoloredLine = currentMarkup(uncolored);
-  assert.doesNotMatch(uncoloredLine, /source-color-dot/);
-  assert.match(
-    uncoloredLine,
-    /^<span class="source-picker-primary"><strong id="generation-source-value">Krea 2 NSFW V4<\/strong><\/span>/,
-  );
-  assert.match(uncoloredLine, /<small>2 sources selected · 3 generations planned<\/small>$/);
-  assert.match(uncolored, /aria-labelledby="generation-source-label generation-source-value"/);
-});
-
-test("source picker row renders the inline editor with the configured color as its starting value", () => {
-  const html = sourcePickerDialogMarkup(
-    [{ source_key: "colored", display_name: "Colored", available: true }],
-    {
-      primaryKey: "colored",
-      selectedKeys: ["colored"],
-      sourceColors: { colored: "#2E86C1" },
-      sourceColorEditorKey: "colored",
-    },
-  );
-  assert.match(html, /data-source-color-editor="colored"/);
-  assert.match(html, /type="color"[^>]*value="2e86c1"/);
-  assert.match(html, /class="source-color-hex source-color-editor-hex"[^>]*>#2E86C1<\/code>/);
-  assert.match(html, /data-action="apply-source-color-editor"[^>]*data-source-color-key="colored"/);
 });
 
 test("gallery card caption leads with the checkpoint name and omits the source name", () => {

@@ -4,7 +4,15 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from .config import COMFYUI_INSTANCE_ID_PATTERN
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
@@ -64,12 +72,16 @@ class PreferenceResponse(APIModel):
     gallery_scale: int
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
+    checkpoint_tiers: dict[str, dict[str, dict[str, list[str]]]] = Field(default_factory=dict)
 
 
 class PreferenceUpdate(APIModel):
     gallery_scale: int | None = Field(default=None, ge=0, le=100)
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
+    checkpoint_tiers: dict[StrictStr, dict[StrictStr, dict[StrictStr, list[StrictStr]]]] | None = (
+        None
+    )
 
     @field_validator("source_ratings")
     @classmethod
@@ -104,12 +116,67 @@ class PreferenceUpdate(APIModel):
             value[key] = normalized.lower()
         return value
 
+    @field_validator("checkpoint_tiers")
+    @classmethod
+    def validate_checkpoint_tiers(
+        cls,
+        value: dict[str, dict[str, dict[str, list[str]]]] | None,
+    ) -> dict[str, dict[str, dict[str, list[str]]]] | None:
+        if value is None:
+            return value
+        if len(value) > 500:
+            raise ValueError("checkpoint_tiers cannot contain more than 500 sources")
+        allowed_tiers = {"top_picks", "preferred", "occasional", "unsorted"}
+        total_choices = 0
+        for source_key, selectors in value.items():
+            if not source_key or source_key != source_key.strip() or len(source_key) > 256:
+                raise ValueError(
+                    "checkpoint tier source keys must be 1 to 256 non-whitespace characters"
+                )
+            if len(selectors) > 20:
+                raise ValueError(
+                    "checkpoint_tiers cannot contain more than 20 selectors per source"
+                )
+            for parameter_id, tiers in selectors.items():
+                if (
+                    not parameter_id
+                    or parameter_id != parameter_id.strip()
+                    or len(parameter_id) > 256
+                ):
+                    raise ValueError(
+                        "checkpoint tier parameter keys must be 1 to 256 non-whitespace characters"
+                    )
+                unknown_tiers = set(tiers) - allowed_tiers
+                if unknown_tiers:
+                    raise ValueError("checkpoint tier names are not recognized")
+                seen: set[str] = set()
+                for choices in tiers.values():
+                    if len(choices) > 1000:
+                        raise ValueError(
+                            "checkpoint tiers cannot contain more than 1000 choices per tier"
+                        )
+                    total_choices += len(choices)
+                    for choice in choices:
+                        if not choice or choice != choice.strip() or len(choice) > 512:
+                            raise ValueError(
+                                "checkpoint tier values must be 1 to 512 non-whitespace characters"
+                            )
+                        if choice in seen:
+                            raise ValueError(
+                                "a checkpoint value cannot appear in more than one tier"
+                            )
+                        seen.add(choice)
+        if total_choices > 25_000:
+            raise ValueError("checkpoint_tiers cannot contain more than 25000 choices")
+        return value
+
     @model_validator(mode="after")
     def validate_update_fields(self) -> PreferenceUpdate:
         if (
             self.gallery_scale is None
             and self.source_ratings is None
             and self.source_colors is None
+            and self.checkpoint_tiers is None
         ):
             raise ValueError("at least one preference field is required")
         return self
