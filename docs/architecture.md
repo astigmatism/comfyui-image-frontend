@@ -217,6 +217,7 @@ The production frontend uses browser-native modules:
 - `api.mjs`: same-origin JSON/multipart and CSRF handling.
 - `lib.mjs`: source-input ordering/defaults/validation, finite-choice reconciliation, seed-safe serialization, recall/state and collection-tree helpers.
 - `render.mjs`: escaped semantic HTML for source-driven controls, collection navigation/tiles, cards, detail, warnings and service states.
+- `gallery-hover.mjs`: shared intentional-hover timing and hover/focus preservation across card redraws.
 - `app.mjs`: state transitions, collection hash routing/CRUD, source selection/revision refresh, submission, pagination, SSE and administration.
 - `styles.css`: design tokens, control geometry, responsive layout, focus and reduced-motion behavior.
 
@@ -228,8 +229,19 @@ generation is accepted with the collection ID captured at submission start, so l
 cannot misfile an in-flight request. Navigation clears the current page and restarts the same
 newest-first keyset pagination under the selected scope. Collection ancestry and subtree displays
 are derived from the owner-scoped flat list, while server checks remain authoritative for ownership,
-cycles, and the five-level limit. Collection preview tiles are fixed 1024px slots; a per-owner switch
-optimistically hides their preview images without changing the global gallery scale.
+cycles, and the five-level limit. Collection tiles follow the gallery scale with square preview
+areas; each collection's preview switch optimistically hides its images. Folder captions always
+show the name and direct generation count. Image cards have no caption or footer space.
+
+Both card types reveal their bottom-right actions after the pointer settles for 450 ms, allowing
+6 px of movement. Image checkpoint names and completed batch counts appear at top left and top
+right. A dark gradient scrim fades in with the overlays over 120 ms; leaving for 150 ms hides
+them. Scrolling, dragging, and leaving before the delay cancel pending hover intent. Keyboard
+focus reveals controls immediately, while touch/non-hover devices keep them visible with larger
+targets. Small image cards wrap their actions into two rows; very short frames reserve enough
+height for the overlays while fitting the original image without cropping. Active progress, errors, and cancel
+remain visible, and an Info button opens details containing generation duration. Gallery redraws
+preserve hover intent and keyboard focus for the same card.
 
 The gallery keeps one object/card per generation and displays its snapshotted execution label in status/history. Changing the current selector never changes existing cards or active-job routing. SSE replaces only the affected durable state and drops a refreshed card when its `collection_id` does not match the open view. Collection CRUD adds no SSE event in v1: the initiating tab refetches collections after its mutation, while another tab converges on navigation or reload. A terminal generation does not trigger a per-card collection-list refetch, so preview thumbnails may remain stale until that same navigation/reload boundary. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance. Favorites remain global and add the resolved collection name when available. Recall reports whether the historical runtime is still configured and available before restoring the selector; it never submits automatically.
 

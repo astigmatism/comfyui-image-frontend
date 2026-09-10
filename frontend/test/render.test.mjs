@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  cardFooterMarkup,
+  cardActionsMarkup,
   collectionDeleteDialogMarkup,
   collectionDialogMarkup,
   collectionTileMarkup,
@@ -498,7 +498,7 @@ test("gallery defaults to newest request first regardless of input order", () =>
     },
   ]);
   const cardIds = Array.from(
-    markup.matchAll(/<article class="gallery-card[^"]*" data-generation-id="([^"]+)"/g),
+    markup.matchAll(/<article class="gallery-card[^"]*"[^>]* data-generation-id="([^"]+)"/g),
     (match) => match[1],
   );
 
@@ -1296,7 +1296,7 @@ test("source picker shows architecture only as workflow subtitle metadata", () =
   assert.doesNotMatch(html, /June 2026|Introduced|Generation type|Technologies/);
 });
 
-test("card footer groups generation actions and exposes permanent deletion", () => {
+test("card overlay groups generation actions and exposes permanent deletion", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
@@ -1315,10 +1315,10 @@ test("card footer groups generation actions and exposes permanent deletion", () 
       content_url: "/api/artifacts/current/content",
     },
   };
-  const html = cardFooterMarkup(generation);
-  assert.match(html, />Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
+  const html = cardActionsMarkup(generation);
+  assert.doesNotMatch(html, /Moody Krea 2 V5 BF16|1m 30s|card-footer/);
   assert.doesNotMatch(html, /Portrait Workflow|Secondary/);
-  assert.match(html, /title="Open generation details for Moody Krea 2 V5 BF16"/);
+  assert.match(html, /aria-label="Generation details" title="Open generation details"/);
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
@@ -1333,7 +1333,7 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   assert.ok(html.indexOf('data-action="recall"') < html.indexOf('data-action="delete-generation"'));
   assert.doesNotMatch(html, /Failed|private prompt|99|Cancel/);
 
-  const historical = cardFooterMarkup({
+  const historical = cardActionsMarkup({
     ...generation,
     recall_source_available: false,
     recall_warning: "The original generation source is unavailable; the current source will stay selected.",
@@ -1342,11 +1342,11 @@ test("card footer groups generation actions and exposes permanent deletion", () 
   assert.doesNotMatch(historical, /data-action="recall"[^>]+disabled/);
   assert.match(historical, /title="The original generation source is unavailable; the current source will stay selected\."/);
 
-  const active = cardFooterMarkup({ ...generation, is_favorite: true });
+  const active = cardActionsMarkup({ ...generation, is_favorite: true });
   assert.match(active, /aria-label="Remove from Favorites" aria-pressed="true"/);
   assert.match(active, /<svg[^>]+viewBox="0 0 24 24"/);
 
-  const pending = cardFooterMarkup({ ...generation, delete_pending: true });
+  const pending = cardActionsMarkup({ ...generation, delete_pending: true });
   assert.match(pending, /data-action="delete-generation"[^>]+disabled[^>]+aria-label="Deletion pending"/);
 });
 
@@ -1381,33 +1381,23 @@ test("generation source controls omit legacy color and comparison presentation",
   );
 });
 
-test("gallery card caption leads with the checkpoint name and omits the source name", () => {
+test("gallery overlays show only checkpoint metadata and keep details accessible without a checkpoint", () => {
   const base = {
     id: "g1",
     status: "succeeded",
-    accepted_at: "2026-07-12T12:00:00Z",
     generation_duration_seconds: 90,
-    checkpoint_label: "Moody Krea 2 V5 BF16",
-    display_artifact: {
-      kind: "image",
-      content_url: "/api/artifacts/current/content",
-    },
+    checkpoint_label: 'Moody <Krea> & "V5"',
+    display_artifact: { kind: "image", content_url: "/api/artifacts/current/content" },
   };
-  const sourceA = { source_key: "source-a", display_name: "Source A" };
-  const sourceB = { source_key: "source-b", display_name: "Source B" };
-  const sourceColors = { "source-a": "#2E86C1" };
-
-  const matched = cardFooterMarkup({ ...base, generation_source: sourceA }, sourceColors);
-  assert.match(matched, />Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
-  assert.doesNotMatch(matched, /Source A|source-colored-name|source-color/);
-
-  const unmatched = cardFooterMarkup({ ...base, generation_source: sourceB }, sourceColors);
-  assert.match(unmatched, />Moody Krea 2 V5 BF16 · 1m 30s<\/button>/);
-  assert.doesNotMatch(unmatched, /Source B|source-colored-name|source-color/);
-
-  const noCheckpoint = cardFooterMarkup({ ...base, checkpoint_label: "", generation_source: sourceA });
-  assert.match(noCheckpoint, />1m 30s<\/button>/);
-  assert.doesNotMatch(noCheckpoint, /Moody Krea 2 V5 BF16|Source A/);
+  const html = galleryCardMarkup(base);
+  assert.match(html, /data-gallery-card="generation"/);
+  assert.match(html, /class="card-checkpoint card-hover-reveal" title="Moody &lt;Krea&gt; &amp; &quot;V5&quot;">Moody &lt;Krea&gt; &amp; &quot;V5&quot;<\/span>/);
+  assert.match(html, /class="card-hover-scrim" aria-hidden="true"/);
+  assert.doesNotMatch(html, /card-footer|card-metadata|1m 30s|<footer/);
+  const noCheckpoint = galleryCardMarkup({ ...base, checkpoint_label: "" });
+  assert.doesNotMatch(noCheckpoint, /card-checkpoint/);
+  assert.match(noCheckpoint, /data-action="open-detail"[^>]+aria-label="Generation details"/);
+  assert.match(detailMarkup(base), /Generation time: 1m 30s/);
 });
 
 test("generation duration uses only whole minutes and seconds", () => {
@@ -2228,18 +2218,22 @@ test("collection tiles escape names, cap previews at four, and collapse previews
   assert.match(collapsed, /collection-folder-glyph/);
   assert.match(collapsed, /aria-checked="false"/);
 
-  const footer = html.match(/<footer class="collection-tile-footer">[\s\S]*?<\/footer>/);
-  assert.ok(footer);
+  const overlay = html.slice(html.indexOf('<div class="collection-tile-overlay">'));
+  assert.match(overlay, /class="card-hover-scrim" aria-hidden="true"/);
+  assert.match(overlay, /class="collection-tile-actions card-hover-reveal"/);
+  assert.doesNotMatch(html, /<footer|collection-tile-footer/);
+  const caption = html.match(/<span class="collection-caption">[\s\S]*?<\/button>/)[0];
+  assert.doesNotMatch(caption, /data-action|card-hover-reveal/);
   assert.match(
-    footer[0],
+    overlay,
     /class="collection-previews-button" data-action="toggle-collection-previews" data-collection-id="collection-1" role="switch" aria-label="Previews for &lt;Alpine &amp; &quot;Friends&quot;&gt;" title="Toggle previews" aria-checked="true"/,
   );
   assert.match(
-    footer[0],
+    overlay,
     /class="rename-collection-button" data-action="rename-collection" data-collection-id="collection-1" aria-label="Rename collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
   );
   assert.match(
-    footer[0],
+    overlay,
     /class="delete-collection-button" data-action="delete-collection" data-collection-id="collection-1" aria-label="Delete collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
   );
 

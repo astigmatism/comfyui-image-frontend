@@ -1,4 +1,5 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
+import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import {
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   CHECKPOINT_TIER_DEFINITIONS,
@@ -60,6 +61,7 @@ import {
 } from "./render.mjs";
 
 const root = document.querySelector("#app");
+const galleryHover = bindGalleryCardHover(root);
 
 const state = {
   session: null,
@@ -4070,11 +4072,13 @@ function renderGallery() {
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
   state.generations = sortGenerationsNewestFirst(state.generations);
-  gallery.innerHTML = galleryMarkup(state.generations, {
-    status: state.galleryStatus,
-    message: state.galleryMessage,
-    collections: state.collections,
-    currentCollectionId: state.currentCollectionId,
+  galleryHover.preserveDuring(() => {
+    gallery.innerHTML = galleryMarkup(state.generations, {
+      status: state.galleryStatus,
+      message: state.galleryMessage,
+      collections: state.collections,
+      currentCollectionId: state.currentCollectionId,
+    });
   });
   const sentinel = document.querySelector("#gallery-sentinel");
   if (sentinel) sentinel.hidden = !state.nextCursor;
@@ -4338,17 +4342,19 @@ function upsertGalleryCard(generation) {
   const empty = gallery.querySelector(".empty-gallery");
   empty?.remove();
   const existing = gallery.querySelector(`[data-generation-id="${CSS.escape(generation.id)}"]`);
-  if (existing) {
-    existing.outerHTML = galleryCardMarkup(generation);
-  } else {
-    const index = state.generations.findIndex((item) => item.id === generation.id);
-    const nextGeneration = index >= 0 ? state.generations[index + 1] : null;
-    const nextCard = nextGeneration
-      ? gallery.querySelector(`[data-generation-id="${CSS.escape(nextGeneration.id)}"]`)
-      : null;
-    if (nextCard) nextCard.insertAdjacentHTML("beforebegin", galleryCardMarkup(generation));
-    else gallery.insertAdjacentHTML("beforeend", galleryCardMarkup(generation));
-  }
+  galleryHover.preserveDuring(() => {
+    if (existing) {
+      existing.outerHTML = galleryCardMarkup(generation);
+    } else {
+      const index = state.generations.findIndex((item) => item.id === generation.id);
+      const nextGeneration = index >= 0 ? state.generations[index + 1] : null;
+      const nextCard = nextGeneration
+        ? gallery.querySelector(`[data-generation-id="${CSS.escape(nextGeneration.id)}"]`)
+        : null;
+      if (nextCard) nextCard.insertAdjacentHTML("beforebegin", galleryCardMarkup(generation));
+      else gallery.insertAdjacentHTML("beforeend", galleryCardMarkup(generation));
+    }
+  });
 }
 
 async function loadMore() {

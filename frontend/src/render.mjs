@@ -1311,13 +1311,14 @@ export function collectionTileMarkup(collection) {
       }).join("")}</div>`
     : `<div class="collection-folder-glyph">${FOLDER_ICON}</div>`;
   const id = escapeHtml(collection?.id || "");
-  return `<div class="collection-tile" data-collection-id="${id}">
+  return `<div class="collection-tile" data-gallery-card="collection" data-collection-id="${id}">
     <button type="button" class="collection-tile-open" data-action="open-collection" data-collection-id="${id}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
       <span class="collection-tile-preview">${preview}</span>
       <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="collection-count" aria-label="${count} ${count === 1 ? "generation" : "generations"}">${count}</span></span>
     </button>
-    <footer class="collection-tile-footer">
-      <span class="collection-tile-actions">
+    <div class="collection-tile-overlay">
+      <div class="card-hover-scrim" aria-hidden="true"></div>
+      <div class="collection-tile-actions card-hover-reveal" role="group" aria-label="Collection actions">
         <button type="button" class="collection-previews-button" data-action="toggle-collection-previews" data-collection-id="${id}" role="switch" aria-label="Previews for ${escapeHtml(name)}" title="Toggle previews" aria-checked="${Boolean(previewsOn)}">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4.5" y="4.5" width="15" height="15" rx="3" /><path d="M10.5 16V8h1.7a2.3 2.3 0 0 1 0 4.6h-1.7" /></svg>
         </button>
@@ -1327,8 +1328,8 @@ export function collectionTileMarkup(collection) {
         <button type="button" class="delete-collection-button" data-action="delete-collection" data-collection-id="${id}" aria-label="Delete collection ${escapeHtml(name)}" title="Delete collection">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
         </button>
-      </span>
-    </footer>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1412,20 +1413,29 @@ export function galleryCardMarkup(generation) {
   const statusOverlay = generation.status === "succeeded" || progress ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;
   const finalCount = Number(generation.final_artifact_count) || 0;
   const imageCount = generation.image_count ?? (finalCount > 0 ? finalCount : generation.artifact_count ?? 0);
-  const count = imageCount > 1 ? `<div class="batch-count${progress ? " batch-count-with-progress" : ""}" aria-label="${imageCount} images">${imageCount}</div>` : "";
+  const count = imageCount > 1 ? `<div class="batch-count${generation.status === "succeeded" ? " card-hover-reveal" : ""}" aria-label="${imageCount} images">${imageCount}</div>` : "";
+  const checkpointName = generationCheckpointLabel(generation);
+  const checkpoint = checkpointName
+    ? `<span class="card-checkpoint card-hover-reveal" title="${escapeHtml(checkpointName)}">${escapeHtml(checkpointName)}</span>`
+    : "";
   const width = positiveNumber(generation.expected_width) || positiveNumber(artifact?.width);
   const height = positiveNumber(generation.expected_height) || positiveNumber(artifact?.height);
   const aspectStyle = width && height ? ` style="--gallery-media-aspect: ${width} / ${height}"` : "";
   const cancel = generation.cancel_allowed
     ? `<button type="button" class="button card-cancel-button" data-action="cancel-generation" data-generation-id="${escapeHtml(generation.id)}">Cancel</button>`
     : "";
-  return `<article class="gallery-card status-${stateClass}" data-generation-id="${escapeHtml(generation.id)}">
+  return `<article class="gallery-card status-${stateClass}" data-gallery-card="generation" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
-      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(generationName)} image">${media}${statusOverlay}${count}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}">${media}${statusOverlay}${count}</div>`}
-      <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
+      ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(generationName)} image">${media}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}">${media}</div>`}
+      <div class="card-hover-scrim" aria-hidden="true"></div>
+      ${checkpoint}${count}
+      <div class="card-bottom-overlay">
+        ${statusOverlay}
+        <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
+        ${cardActionsMarkup(generation)}
+      </div>
       ${cancel}
     </div>
-    ${cardFooterMarkup(generation)}
   </article>`;
 }
 
@@ -1629,22 +1639,16 @@ function statusPlaceholderMarkup(generation) {
   return `<div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${runtimeCopy}${queueCopy}</div>`;
 }
 
-export function cardFooterMarkup(generation) {
-  const checkpointName = generationCheckpointLabel(generation);
-  const duration = formatGenerationDuration(generation.generation_duration_seconds);
-  const metadataParts = [];
-  if (checkpointName) metadataParts.push(escapeHtml(checkpointName));
-  if (duration) metadataParts.push(escapeHtml(duration));
-  const metadata = metadataParts.join(" · ");
+export function cardActionsMarkup(generation) {
   const artifact = generation.display_artifact;
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<footer class="card-footer"><button type="button" class="card-metadata" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" title="Open generation details${checkpointName ? ` for ${escapeHtml(checkpointName)}` : ""}">${metadata}</button><div class="card-actions">${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<div class="card-actions card-hover-reveal" role="group" aria-label="Generation actions"><button type="button" class="card-details-button" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Generation details" title="Open generation details"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button><button type="button" class="move-generation-button" data-action="move-generation" data-generation-id="${escapeHtml(generation.id)}" aria-label="Move to collection" title="Move to collection">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v10H3Z" /><path d="m11 13 2-2 2 2m-2-2v6" /></svg>
-  </button>${deleteGenerationButtonMarkup(generation)}</div></footer>`;
+  </button>${deleteGenerationButtonMarkup(generation)}</div>`;
 }
 
 export function deleteGenerationButtonMarkup(generation, extraClasses = "") {
@@ -1786,8 +1790,9 @@ export function detailMarkup(detail) {
   const errors = [...messageValues(detail.errors), ...(detail.error_message ? [detail.error_message] : [])];
   const sourceName = generationSourceName(detail);
   const runtimeName = generationComfyuiInstanceName(detail);
+  const duration = formatGenerationDuration(detail.generation_duration_seconds);
   return `<form method="dialog" class="dialog-frame">
-    <header class="dialog-header"><div><h2>${escapeHtml(sourceName)}</h2><p>${escapeHtml(statusLabel(detail.status))}${runtimeName ? ` · ${escapeHtml(runtimeName)}` : ""}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
+    <header class="dialog-header"><div><h2>${escapeHtml(sourceName)}</h2><p>${escapeHtml(statusLabel(detail.status))}${runtimeName ? ` · ${escapeHtml(runtimeName)}` : ""}${duration ? ` · Generation time: ${escapeHtml(duration)}` : ""}</p></div><button class="icon-button" value="close" aria-label="Close details">×</button></header>
     <div class="detail-content">
       ${generationInputsMarkup(detail)}
       ${messageAlertMarkup("warning", warnings, "Generation warnings")}

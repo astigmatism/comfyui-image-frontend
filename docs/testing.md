@@ -113,6 +113,11 @@ silently uses the fake service.
 
 ## Browser journeys
 
+`frontend/e2e/gallery-hover.spec.mjs` exercises production card markup, styles, and the shared
+hover controller with a controlled clock. It covers dwell/movement/exit timing, scrim visibility,
+stable geometry, redraw and focus continuity, keyboard-to-pointer transitions, scroll cancellation,
+small-card action placement, active progress/cancel visibility, touch targets, and reduced motion.
+
 `frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. It also covers collection creation/rename/navigation, in-collection generation, preview preference persistence, moving a completed card, and recursive collection deletion. Auto-generate journeys verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
 Run browser tests alone:

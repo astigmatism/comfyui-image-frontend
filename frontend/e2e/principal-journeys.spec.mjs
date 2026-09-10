@@ -58,6 +58,23 @@ async function selectPublishedSource(page, name) {
   await expect(selector).toBeFocused();
 }
 
+async function clickGalleryControl(control) {
+  const card = control.locator("xpath=ancestor::*[@data-gallery-card][1]");
+  // Collection refreshes can replace a card during preparation; retry preparation
+  // without ever repeating the action itself.
+  await expect(async () => {
+    await control.scrollIntoViewIfNeeded({ timeout: 2000 });
+    // Settle scrolling before moving: scrolling cancels pending hover intent.
+    await control.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+    const box = await control.boundingBox();
+    await control.page().mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(card.locator('[role="group"]')).toHaveCSS("opacity", "1", { timeout: 2000 });
+  }).toPass({ timeout: 10000 });
+  await control.click();
+}
+
 async function generateAndExpectAccepted(page) {
   const responsePromise = page.waitForResponse(
     (response) =>
@@ -95,6 +112,7 @@ test("frontend document loads one content-addressed module graph", async ({ page
       `/assets/${assetVersion}/api.mjs`,
       `/assets/${assetVersion}/lib.mjs`,
       `/assets/${assetVersion}/render.mjs`,
+      `/assets/${assetVersion}/gallery-hover.mjs`,
       `/assets/${assetVersion}/styles.css`,
     ]),
   );
@@ -294,32 +312,33 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await viewerClose.click();
   await expect(photoViewer).not.toHaveAttribute("open", "");
 
-  const metadata = page.locator(".gallery-card .card-metadata").first();
-  await metadata.click();
+  const detailsButton = page.locator(".gallery-card .card-details-button").first();
+  await clickGalleryControl(detailsButton);
   await expect(detailDialog).toHaveAttribute("open", "");
   await detailDialog.getByRole("button", { name: "Close details" }).click();
   await expect(detailDialog).not.toHaveAttribute("open", "");
-  await metadata.click();
+  await clickGalleryControl(detailsButton);
   await expect(detailDialog).toHaveAttribute("open", "");
   await detailDialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
-  const footer = page.locator(".gallery-card .card-footer").first();
-  await expect(footer.locator("button")).toHaveCount(5);
-  await expect(footer.getByRole("link", { name: "Download current image" })).toBeVisible();
-  await expect(footer.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
-  await expect(footer.getByRole("button", { name: "Recall settings" })).toBeVisible();
-  await expect(footer.getByRole("button", { name: "Move to collection" })).toBeVisible();
-  await expect(footer.getByRole("button", { name: "Delete generation" })).toBeVisible();
-  await expect(footer.locator(".card-metadata")).toHaveText(/^(?:\d+m )?\d+s$/);
-  await expect(footer).not.toContainText(/seed|Complete|Running|slow multi/i);
+  const actions = page.locator(".gallery-card .card-actions").first();
+  await expect(actions.locator("button")).toHaveCount(5);
+  await expect(actions.getByRole("link", { name: "Download current image" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Recall settings" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Move to collection" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Delete generation" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Generation details" })).toBeVisible();
+  await expect(page.locator(".gallery-card .card-footer")).toHaveCount(0);
+  await expect(actions).not.toContainText(/seed|Complete|Running|slow multi/i);
 
   const downloadPromise = page.waitForEvent("download");
-  await footer.getByRole("link", { name: "Download current image" }).click();
+  await clickGalleryControl(actions.getByRole("link", { name: "Download current image" }));
   await downloadPromise;
 
-  await footer.getByRole("button", { name: "Add to Favorites" }).click();
-  await expect(footer.getByRole("button", { name: "Remove from Favorites" })).toHaveAttribute(
+  await clickGalleryControl(actions.getByRole("button", { name: "Add to Favorites" }));
+  await expect(actions.getByRole("button", { name: "Remove from Favorites" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -345,7 +364,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(prompt).toHaveValue(/cinematic blue hour/);
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
 
-  await footer.getByRole("button", { name: "Recall settings" }).click();
+  await clickGalleryControl(actions.getByRole("button", { name: "Recall settings" }));
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
 
@@ -357,7 +376,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await favoritesDialog.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(favoritesDialog.getByRole("heading", { name: "No favorites yet" })).toBeVisible();
   await favoritesDialog.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(footer.getByRole("button", { name: "Add to Favorites" })).toHaveAttribute(
+  await expect(actions.getByRole("button", { name: "Add to Favorites" })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
@@ -380,11 +399,11 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
     expect(dialog.message()).toContain("It will disappear from your history and cannot be undone.");
     return dialog.dismiss();
   });
-  await deleteButton.click();
+  await clickGalleryControl(deleteButton);
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
 
   page.once("dialog", (dialog) => dialog.accept());
-  await deleteButton.click();
+  await clickGalleryControl(deleteButton);
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose - 1);
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
 });
@@ -414,7 +433,7 @@ test("collection tiles match square generation cards and follow gallery scale", 
   await page.locator("#gallery").evaluate((gallery) => {
     const card = document.createElement("article");
     card.className = "gallery-card collection-size-reference";
-    card.innerHTML = '<div class="card-media-frame"></div><footer class="card-footer"></footer>';
+    card.innerHTML = '<div class="card-media-frame"></div>';
     gallery.append(card);
   });
   const collectionGeometry = async () =>
@@ -450,9 +469,7 @@ test("collection tiles match square generation cards and follow gallery scale", 
   expect(enlargedGeometry.previewWidth).toBeCloseTo(enlargedGeometry.previewHeight, 0);
   expect(enlargedGeometry.previewHeight).toBeCloseTo(enlargedGeometry.mediaHeight, 0);
 
-  await tile
-    .getByRole("button", { name: "Delete collection E2E Gallery Scale" })
-    .click();
+  await clickGalleryControl(tile.getByRole("button", { name: "Delete collection E2E Gallery Scale" }));
   const deleteResponse = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname.startsWith("/api/collections/") &&
@@ -496,9 +513,7 @@ test("collections route generation, preview preference, move, and recursive dele
   await createCollection("E2E Destination");
 
   const preRenameTile = page.locator(".collection-tile").filter({ hasText: "E2E Source" });
-  await preRenameTile
-    .getByRole("button", { name: "Rename collection E2E Source" })
-    .click();
+  await clickGalleryControl(preRenameTile.getByRole("button", { name: "Rename collection E2E Source" }));
   const renameDialog = page.locator("#collection-dialog");
   await renameDialog.getByLabel("Name").fill("E2E Source Renamed");
   await renameDialog.getByRole("button", { name: "Save" }).click();
@@ -539,7 +554,7 @@ test("collections route generation, preview preference, move, and recursive dele
       new URL(response.url()).pathname.startsWith("/api/collections/") &&
       response.request().method() === "PATCH",
   );
-  await sourcePreviewSwitch.click();
+  await clickGalleryControl(sourcePreviewSwitch);
   expect((await previewPatch).ok()).toBe(true);
   await expect(sourcePreviewSwitch).toHaveAttribute("aria-checked", "false");
   await expect(sourceTile.locator(".collection-preview-grid")).toHaveCount(0);
@@ -553,7 +568,7 @@ test("collections route generation, preview preference, move, and recursive dele
     .filter({ hasText: "E2E Source Renamed" })
     .click();
   const movedCard = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
-  await movedCard.getByRole("button", { name: "Move to collection" }).click();
+  await clickGalleryControl(movedCard.getByRole("button", { name: "Move to collection" }));
   const moveDialog = page.locator("#move-dialog");
   await expect(moveDialog).toHaveAttribute("open", "");
   await moveDialog.getByRole("radio", { name: "E2E Destination" }).check();
@@ -577,9 +592,7 @@ test("collections route generation, preview preference, move, and recursive dele
   await expect(page.locator(`.gallery-card[data-generation-id="${generation.id}"]`)).toHaveCount(1);
 
   await page.getByRole("link", { name: "Home" }).click();
-  await destinationTile
-    .getByRole("button", { name: "Delete collection E2E Destination" })
-    .click();
+  await clickGalleryControl(destinationTile.getByRole("button", { name: "Delete collection E2E Destination" }));
   const deleteDialog = page.locator("#collection-delete-dialog");
   await expect(deleteDialog).toContainText("1 generation");
   const deleteResponse = page.waitForResponse(
@@ -594,11 +607,10 @@ test("collections route generation, preview preference, move, and recursive dele
     0,
   );
 
-  await page
+  await clickGalleryControl(page
     .locator(".collection-tile")
     .filter({ hasText: "E2E Source Renamed" })
-    .getByRole("button", { name: "Delete collection E2E Source Renamed" })
-    .click();
+    .getByRole("button", { name: "Delete collection E2E Source Renamed" }));
   await page
     .locator("#collection-delete-dialog")
     .getByRole("button", { name: "Delete everything" })
@@ -680,8 +692,8 @@ test("runtime selector is a borderless single-line two-instance control", async 
   expect(completed.comfyui_instance_id).toBe("worker-2");
   expect(completed.comfyui_instance_label).toBe("Secondary");
   await expect(
-    page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-metadata`),
-  ).toHaveText(/^(?:\d+m )?\d+s$/);
+    page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-details-button`),
+  ).toHaveAttribute("aria-label", "Generation details");
 });
 
 test("photo viewer slideshow waits for a generation's final completed image", async ({
@@ -1076,7 +1088,7 @@ test("initial gallery snapshot commits before buffered live updates", async ({ p
 
     await expect(card).toHaveClass(/status-succeeded/, { timeout: 15_000 });
     page.once("dialog", (dialog) => dialog.accept());
-    await card.getByRole("button", { name: "Delete generation" }).click();
+    await clickGalleryControl(card.getByRole("button", { name: "Delete generation" }));
     await expect(card).toHaveCount(0);
   } finally {
     releaseGallery();
@@ -1147,7 +1159,7 @@ test("failed initial gallery snapshot preserves buffered live generations", asyn
     await expect(card).toHaveClass(/status-succeeded/, { timeout: 15_000 });
 
     page.once("dialog", (dialog) => dialog.accept());
-    await card.getByRole("button", { name: "Delete generation" }).click();
+    await clickGalleryControl(card.getByRole("button", { name: "Delete generation" }));
     await expect(card).toHaveCount(0);
   } finally {
     releaseGallery();
@@ -1324,7 +1336,10 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
   const saved = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "PUT",
+      response.request().method() === "PUT" &&
+      Object.values(response.request().postDataJSON()?.checkpoint_tiers || {})
+        .flatMap((selectors) => Object.values(selectors))
+        .some((tiers) => tiers.preferred?.includes("tyjr_mxfp8")),
   );
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   expect((await saved).ok()).toBe(true);
@@ -1345,6 +1360,12 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
   await expect(page.locator("#workflow-source")).toBeEnabled();
   await page.locator("#workflow-source").click();
   dialog = page.locator("#source-picker-dialog");
+  // Reload can select the workflow from retained history; inspect the workflow
+  // whose tier preference this test saved, independently of earlier journeys.
+  const reloadedWorkflow = dialog.locator("[data-source-workflow-choice]");
+  const moodyKey = await reloadedWorkflow.locator("option")
+    .filter({ hasText: "Moody Krea 2 Mix V4" }).getAttribute("value");
+  await reloadedWorkflow.selectOption(moodyKey);
   await expect(dialog.locator(".checkpoint-tier-preferred")).toContainText(
     "Moody Krea 2 TYJR MXFP8",
   );
@@ -1421,6 +1442,11 @@ test("generation source trigger shows only workflow and checkpoint count", async
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
 
   const trigger = page.locator("#workflow-source");
+  await trigger.click();
+  const picker = page.locator("#source-picker-dialog");
+  const selectAll = picker.getByRole("button", { name: "Select all", exact: true });
+  if (await selectAll.isEnabled()) await selectAll.click();
+  await picker.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(trigger.locator("#generation-source-value")).toHaveText("Moody Krea 2 Mix V4");
   await expect(trigger.locator(".source-picker-current small")).toHaveText(
     /checkpoints? selected/,
@@ -1716,14 +1742,14 @@ test("background service polling does not interrupt focused generation controls"
   });
   await changedServicePollHeld;
 
-  const sourceTable = sourceDialog.locator(".source-picker-table-wrap");
-  const sourceTableScrollTop = await sourceTable.evaluate((table) => {
-    table.style.height = "36px";
-    table.scrollTop = 24;
-    window.__sourceTableBeforeChangedServicePoll = table;
-    return table.scrollTop;
+  const sourceBoard = sourceDialog.locator(".checkpoint-tier-board");
+  const sourceBoardScrollTop = await sourceBoard.evaluate((board) => {
+    board.style.height = "36px";
+    board.scrollTop = 24;
+    window.__sourceBoardBeforeChangedServicePoll = board;
+    return board.scrollTop;
   });
-  expect(sourceTableScrollTop).toBeGreaterThan(0);
+  expect(sourceBoardScrollTop).toBeGreaterThan(0);
   const changedServicePoll = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/services" &&
@@ -1739,11 +1765,11 @@ test("background service polling does not interrupt focused generation controls"
   expect(
     await page.evaluate(
       () =>
-        window.__sourceTableBeforeChangedServicePoll ===
-        document.querySelector("#source-picker-dialog .source-picker-table-wrap"),
+        window.__sourceBoardBeforeChangedServicePoll ===
+        document.querySelector("#source-picker-dialog .checkpoint-tier-board"),
     ),
   ).toBe(true);
-  await expect(sourceTable).toHaveJSProperty("scrollTop", sourceTableScrollTop);
+  await expect(sourceBoard).toHaveJSProperty("scrollTop", sourceBoardScrollTop);
   expect(workflowCatalogRequests).toBe(catalogRequestsBeforePoll);
 
   const deferredCatalogRefresh = page.waitForResponse(
@@ -2018,7 +2044,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   const card = page.locator(`.gallery-card[data-generation-id="${generation.id}"]`);
   await expect(card).toHaveClass(/status-succeeded/, { timeout: 30_000 });
   await expect(card.locator(".batch-count")).toHaveText("2");
-  await card.locator(".card-metadata").click();
+  await clickGalleryControl(card.locator(".card-details-button"));
 
   const detailDialog = page.locator("#detail-dialog");
   await expect(detailDialog).toHaveAttribute("open", "");
@@ -2203,7 +2229,7 @@ test("cancelling a queued generation removes its card and history", async ({ pag
 
   await expect(blockerCard).toHaveClass(/status-succeeded/);
   page.once("dialog", (dialog) => dialog.accept());
-  await blockerCard.getByRole("button", { name: "Delete generation" }).click();
+  await clickGalleryControl(blockerCard.getByRole("button", { name: "Delete generation" }));
   await expect(blockerCard).toHaveCount(0);
 });
 
@@ -2376,7 +2402,7 @@ test("required image input accepts Browse and a retained gallery image drag", as
         `/api/generations/${editedGeneration.id}/recall` &&
       response.request().method() === "GET",
   );
-  await editedCard.getByRole("button", { name: "Recall settings" }).click();
+  await clickGalleryControl(editedCard.getByRole("button", { name: "Recall settings" }));
   const recallResponse = await recallResponsePromise;
   expect(recallResponse.status()).toBe(200);
   const recalled = await recallResponse.json();

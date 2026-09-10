@@ -698,6 +698,7 @@ code {
 }
 
 .collection-tile {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
@@ -720,7 +721,6 @@ code {
 
 .collection-tile:hover {
   border-color: #527197;
-  transform: translateY(-2px);
 }
 
 .collection-tile-open {
@@ -744,15 +744,20 @@ code {
   outline-offset: -2px;
 }
 
-.collection-tile-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-  padding: 0 11px 9px 13px;
+.collection-tile-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  pointer-events: none;
 }
 
 .collection-tile-actions {
+  position: absolute;
+  z-index: 2;
+  right: 10px;
+  bottom: 10px;
   display: flex;
   align-items: center;
   flex: 0 0 auto;
@@ -869,6 +874,7 @@ code {
 }
 
 .gallery-card {
+  container: gallery-card / inline-size;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -886,12 +892,19 @@ code {
 }
 
 .card-media-frame {
+  --card-actions-height: 30px;
   position: relative;
   width: 100%;
   aspect-ratio: var(--gallery-media-aspect, 1 / 1);
+  min-height: calc(50px + var(--card-actions-height));
   overflow: hidden;
-  border-bottom: 1px solid var(--border);
   background: #0a0e14;
+}
+
+/* Very small or panoramic cards still need room for readable, separate controls.
+   object-fit: contain preserves the image itself when the frame needs extra height. */
+.card-media-frame:has(.generation-progress, .card-cancel-button, .media-status) {
+  min-height: calc(132px + var(--card-actions-height));
 }
 
 .card-media {
@@ -950,15 +963,15 @@ code {
 }
 
 .generation-progress-slot {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  left: 8px;
   display: grid;
   justify-items: center;
   min-width: 0;
   pointer-events: none;
   z-index: 3;
+}
+
+.generation-progress-slot:empty {
+  display: none;
 }
 
 .generation-progress {
@@ -1068,15 +1081,10 @@ code {
   backdrop-filter: blur(8px);
 }
 
-.batch-count-with-progress {
-  top: 10px;
-  bottom: auto;
-}
-
 .button.card-cancel-button {
   position: absolute;
   top: 10px;
-  left: 10px;
+  right: 10px;
   min-height: 32px;
   padding: 0 10px;
   border-color: #9b5359;
@@ -1094,9 +1102,9 @@ code {
 }
 
 .media-status {
-  left: 10px;
-  bottom: 10px;
-  max-width: calc(100% - 20px);
+  position: static;
+  justify-self: start;
+  max-width: 100%;
   padding: 5px 9px;
   font-size: 0.74rem;
   white-space: nowrap;
@@ -1105,7 +1113,7 @@ code {
 }
 
 .batch-count {
-  bottom: 10px;
+  top: 10px;
   right: 10px;
   display: grid;
   place-items: center;
@@ -1114,18 +1122,23 @@ code {
   padding: 0 7px;
   font-weight: 700;
   font-size: 0.75rem;
+  pointer-events: none;
+  z-index: 2;
 }
 
-.card-footer {
+.card-bottom-overlay {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 3;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-2);
-  min-height: 50px;
-  padding: 9px 11px 9px 13px;
+  gap: 8px;
+  pointer-events: none;
 }
 
-.card-actions,
 .favorite-actions {
   display: flex;
   align-items: center;
@@ -1133,30 +1146,127 @@ code {
 }
 
 .card-actions {
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(6, 30px);
+  justify-self: end;
+  gap: 7px;
 }
 
-.card-metadata {
-  align-self: stretch;
-  width: 100%;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.78rem;
-  text-align: left;
+.card-checkpoint {
+  position: absolute;
+  top: 12px;
+  right: 50px;
+  left: 12px;
+  z-index: 2;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 650;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
-  transition: color var(--motion-fast) ease;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 65%);
 }
 
-.card-metadata:hover {
-  color: var(--text-soft);
+.card-media-frame:has(.card-cancel-button) .card-checkpoint {
+  right: 126px;
 }
 
+.card-media-frame:has(.card-cancel-button) .batch-count {
+  right: 86px;
+}
+
+.card-hover-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(to top, rgb(0 0 0 / 78%), rgb(0 0 0 / 28%) 23%, transparent 51%);
+  transition: opacity 120ms ease;
+}
+
+.gallery-card .card-hover-scrim {
+  background:
+    linear-gradient(to bottom, rgb(0 0 0 / 66%), transparent 34%),
+    linear-gradient(to top, rgb(0 0 0 / 78%), rgb(0 0 0 / 28%) 23%, transparent 51%);
+}
+
+.card-hover-reveal {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+[data-gallery-card].card-controls-visible .card-hover-reveal,
+[data-gallery-card]:has(:focus-visible) .card-hover-reveal {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+[data-gallery-card].card-controls-visible .card-hover-scrim,
+[data-gallery-card]:has(:focus-visible) .card-hover-scrim {
+  opacity: 1;
+}
+
+.card-actions > button,
+.card-actions > a,
+.collection-tile-actions > button {
+  border-color: rgb(215 230 247 / 32%);
+  background: rgb(14 23 35 / 70%);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+
+@container gallery-card (max-width: 260px) {
+  .card-media-frame {
+    --card-actions-height: 67px;
+  }
+
+  .card-actions {
+    grid-template-columns: repeat(3, 30px);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .card-media-frame {
+    --card-actions-height: 44px;
+  }
+
+  [data-gallery-card] .card-hover-reveal,
+  [data-gallery-card] .card-hover-scrim {
+    opacity: 1;
+  }
+
+  [data-gallery-card] .card-hover-reveal {
+    pointer-events: auto;
+  }
+
+  .card-actions {
+    grid-template-columns: repeat(6, 44px);
+    gap: 4px;
+  }
+
+  .collection-tile-actions {
+    gap: 4px;
+  }
+
+  [data-gallery-card] .card-actions > *,
+  [data-gallery-card] .collection-tile-actions > * {
+    width: 44px;
+    height: 44px;
+  }
+
+  @container gallery-card (max-width: 320px) {
+    .card-media-frame {
+      --card-actions-height: 92px;
+    }
+
+    .card-actions {
+      grid-template-columns: repeat(3, 44px);
+    }
+  }
+}
+
+.card-details-button,
 .download-button,
 .favorite-button,
 .recall-button,
@@ -1182,6 +1292,7 @@ code {
     color var(--motion-fast) ease;
 }
 
+.card-details-button svg,
 .download-button svg,
 .favorite-button svg,
 .recall-button svg,
@@ -1195,6 +1306,8 @@ code {
   overflow: visible;
 }
 
+.card-details-button circle,
+.card-details-button path,
 .download-button path,
 .favorite-button path,
 .recall-button path,
@@ -1211,6 +1324,16 @@ code {
 .download-button path {
   fill: none;
   stroke-linecap: round;
+}
+
+.card-details-button path {
+  stroke-linecap: round;
+}
+
+.card-details-button:hover:not(:disabled) {
+  border-color: #45698f;
+  background: #17263a;
+  color: #d7e9ff;
 }
 
 .download-button {
