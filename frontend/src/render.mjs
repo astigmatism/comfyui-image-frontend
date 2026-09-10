@@ -93,7 +93,6 @@ export function shellMarkup(state) {
         <div id="service-banner"></div>
         <div id="collection-bar-host">${renderCollectionBar(state.collections, state.currentCollectionId, {
           collectionsStatus: state.collectionsStatus,
-          previewsEnabled: state.collectionPreviewsEnabled,
         })}</div>
         <div id="gallery" class="gallery-grid" aria-live="polite"></div>
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
@@ -1436,12 +1435,11 @@ export function galleryMarkup(
     sourceColors = {},
     collections = [],
     currentCollectionId = null,
-    showPreviews = true,
   } = {},
 ) {
   const tiles = collections
     .filter((collection) => (collection.parent_id ?? null) === currentCollectionId)
-    .map((collection) => collectionTileMarkup(collection, { showPreviews }))
+    .map((collection) => collectionTileMarkup(collection))
     .join("");
   const tileGrid = tiles ? `<div class="collection-grid">${tiles}</div>` : "";
   const cards = sortGenerationsNewestFirst(generations)
@@ -1464,13 +1462,14 @@ export function galleryMarkup(
 
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6.5h6l2 2H21v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 9h18" /></svg>`;
 
-export function collectionTileMarkup(collection, { showPreviews = true } = {}) {
+export function collectionTileMarkup(collection) {
   const previews = Array.isArray(collection?.previews)
     ? collection.previews.slice(0, 4)
     : [];
   const count = Math.max(0, Number(collection?.generation_count) || 0);
   const name = String(collection?.name || "");
-  const showGrid = Boolean(showPreviews && previews.length);
+  const previewsOn = collection?.previews_enabled !== false;
+  const showGrid = Boolean(previewsOn && previews.length);
   const preview = showGrid
     ? `<div class="collection-preview-grid">${Array.from({ length: 4 }, (_, index) => {
         const item = previews[index];
@@ -1479,19 +1478,34 @@ export function collectionTileMarkup(collection, { showPreviews = true } = {}) {
           : `<span class="collection-preview-cell collection-preview-empty">${index === previews.length ? FOLDER_ICON : ""}</span>`;
       }).join("")}</div>`
     : `<div class="collection-folder-glyph">${FOLDER_ICON}</div>`;
-  return `<button type="button" class="collection-tile" data-action="open-collection" data-collection-id="${escapeHtml(collection?.id || "")}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
-    <span class="collection-tile-preview">${preview}</span>
-    <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="collection-count" aria-label="${count} ${count === 1 ? "generation" : "generations"}">${count}</span></span>
-  </button>`;
+  const id = escapeHtml(collection?.id || "");
+  return `<div class="collection-tile" data-collection-id="${id}">
+    <button type="button" class="collection-tile-open" data-action="open-collection" data-collection-id="${id}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
+      <span class="collection-tile-preview">${preview}</span>
+      <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="collection-count" aria-label="${count} ${count === 1 ? "generation" : "generations"}">${count}</span></span>
+    </button>
+    <footer class="collection-tile-footer">
+      <span class="collection-tile-actions">
+        <button type="button" class="collection-previews-button" data-action="toggle-collection-previews" data-collection-id="${id}" role="switch" aria-label="Previews for ${escapeHtml(name)}" title="Toggle previews" aria-checked="${Boolean(previewsOn)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4.5" y="4.5" width="15" height="15" rx="3" /><path d="M10.5 16V8h1.7a2.3 2.3 0 0 1 0 4.6h-1.7" /></svg>
+        </button>
+        <button type="button" class="rename-collection-button" data-action="rename-collection" data-collection-id="${id}" aria-label="Rename collection ${escapeHtml(name)}" title="Rename collection">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
+        </button>
+        <button type="button" class="delete-collection-button" data-action="delete-collection" data-collection-id="${id}" aria-label="Delete collection ${escapeHtml(name)}" title="Delete collection">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
+        </button>
+      </span>
+    </footer>
+  </div>`;
 }
 
 export function renderCollectionBar(
   collections,
   currentCollectionId,
-  { collectionsStatus = "ready", previewsEnabled = true } = {},
+  { collectionsStatus = "ready" } = {},
 ) {
   const ancestors = collectionAncestors(collections, currentCollectionId);
-  const current = ancestors.at(-1) || null;
   const crumbs = [
     currentCollectionId
       ? '<a href="#/" data-action="open-collection" data-collection-id="">Home</a>'
@@ -1507,9 +1521,7 @@ export function renderCollectionBar(
   return `<nav id="collection-bar" class="collection-bar" aria-label="Collections">
     <div class="collection-crumbs">${crumbs}</div>
     <div class="collection-toolbar-actions">
-      <span class="app-switch collection-previews-switch"><span>Previews</span><button type="button" class="app-switch-track" data-action="toggle-collection-previews" role="switch" aria-label="Collection previews" aria-checked="${Boolean(previewsEnabled)}"><span class="app-switch-thumb" aria-hidden="true"></span></button></span>
       <button type="button" class="button secondary low" data-action="new-collection" ${loading || atDepthCap ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}">New collection</button>
-      ${current ? '<button type="button" class="button low" data-action="rename-collection">Rename collection</button><button type="button" class="button destructive low" data-action="delete-collection">Delete collection</button>' : ""}
     </div>
   </nav>`;
 }

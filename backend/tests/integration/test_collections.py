@@ -93,6 +93,55 @@ def test_collection_crud_name_validation_depth_and_explicit_root_move(
         assert too_deep.json()["error"]["code"] == "collection_depth"
 
 
+def test_collection_previews_toggle_persists_independently_per_collection(
+    settings_factory, fake_state
+) -> None:
+    del fake_state
+    with TestClient(create_app(settings_factory(enable_background_worker=False))) as client:
+        provision_user(client, username="collections.previews.toggle")
+        first = _create_collection(client, "Toggle first")
+        second = _create_collection(client, "Toggle second")
+        assert first["previews_enabled"] is True
+        assert second["previews_enabled"] is True
+
+        hidden = client.patch(
+            f"/api/collections/{first['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"previews_enabled": False},
+        )
+        assert hidden.status_code == 200
+        assert hidden.json()["previews_enabled"] is False
+        assert hidden.json()["name"] == "Toggle first"
+        listed = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert listed[first["id"]]["previews_enabled"] is False
+        assert listed[second["id"]]["previews_enabled"] is True
+        assert listed[first["id"]]["previews"] == []
+
+        renamed = client.patch(
+            f"/api/collections/{first['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"name": "Toggle first renamed"},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["previews_enabled"] is False
+
+        shown = client.patch(
+            f"/api/collections/{first['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"previews_enabled": True},
+        )
+        assert shown.status_code == 200
+        assert shown.json()["previews_enabled"] is True
+        assert (
+            client.patch(
+                f"/api/collections/{first['id']}",
+                headers={"X-CSRF-Token": csrf(client)},
+                json={},
+            ).status_code
+            == 422
+        )
+
+
 def test_generation_scopes_moves_and_cross_owner_targets_are_not_found(
     settings_factory, fake_state
 ) -> None:

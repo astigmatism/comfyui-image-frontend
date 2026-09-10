@@ -68,6 +68,7 @@ class CollectionService:
                 created_at=collection.created_at,
                 updated_at=collection.updated_at,
                 generation_count=generation_counts.get(collection.id, 0),
+                previews_enabled=collection.previews_enabled,
                 previews=previews.get(collection.id, []),
             )
             for collection in collections
@@ -158,6 +159,8 @@ class CollectionService:
         collection = self.get_owned(session, owner_id, collection_id)
         if payload.name is not None:
             collection.name = payload.name
+        if payload.previews_enabled is not None:
+            collection.previews_enabled = payload.previews_enabled
 
         if "parent_id" in payload.model_fields_set:
             new_parent_id = payload.parent_id

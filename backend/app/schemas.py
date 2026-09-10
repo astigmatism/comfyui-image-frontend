@@ -64,14 +64,12 @@ class PreferenceResponse(APIModel):
     gallery_scale: int
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
-    collection_previews_enabled: bool = True
 
 
 class PreferenceUpdate(APIModel):
     gallery_scale: int | None = Field(default=None, ge=0, le=100)
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
-    collection_previews_enabled: bool | None = None
 
     @field_validator("source_ratings")
     @classmethod
@@ -112,7 +110,6 @@ class PreferenceUpdate(APIModel):
             self.gallery_scale is None
             and self.source_ratings is None
             and self.source_colors is None
-            and self.collection_previews_enabled is None
         ):
             raise ValueError("at least one preference field is required")
         return self
@@ -362,6 +359,7 @@ class CollectionCreate(APIModel):
 class CollectionUpdate(APIModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     parent_id: str | None = None
+    previews_enabled: bool | None = None
 
     @field_validator("name")
     @classmethod
@@ -377,7 +375,11 @@ class CollectionUpdate(APIModel):
 
     @model_validator(mode="after")
     def validate_update_fields(self) -> CollectionUpdate:
-        if self.name is None and "parent_id" not in self.model_fields_set:
+        if (
+            self.name is None
+            and "parent_id" not in self.model_fields_set
+            and self.previews_enabled is None
+        ):
             raise ValueError("at least one collection field is required")
         return self
 
@@ -395,6 +397,7 @@ class Collection(APIModel):
     created_at: datetime
     updated_at: datetime
     generation_count: int
+    previews_enabled: bool = True
     previews: list[CollectionPreview] = Field(default_factory=list)
 
 

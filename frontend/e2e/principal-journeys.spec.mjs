@@ -450,8 +450,9 @@ test("collection tiles match square generation cards and follow gallery scale", 
   expect(enlargedGeometry.previewWidth).toBeCloseTo(enlargedGeometry.previewHeight, 0);
   expect(enlargedGeometry.previewHeight).toBeCloseTo(enlargedGeometry.mediaHeight, 0);
 
-  await tile.click();
-  await page.getByRole("button", { name: "Delete collection" }).click();
+  await tile
+    .getByRole("button", { name: "Delete collection E2E Gallery Scale" })
+    .click();
   const deleteResponse = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname.startsWith("/api/collections/") &&
@@ -494,16 +495,19 @@ test("collections route generation, preview preference, move, and recursive dele
   await createCollection("E2E Source");
   await createCollection("E2E Destination");
 
-  await page.locator(".collection-tile").filter({ hasText: "E2E Source" }).click();
-  await expect(page).toHaveURL(/#\/c\/[^/]+$/u);
-  await expect(page.locator(".collection-crumbs")).toContainText("Home/E2E Source");
-
-  await page.getByRole("button", { name: "Rename collection" }).click();
+  const preRenameTile = page.locator(".collection-tile").filter({ hasText: "E2E Source" });
+  await preRenameTile
+    .getByRole("button", { name: "Rename collection E2E Source" })
+    .click();
   const renameDialog = page.locator("#collection-dialog");
   await renameDialog.getByLabel("Name").fill("E2E Source Renamed");
   await renameDialog.getByRole("button", { name: "Save" }).click();
   await expect(renameDialog).not.toHaveAttribute("open", "");
-  await expect(page.locator(".collection-crumbs")).toContainText("E2E Source Renamed");
+  await expect(page.locator(".collection-tile").filter({ hasText: "E2E Source Renamed" })).toHaveCount(1);
+
+  await preRenameTile.click();
+  await expect(page).toHaveURL(/#\/c\/[^/]+$/u);
+  await expect(page.locator(".collection-crumbs")).toContainText("Home/E2E Source Renamed");
 
   await selectPublishedSource(page, "Generic Landscape");
   await page
@@ -523,34 +527,26 @@ test("collections route generation, preview preference, move, and recursive dele
   await expect(sourceTile.locator(".collection-preview-grid img")).toHaveCount(1);
   await expect(page.locator(`.gallery-card[data-generation-id="${generation.id}"]`)).toHaveCount(0);
 
-  const previewSwitch = page.getByRole("switch", { name: "Collection previews" });
-  const preferenceResponse = page.waitForResponse(
+  const sourcePreviewSwitch = sourceTile.getByRole("switch", {
+    name: "Previews for E2E Source Renamed",
+  });
+  const destinationPreviewSwitch = page
+    .locator(".collection-tile")
+    .filter({ hasText: "E2E Destination" })
+    .getByRole("switch", { name: "Previews for E2E Destination" });
+  const previewPatch = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "PUT",
+      new URL(response.url()).pathname.startsWith("/api/collections/") &&
+      response.request().method() === "PATCH",
   );
-  await previewSwitch.click();
-  expect((await preferenceResponse).ok()).toBe(true);
-  await expect(previewSwitch).toHaveAttribute("aria-checked", "false");
+  await sourcePreviewSwitch.click();
+  expect((await previewPatch).ok()).toBe(true);
+  await expect(sourcePreviewSwitch).toHaveAttribute("aria-checked", "false");
   await expect(sourceTile.locator(".collection-preview-grid")).toHaveCount(0);
+  await expect(destinationPreviewSwitch).toHaveAttribute("aria-checked", "true");
   await page.reload();
-  await expect(page.getByRole("switch", { name: "Collection previews" })).toHaveAttribute(
-    "aria-checked",
-    "false",
-  );
-  await expect(
-    page.locator(".collection-tile").filter({ hasText: "E2E Source Renamed" }).locator(
-      ".collection-preview-grid",
-    ),
-  ).toHaveCount(0);
-
-  const restoredPreferenceResponse = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "PUT",
-  );
-  await page.getByRole("switch", { name: "Collection previews" }).click();
-  expect((await restoredPreferenceResponse).ok()).toBe(true);
+  await expect(sourcePreviewSwitch).toHaveAttribute("aria-checked", "false");
+  await expect(sourceTile.locator(".collection-preview-grid")).toHaveCount(0);
 
   await page
     .locator(".collection-tile")
@@ -575,10 +571,15 @@ test("collections route generation, preview preference, move, and recursive dele
     .locator(".collection-tile")
     .filter({ hasText: "E2E Destination" });
   await expect(destinationTile.locator(".collection-count")).toHaveText("1");
+  await expect(destinationTile.locator(".collection-preview-grid")).toHaveCount(1);
+  await expect(sourceTile.locator(".collection-preview-grid")).toHaveCount(0);
   await destinationTile.click();
   await expect(page.locator(`.gallery-card[data-generation-id="${generation.id}"]`)).toHaveCount(1);
 
-  await page.getByRole("button", { name: "Delete collection" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
+  await destinationTile
+    .getByRole("button", { name: "Delete collection E2E Destination" })
+    .click();
   const deleteDialog = page.locator("#collection-delete-dialog");
   await expect(deleteDialog).toContainText("1 generation");
   const deleteResponse = page.waitForResponse(
@@ -593,8 +594,11 @@ test("collections route generation, preview preference, move, and recursive dele
     0,
   );
 
-  await page.locator(".collection-tile").filter({ hasText: "E2E Source Renamed" }).click();
-  await page.getByRole("button", { name: "Delete collection" }).click();
+  await page
+    .locator(".collection-tile")
+    .filter({ hasText: "E2E Source Renamed" })
+    .getByRole("button", { name: "Delete collection E2E Source Renamed" })
+    .click();
   await page
     .locator("#collection-delete-dialog")
     .getByRole("button", { name: "Delete everything" })

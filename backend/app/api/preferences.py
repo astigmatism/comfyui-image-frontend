@@ -22,9 +22,6 @@ def get_preferences(
         gallery_scale=preference.gallery_scale if preference else 45,
         source_ratings=preference.source_ratings_json if preference else {},
         source_colors=preference.source_colors_json if preference else {},
-        collection_previews_enabled=(
-            preference.collection_previews_enabled if preference else True
-        ),
     )
 
 
@@ -41,7 +38,6 @@ def update_preferences(
             gallery_scale=45,
             source_ratings_json={},
             source_colors_json={},
-            collection_previews_enabled=True,
         )
         session.add(preference)
     if payload.gallery_scale is not None:
@@ -50,12 +46,9 @@ def update_preferences(
         preference.source_ratings_json = dict(payload.source_ratings)
     if payload.source_colors is not None:
         preference.source_colors_json = dict(payload.source_colors)
-    if payload.collection_previews_enabled is not None:
-        preference.collection_previews_enabled = payload.collection_previews_enabled
     session.commit()
     return PreferenceResponse(
         gallery_scale=preference.gallery_scale,
         source_ratings=preference.source_ratings_json,
         source_colors=preference.source_colors_json,
-        collection_previews_enabled=preference.collection_previews_enabled,
     )

@@ -113,7 +113,6 @@ const state = {
   collectionsStatus: "idle",
   collectionsMessage: null,
   currentCollectionId: null,
-  collectionPreviewsEnabled: true,
   generations: [],
   nextCursor: null,
   loadingMore: false,
@@ -142,7 +141,6 @@ const state = {
   serviceTimer: null,
   generationEtaTimer: null,
   scaleTimer: null,
-  collectionPreviewsTimer: null,
   observer: null,
   photoViewerGenerationId: null,
   photoViewerTimer: null,
@@ -330,11 +328,11 @@ async function handleClick(event) {
       openCollectionRoute(target.dataset.collectionId || null);
     }
     else if (action === "new-collection") openCollectionDialog("create", target);
-    else if (action === "rename-collection") openCollectionDialog("rename", target);
+    else if (action === "rename-collection") openCollectionDialog("rename", target, target.dataset.collectionId);
     else if (action === "cancel-collection-dialog") closeCollectionDialog("cancel");
-    else if (action === "delete-collection") openCollectionDeleteDialog(target);
+    else if (action === "delete-collection") openCollectionDeleteDialog(target, target.dataset.collectionId);
     else if (action === "cancel-collection-delete") closeCollectionDeleteDialog("cancel");
-    else if (action === "toggle-collection-previews") toggleCollectionPreviews();
+    else if (action === "toggle-collection-previews") toggleCollectionPreviews(target.dataset.collectionId);
     else if (action === "move-generation") openMoveDialog(target.dataset.generationId, target);
     else if (action === "cancel-move-generation") closeMoveDialog("cancel");
     else if (action === "open-generation-source-dialog") openSourcePickerDialog(target);
@@ -1920,8 +1918,6 @@ async function logout() {
   await api("/api/auth/logout", { method: "POST" });
   stopLiveUpdates();
   stopApplicationStartup();
-  window.clearTimeout(state.collectionPreviewsTimer);
-  state.collectionPreviewsTimer = null;
   state.comfyuiInstances = [];
   state.comfyuiInstancesStatus = "idle";
   state.comfyuiInstancesMessage = null;
@@ -1961,7 +1957,6 @@ async function logout() {
   state.collectionsStatus = "idle";
   state.collectionsMessage = null;
   state.currentCollectionId = null;
-  state.collectionPreviewsEnabled = true;
   startupGalleryBoundary = null;
   state.galleryStatus = "idle";
   state.galleryMessage = null;
@@ -1994,8 +1989,6 @@ function renderPasswordChange(forced) {
 async function enterApplication() {
   stopLiveUpdates();
   stopApplicationStartup();
-  window.clearTimeout(state.collectionPreviewsTimer);
-  state.collectionPreviewsTimer = null;
   if (!window.location.hash) window.history.replaceState(null, "", "#/");
   const controller = new AbortController();
   applicationStartupController = controller;
@@ -2103,7 +2096,6 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
     });
     if (signal?.aborted) return;
     state.galleryScale = preferences.gallery_scale;
-    state.collectionPreviewsEnabled = preferences.collection_previews_enabled !== false;
     if (ratingsRevision === sourceRatingsRevision) {
       state.sourceRatings = normalizedSourceRatings(preferences.source_ratings);
       if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
@@ -2350,7 +2342,6 @@ function renderCollectionBarHost() {
   if (!host) return;
   host.innerHTML = renderCollectionBar(state.collections, state.currentCollectionId, {
     collectionsStatus: state.collectionsStatus,
-    previewsEnabled: state.collectionPreviewsEnabled,
   });
 }
 
@@ -4103,23 +4094,16 @@ function renderGallery() {
     sourceColors: state.sourceColors,
     collections: state.collections,
     currentCollectionId: state.currentCollectionId,
-    showPreviews: state.collectionPreviewsEnabled,
   });
   const sentinel = document.querySelector("#gallery-sentinel");
   if (sentinel) sentinel.hidden = !state.nextCursor;
 }
 
-function currentCollection() {
-  return (
-    state.collections.find(
-      (collection) => collection.id === state.currentCollectionId,
-    ) || null
-  );
-}
-
-function openCollectionDialog(mode, invokingControl) {
+function openCollectionDialog(mode, invokingControl, collectionId) {
   const dialog = document.querySelector("#collection-dialog");
-  const collection = mode === "rename" ? currentCollection() : null;
+  const collection = mode === "rename"
+    ? state.collections.find((item) => item.id === collectionId) || null
+    : null;
   if (!dialog || dialog.open || (mode === "rename" && !collection)) return;
   if (
     mode === "create" &&
@@ -4208,9 +4192,10 @@ function handleCollectionDialogClose() {
   });
 }
 
-function openCollectionDeleteDialog(invokingControl) {
+function openCollectionDeleteDialog(invokingControl, collectionId) {
   const dialog = document.querySelector("#collection-delete-dialog");
-  const collection = currentCollection();
+  const collection =
+    state.collections.find((item) => item.id === collectionId) || null;
   if (!dialog || dialog.open || !collection) return;
   const subtree = collectionSubtree(state.collections, collection.id);
   collectionDeleteReturnFocus = invokingControl;
@@ -4348,23 +4333,22 @@ function handleMoveDialogClose() {
   });
 }
 
-function toggleCollectionPreviews() {
-  state.collectionPreviewsEnabled = !state.collectionPreviewsEnabled;
-  renderCollectionBarHost();
+async function toggleCollectionPreviews(collectionId) {
+  const collection = state.collections.find((item) => item.id === collectionId);
+  if (!collection) return;
+  const next = collection.previews_enabled === false;
+  collection.previews_enabled = next;
   renderGallery();
-  window.clearTimeout(state.collectionPreviewsTimer);
-  state.collectionPreviewsTimer = window.setTimeout(async () => {
-    try {
-      await api("/api/preferences", {
-        method: "PUT",
-        body: JSON.stringify({
-          collection_previews_enabled: state.collectionPreviewsEnabled,
-        }),
-      });
-    } catch {
-      toast("Collection preview preference could not be saved.", "error");
-    }
-  }, 250);
+  try {
+    await api(`/api/collections/${encodeURIComponent(collectionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ previews_enabled: next }),
+    });
+  } catch {
+    collection.previews_enabled = !next;
+    renderGallery();
+    toast("Collection preview setting could not be saved.", "error");
+  }
 }
 
 function upsertGalleryCard(generation) {

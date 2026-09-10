@@ -2391,13 +2391,14 @@ test("collection tiles escape names, cap previews at four, and collapse previews
     id: "collection-1",
     name: '<Alpine & "Friends">',
     generation_count: 7,
+    previews_enabled: true,
     previews: Array.from({ length: 5 }, (_, index) => ({
       generation_id: `generation-${index}`,
       artifact_id: `artifact-${index}`,
       thumbnail_url: `/api/artifacts/artifact-${index}/thumbnail?x=<unsafe>`,
     })),
   };
-  const html = collectionTileMarkup(collection, { showPreviews: true });
+  const html = collectionTileMarkup(collection);
   assert.match(html, /data-action="open-collection"/);
   assert.match(
     html,
@@ -2408,27 +2409,42 @@ test("collection tiles escape names, cap previews at four, and collapse previews
   assert.match(html, /&lt;Alpine &amp; &quot;Friends&quot;&gt;/);
   assert.match(html, /aria-label="7 generations"/);
 
-  const partial = collectionTileMarkup(
-    { ...collection, previews: collection.previews.slice(0, 2) },
-    { showPreviews: true },
-  );
+  const partial = collectionTileMarkup({
+    ...collection,
+    previews: collection.previews.slice(0, 2),
+  });
   assert.equal((partial.match(/collection-preview-empty/g) || []).length, 2);
-  const collapsed = collectionTileMarkup(collection, { showPreviews: false });
+  const collapsed = collectionTileMarkup({ ...collection, previews_enabled: false });
   assert.doesNotMatch(collapsed, /<img /);
   assert.match(collapsed, /collection-folder-glyph/);
+  assert.match(collapsed, /aria-checked="false"/);
+
+  const footer = html.match(/<footer class="collection-tile-footer">[\s\S]*?<\/footer>/);
+  assert.ok(footer);
+  assert.match(
+    footer[0],
+    /class="collection-previews-button" data-action="toggle-collection-previews" data-collection-id="collection-1" role="switch" aria-label="Previews for &lt;Alpine &amp; &quot;Friends&quot;&gt;" title="Toggle previews" aria-checked="true"/,
+  );
+  assert.match(
+    footer[0],
+    /class="rename-collection-button" data-action="rename-collection" data-collection-id="collection-1" aria-label="Rename collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
+  );
+  assert.match(
+    footer[0],
+    /class="delete-collection-button" data-action="delete-collection" data-collection-id="collection-1" aria-label="Delete collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
+  );
 
   const gallery = galleryMarkup([], { collections: [collection] });
-  assert.match(gallery, /<div class="collection-grid"><button[^>]+collection-tile/);
+  assert.match(gallery, /<div class="collection-grid"><div[^>]+collection-tile/);
 });
 
-test("collection bar renders escaped crumbs, current location, and preview switch state", () => {
+test("collection bar renders escaped crumbs, current location, and no global preview switch", () => {
   const collections = [
     { id: "alpha", parent_id: null, name: "Alpha" },
     { id: "beta", parent_id: "alpha", name: "Beta <private>" },
   ];
   const html = renderCollectionBar(collections, "beta", {
     collectionsStatus: "ready",
-    previewsEnabled: false,
   });
   assert.match(html, /aria-label="Collections"/);
   assert.match(html, /data-collection-id="alpha">Alpha<\/a>/);
@@ -2436,10 +2452,11 @@ test("collection bar renders escaped crumbs, current location, and preview switc
     html,
     /aria-current="location">Beta &lt;private&gt;<\/span>/,
   );
-  assert.match(html, /role="switch"[^>]+aria-checked="false"/);
+  assert.doesNotMatch(html, /role="switch"/);
+  assert.doesNotMatch(html, /data-action="toggle-collection-previews"/);
   assert.match(html, /data-action="new-collection"/);
-  assert.match(html, /data-action="rename-collection"/);
-  assert.match(html, /data-action="delete-collection"/);
+  assert.doesNotMatch(html, /data-action="rename-collection"/);
+  assert.doesNotMatch(html, /data-action="delete-collection"/);
 });
 
 test("collection dialogs require a name and move destinations render as an indented tree", () => {
