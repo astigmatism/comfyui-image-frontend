@@ -854,7 +854,7 @@ test("runtime control is hidden when at most one ComfyUI runtime is configured",
   );
 });
 
-test("generation panel promotes Moody checkpoint checkboxes directly beneath the source", () => {
+test("generation panel leaves checkpoint selection to the source picker dialog", () => {
   const moodyInterface = {
     inputs: [
       {
@@ -917,24 +917,18 @@ test("generation panel promotes Moody checkpoint checkboxes directly beneath the
     sourceDetailLoading: false,
     activeSourceKey: "moody",
     parameters: { prompt: "portrait", checkpoint: "v4_int8", cfg: 4 },
-    activeModelSelections: { checkpoint: ["v4_int8", "v5_bf16"] },
     fieldErrors: {},
     formError: null,
   };
 
   const html = generationPanelMarkup(state, moody, moodyInterface);
   const sourceIndex = html.indexOf('id="workflow-source"');
-  const checkpointIndex = html.indexOf('data-control-block="checkpoint"');
   const scrollIndex = html.indexOf('id="panel-scroll"');
 
-  assert.ok(sourceIndex >= 0 && sourceIndex < checkpointIndex && checkpointIndex < scrollIndex);
-  assert.equal((html.match(/data-control-block="checkpoint"/g) || []).length, 1);
-  assert.equal((html.match(/data-active-source-model-choice/g) || []).length, 2);
-  assert.match(
-    html,
-    /aria-label="Moody Krea 2 V4 INT8 ConvRot"[^>]*checked/,
-  );
-  assert.match(html, /aria-label="Moody Krea 2 V5 BF16"[^>]*checked/);
+  assert.ok(sourceIndex >= 0 && sourceIndex < scrollIndex);
+  assert.doesNotMatch(html, /data-control-block="checkpoint"/);
+  assert.doesNotMatch(html, /data-active-source-model-choice/);
+  assert.doesNotMatch(html, /class="source-model-choice/);
   assert.doesNotMatch(html, /data-control-id="checkpoint"/);
   assert.match(html, /data-control-section="advanced"[\s\S]*data-control-id="cfg"/);
 
@@ -943,14 +937,8 @@ test("generation panel promotes Moody checkpoint checkboxes directly beneath the
     moody,
     moodyInterface,
   );
-  assert.match(
-    invalidHtml,
-    /data-active-source-model-choice[^>]*aria-invalid="true"[^>]*aria-describedby="control-checkpoint-error"/,
-  );
-  assert.match(
-    invalidHtml,
-    /<p class="field-error" id="control-checkpoint-error" role="alert">Choose at least one checkpoint\.<\/p>/,
-  );
+  assert.doesNotMatch(invalidHtml, /id="control-checkpoint-error"/);
+  assert.doesNotMatch(invalidHtml, /data-active-source-model-choice/);
 });
 
 test("auto-generate disables only manual generation while queueing", () => {

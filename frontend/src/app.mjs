@@ -88,7 +88,6 @@ const state = {
   sourcePickerDraft: null,
   checkpointTiers: {},
   modelSelectionsBySourceRevision: new Map(),
-  activeModelSelections: {},
   selectedGenerationTargetCount: 0,
   controlSectionOpen: {},
   parameters: {},
@@ -436,14 +435,6 @@ async function handleClick(event) {
     updateSourcePickerDraftWorkflow(element.value);
     return;
   }
-  if (element.matches("[data-active-source-model-choice]")) {
-    updateActiveSourceModelSelection(
-      element.dataset.sourceModelParameterId,
-      element.dataset.sourceModelValue,
-      element.checked,
-    );
-    return;
-  }
   if (element.matches("[data-source-model-choice]")) {
     updateSourcePickerDraftModelSelection(
       element.dataset.sourceModelSourceKey,
@@ -525,58 +516,6 @@ function sourcesForPicker() {
       ? { ...source, ...state.activeSource }
       : source,
   );
-}
-
-function updateActiveSourceModelSelection(parameterId, value, checked) {
-  const source = state.activeSource;
-  const selector = sourceModelSelectors(source).find(
-    (item) => item.parameter_id === parameterId,
-  );
-  if (
-    !source ||
-    state.sourceDetailLoading ||
-    state.submitting ||
-    !selector ||
-    !selector.choices.some((choice) => choice.value === value)
-  ) {
-    syncActiveSourceModelControls();
-    return;
-  }
-  const normalized = modelSelectionsForSource(source);
-  const selected = new Set(normalized[parameterId] || []);
-  if (checked) selected.add(value);
-  else if (selected.size > 1) selected.delete(value);
-  setModelSelectionsForSource(source, {
-    ...normalized,
-    [parameterId]: [...selected],
-  });
-  state.formError = null;
-  applyStoredModelSelectionsToActiveParameters();
-  renderPanel();
-}
-
-function syncActiveSourceModelControls(panel = document.querySelector("#generation-panel")) {
-  const source = state.activeSource;
-  if (!panel || !source) return;
-  const selections = modelSelectionsForSource(source);
-  for (const selector of sourceModelSelectors(source)) {
-    const selected = new Set(selections[selector.parameter_id] || []);
-    const inputs = panel.querySelectorAll(
-      `[data-active-source-model-choice][data-source-model-parameter-id="${CSS.escape(selector.parameter_id)}"]`,
-    );
-    for (const input of inputs) {
-      const checked = selected.has(input.dataset.sourceModelValue);
-      input.checked = checked;
-      input.disabled = Boolean(
-        state.sourceDetailLoading ||
-          state.submitting ||
-          source.available === false ||
-          selector.choices.length === 1 ||
-          (checked && selected.size === 1),
-      );
-      input.closest(".source-model-choice")?.classList.toggle("is-selected", checked);
-    }
-  }
 }
 
 function openSourcePickerDialog(button) {
@@ -1813,7 +1752,7 @@ function syncFieldError(block, controlId, message) {
   }
 
   for (const element of block.querySelectorAll(
-    "[data-control-id]:not([data-resolution-grid]), [data-active-source-model-choice]",
+    "[data-control-id]:not([data-resolution-grid])",
   )) {
     const describedBy = new Set((element.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
     describedBy.delete(errorId);
@@ -1901,7 +1840,6 @@ async function logout() {
   state.sourcePickerDraft = null;
   state.checkpointTiers = {};
   state.modelSelectionsBySourceRevision = new Map();
-  state.activeModelSelections = {};
   state.selectedGenerationTargetCount = 0;
   checkpointTiersRevision += 1;
   state.parameters = {};
@@ -2837,7 +2775,6 @@ function renderPanel() {
   const clientErrors = clientValidate(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
   const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
-  state.activeModelSelections = selected ? modelSelectionsForSource(selected) : {};
   panel.innerHTML = generationPanelMarkup(state, selected, contract);
   const assistant = panel.querySelector("#prompt-assistant");
   if (assistant) {
@@ -3050,7 +2987,6 @@ function syncGenerationSubmissionState() {
     sourcePicker.disabled =
       !state.sources.length || (state.submitting && !state.autoGenerate);
   }
-  syncActiveSourceModelControls(panel);
 }
 
 function currentAutoGenerateRetryContext() {
@@ -4460,7 +4396,6 @@ async function recall(id) {
   const runtimeWarning = applyRecalledComfyuiInstance(recalled);
   const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
   state.modelSelectionsBySourceRevision = new Map();
-  state.activeModelSelections = {};
   if (recalled.source_available === false) {
     state.parameters = recalledState.parameters;
     state.explicitParameterIds = recalledState.explicitParameterIds;
