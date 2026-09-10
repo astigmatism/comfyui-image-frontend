@@ -242,6 +242,9 @@ function comfyuiInstanceSelectorMarkup(state) {
   const instances = Array.isArray(state.comfyuiInstances)
     ? state.comfyuiInstances
     : [];
+  // With a single configured runtime the selection is automatic, so the
+  // control is hidden; it only appears when there is more than one option.
+  if (instances.length < 2) return "";
   const selected = instances.find(
     (item) => item.id === state.selectedComfyuiInstanceId,
   );

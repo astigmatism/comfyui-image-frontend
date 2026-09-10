@@ -804,7 +804,7 @@ test("only the selected unavailable ComfyUI runtime blocks generation", () => {
   );
 });
 
-test("ComfyUI runtime status uses compact loading and legacy configuration icons", () => {
+test("runtime control is hidden when at most one ComfyUI runtime is configured", () => {
   const baseState = {
     submitting: false,
     workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
@@ -823,8 +823,8 @@ test("ComfyUI runtime status uses compact loading and legacy configuration icons
     baseState.workflows[0],
     contract,
   );
-  assert.match(loading, /aria-hidden="true">⏳<\/span>/);
-  assert.match(loading, /title="Checking configured runtimes…"[^>]*role="status"/);
+  assert.doesNotMatch(loading, /id="comfyui-instance"/);
+  assert.doesNotMatch(loading, /class="comfyui-instance-field"/);
 
   const legacy = generationPanelMarkup(
     {
@@ -845,12 +845,8 @@ test("ComfyUI runtime status uses compact loading and legacy configuration icons
     baseState.workflows[0],
     contract,
   );
-  assert.match(legacy, /value="default" selected>Primary<\/option>/);
-  assert.match(legacy, /aria-hidden="true">⚠️<\/span>/);
-  assert.match(
-    legacy,
-    /Only the primary ComfyUI runtime is configured for this deployment\./,
-  );
+  assert.doesNotMatch(legacy, /id="comfyui-instance"/);
+  assert.doesNotMatch(legacy, /class="comfyui-instance-field"/);
   assert.doesNotMatch(legacy, /Add CIF_COMFYUI_INSTANCES/);
   assert.doesNotMatch(
     legacy.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
