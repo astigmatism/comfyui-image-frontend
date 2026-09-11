@@ -8,7 +8,7 @@ import {
   collectionTileMarkup,
   controlMarkup,
   detailMarkup,
-  favoritesMarkup,
+  favoritesGalleryMarkup,
   formatGenerationDuration,
   formatGenerationEta,
   galleryCardMarkup,
@@ -1402,36 +1402,42 @@ test("generation ETA rounds up while active and becomes finishing at zero", () =
   assert.equal(formatGenerationEta(Number.NaN), null);
 });
 
-test("Favorites modal renders a thumbnail, generation details, recall, and delete", () => {
-  const html = favoritesMarkup([
-    {
-      id: "f1",
-      created_at: "2026-07-13T12:00:00Z",
-      final_prompt: "lighthouse <at dusk>",
-      generation: {
-        id: "g1",
-        workflow_display_name: "Portrait Workflow",
-        comfyui_instance_id: "primary",
-        comfyui_instance_label: "Primary",
-        accepted_at: "2026-07-12T12:00:00Z",
-        status: "succeeded",
-        recall_available: true,
-        display_artifact: {
-          kind: "image",
-          thumbnail_url: "/api/artifacts/a1/thumbnail",
-          content_url: "/api/artifacts/a1/content",
-        },
-      },
-    },
+test("Favorites gallery reuses cards and tiles in feed order with pressed hearts and gold rings", () => {
+  const collection = { id: "c1", name: "Saved <folder>", is_favorite: true, generation_count: 2 };
+  const generation = {
+    id: "g1", workflow_display_name: "Portrait Workflow", status: "succeeded",
+    accepted_at: "2026-07-12T12:00:00Z", is_favorite: true, recall_available: true,
+    display_artifact: { kind: "image", thumbnail_url: "/api/artifacts/a1/thumbnail", content_url: "/api/artifacts/a1/content" },
+  };
+  const html = favoritesGalleryMarkup([
+    { id: "f1", item_type: "collection", collection },
+    { id: "f2", item_type: "generation", generation },
   ]);
-  assert.match(html, /<h2>Favorites<\/h2>/);
-  assert.match(html, /a1\/thumbnail/);
-  assert.match(html, /Portrait Workflow/);
-  assert.match(html, /Primary · Generated/);
-  assert.match(html, /lighthouse &lt;at dusk&gt;/);
-  assert.match(html, /data-action="recall-favorite"/);
-  assert.match(html, /data-action="delete-favorite"/);
-  assert.ok(html.indexOf('data-action="recall-favorite"') < html.indexOf('data-action="delete-favorite"'));
+  assert.ok(html.indexOf('data-gallery-card="collection"') < html.indexOf('data-gallery-card="generation"'));
+  assert.match(html, /class="collection-tile is-favorited"/);
+  assert.match(html, /class="gallery-card is-favorited status-succeeded"/);
+  assert.match(html, /data-action="toggle-collection-favorite" data-collection-id="c1" aria-label="Remove from Favorites" aria-pressed="true"/);
+  assert.match(html, /Saved &lt;folder&gt;/);
+  assert.match(html, /data-action="open-photo"/);
+  assert.match(html, /data-action="open-detail"/);
+  assert.match(html, /data-action="recall"/);
+  assert.match(html, /data-action="delete-generation"/);
+  assert.match(html, /loading="lazy"/);
+  assert.ok(html.indexOf('data-action="toggle-collection-favorite"') < html.indexOf('data-action="rename-collection"'));
+  const inactive = collectionTileMarkup({ ...collection, is_favorite: false });
+  assert.doesNotMatch(inactive, /is-favorited/);
+  assert.match(inactive, /aria-label="Add to Favorites" aria-pressed="false"/);
+  assert.doesNotMatch(galleryCardMarkup({ ...generation, is_favorite: false }), /is-favorited/);
+});
+
+test("Favorites gallery has empty, loading, error, and virtual location states", () => {
+  assert.match(favoritesGalleryMarkup([]), /No favorites yet — tap the heart on any card or folder/);
+  assert.match(favoritesGalleryMarkup([], { status: "loading" }), /Loading favorites/);
+  assert.match(favoritesGalleryMarkup([], { status: "error", message: "Offline <retry>" }), /Offline &lt;retry&gt;/);
+  const bar = renderCollectionBar([], null, { favoritesView: true });
+  assert.match(bar, /href="#\/"/);
+  assert.match(bar, /aria-current="location">Favorites/);
+  assert.match(bar, /data-action="new-collection" disabled/);
 });
 
 test("one generation renders one card while progressive media changes in place", () => {

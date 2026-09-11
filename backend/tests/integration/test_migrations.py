@@ -8,6 +8,7 @@ from alembic.config import Config
 from app.models import (
     Artifact,
     Collection,
+    CollectionFavorite,
     Favorite,
     Generation,
     GenerationStatus,
@@ -23,7 +24,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "2f8d6a1c4b90"
+HEAD_REVISION = "6e4b9c2a7d15"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -281,6 +282,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert generation.comfyui_instance_label == "default"
         assert generation.collection_id is None
         assert session.scalar(select(func.count()).select_from(Collection)) == 0
+        assert session.scalar(select(func.count()).select_from(CollectionFavorite)) == 0
         assert session.scalar(select(func.count()).select_from(GenerationTimingProfile)) == 0
         assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 0
 
@@ -386,6 +388,7 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "workflow_profiles",
         "favorites",
         "collections",
+        "collection_favorites",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
@@ -420,6 +423,24 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     assert "ix_collections_owner_parent" in {
         index["name"] for index in inspect(engine).get_indexes("collections")
     }
+
+    favorites_indexes = {
+        index["name"]: index["column_names"]
+        for index in inspect(engine).get_indexes("collection_favorites")
+    }
+    assert favorites_indexes["ix_collection_favorites_owner_created"] == [
+        "owner_id",
+        "created_at",
+        "id",
+    ]
+    assert inspect(engine).get_unique_constraints("collection_favorites")[0]["column_names"] == [
+        "owner_id",
+        "collection_id",
+    ]
+    assert {
+        (fk["referred_table"], fk["options"]["ondelete"])
+        for fk in inspect(engine).get_foreign_keys("collection_favorites")
+    } == {("users", "CASCADE"), ("collections", "CASCADE")}
 
     command.downgrade(config, "base")
     assert "users" not in inspect(engine).get_table_names()

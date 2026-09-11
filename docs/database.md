@@ -55,6 +55,7 @@ Unsorted.
 | `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |
+| `collection_favorites` | Owner bookmark linking one owned collection; unique owner/collection pair |
 | `generation_uploads` | Historical parameter-to-upload/hash links |
 | `prompt_assistant_runs` | Owner-scoped Ollama input/output, thinking mode, safe failure diagnostics, and provenance, optionally linked to a generation |
 | `artifacts` | Every retained image/file batch member with owner-mediated URLs and presentation state |
@@ -135,6 +136,8 @@ still be incorporated into a later profile update.
 
 Uploads, original artifacts, and thumbnails are normal files, not database blobs. Paths are relative to the configured data root and filenames are opaque. Every open/delete resolves the target and rejects paths outside the root.
 
+Migration `6e4b9c2a7d15_add_collection_favorites.py` revises `2f8d6a1c4b90` and adds UUID bookmarks with `owner_id`, `collection_id`, and `created_at`. Both foreign keys use `ON DELETE CASCADE`. The unique owner/collection constraint enforces binary favorites; `(owner_id, created_at, id)` supports the mixed feed, and a collection index supports target deletion. Collection and user deletion remove their collection bookmarks automatically; generation favorites likewise cascade on generation or user deletion.
+
 Removing a favorite deletes only its bookmark. Generation deletion removes exclusive generation rows/files and deletes an upload only when no retained generation references it. User deletion revokes sessions, reconciles active jobs, collects paths, deletes all owner rows, commits, then deletes application files. Normal terminal reconciliation—not later gallery/user deletion—removes frontend-generated `output`/`temp` files from ComfyUI. Userdata publications and ComfyUI history are unchanged.
 
 Deleting a collection collects its bounded-depth subtree, invokes the same generation deletion
@@ -151,7 +154,7 @@ queue status/order per execution instance, owner/collection/newest gallery pagin
 owner/parent collection traversal, native prompt ID recovery, artifact timelines, events, sessions,
 publication instance/source/revision lookup, and bounded successful-run timing maintenance.
 
-Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation. Collection listing likewise resolves all direct generation counts in one aggregate and all preview quadrants in one windowed batch query, independent of collection count.
+Gallery and favorites reads use explicit scalar projections and batched auxiliary queries. Detail-only JSON columns such as compiled/submitted graphs, raw history, diagnostics, and normalized result documents are not transferred to or deserialized by Python for gallery cards. Expected dimensions and source identifiers are extracted in SQLite, while display artifacts, image counts, favorite membership, exact-current revision availability, and dependency status are resolved once per page rather than once per generation. Collection listing likewise resolves all direct generation counts in one aggregate and all preview quadrants in one windowed batch query, independent of collection count. One additional membership query supplies `is_favorite`. The mixed favorites feed pages a tagged `UNION ALL` first, then loads only the selected generation and collection projections in batches.
 
 Long-lived SSE iterators never own a SQLAlchemy session. Authentication finishes in one short scope, then the iterator subscribes before loading replay in another short scope so connection setup cannot lose a durable event; queued events through the replay high-water mark are deduplicated. Periodic authorization checks likewise create and close a fresh session. CPU-heavy image work and durable filesystem writes run in worker threads; their short metadata transactions open thread-confined sessions only after the file operation completes.
 

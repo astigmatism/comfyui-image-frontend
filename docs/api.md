@@ -566,11 +566,29 @@ The transcription request is multipart with one `file` field whose media type is
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/favorites?limit=40&cursor=...` | Newest-first owner favorites |
+| `GET` | `/api/favorites?limit=40&cursor=...` | Mixed owned generation/collection favorites, most recently favorited first |
 | `PUT` | `/api/generations/{id}/favorite` | Idempotently bookmark an owned generation |
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
+| `PUT` | `/api/collections/{id}/favorite` | Idempotently bookmark an owned collection; returns updated `Collection` |
+| `DELETE` | `/api/collections/{id}/favorite` | Remove collection bookmark; returns `204` |
 | `GET` | `/api/preferences` | Read owner gallery scale and checkpoint tier/order preferences; legacy source rating/color fields remain for stored-data compatibility |
 | `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or per-workflow checkpoint tiers; legacy source rating/color updates remain accepted |
+
+Favorites are private, binary bookmarks. `GET /api/favorites` returns `{items, next_cursor}`,
+with `limit` from 1–60 (default 40). Each item has `id`, `created_at`, and
+`item_type: "generation" | "collection"`, with exactly one non-null `generation` or `collection`.
+Generation items preserve their existing `final_prompt` and generation-summary fields; collection
+items have an empty `final_prompt` and the normal collection projection (counts, previews,
+`previews_enabled`, and `is_favorite`). All collection responses include `is_favorite` (default false).
+
+Ordering is by bookmark `created_at DESC, id DESC` across both kinds, independent of generation
+submission time or folder creation time. Opaque cursors keep the existing `accepted_at`/`id` encoding,
+using the favorite timestamp as `accepted_at`. Repeated PUTs preserve the bookmark ID and timestamp;
+removing and re-adding creates a new bookmark. Pending-delete generations are omitted.
+Both collection favorite writes require a ready authenticated user and CSRF token, and return 404
+for missing or cross-owner IDs, including for administrators. Removing a bookmark preserves all
+content; bookmarking a folder does not bookmark its children or generations. Deleting the target or
+its owner cascades the bookmark. `#/favorites` displays this feed as normal gallery cards and tiles.
 
 `checkpoint_tiers` is keyed by opaque source key and public selector parameter ID. Each selector maps the fixed tier IDs `top_picks`, `preferred`, `occasional`, and `unsorted` to ordered arrays of stable public checkpoint values. A value may appear at most once per selector. The client reconciles this preference with the current publication so newly published values appear in Unsorted and values no longer published disappear from the dialog.
 

@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import builtins
 from collections import deque
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..errors import AppError
-from ..models import Artifact, AuditLog, Collection, Generation
+from ..models import Artifact, AuditLog, Collection, CollectionFavorite, Generation
 from ..schemas import Collection as CollectionResponse
 from ..schemas import CollectionCreate, CollectionPreview, CollectionUpdate
-from .generations import GenerationService
+
+if TYPE_CHECKING:
+    from .generations import GenerationService
 
 MAX_COLLECTION_DEPTH = 5
 
@@ -32,12 +36,23 @@ class CollectionService:
         return collection
 
     def list(self, session: Session, *, owner_id: str) -> builtins.list[CollectionResponse]:
+        return self.project(session, owner_id=owner_id)
+
+    @staticmethod
+    def project(
+        session: Session,
+        *,
+        owner_id: str,
+        collection_ids: builtins.list[str] | None = None,
+        known_favorite_ids: frozenset[str] | None = None,
+    ) -> builtins.list[CollectionResponse]:
+        if collection_ids == []:
+            return []
+        statement = select(Collection).where(Collection.owner_id == owner_id)
+        if collection_ids is not None:
+            statement = statement.where(Collection.id.in_(collection_ids))
         collections = list(
-            session.scalars(
-                select(Collection)
-                .where(Collection.owner_id == owner_id)
-                .order_by(Collection.created_at, Collection.id)
-            )
+            session.scalars(statement.order_by(Collection.created_at, Collection.id))
         )
         collection_ids = [collection.id for collection in collections]
         if not collection_ids:
@@ -55,11 +70,21 @@ class CollectionService:
                 .group_by(Generation.collection_id)
             )
         }
-        previews = self._collection_previews(
+        previews = CollectionService._collection_previews(
             session,
             owner_id=owner_id,
             collection_ids=collection_ids,
         )
+        favorite_ids = known_favorite_ids
+        if favorite_ids is None:
+            favorite_ids = frozenset(
+                session.scalars(
+                    select(CollectionFavorite.collection_id).where(
+                        CollectionFavorite.owner_id == owner_id,
+                        CollectionFavorite.collection_id.in_(collection_ids),
+                    )
+                )
+            )
         return [
             CollectionResponse(
                 id=collection.id,
@@ -69,6 +94,7 @@ class CollectionService:
                 updated_at=collection.updated_at,
                 generation_count=generation_counts.get(collection.id, 0),
                 previews_enabled=collection.previews_enabled,
+                is_favorite=collection.id in favorite_ids,
                 previews=previews.get(collection.id, []),
             )
             for collection in collections
@@ -184,6 +210,34 @@ class CollectionService:
         session.commit()
         return self._response(session, owner_id=owner_id, collection_id=collection.id)
 
+    def add_favorite(
+        self, session: Session, *, owner_id: str, collection_id: str
+    ) -> CollectionResponse:
+        self.get_owned(session, owner_id, collection_id)
+        statement = select(CollectionFavorite).where(
+            CollectionFavorite.owner_id == owner_id,
+            CollectionFavorite.collection_id == collection_id,
+        )
+        if session.scalar(statement) is None:
+            session.add(CollectionFavorite(owner_id=owner_id, collection_id=collection_id))
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                if session.scalar(statement) is None:
+                    raise
+        return self._response(session, owner_id=owner_id, collection_id=collection_id)
+
+    def remove_favorite(self, session: Session, *, owner_id: str, collection_id: str) -> None:
+        self.get_owned(session, owner_id, collection_id)
+        session.execute(
+            delete(CollectionFavorite).where(
+                CollectionFavorite.owner_id == owner_id,
+                CollectionFavorite.collection_id == collection_id,
+            )
+        )
+        session.commit()
+
     async def delete(
         self,
         session: Session,
@@ -245,9 +299,7 @@ class CollectionService:
         owner_id: str,
         collection_id: str,
     ) -> CollectionResponse:
-        return next(
-            item for item in self.list(session, owner_id=owner_id) if item.id == collection_id
-        )
+        return self.project(session, owner_id=owner_id, collection_ids=[collection_id])[0]
 
     def _level(self, session: Session, *, owner_id: str, collection: Collection) -> int:
         level = 1

@@ -3,6 +3,9 @@ from __future__ import annotations
 from app.main import create_app
 from app.models import (
     Artifact,
+    Collection,
+    CollectionFavorite,
+    Favorite,
     Generation,
     GenerationEvent,
     GenerationUpload,
@@ -82,6 +85,19 @@ def test_administrator_user_deletion_cascades_without_disclosing_content(
             lambda item: item["status"] == "running" and item["artifact_count"] >= 1,
         )
 
+        headers = {"X-CSRF-Token": csrf(client)}
+        collection = client.post(
+            "/api/collections", headers=headers, json={"name": "Private saved folder"}
+        ).json()
+        assert (
+            client.put(f"/api/collections/{collection['id']}/favorite", headers=headers).status_code
+            == 200
+        )
+        assert (
+            client.put(f"/api/generations/{generation_id}/favorite", headers=headers).status_code
+            == 200
+        )
+
         container = client.app.state.container
         with container.db.session_factory() as session:
             artifact_paths = [
@@ -111,6 +127,9 @@ def test_administrator_user_deletion_cascades_without_disclosing_content(
             assert session.get(User, target["id"]) is None
             for model, owner_field in (
                 (Generation, Generation.owner_id),
+                (Favorite, Favorite.owner_id),
+                (Collection, Collection.owner_id),
+                (CollectionFavorite, CollectionFavorite.owner_id),
                 (Artifact, Artifact.owner_id),
                 (Upload, Upload.owner_id),
                 (PromptAssistantRun, PromptAssistantRun.owner_id),

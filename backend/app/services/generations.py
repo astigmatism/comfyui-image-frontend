@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, literal, or_, select
+from sqlalchemy import and_, case, delete, func, literal, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -25,6 +25,7 @@ from ..models import (
     ArtifactState,
     AuditLog,
     Collection,
+    CollectionFavorite,
     ComfyUIInstanceHealth,
     Favorite,
     Generation,
@@ -55,6 +56,7 @@ from ..schemas import (
     WorkflowIdentity,
 )
 from .assets import AssetStore
+from .collections import CollectionService
 from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
@@ -107,14 +109,6 @@ class _GenerationSummaryRow:
             self.api_graph_sha256,
             self.contract_sha256,
         )
-
-
-@dataclass(frozen=True)
-class _FavoriteSummaryRow:
-    id: str
-    created_at: datetime
-    final_prompt: str
-    generation: _GenerationSummaryRow
 
 
 @dataclass(frozen=True)
@@ -572,47 +566,93 @@ class GenerationService:
         limit: int,
     ) -> FavoritePage:
         limit = max(1, min(limit, 60))
-        statement = (
+        feed = union_all(
             select(
-                Favorite.id.label("favorite_id"),
-                Favorite.created_at.label("favorite_created_at"),
-                Generation.final_prompt.label("final_prompt"),
-                *_summary_projection(),
+                Favorite.id.label("id"),
+                Favorite.created_at.label("created_at"),
+                Favorite.generation_id.label("item_id"),
+                literal("generation").label("item_type"),
             )
             .join(Generation, Favorite.generation_id == Generation.id)
-            .where(Favorite.owner_id == owner_id, Generation.owner_id == owner_id)
-        )
+            .where(
+                Favorite.owner_id == owner_id,
+                Generation.owner_id == owner_id,
+                Generation.pending_delete.is_(False),
+            ),
+            select(
+                CollectionFavorite.id,
+                CollectionFavorite.created_at,
+                CollectionFavorite.collection_id,
+                literal("collection"),
+            )
+            .join(Collection, CollectionFavorite.collection_id == Collection.id)
+            .where(CollectionFavorite.owner_id == owner_id, Collection.owner_id == owner_id),
+        ).subquery()
+        statement = select(feed)
         if cursor:
             cursor_time, cursor_id = _decode_cursor(cursor)
             statement = statement.where(
                 or_(
-                    Favorite.created_at < cursor_time,
-                    and_(Favorite.created_at == cursor_time, Favorite.id < cursor_id),
+                    feed.c.created_at < cursor_time,
+                    and_(feed.c.created_at == cursor_time, feed.c.id < cursor_id),
                 )
             )
         result_rows = list(
             session.execute(
-                statement.order_by(Favorite.created_at.desc(), Favorite.id.desc()).limit(limit + 1)
+                statement.order_by(feed.c.created_at.desc(), feed.c.id.desc()).limit(limit + 1)
             )
         )
-        has_more = len(result_rows) > limit
-        rows = [_favorite_summary_row(row) for row in result_rows[:limit]]
+        rows = result_rows[:limit]
         next_cursor = (
-            _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+            _encode_cursor(rows[-1].created_at, rows[-1].id)
+            if len(result_rows) > limit and rows
+            else None
         )
+        generation_ids = [row.item_id for row in rows if row.item_type == "generation"]
+        generation_rows = (
+            list(
+                session.execute(
+                    select(*_summary_projection(), Generation.final_prompt).where(
+                        Generation.owner_id == owner_id, Generation.id.in_(generation_ids)
+                    )
+                )
+            )
+            if generation_ids
+            else []
+        )
+        summaries = {row.id: _summary_row(row) for row in generation_rows}
+        prompts = {row.id: row.final_prompt for row in generation_rows}
         context = self._summary_context(
             session,
             owner_id=owner_id,
-            rows=[row.generation for row in rows],
-            known_favorite_generation_ids=frozenset(row.generation.id for row in rows),
+            rows=list(summaries.values()),
+            known_favorite_generation_ids=frozenset(generation_ids),
         )
+        collection_ids = [row.item_id for row in rows if row.item_type == "collection"]
+        collections = {
+            item.id: item
+            for item in CollectionService.project(
+                session,
+                owner_id=owner_id,
+                collection_ids=collection_ids,
+                known_favorite_ids=frozenset(collection_ids),
+            )
+        }
         return FavoritePage(
             items=[
                 FavoriteSummary(
                     id=row.id,
                     created_at=row.created_at,
-                    final_prompt=row.final_prompt,
-                    generation=self._project_summary(row.generation, context),
+                    item_type="generation",
+                    final_prompt=prompts[row.item_id],
+                    generation=self._project_summary(summaries[row.item_id], context),
+                )
+                if row.item_type == "generation"
+                else FavoriteSummary(
+                    id=row.id,
+                    created_at=row.created_at,
+                    item_type="collection",
+                    collection=collections[row.item_id],
                 )
                 for row in rows
             ],
@@ -1565,16 +1605,6 @@ def _progress_summary(value: Mapping[str, Any] | None) -> GenerationProgress | N
     if not isinstance(value, Mapping):
         return None
     return GenerationProgress.model_validate(copy.deepcopy(dict(value)))
-
-
-def _favorite_summary_row(row: Any) -> _FavoriteSummaryRow:
-    values = row._mapping
-    return _FavoriteSummaryRow(
-        id=str(values["favorite_id"]),
-        created_at=values["favorite_created_at"],
-        final_prompt=str(values["final_prompt"]),
-        generation=_summary_row(row),
-    )
 
 
 def _positive_int(value: Any) -> int | None:

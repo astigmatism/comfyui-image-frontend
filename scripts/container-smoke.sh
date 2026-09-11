@@ -63,7 +63,8 @@ for path in entrypoints:
         assert 'from "./render.mjs"' in body
         with urllib.request.urlopen(urljoin(app_url, "render.mjs"), timeout=1) as response:
             render = response.read().decode("utf8")
-            assert "activeSourceModelChoicesMarkup" in render
+            assert "sourcePickerDialogMarkup" in render
+            assert "favoritesGalleryMarkup" in render
             assert response.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
         with urllib.request.urlopen(urljoin(app_url, "lib.mjs"), timeout=1) as response:
             library = response.read().decode("utf8")

@@ -465,6 +465,7 @@ class Collection(APIModel):
     updated_at: datetime
     generation_count: int
     previews_enabled: bool = True
+    is_favorite: bool = False
     previews: list[CollectionPreview] = Field(default_factory=list)
 
 
@@ -516,8 +517,20 @@ class RecallResponse(APIModel):
 class FavoriteSummary(APIModel):
     id: str
     created_at: datetime
-    final_prompt: str
-    generation: GenerationSummary
+    item_type: Literal["generation", "collection"] = "generation"
+    final_prompt: str = ""
+    generation: GenerationSummary | None = None
+    collection: Collection | None = None
+
+    @model_validator(mode="after")
+    def validate_item(self) -> FavoriteSummary:
+        if self.item_type == "generation":
+            valid = self.generation is not None and self.collection is None
+        else:
+            valid = self.collection is not None and self.generation is None
+        if not valid:
+            raise ValueError("A favorite must contain exactly its declared item type.")
+        return self
 
 
 class FavoritePage(APIModel):

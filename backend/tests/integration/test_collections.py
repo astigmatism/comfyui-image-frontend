@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from app.main import create_app
-from app.models import AuditLog, Collection, Generation
+from app.models import AuditLog, Collection, CollectionFavorite, Favorite, Generation, User
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from tests.conftest import change_password, create_user, csrf, login
@@ -352,3 +352,95 @@ def test_recursive_delete_with_active_generation_returns_202_and_reconciles(
             time.sleep(0.03)
         else:
             raise AssertionError("pending collection generation was not reconciled")
+
+
+def test_collection_favorites_are_idempotent_private_csrf_guarded_and_bookmark_only(
+    settings_factory, fake_state
+) -> None:
+    del fake_state
+    with TestClient(create_app(settings_factory(enable_background_worker=False))) as client:
+        user, owner_cookie = provision_user(client, username="collection.favorites")
+        folder = _create_collection(client, "Saved folder")
+        child = _create_collection(client, "Child", str(folder["id"]))
+        generation = _create_in_collection(client, "not automatically saved", str(folder["id"]))
+        endpoint = f"/api/collections/{folder['id']}/favorite"
+        assert folder["is_favorite"] is False
+        assert client.put(endpoint).status_code == 403
+        assert client.delete(endpoint).status_code == 403
+        headers = {"X-CSRF-Token": csrf(client)}
+        saved = client.put(endpoint, headers=headers)
+        assert saved.status_code == 200
+        assert saved.json()["is_favorite"] is True
+        first = client.get("/api/favorites").json()["items"]
+        assert len(first) == 1
+        assert first[0]["item_type"] == "collection"
+        assert first[0]["generation"] is None
+        assert first[0]["collection"] == saved.json()
+        assert client.put(endpoint, headers=headers).json() == saved.json()
+        assert client.get("/api/favorites").json()["items"] == first
+        listed = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert listed[folder["id"]]["is_favorite"] is True
+        assert listed[child["id"]]["is_favorite"] is False
+        assert client.get(f"/api/generations/{generation['id']}").json()["is_favorite"] is False
+        with client.app.state.container.db.session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(CollectionFavorite)) == 1
+
+        client.cookies.clear()
+        login(client, "admin", ADMIN_PASSWORD)
+        # Administrators also cannot bookmark another owner's content.
+        assert client.put(endpoint, headers={"X-CSRF-Token": csrf(client)}).status_code == 404
+        create_user(client, "collection.favorite.other", USER_TEMP)
+        client.cookies.clear()
+        login(client, "collection.favorite.other", USER_TEMP)
+        change_password(client, "OtherCollectionFavorite123!")
+        assert client.get("/api/favorites").json()["items"] == []
+        assert client.get("/api/collections").json() == []
+        for method in (client.put, client.delete):
+            assert method(endpoint, headers={"X-CSRF-Token": csrf(client)}).status_code == 404
+            assert (
+                method(
+                    "/api/collections/missing/favorite", headers={"X-CSRF-Token": csrf(client)}
+                ).status_code
+                == 404
+            )
+        restore_cookie(client, owner_cookie)
+        for _ in range(2):
+            assert (
+                client.delete(endpoint, headers={"X-CSRF-Token": csrf(client)}).status_code == 204
+            )
+        assert client.get("/api/favorites").json()["items"] == []
+        listed = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert listed[folder["id"]]["is_favorite"] is False
+        assert client.get(f"/api/generations/{generation['id']}").status_code == 200
+        assert user["id"]
+
+
+def test_collection_and_user_deletion_cascade_favorites(settings_factory, fake_state) -> None:
+    del fake_state
+    with TestClient(create_app(settings_factory(enable_background_worker=False))) as client:
+        user, _ = provision_user(client, username="collection.favorite.cascades")
+        parent = _create_collection(client, "Delete parent")
+        child = _create_collection(client, "Delete child", str(parent["id"]))
+        retained = _create_collection(client, "Retained until user deletion")
+        generation = _create_in_collection(client, "delete saved image", str(child["id"]))
+        headers = {"X-CSRF-Token": csrf(client)}
+        for folder in (parent, child, retained):
+            assert (
+                client.put(f"/api/collections/{folder['id']}/favorite", headers=headers).status_code
+                == 200
+            )
+        assert (
+            client.put(f"/api/generations/{generation['id']}/favorite", headers=headers).status_code
+            == 200
+        )
+        assert client.delete(f"/api/collections/{parent['id']}", headers=headers).status_code == 204
+        items = client.get("/api/favorites").json()["items"]
+        assert [item["collection"]["id"] for item in items] == [retained["id"]]
+        with client.app.state.container.db.session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(Favorite)) == 0
+            assert session.scalar(select(func.count()).select_from(CollectionFavorite)) == 1
+            # Direct SQL deletion proves the database cascades, independent of service cleanup.
+            session.query(User).filter(User.id == user["id"]).delete()
+            session.commit()
+            assert session.scalar(select(func.count()).select_from(CollectionFavorite)) == 0
+            assert session.scalar(select(func.count()).select_from(Collection)) == 0

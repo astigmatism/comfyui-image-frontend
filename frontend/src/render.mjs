@@ -75,9 +75,10 @@ export function shellMarkup(state) {
         <div class="topbar-right">
           <div id="collection-bar-host" class="collection-bar-host">${renderCollectionBar(state.collections, state.currentCollectionId, {
             collectionsStatus: state.collectionsStatus,
+            favoritesView: state.favoritesView,
           })}</div>
           <div class="topbar-spacer"></div>
-          <button type="button" class="button low favorites-launch-button" data-action="open-favorites" aria-label="Favorites"><span aria-hidden="true">♡</span><span class="favorites-launch-label">Favorites</span></button>
+          <button type="button" class="button low favorites-launch-button" data-action="open-favorites" aria-label="Favorites" aria-pressed="${Boolean(state.favoritesView)}"><span aria-hidden="true">♡</span><span class="favorites-launch-label">Favorites</span></button>
           <label class="scale-control">
             <span>Gallery scale</span>
             <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-valuetext="${state.galleryScale}%" />
@@ -103,7 +104,6 @@ export function shellMarkup(state) {
       </main>
       <dialog id="detail-dialog" class="detail-dialog"></dialog>
       <dialog id="photo-viewer" class="photo-viewer" aria-label="Image viewer"><div class="photo-viewer-host"></div></dialog>
-      <dialog id="favorites-dialog" class="favorites-dialog"></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
       <dialog id="source-picker-dialog" class="source-picker-dialog" aria-label="Generation source"></dialog>
@@ -1267,7 +1267,7 @@ export function collectionTileMarkup(collection) {
       }).join("")}</div>`
     : `<div class="collection-folder-glyph">${FOLDER_ICON}</div>`;
   const id = escapeHtml(collection?.id || "");
-  return `<div class="collection-tile" data-gallery-card="collection" data-collection-id="${id}">
+  return `<div class="collection-tile${collection.is_favorite ? " is-favorited" : ""}" data-gallery-card="collection" data-collection-id="${id}">
     <button type="button" class="collection-tile-open" data-action="open-collection" data-collection-id="${id}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
       <span class="collection-tile-preview">${preview}</span>
       <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="collection-count" aria-label="${count} ${count === 1 ? "generation" : "generations"}">${count}</span></span>
@@ -1278,6 +1278,7 @@ export function collectionTileMarkup(collection) {
         <button type="button" class="collection-previews-button" data-action="toggle-collection-previews" data-collection-id="${id}" role="switch" aria-label="Previews for ${escapeHtml(name)}" title="Toggle previews" aria-checked="${Boolean(previewsOn)}">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4.5" y="4.5" width="15" height="15" rx="3" /><path d="M10.5 16V8h1.7a2.3 2.3 0 0 1 0 4.6h-1.7" /></svg>
         </button>
+        ${favoriteButtonMarkup(collection, "", "collection")}
         <button type="button" class="rename-collection-button" data-action="rename-collection" data-collection-id="${id}" aria-label="Rename collection ${escapeHtml(name)}" title="Rename collection">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
         </button>
@@ -1292,13 +1293,14 @@ export function collectionTileMarkup(collection) {
 export function renderCollectionBar(
   collections,
   currentCollectionId,
-  { collectionsStatus = "ready" } = {},
+  { collectionsStatus = "ready", favoritesView = false } = {},
 ) {
   const ancestors = collectionAncestors(collections, currentCollectionId);
   const crumbs = [
-    currentCollectionId
+    currentCollectionId || favoritesView
       ? '<a href="#/" data-action="open-collection" data-collection-id="">Home</a>'
       : '<span aria-current="location">Home</span>',
+    ...(favoritesView ? ['<span aria-current="location">Favorites</span>'] : []),
     ...ancestors.map((collection, index) =>
       index === ancestors.length - 1
         ? `<span aria-current="location">${escapeHtml(collection.name)}</span>`
@@ -1310,7 +1312,7 @@ export function renderCollectionBar(
   return `<nav id="collection-bar" class="collection-bar" aria-label="Collections">
     <div class="collection-crumbs">${crumbs}</div>
     <div class="collection-toolbar-actions">
-      <button type="button" class="button low new-collection-launch-button" data-action="new-collection" ${loading || atDepthCap ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}"><span class="new-collection-plus" aria-hidden="true">+</span><span class="new-collection-label">New collection</span></button>
+      <button type="button" class="button low new-collection-launch-button" data-action="new-collection" ${loading || atDepthCap || favoritesView ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}"><span class="new-collection-plus" aria-hidden="true">+</span><span class="new-collection-label">New collection</span></button>
     </div>
   </nav>`;
 }
@@ -1380,7 +1382,7 @@ export function galleryCardMarkup(generation) {
   const cancel = generation.cancel_allowed
     ? `<button type="button" class="button card-cancel-button" data-action="cancel-generation" data-generation-id="${escapeHtml(generation.id)}">Cancel</button>`
     : "";
-  return `<article class="gallery-card status-${stateClass}" data-gallery-card="generation" data-generation-id="${escapeHtml(generation.id)}">
+  return `<article class="gallery-card${generation.is_favorite ? " is-favorited" : ""} status-${stateClass}" data-gallery-card="generation" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
       ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(generationName)} image">${media}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}">${media}</div>`}
       <div class="card-hover-scrim" aria-hidden="true"></div>
@@ -1687,51 +1689,25 @@ export function photoViewerMarkup(
   </div>`;
 }
 
-export function favoriteButtonMarkup(generation, extraClasses = "") {
+export function favoriteButtonMarkup(generation, extraClasses = "", itemType = "generation") {
   const active = Boolean(generation.is_favorite);
   const label = active ? "Remove from Favorites" : "Add to Favorites";
-  return `<button type="button" class="favorite-button${extraClasses ? ` ${extraClasses}` : ""}" data-action="toggle-favorite" data-generation-id="${escapeHtml(generation.id)}" aria-label="${label}" aria-pressed="${active}" title="${label}">
+  return `<button type="button" class="favorite-button${extraClasses ? ` ${extraClasses}` : ""}" data-action="${itemType === "collection" ? "toggle-collection-favorite" : "toggle-favorite"}" data-${itemType}-id="${escapeHtml(generation.id)}" aria-label="${label}" aria-pressed="${active}" title="${label}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /></svg>
   </button>`;
 }
 
-export function favoritesMarkup(favorites, nextCursor = null, collections = []) {
-  const list = favorites.length
-    ? `<div class="favorites-list">${favorites.map((favorite) => favoriteItemMarkup(favorite, collections)).join("")}</div>`
-    : '<section class="empty-favorites"><div class="empty-favorite-heart" aria-hidden="true">♡</div><h3>No favorites yet</h3><p>Use the heart on a gallery item to save it here.</p></section>';
-  return `<div class="dialog-frame favorites-frame">
-    <header class="dialog-header"><div><h2>Favorites</h2><p>Your saved generations, visible only to you.</p></div><button type="button" class="icon-button" data-action="close-favorites" aria-label="Close Favorites">×</button></header>
-    <div class="favorites-content">${list}${nextCursor ? '<div class="favorites-load-more"><button type="button" class="button secondary" data-action="load-more-favorites">Load more</button></div>' : ""}</div>
-    <footer class="dialog-actions"><button type="button" class="button primary" data-action="close-favorites">Close</button></footer>
-  </div>`;
-}
-
-function favoriteItemMarkup(favorite, collections = []) {
-  const generation = favorite.generation;
-  const artifact = generation.display_artifact;
-  const sourceName = generationSourceName(generation);
-  const runtimeName = generationComfyuiInstanceName(generation);
-  const hasImage = artifact?.kind === "image";
-  const media = hasImage
-    ? `<button type="button" class="favorite-thumbnail-button" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View original image for ${escapeHtml(sourceName)}" title="View original image"><img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`Favorite from ${sourceName}`)}" /></button>`
-    : `<div class="favorite-placeholder"><span aria-hidden="true">◇</span><strong>No retained image</strong></div>`;
-  const recallTitle = generation.recall_warning
-    || generation.recall_unavailable_reason
-    || "Load this request into the generation panel";
-  const collectionName = generation.collection_id
-    ? collections.find((collection) => collection.id === generation.collection_id)?.name
-    : null;
-  return `<article class="favorite-item" data-favorite-id="${escapeHtml(favorite.id)}" data-generation-id="${escapeHtml(generation.id)}">
-    <div class="favorite-thumbnail">${media}</div>
-    <div class="favorite-details">
-      <div class="favorite-heading"><div><h3>${escapeHtml(sourceName)}</h3><p>${runtimeName ? `${escapeHtml(runtimeName)} · ` : ""}Generated ${escapeHtml(formatLocalDate(generation.accepted_at))} · ${escapeHtml(statusLabel(generation.status))}${collectionName ? ` · <span class="favorite-collection">${escapeHtml(collectionName)}</span>` : ""}</p></div></div>
-      <p class="favorite-prompt">${escapeHtml(favorite.final_prompt || "No prompt was retained.")}</p>
-      <div class="favorite-actions">
-        <button type="button" class="button secondary" data-action="recall-favorite" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} title="${escapeHtml(recallTitle)}">Recall</button>
-        <button type="button" class="button destructive" data-action="delete-favorite" data-generation-id="${escapeHtml(generation.id)}">Delete</button>
-      </div>
-    </div>
-  </article>`;
+export function favoritesGalleryMarkup(items, { status = "ready", message = null } = {}) {
+  const cards = items.map((item) => item.item_type === "collection"
+    ? collectionTileMarkup(item.collection)
+    : galleryCardMarkup(item.generation)).join("");
+  if (status === "loading") {
+    return `<section class="gallery-status" role="status"><h2>Loading favorites…</h2></section>${cards}`;
+  }
+  if (status === "error") {
+    return `<section class="gallery-status gallery-error" role="alert"><h2>Favorites temporarily unavailable</h2><p>${escapeHtml(message || "Favorites could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry favorites</button></section>${cards}`;
+  }
+  return cards || '<section class="empty-gallery empty-favorites"><h2>No favorites yet — tap the heart on any card or folder</h2></section>';
 }
 
 export function detailMarkup(detail) {

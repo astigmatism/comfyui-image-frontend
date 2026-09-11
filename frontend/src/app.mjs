@@ -40,8 +40,9 @@ import {
 import {
   collectionDeleteDialogMarkup,
   collectionDialogMarkup,
+  collectionTileMarkup,
   detailMarkup,
-  favoritesMarkup,
+  favoritesGalleryMarkup,
   formatGenerationEta,
   galleryCardMarkup,
   galleryMarkup,
@@ -112,9 +113,9 @@ const state = {
   generations: [],
   nextCursor: null,
   loadingMore: false,
-  favorites: [],
-  favoritesNextCursor: null,
-  loadingMoreFavorites: false,
+  favorites: { items: [], nextCursor: null },
+  favoritesView: false,
+  photoViewerDetachedGeneration: null,
   galleryScale: 45,
   services: [],
   servicesStatus: "idle",
@@ -176,6 +177,8 @@ let autoGenerateRetryContext = null;
 let preparedAutoGenerateAssistantFingerprint = null;
 let promptCompositionRequests = 0;
 let collectionNavigationToken = 0;
+let favoritesRevision = 0;
+const pendingGenerationIds = new Set();
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
 const TERMINAL_GENERATION_STATUSES = new Set([
@@ -356,12 +359,9 @@ async function handleClick(event) {
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "retry-auto-generate") retryAutoGenerate();
     else if (action === "recall") await recall(target.dataset.generationId);
-    else if (action === "recall-favorite") await recallFavorite(target.dataset.generationId);
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
-    else if (action === "delete-favorite") await deleteFavorite(target.dataset.generationId);
-    else if (action === "open-favorites") await openFavorites();
-    else if (action === "close-favorites") document.querySelector("#favorites-dialog")?.close();
-    else if (action === "load-more-favorites") await loadMoreFavorites();
+    else if (action === "toggle-collection-favorite") await toggleCollectionFavorite(target.dataset.collectionId, target);
+    else if (action === "open-favorites") openCollectionRoute("favorites");
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
@@ -1855,11 +1855,14 @@ async function logout() {
   state.servicesStatus = "idle";
   state.servicesMessage = null;
   state.generations = [];
+  pendingGenerationIds.clear();
   state.nextCursor = null;
   state.collections = [];
   state.collectionsStatus = "idle";
   state.collectionsMessage = null;
-  state.currentCollectionId = null;
+  setGalleryRoute(null);
+  state.favorites = { items: [], nextCursor: null };
+  collectionNavigationToken += 1;
   startupGalleryBoundary = null;
   state.galleryStatus = "idle";
   state.galleryMessage = null;
@@ -1909,18 +1912,18 @@ async function enterApplication() {
   state.servicesStatus = "loading";
   state.servicesMessage = null;
   state.generations = [];
+  pendingGenerationIds.clear();
   state.nextCursor = null;
   state.collections = [];
   state.collectionsStatus = "loading";
   state.collectionsMessage = null;
-  state.currentCollectionId = collectionIdFromHash();
+  setGalleryRoute(collectionIdFromHash());
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.autoGenerateCreativeDirection = false;
   resetAutoGenerateRetryState();
-  state.favorites = [];
-  state.favoritesNextCursor = null;
+  state.favorites = { items: [], nextCursor: null };
   state.checkpointTiers = {};
   checkpointTiersRevision += 1;
   state.promptAssistant = {
@@ -2166,6 +2169,7 @@ function selectedComfyuiInstance() {
 function collectionIdFromHash(hash = window.location.hash) {
   const value = String(hash || "");
   if (!value || value === "#" || value === "#/") return null;
+  if (value === "#/favorites") return "favorites";
   const match = value.match(/^#\/c\/([^/?#]+)$/u);
   if (!match) return null;
   try {
@@ -2176,7 +2180,31 @@ function collectionIdFromHash(hash = window.location.hash) {
 }
 
 function collectionRouteHash(collectionId) {
+  if (collectionId === "favorites") return "#/favorites";
   return collectionId ? `#/c/${encodeURIComponent(collectionId)}` : "#/";
+}
+
+function currentGalleryRoute() {
+  return state.favoritesView ? "favorites" : state.currentCollectionId;
+}
+
+function setGalleryRoute(route) {
+  state.favoritesView = route === "favorites";
+  state.currentCollectionId = state.favoritesView ? null : route;
+}
+
+function galleryNextCursor() {
+  return state.favoritesView ? state.favorites.nextCursor : state.nextCursor;
+}
+
+function syncFavoriteGenerations() {
+  state.generations = state.favorites.items.flatMap((item) => item.generation ? [item.generation] : []);
+}
+
+function generationBelongsToView(generation) {
+  return state.favoritesView
+    ? state.favorites.items.some((item) => item.generation?.id === generation.id)
+    : generation.collection_id === state.currentCollectionId;
 }
 
 function openCollectionRoute(collectionId) {
@@ -2200,8 +2228,13 @@ function handleCollectionHashChange() {
 
 async function navigateCollectionView(collectionId) {
   const token = ++collectionNavigationToken;
-  state.currentCollectionId = collectionId;
+  for (const generation of state.generations) {
+    if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
+  }
+  setGalleryRoute(collectionId);
+  state.favorites = { items: [], nextCursor: null };
   state.generations = [];
+  state.loadingMore = false;
   state.nextCursor = null;
   startupGalleryBoundary = null;
   state.galleryStatus = "loading";
@@ -2214,6 +2247,7 @@ async function navigateCollectionView(collectionId) {
 }
 
 async function loadCollections(signal = applicationStartupController?.signal) {
+  const revision = favoritesRevision;
   state.collectionsStatus = "loading";
   state.collectionsMessage = null;
   renderCollectionBarHost();
@@ -2224,7 +2258,14 @@ async function loadCollections(signal = applicationStartupController?.signal) {
       signal,
     });
     if (signal?.aborted) return;
+    if (revision !== favoritesRevision) return loadCollections(signal);
     state.collections = Array.isArray(collections) ? collections : [];
+    const byId = new Map(state.collections.map((item) => [item.id, item]));
+    state.favorites.items = state.favorites.items.flatMap((item) => {
+      if (!item.collection) return [item];
+      const collection = byId.get(item.collection.id);
+      return collection?.is_favorite ? [{ ...item, collection }] : [];
+    });
     state.collectionsStatus = "ready";
     state.collectionsMessage = null;
   } catch (error) {
@@ -2242,10 +2283,17 @@ function renderCollectionBarHost() {
   if (!host) return;
   host.innerHTML = renderCollectionBar(state.collections, state.currentCollectionId, {
     collectionsStatus: state.collectionsStatus,
+    favoritesView: state.favoritesView,
   });
+  document.querySelector('[data-action="open-favorites"]')?.setAttribute("aria-pressed", String(state.favoritesView));
 }
 
-function galleryPageUrl(cursor = null, collectionId = state.currentCollectionId) {
+function galleryPageUrl(cursor = null, collectionId = currentGalleryRoute()) {
+  if (collectionId === "favorites") {
+    const parameters = new URLSearchParams({ limit: "40" });
+    if (cursor) parameters.set("cursor", cursor);
+    return `/api/favorites?${parameters.toString()}`;
+  }
   const parameters = new URLSearchParams({ limit: "24" });
   if (cursor) parameters.set("cursor", cursor);
   parameters.set("collection_id", collectionId || "");
@@ -2275,7 +2323,8 @@ async function loadStartupGallery(
   signal = applicationStartupController?.signal,
   { navigationToken = collectionNavigationToken, allowFallback = true } = {},
 ) {
-  const requestCollectionId = state.currentCollectionId;
+  const requestCollectionId = currentGalleryRoute();
+  const revision = favoritesRevision;
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   renderGallery();
@@ -2288,26 +2337,33 @@ async function loadStartupGallery(
     if (
       signal?.aborted ||
       navigationToken !== collectionNavigationToken ||
-      requestCollectionId !== state.currentCollectionId
+      requestCollectionId !== currentGalleryRoute()
     )
       return;
-    const currentById = new Map(state.generations.map((item) => [item.id, item]));
-    const incoming = sortGenerationsNewestFirst(Array.isArray(page.items) ? page.items : []);
-    startupGalleryBoundary = {
-      oldest: incoming.length ? incoming[incoming.length - 1] : null,
-    };
-    state.generations = sortGenerationsNewestFirst([
-      ...state.generations,
-      ...incoming.filter((item) => !currentById.has(item.id)),
-    ]);
-    state.nextCursor = page.next_cursor;
+    if (requestCollectionId === "favorites") {
+      if (revision !== favoritesRevision) return loadStartupGallery(signal, { navigationToken, allowFallback });
+      state.favorites = { items: page.items, nextCursor: page.next_cursor };
+      syncFavoriteGenerations();
+      startupGalleryBoundary = { oldest: null };
+    } else {
+      const currentById = new Map(state.generations.map((item) => [item.id, item]));
+      const incoming = sortGenerationsNewestFirst(Array.isArray(page.items) ? page.items : []);
+      startupGalleryBoundary = {
+        oldest: incoming.length ? incoming[incoming.length - 1] : null,
+      };
+      state.generations = sortGenerationsNewestFirst([
+        ...state.generations,
+        ...incoming.filter((item) => !currentById.has(item.id)),
+      ]);
+      state.nextCursor = page.next_cursor;
+    }
     state.galleryStatus = "ready";
     state.galleryMessage = null;
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
     if (
       allowFallback &&
-      requestCollectionId &&
+      requestCollectionId && requestCollectionId !== "favorites" &&
       error.status === 404 &&
       navigationToken === collectionNavigationToken
     ) {
@@ -2324,7 +2380,7 @@ async function loadStartupGallery(
     }
     if (
       navigationToken !== collectionNavigationToken ||
-      requestCollectionId !== state.currentCollectionId
+      requestCollectionId !== currentGalleryRoute()
     )
       return;
     startupGalleryBoundary = null;
@@ -3154,6 +3210,10 @@ function autoGenerationNeedsPromptAssistant() {
   return Boolean(fingerprint && fingerprint !== preparedAutoGenerateAssistantFingerprint);
 }
 
+function hasPendingGeneration() {
+  return pendingGenerationIds.size > 0 || hasActiveGeneration(state.generations);
+}
+
 function autoGenerationReady() {
   const contract = sourceInterface(state.activeSource);
   const selected =
@@ -3171,7 +3231,7 @@ function autoGenerationReady() {
       !autoGenerateCycleRunning &&
       !promptCompositionRequests &&
       !galleryPending &&
-      !hasActiveGeneration(state.generations) &&
+      !hasPendingGeneration() &&
       !generationRequestBlocked(state, selected, contract, errors) &&
       (!assistantRequired || state.promptAssistant.available),
   );
@@ -3199,7 +3259,7 @@ async function runAutoGenerateCycle() {
       if (
         !composed ||
         !state.autoGenerate ||
-        hasActiveGeneration(state.generations) ||
+        hasPendingGeneration() ||
         autoGenerationNeedsPromptAssistant()
       )
         return;
@@ -3217,7 +3277,7 @@ async function runAutoGenerateCycle() {
         state.selectedComfyuiInstanceId !== requestComfyuiInstanceId ||
         (autoGenerationNeedsPromptAssistant() &&
           currentAutoGenerateAssistantFingerprint() !== requestAssistantFingerprint) ||
-        (queued && !hasActiveGeneration(state.generations)))
+        (queued && !hasPendingGeneration()))
     ) {
       scheduleAutoGenerate();
     }
@@ -3288,7 +3348,8 @@ async function generateSingleSource() {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    const belongsToCurrentView = generation.collection_id === state.currentCollectionId;
+    if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
+    const belongsToCurrentView = generationBelongsToView(generation);
     const current = state.generations.find((item) => item.id === generation.id);
     if (belongsToCurrentView) {
       state.generations = sortGenerationsNewestFirst([
@@ -3431,6 +3492,7 @@ async function generateSelectedCheckpoints() {
       const result = queueResults[index];
       if (result.status === "fulfilled") {
         queued.push(result.value);
+        if (!TERMINAL_GENERATION_STATUSES.has(result.value.status)) pendingGenerationIds.add(result.value.id);
         if (queueTargets[index].usesPromptAssistant) promptAssistantQueued = true;
       } else {
         failures.push(result.reason);
@@ -3438,7 +3500,7 @@ async function generateSelectedCheckpoints() {
     }
 
     const visibleQueued = queued.filter(
-      (generation) => generation.collection_id === state.currentCollectionId,
+      (generation) => generationBelongsToView(generation),
     );
     if (visibleQueued.length) {
       const queuedIds = new Set(visibleQueued.map((generation) => generation.id));
@@ -4007,17 +4069,31 @@ function validateImageMetadata(image, media) {
 function renderGallery() {
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
-  state.generations = sortGenerationsNewestFirst(state.generations);
+  if (state.favoritesView) syncFavoriteGenerations();
+  else state.generations = sortGenerationsNewestFirst(state.generations);
+  const focused = gallery.contains(document.activeElement) ? document.activeElement : null;
+  const focusedCard = focused?.closest("[data-gallery-card]");
+  const focusedIndex = focusedCard ? [...gallery.querySelectorAll("[data-gallery-card]")].indexOf(focusedCard) : -1;
   galleryHover.preserveDuring(() => {
-    gallery.innerHTML = galleryMarkup(state.generations, {
-      status: state.galleryStatus,
-      message: state.galleryMessage,
-      collections: state.collections,
-      currentCollectionId: state.currentCollectionId,
-    });
+    gallery.innerHTML = state.favoritesView
+      ? favoritesGalleryMarkup(state.favorites.items, { status: state.galleryStatus, message: state.galleryMessage })
+      : galleryMarkup(state.generations, {
+          status: state.galleryStatus,
+          message: state.galleryMessage,
+          collections: state.collections,
+          currentCollectionId: state.currentCollectionId,
+        });
   });
+  if (focused?.dataset.action) {
+    const key = focused.dataset.generationId ? "generationId" : "collectionId";
+    const replacement = [...gallery.querySelectorAll("[data-action]")].find((control) =>
+      control.dataset.action === focused.dataset.action && control.dataset[key] === focused.dataset[key]);
+    const cards = gallery.querySelectorAll("[data-gallery-card]");
+    const fallback = cards[Math.min(focusedIndex, cards.length - 1)]?.querySelector("[data-action]");
+    (replacement || fallback || document.querySelector('[data-action="open-favorites"]'))?.focus({ preventScroll: true });
+  }
   const sentinel = document.querySelector("#gallery-sentinel");
-  if (sentinel) sentinel.hidden = !state.nextCursor;
+  if (sentinel) sentinel.hidden = !galleryNextCursor();
 }
 
 function openCollectionDialog(mode, invokingControl, collectionId) {
@@ -4025,7 +4101,7 @@ function openCollectionDialog(mode, invokingControl, collectionId) {
   const collection = mode === "rename"
     ? state.collections.find((item) => item.id === collectionId) || null
     : null;
-  if (!dialog || dialog.open || (mode === "rename" && !collection)) return;
+  if (!dialog || dialog.open || (mode === "rename" && !collection) || (mode === "create" && state.favoritesView)) return;
   if (
     mode === "create" &&
     state.currentCollectionId &&
@@ -4088,6 +4164,7 @@ async function submitCollectionForm(form) {
       ...state.collections.filter((item) => item.id !== collection.id),
       collection,
     ];
+    state.favorites.items = state.favorites.items.map((item) => item.collection?.id === collection.id ? { ...item, collection } : item);
     closeCollectionDialog("saved");
     renderCollectionBarHost();
     renderGallery();
@@ -4144,6 +4221,7 @@ async function submitCollectionDelete(form) {
     submit.disabled = false;
     throw new Error(payload.error?.message || "Collection deletion failed.");
   }
+  favoritesRevision += 1;
   const subtreeIds = new Set(
     collectionSubtree(state.collections, collectionId).map((item) => item.id),
   );
@@ -4151,6 +4229,8 @@ async function submitCollectionDelete(form) {
   state.generations = state.generations.filter(
     (generation) => !subtreeIds.has(generation.collection_id),
   );
+  state.favorites.items = state.favorites.items.filter((item) =>
+    !subtreeIds.has(item.collection?.id) && !subtreeIds.has(item.generation?.collection_id));
   closeCollectionDeleteDialog("deleted");
   toast(
     response.status === 202
@@ -4158,7 +4238,7 @@ async function submitCollectionDelete(form) {
       : "Collection and its contents were deleted.",
     "success",
   );
-  openCollectionRoute(collection.parent_id || null);
+  openCollectionRoute(state.favoritesView ? "favorites" : collection.parent_id || null);
 }
 
 function closeCollectionDeleteDialog(returnValue) {
@@ -4207,7 +4287,7 @@ async function submitGenerationMove(form) {
     const index = state.generations.findIndex((item) => item.id === generationId);
     if (index >= 0) state.generations[index] = moved;
     closeMoveDialog("moved");
-    if (moved.collection_id !== state.currentCollectionId) {
+    if (!generationBelongsToView(moved)) {
       removeGalleryGeneration(generationId);
     } else {
       upsertGalleryCard(moved);
@@ -4259,6 +4339,7 @@ async function toggleCollectionPreviews(collectionId) {
   if (!collection) return;
   const next = collection.previews_enabled === false;
   collection.previews_enabled = next;
+  syncFavoriteCollection(collection);
   renderGallery();
   try {
     await api(`/api/collections/${encodeURIComponent(collectionId)}`, {
@@ -4267,12 +4348,19 @@ async function toggleCollectionPreviews(collectionId) {
     });
   } catch {
     collection.previews_enabled = !next;
+    syncFavoriteCollection(collection);
     renderGallery();
     toast("Collection preview setting could not be saved.", "error");
   }
 }
 
 function upsertGalleryCard(generation) {
+  if (state.favoritesView) {
+    if (!generationBelongsToView(generation)) return;
+    state.favorites.items = state.favorites.items.map((item) =>
+      item.generation?.id === generation.id ? { ...item, generation } : item);
+    syncFavoriteGenerations();
+  }
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
   const empty = gallery.querySelector(".empty-gallery");
@@ -4294,29 +4382,38 @@ function upsertGalleryCard(generation) {
 }
 
 async function loadMore() {
-  if (!state.nextCursor || state.loadingMore) return;
+  if (!galleryNextCursor() || state.loadingMore) return;
   state.loadingMore = true;
+  const navigationToken = collectionNavigationToken;
+  const requestRoute = currentGalleryRoute();
+  const revision = favoritesRevision;
   try {
-    const requestCollectionId = state.currentCollectionId;
-    const page = await api(galleryPageUrl(state.nextCursor, requestCollectionId));
-    if (requestCollectionId !== state.currentCollectionId) return;
-    const known = new Set(state.generations.map((item) => item.id));
-    for (const item of page.items) {
-      if (!known.has(item.id)) state.generations.push(item);
+    const page = await api(galleryPageUrl(galleryNextCursor(), requestRoute));
+    if (navigationToken !== collectionNavigationToken || requestRoute !== currentGalleryRoute()) return;
+    if (state.favoritesView) {
+      if (revision !== favoritesRevision) {
+        state.loadingMore = false;
+        return await loadMore();
+      }
+      const known = new Set(state.favorites.items.map((item) => item.id));
+      state.favorites.items.push(...page.items.filter((item) => !known.has(item.id)));
+      state.favorites.nextCursor = page.next_cursor;
+    } else {
+      const known = new Set(state.generations.map((item) => item.id));
+      state.generations.push(...page.items.filter((item) => !known.has(item.id)));
+      state.nextCursor = page.next_cursor;
     }
-    state.generations = sortGenerationsNewestFirst(state.generations);
-    state.nextCursor = page.next_cursor;
     renderGallery();
     setupPaginationObserver();
   } finally {
-    state.loadingMore = false;
+    if (navigationToken === collectionNavigationToken) state.loadingMore = false;
   }
 }
 
 function setupPaginationObserver() {
   state.observer?.disconnect();
   const sentinel = document.querySelector("#gallery-sentinel");
-  if (!sentinel || !state.nextCursor || !("IntersectionObserver" in window)) return;
+  if (!sentinel || !galleryNextCursor() || !("IntersectionObserver" in window)) return;
   state.observer = new IntersectionObserver(
     (entries) => {
       if (entries.some((entry) => entry.isIntersecting)) loadMore().catch(() => {});
@@ -4329,16 +4426,23 @@ function setupPaginationObserver() {
 async function refreshGeneration(
   id,
   {
-    insertIf = (detail) => detail.collection_id === state.currentCollectionId,
+    insertIf = (detail) => generationBelongsToView(detail),
   } = {},
 ) {
   const refreshToken = generationRefreshGate.issue(id);
+  const navigationToken = collectionNavigationToken;
   try {
     let detail = await api(`/api/generations/${id}`);
-    if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
+    if (TERMINAL_GENERATION_STATUSES.has(detail.status) && pendingGenerationIds.delete(id)) scheduleAutoGenerate();
+    if (!generationRefreshGate.isCurrent(id, refreshToken) || navigationToken !== collectionNavigationToken) return;
+    if (state.favoritesView && (!detail.is_favorite || detail.delete_pending)) {
+      state.favorites.items = state.favorites.items.filter((item) => item.generation?.id !== id);
+      renderGallery();
+      return;
+    }
     const index = state.generations.findIndex((item) => item.id === id);
     const previous = index >= 0 ? state.generations[index] : null;
-    if (detail.collection_id !== state.currentCollectionId) {
+    if (!generationBelongsToView(detail)) {
       if (index >= 0) removeGalleryGeneration(id);
       return;
     }
@@ -4356,7 +4460,7 @@ async function refreshGeneration(
       detail.display_artifact?.kind === "image";
     if (index >= 0) state.generations[index] = detail;
     else if (
-      detail.collection_id === state.currentCollectionId &&
+      generationBelongsToView(detail) &&
       insertIf(detail)
     )
       state.generations.unshift(detail);
@@ -4382,7 +4486,7 @@ async function refreshGeneration(
       renderPhotoViewer();
     }
   } catch (error) {
-    if (!generationRefreshGate.isCurrent(id, refreshToken)) return;
+    if (!generationRefreshGate.isCurrent(id, refreshToken) || navigationToken !== collectionNavigationToken) return;
     if (error.status === 404) removeGeneration(id);
   }
 }
@@ -4461,98 +4565,91 @@ function applyRecalledComfyuiInstance(recalled) {
   return recalledState.notice;
 }
 
-async function recallFavorite(id) {
-  document.querySelector("#favorites-dialog")?.close();
-  await recall(id);
+function favoriteToggleFocus(button) {
+  const focused = document.activeElement === button;
+  const route = currentGalleryRoute();
+  const card = button.closest("[data-gallery-card]");
+  const index = [...document.querySelectorAll("#gallery [data-gallery-card]")].indexOf(card);
+  const idAttribute = button.dataset.generationId ? "data-generation-id" : "data-collection-id";
+  const id = button.getAttribute(idAttribute);
+  return () => {
+    if (!focused || route !== currentGalleryRoute()) return;
+    if (button.isConnected) {
+      button.focus({ preventScroll: true });
+      return;
+    }
+    const replacement = document.querySelector(
+      `#gallery [data-action="${CSS.escape(button.dataset.action)}"][${idAttribute}="${CSS.escape(id)}"]`,
+    );
+    const cards = document.querySelectorAll("#gallery [data-gallery-card]");
+    const fallback = cards[Math.min(index, cards.length - 1)]?.querySelector("[data-action]");
+    (replacement || fallback || document.querySelector('[data-action="open-favorites"]'))?.focus({ preventScroll: true });
+  };
 }
 
 async function toggleFavorite(id, button) {
-  const generation =
-    state.generations.find((item) => item.id === id) ||
-    state.favorites.find((item) => item.generation.id === id)?.generation;
+  const generation = photoViewerGeneration(id);
   if (!generation) return;
   const wasFavorite = Boolean(generation.is_favorite);
+  const restoreFocus = favoriteToggleFocus(button);
   button.disabled = true;
   try {
+    let favorite = null;
     if (wasFavorite) {
       await api(`/api/generations/${encodeURIComponent(id)}/favorite`, { method: "DELETE" });
-      setGenerationFavorite(id, false);
-      state.favorites = state.favorites.filter((item) => item.generation.id !== id);
-      if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
-      updatePhotoViewerFavoriteControl();
-      toast("Removed from Favorites.", "success");
     } else {
-      const favorite = await api(`/api/generations/${encodeURIComponent(id)}/favorite`, {
-        method: "PUT",
-      });
-      setGenerationFavorite(id, true, favorite.generation);
-      state.favorites = [
-        favorite,
-        ...state.favorites.filter((item) => item.generation.id !== id),
-      ];
-      if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
-      updatePhotoViewerFavoriteControl();
-      toast("Added to Favorites.", "success");
+      favorite = await api(`/api/generations/${encodeURIComponent(id)}/favorite`, { method: "PUT" });
     }
+    favoritesRevision += 1;
+    generationRefreshGate.invalidate(id);
+    const updated = { ...generation, ...(favorite?.generation || {}), is_favorite: !wasFavorite };
+    state.generations = state.generations.map((item) => item.id === id ? updated : item);
+    if (state.photoViewerGenerationId === id) state.photoViewerDetachedGeneration = updated;
+    state.favorites.items = state.favorites.items.filter((item) => item.generation?.id !== id);
+    if (favorite) state.favorites.items.unshift(favorite);
+    if (state.favoritesView) renderGallery();
+    else if (state.generations.some((item) => item.id === id)) upsertGalleryCard(updated);
+    updatePhotoViewerFavoriteControl();
+    toast(wasFavorite ? "Removed from Favorites." : "Added to Favorites.", "success");
   } finally {
     if (button.isConnected) button.disabled = false;
+    restoreFocus();
   }
 }
 
-function setGenerationFavorite(id, isFavorite, summary = null) {
-  const index = state.generations.findIndex((item) => item.id === id);
-  if (index < 0) return;
-  state.generations[index] = {
-    ...state.generations[index],
-    ...(summary || {}),
-    is_favorite: isFavorite,
-  };
-  upsertGalleryCard(state.generations[index]);
+function syncFavoriteCollection(collection) {
+  state.favorites.items = state.favorites.items.map((item) => item.collection?.id === collection.id ? { ...item, collection } : item);
 }
 
-async function openFavorites() {
-  const page = await api("/api/favorites?limit=40");
-  state.favorites = page.items;
-  state.favoritesNextCursor = page.next_cursor;
-  renderFavoritesDialog();
-  const dialog = document.querySelector("#favorites-dialog");
-  if (!dialog.open) dialog.showModal();
-}
-
-function renderFavoritesDialog() {
-  const dialog = document.querySelector("#favorites-dialog");
-  if (!dialog) return;
-  dialog.innerHTML = favoritesMarkup(
-    state.favorites,
-    state.favoritesNextCursor,
-    state.collections,
-  );
-}
-
-async function loadMoreFavorites() {
-  if (!state.favoritesNextCursor || state.loadingMoreFavorites) return;
-  state.loadingMoreFavorites = true;
+async function toggleCollectionFavorite(id, button) {
+  const collection = state.collections.find((item) => item.id === id)
+    || state.favorites.items.find((item) => item.collection?.id === id)?.collection;
+  if (!collection) return;
+  const wasFavorite = Boolean(collection.is_favorite);
+  const restoreFocus = favoriteToggleFocus(button);
+  button.disabled = true;
   try {
-    const page = await api(
-      `/api/favorites?limit=40&cursor=${encodeURIComponent(state.favoritesNextCursor)}`,
-    );
-    const known = new Set(state.favorites.map((item) => item.id));
-    state.favorites.push(...page.items.filter((item) => !known.has(item.id)));
-    state.favoritesNextCursor = page.next_cursor;
-    renderFavoritesDialog();
+    let updated;
+    if (wasFavorite) {
+      await api(`/api/collections/${encodeURIComponent(id)}/favorite`, { method: "DELETE" });
+      updated = { ...collection, is_favorite: false };
+    } else {
+      updated = await api(`/api/collections/${encodeURIComponent(id)}/favorite`, { method: "PUT" });
+    }
+    favoritesRevision += 1;
+    state.collections = state.collections.map((item) => item.id === id ? updated : item);
+    state.favorites.items = state.favorites.items.filter((item) => item.collection?.id !== id);
+    if (state.favoritesView) renderGallery();
+    else {
+      const tile = document.querySelector(`#gallery .collection-tile[data-collection-id="${CSS.escape(id)}"]`);
+      if (tile) galleryHover.preserveDuring(() => { tile.outerHTML = collectionTileMarkup(updated); });
+    }
+    if (!wasFavorite && state.favoritesView) await loadStartupGallery();
+    toast(wasFavorite ? "Removed from Favorites." : "Added to Favorites.", "success");
   } finally {
-    state.loadingMoreFavorites = false;
+    if (button.isConnected) button.disabled = false;
+    restoreFocus();
   }
-}
-
-async function deleteFavorite(id) {
-  if (!window.confirm("Remove this generation from Favorites? It will remain in your generation history.")) return;
-  await api(`/api/generations/${encodeURIComponent(id)}/favorite`, { method: "DELETE" });
-  state.favorites = state.favorites.filter((item) => item.generation.id !== id);
-  setGenerationFavorite(id, false);
-  updatePhotoViewerFavoriteControl();
-  renderFavoritesDialog();
-  toast("Favorite deleted. Generation history was preserved.", "success");
 }
 
 async function openDetail(id) {
@@ -4566,7 +4663,8 @@ async function openDetail(id) {
 function photoViewerGeneration(id) {
   return (
     state.generations.find((item) => item.id === id) ||
-    state.favorites.find((item) => item.generation.id === id)?.generation ||
+    state.favorites.items.find((item) => item.generation?.id === id)?.generation ||
+    (state.photoViewerDetachedGeneration?.id === id ? state.photoViewerDetachedGeneration : null) ||
     null
   );
 }
@@ -4579,7 +4677,7 @@ function photoViewerNavigation(id) {
   const generations = photoViewerGenerations();
   const index = generations.findIndex((generation) => generation.id === id);
   return {
-    hasOlder: index >= 0 && (index < generations.length - 1 || Boolean(state.nextCursor)),
+    hasOlder: index >= 0 && (index < generations.length - 1 || Boolean(galleryNextCursor())),
     hasNewer: index > 0,
   };
 }
@@ -4630,7 +4728,7 @@ async function navigatePhotoViewer(direction) {
   let generations = photoViewerGenerations();
   let index = generations.findIndex((generation) => generation.id === state.photoViewerGenerationId);
   let target = generations[index + (direction === "older" ? 1 : -1)];
-  while (!target && direction === "older" && state.nextCursor) {
+  while (!target && direction === "older" && galleryNextCursor()) {
     await loadMore();
     generations = photoViewerGenerations();
     index = generations.findIndex((generation) => generation.id === state.photoViewerGenerationId);
@@ -4892,6 +4990,7 @@ function closePhotoViewer() {
 }
 
 function resetPhotoViewerState() {
+  state.photoViewerDetachedGeneration = null;
   if (state.photoViewerTimer) window.clearTimeout(state.photoViewerTimer);
   state.photoViewerTimer = null;
   state.photoViewerGenerationId = null;
@@ -4960,14 +5059,15 @@ async function deleteGeneration(id) {
 }
 
 function removeGeneration(id) {
+  favoritesRevision += 1;
+  pendingGenerationIds.delete(id);
   generationRefreshGate.invalidate(id);
   const closesPhotoViewer = state.photoViewerGenerationId === id;
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
-  state.favorites = state.favorites.filter((item) => item.generation.id !== id);
+  state.favorites.items = state.favorites.items.filter((item) => item.generation?.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
-  if (document.querySelector("#favorites-dialog")?.open) renderFavoritesDialog();
-  if (!state.generations.length) renderGallery();
+  if (state.favoritesView || !state.generations.length) renderGallery();
   else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
   scheduleAutoGenerate();
 }
@@ -4978,7 +5078,7 @@ function removeGalleryGeneration(id) {
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
   document.querySelector(`#gallery [data-generation-id="${CSS.escape(id)}"]`)?.remove();
-  if (!state.generations.length) renderGallery();
+  if (state.favoritesView || !state.generations.length) renderGallery();
   else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
   scheduleAutoGenerate();
 }
@@ -5033,6 +5133,7 @@ function applyGenerationProgress(event) {
   const current = state.generations[index].progress;
   if (progressUpdatedAt(progress) < progressUpdatedAt(current)) return;
   state.generations[index] = { ...state.generations[index], progress };
+  state.favorites.items = state.favorites.items.map((item) => item.generation?.id === generationId ? { ...item, generation: state.generations[index] } : item);
   const card = document.querySelector(`[data-generation-id="${CSS.escape(generationId)}"]`);
   const slot = card?.querySelector("[data-generation-progress-slot]");
   if (slot) slot.innerHTML = generationProgressMarkup(state.generations[index]);
@@ -5099,7 +5200,7 @@ function resumeLiveUpdates() {
   for (const update of latestByGeneration.values()) {
     const generationId = update.payload.generation_id;
     if (update.type === "generation.deleted") {
-      if (visibleGenerations.has(generationId)) applyLiveUpdate(update);
+      if (visibleGenerations.has(generationId) || pendingGenerationIds.has(generationId)) applyLiveUpdate(update);
       continue;
     }
     const visible = visibleGenerations.get(generationId);

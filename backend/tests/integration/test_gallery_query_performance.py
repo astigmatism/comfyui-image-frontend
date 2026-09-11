@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from app.main import create_app
-from app.models import Artifact, ArtifactState, Collection, Favorite, Generation, GenerationStatus
+from app.models import (
+    Artifact,
+    ArtifactState,
+    Collection,
+    CollectionFavorite,
+    Favorite,
+    Generation,
+    GenerationStatus,
+)
 from fastapi.testclient import TestClient
-from sqlalchemy import event, text
+from sqlalchemy import event, select, text
 from tests.conftest import change_password, create_user, login
 from tests.helpers import (
     USER_TEMP,
@@ -142,7 +150,32 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
         favorite_page_count, favorite_page_statements = _statement_count_for_favorites(
             client, str(user["id"]), 24
         )
-        assert one_favorite_count == favorite_page_count == 5
+        assert one_favorite_count == favorite_page_count == 6
+        with client.app.state.container.db.session_factory() as session:
+            collections = [
+                Collection(owner_id=str(user["id"]), name=f"Saved {i}") for i in range(24)
+            ]
+            session.add_all(collections)
+            session.flush()
+            # Pair each collection with a generation timestamp so small and large pages are mixed.
+            favorites = list(session.scalars(select(Favorite).order_by(Favorite.created_at.desc())))
+            session.add_all(
+                CollectionFavorite(
+                    owner_id=str(user["id"]),
+                    collection_id=collection.id,
+                    created_at=favorite.created_at,
+                )
+                for collection, favorite in zip(collections, favorites, strict=True)
+            )
+            session.commit()
+        mixed_small_count, mixed_small_sql = _statement_count_for_favorites(
+            client, str(user["id"]), 2
+        )
+        mixed_large_count, mixed_large_sql = _statement_count_for_favorites(
+            client, str(user["id"]), 48
+        )
+        assert mixed_small_count == mixed_large_count == 9
+        assert any("UNION ALL" in statement for statement in mixed_small_sql)
         assert other["id"] not in {
             item["id"] for item in client.get("/api/generations?limit=60").json()["items"]
         }
@@ -155,6 +188,8 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
                 *page_scoped_statements,
                 *one_favorite_statements,
                 *favorite_page_statements,
+                *mixed_small_sql,
+                *mixed_large_sql,
             ]
         ).casefold()
         for detail_only_column in (
@@ -297,3 +332,40 @@ def test_batched_gallery_summary_matches_single_item_semantics_with_artifacts_an
         assert actual_fallback.model_dump(mode="json") == expected_fallback.model_dump(mode="json")
         assert actual_fallback.display_artifact is not None
         assert actual_fallback.display_artifact.id == fallback.id
+
+
+def test_collection_list_query_count_stays_constant_with_favorites(
+    settings_factory, fake_state
+) -> None:
+    del fake_state
+    with TestClient(create_app(settings_factory(enable_background_worker=False))) as client:
+        user, _ = provision_user(client, username="collection.query.count")
+        container = client.app.state.container
+        counts = []
+        statements = []
+
+        def record(_connection, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement)
+
+        for size in (1, 24):
+            with container.db.session_factory() as session:
+                collections = [
+                    Collection(owner_id=user["id"], name=f"Folder {size}-{i}") for i in range(size)
+                ]
+                session.add_all(collections)
+                session.flush()
+                session.add_all(
+                    CollectionFavorite(owner_id=user["id"], collection_id=item.id)
+                    for item in collections
+                )
+                session.commit()
+            statements.clear()
+            event.listen(container.db.engine, "before_cursor_execute", record)
+            try:
+                with container.db.session_factory() as session:
+                    items = container.collections.list(session, owner_id=user["id"])
+                    assert all(item.is_favorite for item in items)
+            finally:
+                event.remove(container.db.engine, "before_cursor_execute", record)
+            counts.append(len(statements))
+        assert counts == [4, 4]

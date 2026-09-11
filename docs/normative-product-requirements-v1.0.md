@@ -82,7 +82,7 @@ The first release MUST NOT include:
 - A shared filesystem mount used by the application to read ComfyUI workflows.
 - Deleting ComfyUI history or unrelated/source-workflow files when application records are deleted.
 - Deleting or modifying anything in Ollama when application records are deleted.
-- Search, filtering, favorites, comments, notes, social features, or public links unless later added as a separate requirement.
+- Search, filtering, comments, notes, social features, or public links unless later added as a separate requirement. Private favorites are covered by GAL-031–GAL-034.
 - A guarantee of bit-for-bit image reproduction after workflow, model, dependency, runtime, GPU, or hardware changes.
 
 ---
@@ -511,9 +511,9 @@ The authenticated application uses a two-dimensional shell:
 
 - **GAL-001:** The gallery is the main content area of the application.
 - **GAL-002:** One accepted generation MUST produce exactly one primary gallery card, regardless of terminal status, number of progressive checkpoints, or number of final batch images.
-- **GAL-003:** Newest submissions MUST appear first.
+- **GAL-003:** Newest submissions MUST appear first in ordinary gallery views; Favorites uses the bookmark ordering in GAL-033.
 - **GAL-004:** The gallery MUST use lazy loading and cursor-based pagination or equivalent progressive loading suitable for thousands of images.
-- **GAL-005:** Search, filters, favorites, tags, and alternate gallery modes are out of scope for the first release.
+- **GAL-005:** Search, filters, tags, and alternate gallery modes other than the Favorites view remain out of scope. Private favorites, originally excluded from the first release, are now covered by GAL-031–GAL-034.
 
 ### 17.2 Scale slider
 
@@ -553,6 +553,13 @@ The card footer is intentionally minimal.
 - **GAL-028:** The detail view MUST provide the full-resolution retained artifacts, the ordered checkpoint timeline, current or terminal state, relevant user-facing error information, and deletion for the owning user.
 - **GAL-029:** Technical provenance MAY appear in a collapsed section so it does not clutter the default gallery.
 - **GAL-030:** The detail view is the appropriate place for permanent Delete and for contextual Cancel when applicable.
+
+### 17.6 Private Favorites gallery
+
+- **GAL-031:** A heart button on every generation card and collection tile MUST toggle a private binary favorite with an accessible pressed state. Favorites are the single save mechanism; there MUST NOT be separate likes or frequency counts. Favoriting a folder MUST bookmark only that folder, without favoriting its contents.
+- **GAL-032:** Favorited generation cards and collection tiles MUST show a static gold-gradient ring without hover, preserving rounded corners and visible keyboard focus. The active heart MUST retain its pink treatment.
+- **GAL-033:** The toolbar Favorites button MUST navigate to `#/favorites`, indicate its active state, and show Favorites as the current location. This view MUST reuse normal cards and tiles in a mixed grid ordered by favorite creation time descending, with favorite ID descending as a stable tie-breaker. It MUST support the gallery scale, lazy cursor loading, ordinary card/tile actions, an empty state, and immediate removal after unfavoriting.
+- **GAL-034:** Favorites MUST be owner-scoped and private, including against administrator content access. Writes MUST require CSRF protection and be idempotent. Deleting a generation, collection, or owning user MUST cascade its bookmarks; removing a bookmark MUST preserve the underlying content.
 
 ---
 

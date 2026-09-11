@@ -73,3 +73,28 @@ async def delete_collection(
             status.HTTP_204_NO_CONTENT if deleted_immediately else status.HTTP_202_ACCEPTED
         )
     )
+
+
+@router.put("/{collection_id}/favorite", response_model=Collection)
+def add_collection_favorite(
+    collection_id: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> Collection:
+    return get_container(request).collections.add_favorite(
+        session, owner_id=context.user.id, collection_id=collection_id
+    )
+
+
+@router.delete("/{collection_id}/favorite", status_code=status.HTTP_204_NO_CONTENT)
+def remove_collection_favorite(
+    collection_id: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> Response:
+    get_container(request).collections.remove_favorite(
+        session, owner_id=context.user.id, collection_id=collection_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
