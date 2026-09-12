@@ -11,10 +11,11 @@ export function selectionPlan(keys, state) {
     ? (state.favorites?.items || []).flatMap((item) => item.generation ? [item.generation] : [])
     : state.generations || [];
   const chosenFolders = collections.filter((item) => keys.has(`collection:${item.id}`));
+  const chosenCards = generations.filter((item) => keys.has(`generation:${item.id}`));
   const covered = new Set(chosenFolders.flatMap((item) => collectionSubtree(collections, item.id).map((child) => child.id)));
   const descendants = new Set(chosenFolders.flatMap((item) => collectionSubtree(collections, item.id).filter((child) => child.id !== item.id).map((child) => child.id)));
   const folders = chosenFolders.filter((item) => !descendants.has(item.id));
-  const cards = generations.filter((item) => keys.has(`generation:${item.id}`) && !covered.has(item.collection_id));
+  const cards = chosenCards.filter((item) => !covered.has(item.collection_id));
   const folderContents = collections.filter((item) => covered.has(item.id));
   return {
     generation_ids: cards.map((item) => item.id),
@@ -22,6 +23,14 @@ export function selectionPlan(keys, state) {
     cards,
     folders,
     covered,
+    favorites: {
+      generation_ids: chosenCards.map((item) => item.id),
+      collection_ids: chosenFolders.map((item) => item.id),
+      count: chosenCards.length + chosenFolders.length,
+      allFavorited: [...chosenCards, ...chosenFolders].every((item) => item.is_favorite),
+    },
+    downloadable: cards.some((item) => item.image_count > 0 || item.display_artifact?.content_url)
+      || folderContents.some((item) => item.generation_count > 0),
     count: cards.length + folders.length,
     generationCount: cards.length + folderContents.reduce((sum, item) => sum + (Number(item.generation_count) || 0), 0),
     active: cards.some((item) => !terminal.has(item.status)) || folders.some((item) => Number(item.remaining_count) > 0),
@@ -98,11 +107,14 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     const host = root.querySelector("#gallery-selection-toolbar");
     if (!host) return;
     host.hidden = !selecting;
+    host.setAttribute("aria-busy", String(busy));
     const focusedAction = host.contains(document.activeElement) ? document.activeElement.dataset.bulkAction : null;
     const plan = selectionPlan(selected, state);
     const all = visibleCards.length > 0 && selected.size === visibleCards.length;
     host.innerHTML = `<span class="selection-count" role="status" aria-label="${selected.size} selected" title="${escapeHtml(plan.summary)}">${selected.size}<span class="selection-count-label"> selected</span></span>
       <button type="button" class="button low selection-tool" data-bulk-action="all" aria-label="Select loaded (${visibleCards.length})" title="Select all ${visibleCards.length} loaded items" ${all || !visibleCards.length || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="14" height="14" rx="2" /><path d="M16 3H5a2 2 0 0 0-2 2v11m8-2 2 2 4-4" /></svg></button>
+      <button type="button" class="button low selection-tool" data-bulk-action="favorite" aria-label="Add to Favorites" title="${plan.favorites.allFavorited ? "All selected items are already favorites" : "Add selected image and folder cards to Favorites"}" ${!plan.favorites.count || plan.favorites.allFavorited || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" /></svg></button>
+      <button type="button" class="button low selection-tool" data-bulk-action="download" aria-label="Download selection" title="Download all available images, including folder contents, as a ZIP" ${!plan.downloadable || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="transfer" aria-label="Move / Copy…" title="Move or copy selected items" ${!plan.count || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v11H3Z" /><path d="M13 17v-5m-3 3 3-3 3 3" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="delete" aria-label="Delete…" title="Delete selected items" ${!plan.count || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="clear" aria-label="Clear selection" title="Clear selection (Esc)" ${busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M6 18 18 6" /></svg></button>`;
@@ -130,6 +142,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   }
 
   function finish() {
+    if (busy) return;
     selecting = false; selected.clear(); sync();
     const card = cards().find((item) => keyFor(item) === anchor) || cards()[0];
     card?.querySelector(".card-select-button")?.focus({ preventScroll: true });
@@ -209,6 +222,45 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     }
   }
 
+  async function performToolbarAction(operation) {
+    if (busy) return;
+    const plan = selectionPlan(selected, getState());
+    if (operation === "favorite" ? !plan.favorites.count || plan.favorites.allFavorited : !plan.downloadable) return;
+    const selection = operation === "favorite" ? plan.favorites : plan;
+    const body = JSON.stringify({ generation_ids: selection.generation_ids, collection_ids: selection.collection_ids });
+    busy = true;
+    sync();
+    let succeeded = false;
+    try {
+      if (operation === "download") {
+        const blob = await api("/api/gallery/download", { method: "POST", body, responseType: "blob" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "gallery-selection.zip";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        notify("Selection download started.", "success");
+      } else {
+        const result = await api("/api/gallery/favorite", { method: "POST", body });
+        succeeded = true;
+        await refresh({ operation, plan, result });
+        notify(`Added ${plural(plan.favorites.count, "item")} to Favorites.`, "success");
+      }
+    } catch (error) {
+      notify(succeeded ? "Favorites were saved, but the gallery could not refresh. Reload to see them." : error.message || "The operation could not be completed.", "error");
+    } finally {
+      busy = false;
+      sync();
+      if (selecting) {
+        const button = root.querySelector(`#gallery-selection-toolbar [data-bulk-action="${operation}"]`);
+        (button && !button.disabled ? button : root.querySelector('#gallery-selection-toolbar [data-bulk-action="clear"]'))?.focus({ preventScroll: true });
+      }
+    }
+  }
+
   root.addEventListener("click", (event) => {
     const action = event.target.closest("[data-bulk-action]")?.dataset.bulkAction;
     const card = event.target.closest("#gallery [data-gallery-card]");
@@ -221,6 +273,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     if (action === "all") { cards().forEach((item) => selected.add(keyFor(item))); sync(); }
     else if (action === "clear") finish();
     else if (action === "transfer" || action === "delete") openDialog(action);
+    else if (action === "favorite" || action === "download") void performToolbarAction(action);
     else if (action === "close") activeDialog()?.close();
     else void perform(action);
   }, true);
@@ -228,7 +281,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     if (event.target.name === "bulk_collection_id") updateTransferControls();
   });
   root.addEventListener("keydown", (event) => {
-    if (!selecting || activeDialog() || event.target.closest("input, textarea, select, [contenteditable=true]")) return;
+    if (!selecting || busy || activeDialog() || event.target.closest("input, textarea, select, [contenteditable=true]")) return;
     if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finish(); }
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
       event.preventDefault(); cards().forEach((item) => selected.add(keyFor(item))); sync();

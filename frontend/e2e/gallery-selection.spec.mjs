@@ -23,7 +23,17 @@ async function mountSelection(page) {
       hover.preserveDuring(() => { root.querySelector("#gallery").innerHTML = galleryMarkup(state.generations, { collections: state.collections }); });
     };
     window.redrawSelectionFixture();
-    bindGallerySelection(root, { getState: () => state, refresh: async () => {}, notify: () => {} });
+    window.selectionNotices = [];
+    bindGallerySelection(root, {
+      getState: () => state,
+      refresh: async ({ operation, result }) => {
+        if (operation !== "favorite") return;
+        for (const item of state.generations) if (result.generation_ids.includes(item.id)) item.is_favorite = true;
+        for (const item of state.collections) if (result.collection_ids.includes(item.id)) item.is_favorite = true;
+        window.redrawSelectionFixture();
+      },
+      notify: (message, kind) => window.selectionNotices.push({ message, kind }),
+    });
     root.querySelector("#gallery").style.setProperty("--gallery-card-min", "220px");
   });
 }
@@ -117,7 +127,71 @@ test("move and copy share the destination picker and preserve selection on a rej
   await expect(deletion).toContainText("including nested folders");
 });
 
-for (const width of [320, 390, 850, 1024]) test(`selection toolbar and both destination buttons fit ${width}px`, async ({ page }) => {
+test("bulk favorites preserve existing favorites and selection for a ZIP download", async ({ page }) => {
+  await mountSelection(page);
+  const folder = page.getByRole("checkbox", { name: "Select collection Studies" });
+  await folder.focus(); await folder.press("Space");
+  for (const id of ["g0", "g1"]) await page.locator(`[data-generation-id="${id}"] .card-select-button`).click();
+  let payload;
+  await page.route("**/api/gallery/favorite", async (route) => {
+    payload = route.request().postDataJSON();
+    await route.fulfill({ json: payload });
+  });
+  const favorite = page.getByRole("button", { name: "Add to Favorites", exact: true });
+  await favorite.click();
+  await expect(favorite).toBeDisabled();
+  expect(payload).toEqual({ generation_ids: ["g0", "g1"], collection_ids: ["folder"] });
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("3 selected");
+  for (const id of ["g0", "g1"]) await expect(page.locator(`[data-gallery-card="generation"][data-generation-id="${id}"]`)).toHaveClass(/is-favorited/);
+  await expect(page.locator('[data-gallery-card="collection"][data-collection-id="folder"]')).toHaveClass(/is-favorited/);
+  await page.route("**/api/gallery/download", async (route) => {
+    expect(route.request().postDataJSON()).toEqual(payload);
+    await route.fulfill({ contentType: "application/zip", body: Buffer.from("PK\x05\x06" + "\x00".repeat(18)) });
+  });
+  const downloaded = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download selection", exact: true }).click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe("gallery-selection.zip");
+  expect(await download.failure()).toBeNull();
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("3 selected");
+  await page.getByRole("button", { name: "Clear selection", exact: true }).click();
+  await expect(page.locator('[data-generation-id="g0"] .favorite-button')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-generation-id="g0"] .download-button')).toHaveAttribute("download", "");
+});
+
+for (const action of ["favorite", "download"]) test(`failed bulk ${action} preserves selection and allows retry`, async ({ page }) => {
+  await mountSelection(page);
+  const checkbox = page.locator('[data-generation-id="g0"] .card-select-button');
+  await checkbox.focus(); await checkbox.press("Space");
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  await page.route(`**/api/gallery/${action}`, async (route) => {
+    await pending;
+    await route.fulfill({ status: 503, json: { error: { message: "Please retry this selection." } } });
+  });
+  const button = page.locator(`#gallery-selection-toolbar [data-bulk-action="${action}"]`);
+  await button.click();
+  await expect(page.locator("#gallery-selection-toolbar")).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("button", { name: "Clear selection", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ControlOrMeta+a");
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("1 selected");
+  release();
+  await expect(button).toBeEnabled();
+  await expect(button).toBeFocused();
+  await expect(checkbox).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => page.evaluate(() => window.selectionNotices)).toEqual([{ message: "Please retry this selection.", kind: "error" }]);
+});
+
+test("an empty folder can be favorited but has nothing to download", async ({ page }) => {
+  await mountSelection(page);
+  const checkbox = page.getByRole("checkbox", { name: "Select collection Archive" });
+  await checkbox.focus(); await checkbox.press("Space");
+  await expect(page.getByRole("button", { name: "Download selection", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add to Favorites", exact: true })).toBeEnabled();
+});
+
+for (const width of [320, 390, 801, 850, 1000, 1024, 1201, 1440]) test(`selection toolbar and both destination buttons fit ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 844 });
   await mountSelection(page);
   const headerBefore = await page.locator(".topbar").boundingBox();
@@ -126,12 +200,18 @@ for (const width of [320, 390, 850, 1024]) test(`selection toolbar and both dest
   expect((await page.locator(".topbar").boundingBox()).height).toBe(headerBefore.height);
   await expect(page.getByRole("button", { name: "Favorites", exact: true })).toBeVisible();
   await expect(page.getByRole("slider", { name: "Gallery scale" })).toBeVisible();
-  for (const button of await page.locator('#gallery-selection-toolbar button, .favorites-launch-button, #gallery-scale, .account-menu > summary').all()) {
+  await page.evaluate(async () => {
+    const base = document.querySelector('script[type="module"]').src;
+    const { generationActivityMarkup } = await import(new URL("./render.mjs", base));
+    document.querySelector("#generation-activity-host").innerHTML = generationActivityMarkup({ autoGenerate: true, submitting: true });
+  });
+  for (const button of await page.locator('#gallery-selection-toolbar button, .favorites-launch-button, #gallery-scale, .generation-activity, .account-menu > summary').all()) {
     await expect(button).toBeInViewport();
     const bounds = await button.boundingBox();
     expect(bounds.x).toBeGreaterThanOrEqual(0);
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
   }
+  await page.screenshot({ path: test.info().outputPath(`selection-toolbar-${width}.png`) });
   await page.getByRole("button", { name: "Move / Copy…" }).click();
   const dialog = page.locator("#gallery-transfer-dialog");
   await expect(dialog.getByRole("button", { name: "Copy here" })).toBeInViewport();

@@ -3584,6 +3584,18 @@ test("mixed selection copies independently, moves originals, and deletes only th
   }
 
   await selectPair(source.id, outside.id);
+  await page.getByRole("button", { name: "Add to Favorites", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Add to Favorites", exact: true })).toBeDisabled();
+  await expect(folderCard(source.id)).toHaveClass(/is-favorited/);
+  await expect(imageCard(outside.id)).toHaveClass(/is-favorited/);
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("2 selected");
+  expect((await (await page.request.get(`/api/generations/${inside.id}`)).json()).is_favorite).toBe(false);
+  const downloaded = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download selection", exact: true }).click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe("gallery-selection.zip");
+  expect(await download.failure()).toBeNull();
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("2 selected");
   const copied = await transferSelection("Copy");
   expect(copied.generation_ids).toHaveLength(2);
   expect(copied.collection_ids).toHaveLength(1);

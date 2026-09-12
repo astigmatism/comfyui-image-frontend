@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from functools import partial
+from io import BytesIO
+from pathlib import PurePosixPath
+from tempfile import NamedTemporaryFile
+from zipfile import ZipFile
+
 import pytest
 from app.main import create_app
 from app.models import Artifact, Generation
@@ -36,6 +42,142 @@ def transfer(client, operation, generations=(), collections=(), destination=None
             "collection_id": destination,
         },
     )
+
+
+def test_bulk_favorites_bookmark_explicit_cards_without_recursing(settings_factory, fake_state):
+    del fake_state
+    with TestClient(create_app(settings_factory())) as client:
+        provision_user(client)
+        parent = folder(client, "Studies")
+        child = folder(client, "Winter", parent["id"])
+        unselected = folder(client, "Summer", parent["id"])
+        selected_image = create_generation(client, "selected favorite")
+        other_image = create_generation(client, "not a favorite")
+        for image in (selected_image, other_image):
+            assert (
+                transfer(client, "move", [image["id"]], destination=child["id"]).status_code == 200
+            )
+        payload = {
+            "generation_ids": [selected_image["id"], selected_image["id"]],
+            "collection_ids": [parent["id"], child["id"]],
+        }
+        for _ in range(2):
+            response = client.post(
+                "/api/gallery/favorite", headers={"X-CSRF-Token": csrf(client)}, json=payload
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["generation_ids"] == [selected_image["id"]]
+            assert response.json()["collection_ids"] == [parent["id"], child["id"]]
+        favorites = client.get("/api/favorites").json()["items"]
+        assert len(favorites) == 3
+        assert client.get(f"/api/generations/{selected_image['id']}").json()["is_favorite"]
+        assert not client.get(f"/api/generations/{other_image['id']}").json()["is_favorite"]
+        collections = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert collections[parent["id"]]["is_favorite"]
+        assert collections[child["id"]]["is_favorite"]
+        assert not collections[unselected["id"]]["is_favorite"]
+
+
+def test_bulk_download_includes_nested_batches_once_and_cleans_up(
+    settings_factory, fake_state, monkeypatch, tmp_path
+):
+    del fake_state
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(
+        "app.services.gallery.NamedTemporaryFile", partial(NamedTemporaryFile, dir=downloads)
+    )
+    app = create_app(settings_factory(enable_background_worker=True))
+    with TestClient(app) as client:
+        provision_user(client)
+        parent = folder(client, "Studies")
+        child = folder(client, "Winter", parent["id"])
+        batch = create_generation(client, "multi image download")
+        batch_detail = wait_for_status(client, batch["id"], "succeeded")
+        outside = create_generation(client, "outside download")
+        outside_detail = wait_for_status(client, outside["id"], "succeeded")
+        assert transfer(client, "move", [batch["id"]], destination=child["id"]).status_code == 200
+        payload = {
+            "generation_ids": [batch["id"], outside["id"]],
+            "collection_ids": [parent["id"], child["id"]],
+        }
+        response = client.post(
+            "/api/gallery/download", headers={"X-CSRF-Token": csrf(client)}, json=payload
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "application/zip"
+        assert 'filename="gallery-selection.zip"' in response.headers["content-disposition"]
+        expected = [
+            item
+            for detail in (batch_detail, outside_detail)
+            for item in detail["artifacts"]
+            if item["kind"] == "image"
+        ]
+        assert batch_detail["image_count"] == 2
+        with ZipFile(BytesIO(response.content)) as archive:
+            names = archive.namelist()
+            assert len(names) == len(set(names)) == len(expected)
+            for artifact in expected:
+                name = next(name for name in names if f"image-{artifact['id']}." in name)
+                assert archive.read(name) == client.get(artifact["content_url"]).content
+                assert not PurePosixPath(name).is_absolute()
+                assert ".." not in PurePosixPath(name).parts
+            assert any(
+                name.startswith(f"Studies-{parent['id']}/Winter-{child['id']}/") for name in names
+            )
+            assert any(name.startswith(f"generation-{outside['id']}/") for name in names)
+        assert not list(downloads.iterdir())
+
+        def fail_write(*args, **kwargs):
+            raise OSError("simulated full disk")
+
+        monkeypatch.setattr("app.services.gallery.ZipFile.write", fail_write)
+        with pytest.raises(OSError, match="simulated full disk"):
+            client.post(
+                "/api/gallery/download", headers={"X-CSRF-Token": csrf(client)}, json=payload
+            )
+        assert not list(downloads.iterdir())
+
+
+@pytest.mark.parametrize("operation", ["favorite", "download"])
+def test_favorite_and_download_validate_ownership_and_csrf(settings_factory, fake_state, operation):
+    del fake_state
+    with TestClient(create_app(settings_factory())) as client:
+        _, owner_cookie = provision_user(client)
+        image = create_generation(client, "private image")
+        private_folder = folder(client, "Private")
+        headers = {"X-CSRF-Token": csrf(client)}
+        path = f"/api/gallery/{operation}"
+        assert client.post(path, json={"generation_ids": [image["id"]]}).status_code == 403
+        assert client.post(path, headers=headers, json={}).status_code == 422
+        assert (
+            client.post(
+                path, headers=headers, json={"generation_ids": [image["id"], "missing"]}
+            ).status_code
+            == 404
+        )
+        assert not client.get(f"/api/generations/{image['id']}").json()["is_favorite"]
+        if operation == "download":
+            for payload in (
+                {"generation_ids": [image["id"]]},
+                {"collection_ids": [private_folder["id"]]},
+            ):
+                response = client.post(path, headers=headers, json=payload)
+                assert response.status_code == 409
+                assert response.json()["error"]["code"] == "download_empty"
+        login_ready_admin(client)
+        admin_folder = folder(client, "Admin")
+        for payload in (
+            {"collection_ids": [admin_folder["id"], private_folder["id"]]},
+            {"collection_ids": [admin_folder["id"]], "generation_ids": [image["id"]]},
+        ):
+            assert (
+                client.post(path, headers={"X-CSRF-Token": csrf(client)}, json=payload).status_code
+                == 404
+            )
+        assert not client.get("/api/collections").json()[0]["is_favorite"]
+        restore_cookie(client, owner_cookie)
+        assert not client.get(f"/api/generations/{image['id']}").json()["is_favorite"]
 
 
 def test_copies_have_independent_artifacts_and_survive_deleting_original(

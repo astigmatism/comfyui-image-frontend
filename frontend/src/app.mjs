@@ -289,6 +289,21 @@ function bindDelegatedEvents() {
 }
 
 async function refreshAfterGalleryOperation({ operation, plan, result, destination }) {
+  if (operation === "favorite") {
+    favoritesRevision += 1;
+    const generations = new Set(result.generation_ids);
+    const collections = new Set(result.collection_ids);
+    for (const id of generations) generationRefreshGate.invalidate(id);
+    const updateGeneration = (item) => item && generations.has(item.id) ? { ...item, is_favorite: true } : item;
+    const updateCollection = (item) => item && collections.has(item.id) ? { ...item, is_favorite: true } : item;
+    state.generations = state.generations.map(updateGeneration);
+    state.collections = state.collections.map(updateCollection);
+    state.favorites.items = state.favorites.items.map((item) => ({ ...item, generation: updateGeneration(item.generation), collection: updateCollection(item.collection) }));
+    state.photoViewerDetachedGeneration = updateGeneration(state.photoViewerDetachedGeneration);
+    renderGallery();
+    updatePhotoViewerFavoriteControl();
+    return;
+  }
   if (operation === "move") {
     const ids = new Set(result.generation_ids);
     state.generations = state.generations.map((item) => ids.has(item.id) ? { ...item, collection_id: destination } : item);

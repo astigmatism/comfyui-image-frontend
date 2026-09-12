@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
+from zipfile import ZIP_STORED, ZipFile
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..errors import AppError
@@ -71,6 +76,109 @@ class GalleryService:
             roots=roots,
             levels=trees,
         )
+
+    def favorite(
+        self, session: Session, *, owner_id: str, payload: GallerySelection
+    ) -> GallerySelection:
+        # Favorites bookmark the explicitly selected cards, including a child
+        # selected alongside its parent. They do not recurse into folder contents.
+        for item in payload.generation_ids:
+            self.generations.get_owned(session, owner_id, item)
+        for item in payload.collection_ids:
+            self.collections.get_owned(session, owner_id, item)
+        for attempt in range(2):
+            additions: list[Favorite | CollectionFavorite] = []
+            for model, column, ids in (
+                (Favorite, Favorite.generation_id, payload.generation_ids),
+                (CollectionFavorite, CollectionFavorite.collection_id, payload.collection_ids),
+            ):
+                existing = set(
+                    session.scalars(
+                        select(column).where(model.owner_id == owner_id, column.in_(ids))
+                    )
+                )
+                additions.extend(
+                    model(owner_id=owner_id, **{column.key: item})
+                    for item in ids
+                    if item not in existing
+                )
+            session.add_all(additions)
+            try:
+                session.commit()
+                return payload
+            except IntegrityError:
+                session.rollback()
+                if attempt:
+                    raise
+        raise AssertionError("Unreachable favorite retry")
+
+    def download(self, session: Session, *, owner_id: str, payload: GallerySelection) -> Path:
+        chosen = self.selection(session, owner_id, payload)
+        contents = list(
+            session.scalars(
+                select(Generation).where(
+                    Generation.owner_id == owner_id,
+                    Generation.collection_id.in_(chosen.subtree_ids),
+                )
+            )
+        )
+        sources = {item.id: item for item in [*chosen.generations, *contents]}
+        artifacts = list(
+            session.scalars(
+                select(Artifact)
+                .where(
+                    Artifact.owner_id == owner_id,
+                    Artifact.generation_id.in_(sources),
+                    Artifact.kind == "image",
+                )
+                .order_by(
+                    Artifact.generation_id, Artifact.sequence, Artifact.batch_index, Artifact.id
+                )
+            )
+        )
+        if not artifacts:
+            raise AppError(
+                "download_empty",
+                "No images are available to download in this selection.",
+                status_code=409,
+            )
+        folders = {
+            item.id: item
+            for item in session.scalars(
+                select(Collection).where(
+                    Collection.owner_id == owner_id, Collection.id.in_(chosen.subtree_ids)
+                )
+            )
+        }
+        folder_paths: dict[str, Path] = {}
+        for root in chosen.roots:
+            for level in chosen.levels[root.id]:
+                for item_id in level:
+                    folder = folders[item_id]
+                    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", folder.name)[:80].strip(" .")
+                    folder_paths[item_id] = folder_paths.get(folder.parent_id or "", Path()) / (
+                        f"{name or 'Collection'}-{folder.id}"
+                    )
+        with NamedTemporaryFile(prefix="gallery-download-", suffix=".zip", delete=False) as temp:
+            path = Path(temp.name)
+        try:
+            # Image formats are already compressed. Build on disk so large folder
+            # downloads do not require holding their contents in server memory.
+            with ZipFile(path, "w", compression=ZIP_STORED) as archive:
+                for artifact in artifacts:
+                    source = self.assets.open(artifact.storage_path)
+                    generation = sources[artifact.generation_id]
+                    directory = folder_paths.get(generation.collection_id or "", Path())
+                    archive_name = (
+                        directory
+                        / f"generation-{generation.id}"
+                        / (f"image-{artifact.id}{source.suffix}")
+                    )
+                    archive.write(source, arcname=archive_name.as_posix())
+            return path
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
 
     def transfer(
         self, session: Session, *, owner_id: str, payload: GalleryTransfer

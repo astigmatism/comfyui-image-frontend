@@ -24,10 +24,12 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
 
 1. Hover an image or folder and click the checkbox in its lower-right toolkit. It appears
    with the existing tools after the hover delay (or keyboard focus). Touch screens keep the
-   existing toolkit available. Selection reveals checkboxes on every card. A small count and four
+   existing toolkit available. Selection reveals checkboxes on every card. A small count and six
    outlined icons replace the collection breadcrumb in the normal-height title bar; Favorites,
-   gallery scale, activity and account controls stay available. The icons select loaded items,
-   open Move / Copy, open Delete, and clear the selection. Hover for their labels. The toolbar
+   gallery scale, activity and account controls stay available. On narrow screens, selection actions
+   use the second title-bar row and the other controls share the first row with the panel toggle.
+   The icons select loaded items, add Favorites, download a ZIP, open Move / Copy, open Delete,
+   and clear the selection. Hover for their labels. The toolbar
    fades and slides in over 190ms on the first selection, respecting reduced-motion preferences.
 2. Click more cards, Shift-click a range, or use **Select loaded** / Cmd/Ctrl+A. Newly arriving
    cards remain unselected. **Clear selection** (the × icon), Escape, or deselecting the last item exits
@@ -39,6 +41,12 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
 4. Choose **Delete…** to inspect the confirmation. It shows the affected generation count and
    warns when folder contents or active generations are included. Confirming permanently deletes
    this sample content. A failed operation keeps the selection available for retry.
+5. Choose **Add to Favorites** (the heart icon) to bookmark all selected cards. Selected folders
+   are bookmarked themselves; their unselected contents are not favorited. Existing favorites
+   remain set, and the action is disabled when every selected card is already a favorite.
+6. Choose **Download selection** (the down arrow) to save one ZIP containing every available image
+   from selected cards and folders, including batches and nested folders. Overlapping selections
+   appear once. Both Favorites and Download keep the selection so you can use another action next.
 
 Blue checks and outlines identify selected cards; existing gold favorite indicators remain
 distinct. Selection is limited to the currently loaded cards, rather than implicitly including
@@ -63,6 +71,7 @@ CIF_E2E_PORT=8766 npx playwright test e2e/gallery-selection.spec.mjs e2e/gallery
 ```
 
 The alternate browser-test port avoids the live preview on 8765. The new backend tests cover
-ownership, overlapping selections, independent copied files and recall, rollback, nesting limits
-and recursive deletion. Browser coverage includes keyboard selection, incoming cards, failed
-operations, shared destination controls and toolbar/modal bounds at 320–1024px.
+ownership, overlapping selections, independent copied files and recall, rollback, nesting limits,
+recursive deletion, explicit favorites, ZIP contents and temporary-file cleanup. Browser coverage
+includes keyboard selection, incoming cards, failed operations, bulk favorites and downloads,
+shared destination controls and toolbar/modal bounds at 320–1440px with generation activity visible.

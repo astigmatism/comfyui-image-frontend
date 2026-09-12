@@ -353,6 +353,8 @@ them. They resolve only to current validated publications and do not restore leg
 | `POST` | `/api/generations/{id}/move` | Move an owned generation to a collection or to unfiled root |
 | `POST` | `/api/gallery/transfer` | Move or copy a mixed selection of generations and collection subtrees |
 | `POST` | `/api/gallery/delete` | Delete a mixed selection using the existing cancellation and cleanup lifecycle |
+| `POST` | `/api/gallery/favorite` | Add explicitly selected image and folder cards to Favorites |
+| `POST` | `/api/gallery/download` | Download selected images and recursive folder contents as one ZIP |
 
 Collections are returned as a flat `created_at, id` ordered list; clients construct the tree from
 `parent_id`. Names are trimmed and must contain 1–100 characters. Duplicate sibling names are
@@ -383,10 +385,11 @@ consumers.
 
 ### Bulk selection operations
 
-Both gallery endpoints require a ready authenticated user and `X-CSRF-Token`. The selection
+All gallery endpoints require a ready authenticated user and `X-CSRF-Token`. The selection
 contains `generation_ids` and `collection_ids` arrays, with at least one ID and at most 500
 explicitly selected IDs in total. Repeated IDs are deduplicated. Every ID is checked for ownership
-before any mutation; inaccessible IDs return 404, including for administrators. A selected folder
+before any mutation or download; inaccessible IDs return 404, including for administrators.
+For transfer, delete, and download, a selected folder
 subsumes its descendants and separately selected generations inside it, so overlapping Favorites
 selections affect each item once.
 
@@ -407,6 +410,19 @@ generations. Transfers commit once; a failed copy rolls back new rows and remove
 Failed items include a safe `message`; clients retain those items for retry. Pending items have
 entered the existing active-generation cancellation/deletion lifecycle. Deletion is permanent
 and applies to whole generation cards (all their images), including all contents of selected folders.
+
+`POST /api/gallery/favorite` bookmarks each explicitly selected image or folder card, including
+children selected alongside a parent. It does not favorite unselected folder contents. Existing
+favorites remain set. The operation commits once and returns the deduplicated `generation_ids`
+and `collection_ids` with status 200.
+
+`POST /api/gallery/download` returns `application/zip` with attachment filename
+`gallery-selection.zip`. The archive contains all currently stored image outputs, including every
+batch image and nested folder contents, with overlapping selections included once. Folder paths
+use sanitized names and IDs; generation and artifact IDs prevent filename collisions. Cards without
+images contribute no files; a selection with no images returns 409 `download_empty`. Active
+generations contribute only images already available. The archive is built on disk and the temporary
+file is removed after the response or if archive creation fails.
 
 ## Generation summaries and detail
 

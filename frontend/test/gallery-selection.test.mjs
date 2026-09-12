@@ -21,6 +21,19 @@ test("mixed favorite selection processes a folder and its descendants once", () 
   assert.deepEqual(plan.generation_ids, ["outside"]);
   assert.equal(plan.generationCount, 6);
   assert.equal(plan.count, 2);
+  assert.deepEqual(plan.favorites.collection_ids, ["parent", "child"]);
+  assert.deepEqual(plan.favorites.generation_ids, ["inside", "outside"]);
+  assert.equal(plan.favorites.count, 4);
+  assert.equal(plan.downloadable, true);
+});
+
+test("favorites remain set and only selections with available content enable downloads", () => {
+  const state = { collections, generations: [{ ...generations[0], is_favorite: true, image_count: 0 }] };
+  const plan = selectionPlan(new Set(["generation:inside"]), state);
+  assert.equal(plan.favorites.allFavorited, true);
+  assert.equal(plan.downloadable, false);
+  assert.equal(selectionPlan(new Set(["collection:other"]), state).downloadable, false);
+  assert.equal(selectionPlan(new Set(["collection:parent", "generation:inside"]), state).favorites.allFavorited, false);
 });
 
 test("destination dialog supports both operations and excludes selected subtree", () => {

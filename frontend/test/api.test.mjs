@@ -10,6 +10,23 @@ function jsonResponse(payload, init = {}) {
   });
 }
 
+test("blob downloads retain CSRF headers and surface JSON errors instead of downloading them", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; setCsrfToken(null); });
+  setCsrfToken("download-token");
+  globalThis.fetch = async (_path, options) => {
+    assert.equal(options.headers.get("X-CSRF-Token"), "download-token");
+    assert.equal(options.responseType, undefined);
+    return new Response("zip bytes", { headers: { "content-type": "application/zip" } });
+  };
+  const options = { method: "POST", body: JSON.stringify({ generation_ids: ["g"] }), responseType: "blob" };
+  const result = await api("/api/gallery/download", options);
+  assert.equal(result.type, "application/zip");
+  assert.equal(await result.text(), "zip bytes");
+  globalThis.fetch = async () => jsonResponse({ error: { code: "download_empty", message: "No images are available." } }, { status: 409 });
+  await assert.rejects(api("/api/gallery/download", options), { code: "download_empty", message: "No images are available." });
+});
+
 function stalledJsonResponse(signal, { abortDelayMs = 0 } = {}) {
   const encoder = new TextEncoder();
   return new Response(

@@ -24,6 +24,7 @@ export async function api(path, options = {}) {
   const {
     deadlineMs,
     operation = "Request",
+    responseType = "json",
     signal: callerSignal,
     method: requestedMethod = "GET",
     ...fetchOptions
@@ -52,6 +53,7 @@ export async function api(path, options = {}) {
       signal: deadline.signal,
     });
     if (response.status === 204) return null;
+    if (response.ok && responseType === "blob") return await response.blob();
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : null;
     if (response.ok) return payload;
