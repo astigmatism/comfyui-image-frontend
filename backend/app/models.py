@@ -299,11 +299,44 @@ class Collection(Base):
     )
 
 
+class GenerationRun(Base):
+    __tablename__ = "generation_runs"
+    __table_args__ = (Index("ix_generation_runs_owner_created", "owner_id", "created_at", "id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    submission_failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_succeeded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_cancelled_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class GenerationRunMember(Base):
+    __tablename__ = "generation_run_members"
+
+    generation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generations.id", ondelete="CASCADE"), primary_key=True
+    )
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generation_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+
 class Generation(Base):
     __tablename__ = "generations"
     __table_args__ = (
         Index("ix_generations_owner_created", "owner_id", "accepted_at", "id"),
         Index("ix_generations_queue", "status", "queue_seq"),
+        Index(
+            "ix_generations_owner_activity", "owner_id", "status", "collection_id", "pending_delete"
+        ),
         Index(
             "ix_generations_instance_queue",
             "comfyui_instance_id",

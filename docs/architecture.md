@@ -243,6 +243,25 @@ height for the overlays while fitting the original image without cropping. Activ
 remain visible, and an Info button opens details containing generation duration. Gallery redraws
 preserve hover intent and keyboard focus for the same card.
 
+The toolbar's generation activity indicator sits between Gallery scale and the account menu.
+It uses resolved jobs / planned jobs, displays outcome counts on hover or focus, shows
+completion for five seconds, and then hides. Auto-generation replaces the percentage
+with active/preparing/waiting/retrying/paused state; its scheduling remains local to the
+browser tab. Folder count badges add animated remaining counts including descendants,
+while the original count still describes direct contents. Reduced-motion preferences
+stop the animation.
+
+A compact owner-scoped activity snapshot supplies both indicators without reading card
+or workflow JSON. The browser refreshes it on lifecycle events (coalesced), SSE connection,
+folder navigation/mutations, and the ten-second service poll. Updates patch badges without
+replacing folder cards or disrupting focus. Node-progress ticks do not refetch aggregates. Activity reads run one at a time; event-driven generation detail reads coalesce by ID with at most three in flight, preventing replay bursts from exhausting the database pool.
+The snapshot also prevents auto-generation from overlooking jobs outside the loaded gallery.
+`generation_runs` and `generation_run_members` preserve original totals and deleted outcomes.
+Single submissions and atomic checkpoint batches acquire a database write lock before
+selecting the current run, so overlapping tabs append to one run. Batch savepoints retain
+per-item validation errors while committing the full plan in one transaction. The worker
+continues to execute ordinary generations on their existing pinned runtimes.
+
 The gallery keeps one object/card per generation and displays its snapshotted execution label in status/history. Changing the current selector never changes existing cards or active-job routing. SSE replaces only the affected durable state and drops a refreshed card when its `collection_id` does not match the open view. Collection CRUD adds no SSE event in v1: the initiating tab refetches collections after its mutation, while another tab converges on navigation or reload. A terminal generation does not trigger a per-card collection-list refetch, so preview thumbnails may remain stale until that same navigation/reload boundary. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance. Favorites remain global: `#/favorites` renders the mixed feed as ordinary generation cards and collection tiles, with a static gold ring for saved items. The virtual route is separate from the current collection ID, so new generations are never assigned a synthetic collection. It uses the same scale, sentinel, image viewer, recall, move, and deletion controls; unfavoriting removes the item immediately. Generation actions preserve bookmark order while folder tiles navigate to their normal collection route. Recall reports whether the historical runtime is still configured and available before restoring the selector; it never submits automatically.
 
 ## Compatibility and migration

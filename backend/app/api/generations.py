@@ -17,6 +17,9 @@ from ..dependencies import (
 from ..errors import AppError
 from ..models import Artifact
 from ..schemas import (
+    GenerationActivity,
+    GenerationBatchCreate,
+    GenerationBatchResult,
     GenerationCreate,
     GenerationDetail,
     GenerationMove,
@@ -25,6 +28,7 @@ from ..schemas import (
     RecallResponse,
     ValidationResult,
 )
+from ..services.generation_activity import activity_snapshot
 
 router = APIRouter(prefix="/api", tags=["generations"])
 
@@ -53,6 +57,26 @@ async def create_generation(
     return await get_container(request).generations.accept(
         session, user=context.user, request=payload
     )
+
+
+@router.post("/generations/batch", response_model=GenerationBatchResult, status_code=201)
+async def create_generation_batch(
+    payload: GenerationBatchCreate,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> GenerationBatchResult:
+    return await get_container(request).generations.accept_batch(
+        session, user=context.user, request=payload
+    )
+
+
+@router.get("/generation-activity", response_model=GenerationActivity)
+def generation_activity(
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+) -> GenerationActivity:
+    return activity_snapshot(session, context.user.id)
 
 
 @router.get("/generations", response_model=GenerationPage)

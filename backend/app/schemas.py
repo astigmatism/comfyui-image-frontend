@@ -408,6 +408,37 @@ class GenerationPage(APIModel):
     next_cursor: str | None = None
 
 
+class GenerationBatchCreate(APIModel):
+    items: list[GenerationCreate] = Field(min_length=1, max_length=256)
+
+
+class GenerationBatchItem(APIModel):
+    generation: GenerationSummary | None = None
+    error: dict[str, Any] | None = None
+
+
+class GenerationBatchResult(APIModel):
+    items: list[GenerationBatchItem]
+
+
+class GenerationRunProgress(APIModel):
+    id: str
+    total_count: int
+    resolved_count: int
+    remaining_count: int
+    succeeded_count: int
+    failed_count: int
+    cancelled_count: int
+    completed_at: datetime | None = None
+
+
+class GenerationActivity(APIModel):
+    run: GenerationRunProgress | None = None
+    remaining_count: int = 0
+    collection_remaining_counts: dict[str, int] = Field(default_factory=dict)
+    collection_generation_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class CollectionCreate(APIModel):
     name: str = Field(min_length=1, max_length=100)
     parent_id: str | None = None

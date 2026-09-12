@@ -229,6 +229,103 @@ code {
   position: relative;
 }
 
+.generation-activity-host:empty {
+  display: none;
+}
+
+.generation-activity-host {
+  flex: 0 0 auto;
+}
+
+.generation-activity {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid #354e65;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--surface-1);
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.activity-ring {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke-width: 2.5;
+  transform: rotate(-90deg);
+}
+
+.activity-ring-track {
+  stroke: currentColor;
+  opacity: 0.2;
+}
+
+.activity-ring-value {
+  stroke: currentColor;
+  stroke-linecap: round;
+  transition: stroke-dasharray 240ms ease;
+}
+
+.activity-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 1.25s linear infinite;
+}
+
+.activity-auto {
+  color: #9cdac3;
+  border-color: #365c50;
+}
+
+.activity-paused,
+.activity-error,
+.generation-activity.is-stale {
+  color: #f3c88b;
+  border-color: #68543c;
+}
+
+.activity-paused .activity-spinner,
+.is-stale .activity-spinner {
+  animation-play-state: paused;
+}
+
+.activity-tooltip {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  display: none;
+  width: 240px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: normal;
+  z-index: 60;
+}
+
+.generation-activity:hover .activity-tooltip,
+.generation-activity:focus .activity-tooltip {
+  display: block;
+}
+
 .account-menu > summary {
   display: flex;
   align-items: center;
@@ -701,6 +798,7 @@ code {
 }
 
 .collection-tile {
+  container: gallery-card / inline-size;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -874,6 +972,37 @@ code {
   font-size: 0.72rem;
   font-weight: 750;
   place-items: center;
+}
+
+.collection-count.is-generating {
+  display: flex;
+  gap: 7px;
+  height: auto;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-color: #416381;
+}
+
+.collection-remaining {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border-strong);
+  color: var(--accent);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+@container gallery-card (max-width: 230px) {
+  .collection-caption:has(.is-generating) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .collection-count.is-generating {
+    justify-self: start;
+  }
 }
 
 .gallery-card {
@@ -4068,9 +4197,26 @@ tr:last-child td {
   }
 }
 
+@media (min-width: 801px) and (max-width: 1200px) {
+  .scale-control > span,
+  .favorites-launch-label,
+  .new-collection-label {
+    display: none;
+  }
+
+  .scale-control input {
+    width: 88px;
+  }
+
+  .topbar-right {
+    gap: 8px;
+  }
+}
+
 @media (max-width: 800px) {
   :root {
     --panel-width: min(92vw, 350px);
+    --topbar-height: 96px;
   }
 
   .app-shell {
@@ -4078,7 +4224,22 @@ tr:last-child td {
   }
 
   .topbar {
-    padding: 0 10px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 44px 44px;
+    gap: 0;
+    padding: 4px 10px;
+  }
+
+  .topbar-left,
+  .topbar-right {
+    gap: 8px;
+    padding: 0;
+  }
+
+  .activity-label {
+    max-width: 85px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .panel-toggle {
@@ -4325,8 +4486,11 @@ tr:last-child td {
 
 @media (max-width: 400px) {
   .topbar {
+    padding: 4px 8px;
+  }
+
+  .topbar-right {
     gap: 6px;
-    padding: 0 8px;
   }
 
   .app-title {

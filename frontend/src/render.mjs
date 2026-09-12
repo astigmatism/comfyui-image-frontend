@@ -83,6 +83,7 @@ export function shellMarkup(state) {
             <span>Gallery scale</span>
             <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-valuetext="${state.galleryScale}%" />
           </label>
+          <div id="generation-activity-host" class="generation-activity-host" aria-live="polite" aria-atomic="true">${generationActivityMarkup(state)}</div>
           <details class="account-menu">
             <summary aria-label="Account menu">${escapeHtml(state.session.user.username)}</summary>
             <div class="menu-popover" role="menu">
@@ -1250,6 +1251,49 @@ export function galleryMarkup(
 
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6.5h6l2 2H21v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 9h18" /></svg>`;
 
+export function collectionCountMarkup(collection) {
+  const count = Math.max(0, Number(collection?.generation_count) || 0);
+  const remaining = Math.max(0, Number(collection?.remaining_count) || 0);
+  const label = `${count} ${count === 1 ? "generation" : "generations"}${remaining ? `; ${remaining} remaining including nested folders` : ""}`;
+  return `<span class="collection-count${remaining ? " is-generating" : ""}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><span>${count}</span>${remaining ? `<span class="collection-remaining"><span class="activity-spinner" aria-hidden="true"></span>${remaining} remaining</span>` : ""}</span>`;
+}
+
+export function generationActivityMarkup(state, now = Date.now()) {
+  const run = state.generationSubmissionProgress || state.generationActivity?.run;
+  const remaining = state.generationActivity?.remaining_count || 0;
+  let mode = "progress";
+  let label;
+  let description;
+  let percent = 0;
+  if (state.autoGenerate || state.autoGenerateStatus === "paused") {
+    mode = state.autoGenerateStatus === "paused" ? "paused" : "auto";
+    label = mode === "paused" ? "Auto paused"
+      : state.autoGenerateStatus === "retrying" ? "Auto retrying"
+        : state.submitting || state.promptAssistantComposing ? "Auto preparing"
+          : remaining > 0 ? "Auto active" : "Auto waiting";
+    description = state.autoGenerateStatusMessage || `${label}. ${remaining} generations remaining. Auto-generation is enabled in this tab.`;
+  } else if (run?.total_count > 0) {
+    const completedAt = Date.parse(run.completed_at || "");
+    if (!run.remaining_count && Number.isFinite(completedAt) && now - completedAt > 5000) return "";
+    percent = Math.min(run.remaining_count > 0 ? 99 : 100, Math.floor(100 * run.resolved_count / run.total_count));
+    label = `${percent}%`;
+    mode = run.failed_count ? "error" : "progress";
+    description = `${run.resolved_count} of ${run.total_count} resolved; ${run.remaining_count} remaining. ${run.succeeded_count || 0} succeeded, ${run.failed_count || 0} failed, ${run.cancelled_count || 0} cancelled.`;
+  } else if (state.generationActivityUnavailable) {
+    mode = "paused";
+    label = "Progress unavailable";
+    description = "Generation activity is temporarily unavailable. Reconnecting…";
+  } else return "";
+  if (state.generationActivityUnavailable) description += " Updates temporarily unavailable; showing the last known progress.";
+  const determinate = ["progress", "error"].includes(mode);
+  const ring = determinate
+    ? `<svg class="activity-ring" viewBox="0 0 24 24" aria-hidden="true"><circle class="activity-ring-track" cx="12" cy="12" r="9" /><circle class="activity-ring-value" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="${percent} 100" /></svg>`
+    : `<span class="activity-spinner" aria-hidden="true"></span>`;
+  return `<div class="generation-activity activity-${mode}${state.generationActivityUnavailable ? " is-stale" : ""}" tabindex="0" title="${escapeHtml(description)}" ${determinate ? `role="progressbar" aria-label="Generation completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-valuetext="${escapeHtml(description)}"` : `role="status" aria-label="${escapeHtml(description)}"`}>
+    ${ring}<span class="activity-label">${label}</span><span class="activity-tooltip" aria-hidden="true">${escapeHtml(description)}</span>
+  </div>`;
+}
+
 export function collectionTileMarkup(collection) {
   const previews = Array.isArray(collection?.previews)
     ? collection.previews.slice(0, 4)
@@ -1270,7 +1314,7 @@ export function collectionTileMarkup(collection) {
   return `<div class="collection-tile${collection.is_favorite ? " is-favorited" : ""}" data-gallery-card="collection" data-collection-id="${id}">
     <button type="button" class="collection-tile-open" data-action="open-collection" data-collection-id="${id}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
       <span class="collection-tile-preview">${preview}</span>
-      <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="collection-count" aria-label="${count} ${count === 1 ? "generation" : "generations"}">${count}</span></span>
+      <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>${collectionCountMarkup(collection)}</span>
     </button>
     <div class="collection-tile-overlay">
       <div class="card-hover-scrim" aria-hidden="true"></div>

@@ -15,6 +15,9 @@ import {
   galleryMarkup,
   generationPanelMarkup,
   generationProgressMarkup,
+  generationActivityMarkup,
+  collectionCountMarkup,
+  shellMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
@@ -2292,4 +2295,45 @@ test("an empty collection gets collection-specific empty copy", () => {
   assert.match(html, /This collection is empty/);
   assert.match(html, /Generate images here, or move cards in/);
   assert.doesNotMatch(html, /No generations yet/);
+});
+
+
+test("global activity counts resolved jobs, reports outcomes, and expires completion", () => {
+  const run = { total_count: 10, resolved_count: 6, remaining_count: 4,
+    succeeded_count: 4, failed_count: 1, cancelled_count: 1 };
+  const state = { generationActivity: { run, remaining_count: 4 } };
+  const markup = generationActivityMarkup(state);
+  assert.match(markup, /aria-valuenow="60"/);
+  assert.match(markup, /6 of 10 resolved; 4 remaining/);
+  assert.match(markup, /4 succeeded, 1 failed, 1 cancelled/);
+  assert.match(markup, /activity-error/);
+  assert.match(generationActivityMarkup({ ...state, generationSubmissionProgress: {
+    ...run, total_count: 20, remaining_count: 14,
+  } }), /aria-valuenow="30"/);
+  const completed = { generationActivity: { run: { ...run, resolved_count: 10,
+    remaining_count: 0, completed_at: "2026-09-11T12:00:00Z" } } };
+  assert.match(generationActivityMarkup(completed, Date.parse("2026-09-11T12:00:03Z")), /100%/);
+  assert.equal(generationActivityMarkup(completed, Date.parse("2026-09-11T12:00:06Z")), "");
+});
+
+test("auto activity replaces percentages and distinguishes preparing, retrying and paused states", () => {
+  const state = { autoGenerate: true, generationActivity: { remaining_count: 3,
+    run: { total_count: 4, resolved_count: 1, remaining_count: 3 } } };
+  assert.match(generationActivityMarkup(state), /Auto active/);
+  assert.doesNotMatch(generationActivityMarkup(state), /role="progressbar"/);
+  assert.match(generationActivityMarkup({ ...state, submitting: true }), /Auto preparing/);
+  assert.match(generationActivityMarkup({ ...state, autoGenerateStatus: "retrying" }), /Auto retrying/);
+  assert.match(generationActivityMarkup({ ...state, autoGenerate: false, autoGenerateStatus: "paused" }), /Auto paused/);
+  assert.match(generationActivityMarkup({ ...state, autoGenerate: false }), /25%/);
+  assert.match(generationActivityMarkup({ autoGenerate: true }), /Auto waiting/);
+});
+
+test("folder activity extends the direct count and labels descendant work explicitly", () => {
+  const markup = collectionCountMarkup({ generation_count: 2, remaining_count: 5 });
+  assert.match(markup, /2 generations; 5 remaining including nested folders/);
+  assert.match(markup, /activity-spinner/);
+  assert.doesNotMatch(collectionCountMarkup({ generation_count: 2 }), /activity-spinner/);
+  const shell = shellMarkup({ session: { user: { role: "user", username: "artist" } }, collections: [] });
+  assert.ok(shell.indexOf('id="gallery-scale"') < shell.indexOf('id="generation-activity-host"'));
+  assert.ok(shell.indexOf('id="generation-activity-host"') < shell.indexOf('class="account-menu"'));
 });

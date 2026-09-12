@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createCoalescedTaskQueue,
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
   applyChoiceStrengthDefaults,
@@ -1115,4 +1116,38 @@ test("choice reconciliation retains only values still declared by the current pu
     reconcileInterfaceValues(choiceInterface, { lora: "knp_v2" }, changedType).lora,
     "knp_v4_1",
   );
+});
+
+
+test("event refresh queue bounds concurrency, coalesces running keys and clears pending work", async () => {
+  const calls = [];
+  const releases = new Map();
+  const queue = createCoalescedTaskQueue((key, value) => {
+    calls.push([key, value]);
+    return new Promise((resolve) => releases.set(key, resolve));
+  }, 2);
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  queue.enqueue("a", 1);
+  queue.enqueue("b", 1);
+  queue.enqueue("c", 1);
+  await settle();
+  assert.deepEqual(calls, [["a", 1], ["b", 1]]);
+  queue.enqueue("a", 2);
+  queue.enqueue("a", 3);
+  releases.get("a")();
+  await settle();
+  assert.deepEqual(calls, [["a", 1], ["b", 1], ["c", 1]]);
+  releases.get("c")();
+  await settle();
+  assert.deepEqual(calls.at(-1), ["a", 3]);
+  queue.enqueue("d", 1);
+  queue.clear();
+  releases.get("a")();
+  releases.get("b")();
+  await settle();
+  assert.equal(calls.some(([key]) => key === "d"), false);
+  queue.enqueue("e", 1);
+  queue.clear();
+  await settle();
+  assert.equal(calls.some(([key]) => key === "e"), false);
 });

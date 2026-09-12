@@ -1370,8 +1370,8 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   const generationRequests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname === "/api/generations" && request.method() === "POST") {
-      generationRequests.push(request.postDataJSON());
+    if (url.pathname === "/api/generations/batch" && request.method() === "POST") {
+      generationRequests.push(...request.postDataJSON().items);
     }
   });
   await page.getByRole("button", { name: "Generate", exact: true }).click();
@@ -3481,4 +3481,57 @@ test("auto-generate reevaluates controls changed while Creative Direction is com
   expect(request.postDataJSON().parameters.prompt).toBe("live control lighthouse");
   expect(request.postDataJSON().prompt_assistant_run_id).toBeUndefined();
   await page.unroute("**/api/prompt-assistant/compose");
+});
+
+test("toolbar and nested folder activity survive reload and reflect auto mode", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  const session = await (await page.request.get("/api/auth/session")).json();
+  const collectionResponse = await page.request.post("/api/collections", {
+    headers: { "X-CSRF-Token": session.csrf_token },
+    data: { name: "Generation progress" },
+  });
+  expect(collectionResponse.status()).toBe(201);
+  const collection = await collectionResponse.json();
+  let activity = {
+    run: { id: "progress-run", total_count: 10, resolved_count: 6, remaining_count: 4,
+      succeeded_count: 6, failed_count: 0, cancelled_count: 0, completed_at: null },
+    remaining_count: 4,
+    collection_remaining_counts: { [collection.id]: 4 },
+    collection_generation_counts: { [collection.id]: 2 },
+  };
+  await page.route("**/api/generation-activity", (route) => route.fulfill({ json: activity }));
+  await page.reload();
+  const progress = page.locator("#generation-activity-host");
+  const folder = page.locator(`[data-gallery-card="collection"][data-collection-id="${collection.id}"]`);
+  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "60");
+  await expect(folder.locator(".collection-count")).toContainText("4 remaining");
+  await progress.getByRole("progressbar").focus();
+  await expect(progress.locator(".activity-tooltip")).toBeVisible();
+  await expect(progress.locator(".activity-tooltip")).toContainText("6 of 10 resolved");
+  await page.locator("#gallery-scale").focus();
+  await page.screenshot({ path: testInfo.outputPath("generation-progress-desktop.png") });
+  await page.locator("#auto-generate").check();
+  await expect(progress).toContainText("Auto active");
+  await expect(progress.getByRole("progressbar")).toHaveCount(0);
+  await page.locator("#auto-generate").uncheck();
+  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "60");
+  activity = { ...activity, run: { ...activity.run, total_count: 20, remaining_count: 14 },
+    remaining_count: 14, collection_remaining_counts: { [collection.id]: 14 } };
+  await page.reload();
+  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "30");
+  await expect(folder.locator(".collection-count")).toContainText("14 remaining");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(progress).toBeInViewport();
+  await expect(page.locator(".account-menu")).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("generation-progress-mobile.png"), animations: "disabled" });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(folder.locator(".activity-spinner")).toHaveCSS("animation-iteration-count", "1");
+  activity = { ...activity, run: { ...activity.run, resolved_count: 20, remaining_count: 0,
+    succeeded_count: 19, cancelled_count: 1, completed_at: new Date().toISOString() },
+    remaining_count: 0, collection_remaining_counts: {} };
+  await page.reload();
+  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+  await expect(folder.locator(".collection-remaining")).toHaveCount(0);
+  await expect(progress.getByRole("progressbar")).toHaveCount(0, { timeout: 7000 });
 });

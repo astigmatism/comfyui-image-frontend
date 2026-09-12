@@ -159,3 +159,14 @@ Gallery and favorites reads use explicit scalar projections and batched auxiliar
 Long-lived SSE iterators never own a SQLAlchemy session. Authentication finishes in one short scope, then the iterator subscribes before loading replay in another short scope so connection setup cannot lose a durable event; queued events through the replay high-water mark are deduplicated. Periodic authorization checks likewise create and close a fresh session. CPU-heavy image work and durable filesystem writes run in worker threads; their short metadata transactions open thread-confined sessions only after the file operation completes.
 
 Run one application instance against one SQLite file. Keep database and files on a reliable local persistent volume. Back up the entire data directory while the service is stopped; restoring only `app.db` or only media can create dangling metadata. ComfyUI publication bundles are external and require a separate server backup policy.
+
+## Generation runs
+
+`generation_runs` stores an owner-scoped run ID, original total, submission-failure
+count, deleted success/failure/cancellation counters, and created/updated timestamps.
+`generation_run_members` maps each generation to its run with indexed `run_id`.
+Deleting a generation cascades its membership after preserving the terminal outcome;
+deleting the owner cascades both run history and memberships. Ordinary completion
+is aggregated from durable generation statuses, so worker recovery needs no additional
+progress state transitions. Migration `3ab76df901e2` adopts existing active work into
+one run per owner. Historical completed generations remain outside new runs.

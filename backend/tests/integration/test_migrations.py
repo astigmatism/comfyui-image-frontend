@@ -24,7 +24,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "6e4b9c2a7d15"
+HEAD_REVISION = "3ab76df901e2"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -449,6 +449,34 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     assert revision == HEAD_REVISION
+    engine.dispose()
+
+
+def test_generation_run_migration_adopts_active_legacy_work(settings_factory) -> None:
+    settings = settings_factory()
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    config = _config(settings.database_path)
+    command.upgrade(config, LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{settings.database_path}")
+    _insert_populated_legacy_rows(engine)
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE generations SET status = 'RUNNING', completed_at = NULL"))
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT total_count FROM generation_runs")).scalar_one() == 1
+        assert (
+            connection.execute(
+                text("SELECT generation_id FROM generation_run_members")
+            ).scalar_one()
+            == LEGACY_GENERATION_ID
+        )
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    command.downgrade(config, "6e4b9c2a7d15")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT id FROM generations")).scalar_one()
+            == LEGACY_GENERATION_ID
+        )
     engine.dispose()
 
 

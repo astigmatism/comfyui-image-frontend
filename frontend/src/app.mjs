@@ -12,6 +12,7 @@ import {
   collectionDepth,
   collectionSubtree,
   createLatestRequestGate,
+  createCoalescedTaskQueue,
   defaultsForInterface,
   hasActiveGeneration,
   interfaceInputs,
@@ -41,6 +42,8 @@ import {
   collectionDeleteDialogMarkup,
   collectionDialogMarkup,
   collectionTileMarkup,
+  collectionCountMarkup,
+  generationActivityMarkup,
   detailMarkup,
   favoritesGalleryMarkup,
   formatGenerationEta,
@@ -123,6 +126,9 @@ const state = {
   galleryStatus: "idle",
   galleryMessage: null,
   submitting: false,
+  generationActivity: null,
+  generationActivityUnavailable: false,
+  generationSubmissionProgress: null,
   autoGenerate: false,
   autoGenerateCreativeDirection: false,
   autoGenerateStatus: "idle",
@@ -154,6 +160,7 @@ const state = {
 };
 
 const generationRefreshGate = createLatestRequestGate();
+const liveGenerationRefreshQueue = createCoalescedTaskQueue((id, options) => refreshGeneration(id, options));
 let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
@@ -168,6 +175,9 @@ let speechSessionSequence = 0;
 let applicationStartupController = null;
 let servicePollingController = null;
 let startupGalleryBoundary = null;
+let activityRefreshTimer = null;
+let activityRequestToken = 0;
+let activityRefreshRequest = null;
 let autoGenerateScheduled = false;
 let autoGenerateCycleRunning = false;
 let autoGenerateRescheduleRequested = false;
@@ -1856,6 +1866,9 @@ async function logout() {
   state.servicesMessage = null;
   state.generations = [];
   pendingGenerationIds.clear();
+  state.generationActivity = null;
+  state.generationSubmissionProgress = null;
+  state.generationActivityUnavailable = false;
   state.nextCursor = null;
   state.collections = [];
   state.collectionsStatus = "idle";
@@ -1913,6 +1926,9 @@ async function enterApplication() {
   state.servicesMessage = null;
   state.generations = [];
   pendingGenerationIds.clear();
+  state.generationActivity = null;
+  state.generationSubmissionProgress = null;
+  state.generationActivityUnavailable = false;
   state.nextCursor = null;
   state.collections = [];
   state.collectionsStatus = "loading";
@@ -1970,6 +1986,7 @@ async function enterApplication() {
   const requests = [
     loadStartupPreferences(controller.signal),
     loadCollections(controller.signal),
+    refreshGenerationActivity(),
     servicesRequest,
     loadStartupComfyuiInstances(controller.signal),
     galleryRequest,
@@ -2260,6 +2277,8 @@ async function loadCollections(signal = applicationStartupController?.signal) {
     if (signal?.aborted) return;
     if (revision !== favoritesRevision) return loadCollections(signal);
     state.collections = Array.isArray(collections) ? collections : [];
+    applyCollectionActivity({ counts: false });
+    scheduleActivityRefresh();
     const byId = new Map(state.collections.map((item) => [item.id, item]));
     state.favorites.items = state.favorites.items.flatMap((item) => {
       if (!item.collection) return [item];
@@ -2986,6 +3005,7 @@ function restorePanelView(panel, view) {
 }
 
 function syncGenerationSubmissionState() {
+  renderGenerationActivity();
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
   const contract = sourceInterface(state.activeSource);
@@ -3061,6 +3081,7 @@ function cancelAutoGenerateRetryTimer() {
 }
 
 function syncAutoGenerateStatus() {
+  renderGenerationActivity();
   const status = document.querySelector("#auto-generate-status");
   if (!status) return;
   status.replaceChildren();
@@ -3211,7 +3232,8 @@ function autoGenerationNeedsPromptAssistant() {
 }
 
 function hasPendingGeneration() {
-  return pendingGenerationIds.size > 0 || hasActiveGeneration(state.generations);
+  return (state.generationActivity?.remaining_count || 0) > 0 ||
+    pendingGenerationIds.size > 0 || hasActiveGeneration(state.generations);
 }
 
 function autoGenerationReady() {
@@ -3323,6 +3345,7 @@ async function generateSingleSource() {
     focusFirstInvalid();
     return false;
   }
+  beginGenerationActivitySubmission(plannedGenerationTargetCount());
   state.submitting = true;
   state.formError = null;
   state.serverFieldErrors = {};
@@ -3397,6 +3420,8 @@ async function generateSingleSource() {
     }
     return false;
   } finally {
+    await refreshGenerationActivity();
+    state.generationSubmissionProgress = null;
     state.submitting = false;
     syncGenerationSubmissionState();
     if (focusErrors) focusFirstInvalid();
@@ -3433,6 +3458,7 @@ async function generateSelectedCheckpoints() {
     return false;
   }
 
+  beginGenerationActivitySubmission(plannedGenerationTargetCount());
   state.submitting = true;
   state.formError = null;
   state.serverFieldErrors = {};
@@ -3477,14 +3503,13 @@ async function generateSelectedCheckpoints() {
       if (usesPromptAssistant) payload.prompt_assistant_run_id = requestCompositionId;
       return { payload, usesPromptAssistant };
     });
-    const queueResults = await Promise.allSettled(
-      queueTargets.map(({ payload }) =>
-        api("/api/generations", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }),
-      ),
-    );
+    const batch = await api("/api/generations/batch", {
+      method: "POST",
+      body: JSON.stringify({ items: queueTargets.map(({ payload }) => payload) }),
+    });
+    const queueResults = batch.items.map((item) => item.generation
+      ? { status: "fulfilled", value: item.generation }
+      : { status: "rejected", reason: Object.assign(new Error(item.error.message), item.error) });
     const queued = [];
     const failures = [];
     let promptAssistantQueued = false;
@@ -3605,6 +3630,8 @@ async function generateSelectedCheckpoints() {
     }
     return false;
   } finally {
+    await refreshGenerationActivity();
+    state.generationSubmissionProgress = null;
     state.submitting = false;
     syncGenerationSubmissionState();
     if (focusErrors) focusFirstInvalid();
@@ -4084,6 +4111,7 @@ function renderGallery() {
           currentCollectionId: state.currentCollectionId,
         });
   });
+  applyCollectionActivity({ counts: false });
   if (focused?.dataset.action) {
     const key = focused.dataset.generationId ? "generationId" : "collectionId";
     const replacement = [...gallery.querySelectorAll("[data-action]")].find((control) =>
@@ -4432,7 +4460,7 @@ async function refreshGeneration(
   const refreshToken = generationRefreshGate.issue(id);
   const navigationToken = collectionNavigationToken;
   try {
-    let detail = await api(`/api/generations/${id}`);
+    let detail = await api(`/api/generations/${id}`, { signal: applicationStartupController?.signal });
     if (TERMINAL_GENERATION_STATUSES.has(detail.status) && pendingGenerationIds.delete(id)) scheduleAutoGenerate();
     if (!generationRefreshGate.isCurrent(id, refreshToken) || navigationToken !== collectionNavigationToken) return;
     if (state.favoritesView && (!detail.is_favorite || detail.delete_pending)) {
@@ -5061,6 +5089,7 @@ async function deleteGeneration(id) {
 function removeGeneration(id) {
   favoritesRevision += 1;
   pendingGenerationIds.delete(id);
+  scheduleActivityRefresh();
   generationRefreshGate.invalidate(id);
   const closesPhotoViewer = state.photoViewerGenerationId === id;
   if (closesPhotoViewer) closePhotoViewer();
@@ -5081,6 +5110,108 @@ function removeGalleryGeneration(id) {
   if (state.favoritesView || !state.generations.length) renderGallery();
   else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
   scheduleAutoGenerate();
+}
+
+function beginGenerationActivitySubmission(count) {
+  const current = state.generationActivity?.run;
+  const active = current?.remaining_count > 0;
+  state.generationSubmissionProgress = {
+    total_count: (active ? current.total_count : 0) + count,
+    resolved_count: active ? current.resolved_count : 0,
+    remaining_count: (active ? current.remaining_count : 0) + count,
+    succeeded_count: active ? current.succeeded_count : 0,
+    failed_count: active ? current.failed_count : 0,
+    cancelled_count: active ? current.cancelled_count : 0,
+  };
+}
+
+function renderGenerationActivity() {
+  const host = document.querySelector("#generation-activity-host");
+  if (!host) return;
+  const markup = generationActivityMarkup({ ...state, promptAssistantComposing: promptCompositionRequests > 0 });
+  // Preserve focus, hover and animation between unchanged snapshots.
+  if (host.dataset.markup !== markup) {
+    const focused = host.contains(document.activeElement);
+    host.innerHTML = markup;
+    host.dataset.markup = markup;
+    if (focused) host.querySelector("[tabindex]")?.focus({ preventScroll: true });
+  }
+}
+
+function applyCollectionActivity({ counts = true } = {}) {
+  const activity = state.generationActivity;
+  if (!activity) return;
+  for (const collection of state.collections) {
+    collection.remaining_count = activity.collection_remaining_counts?.[collection.id] || 0;
+    if (counts) collection.generation_count = activity.collection_generation_counts?.[collection.id] || 0;
+  }
+  const byId = new Map(state.collections.map((collection) => [collection.id, collection]));
+  for (const item of state.favorites.items) {
+    if (!item.collection) continue;
+    const collection = byId.get(item.collection.id);
+    if (collection) Object.assign(item.collection, {
+      remaining_count: collection.remaining_count,
+      generation_count: collection.generation_count,
+    });
+  }
+  for (const tile of document.querySelectorAll('[data-gallery-card="collection"]')) {
+    const collection = byId.get(tile.dataset.collectionId);
+    const badge = tile.querySelector(".collection-count");
+    if (!collection || !badge) continue;
+    const markup = collectionCountMarkup(collection);
+    if (badge.outerHTML !== markup) badge.outerHTML = markup;
+    tile.querySelector(".collection-tile-open")?.setAttribute("aria-label",
+      `Open collection ${collection.name}, ${collection.generation_count} generations${collection.remaining_count ? `, ${collection.remaining_count} remaining including nested folders` : ""}`);
+  }
+}
+
+function scheduleActivityRefresh() {
+  if (activityRefreshTimer !== null || !applicationStartupController) return;
+  activityRefreshTimer = window.setTimeout(() => {
+    activityRefreshTimer = null;
+    void refreshGenerationActivity();
+  }, 180);
+}
+
+function refreshGenerationActivity() {
+  const controller = applicationStartupController;
+  if (!controller || controller.signal.aborted) return Promise.resolve();
+  if (activityRefreshRequest?.controller === controller) {
+    activityRefreshRequest.again = true;
+    return activityRefreshRequest.promise;
+  }
+  const request = { controller, again: false, promise: null };
+  activityRefreshRequest = request;
+  request.promise = (async () => {
+    do {
+      request.again = false;
+      await fetchGenerationActivity(controller);
+    } while (request.again && !controller.signal.aborted);
+  })().finally(() => {
+    if (activityRefreshRequest === request) activityRefreshRequest = null;
+  });
+  return request.promise;
+}
+
+async function fetchGenerationActivity(controller) {
+  const token = ++activityRequestToken;
+  try {
+    const activity = await api("/api/generation-activity", {
+      signal: controller.signal,
+      operation: "Generation activity",
+      deadlineMs: 6000,
+    });
+    if (token !== activityRequestToken || controller.signal.aborted) return;
+    const previouslyRemaining = state.generationActivity?.remaining_count;
+    state.generationActivity = activity;
+    state.generationActivityUnavailable = false;
+    applyCollectionActivity();
+    if (previouslyRemaining !== activity.remaining_count) scheduleAutoGenerate();
+  } catch (error) {
+    if (token !== activityRequestToken || requestWasAborted(error, controller.signal)) return;
+    state.generationActivityUnavailable = true;
+  }
+  renderGenerationActivity();
 }
 
 function startLiveUpdates({ paused = false } = {}) {
@@ -5114,14 +5245,16 @@ function startLiveUpdates({ paused = false } = {}) {
     });
   }
   source.onerror = () => {};
+  source.onopen = () => scheduleActivityRefresh();
   state.eventSource = source;
   startGenerationEtaTimer();
 }
 
 function applyLiveUpdate({ type, payload }) {
+  if (type !== "generation.progress" && type !== "generation.stage") scheduleActivityRefresh();
   if (type === "generation.deleted") removeGeneration(payload.generation_id);
   else if (type === "generation.progress") applyGenerationProgress(payload);
-  else if (payload.generation_id) refreshGeneration(payload.generation_id).catch(() => {});
+  else if (payload.generation_id) liveGenerationRefreshQueue.enqueue(payload.generation_id);
 }
 
 function applyGenerationProgress(event) {
@@ -5164,6 +5297,7 @@ function stopGenerationEtaTimer() {
 
 function refreshGenerationEtaCountdowns() {
   const now = Date.now();
+  renderGenerationActivity();
   for (const eta of root.querySelectorAll("[data-generation-eta-completion]")) {
     const completionTimestamp = Number(eta.getAttribute("data-generation-eta-completion"));
     if (!Number.isFinite(completionTimestamp)) continue;
@@ -5209,11 +5343,11 @@ function resumeLiveUpdates() {
       if (!alreadyTerminal || update.type !== "generation.terminal") applyLiveUpdate(update);
       continue;
     }
-    refreshGeneration(generationId, {
+    liveGenerationRefreshQueue.enqueue(generationId, {
       insertIf: boundary
         ? (detail) => generationPrecedesBoundary(detail, boundary.oldest)
         : () => true,
-    }).catch(() => {});
+    });
   }
 }
 
@@ -5235,6 +5369,7 @@ function scheduleServicePoll(controller) {
     state.serviceTimer = null;
     try {
       await Promise.allSettled([
+        refreshGenerationActivity(),
         refreshServices(controller.signal),
         loadComfyuiInstances({ signal: controller.signal, showLoading: false }),
       ]);
@@ -5252,6 +5387,9 @@ function stopServicePolling() {
 }
 
 function stopLiveUpdates() {
+  activityRequestToken += 1;
+  window.clearTimeout(activityRefreshTimer);
+  activityRefreshTimer = null;
   stopGenerationEtaTimer();
   discardSpeechSession();
   state.eventSource?.close();
@@ -5260,6 +5398,7 @@ function stopLiveUpdates() {
   state.pendingLiveUpdates = [];
   startupGalleryBoundary = null;
   generationRefreshGate.clear();
+  liveGenerationRefreshQueue.clear();
   stopServicePolling();
   state.observer?.disconnect();
   closePhotoViewer();

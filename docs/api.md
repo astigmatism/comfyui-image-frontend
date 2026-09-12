@@ -607,6 +607,36 @@ its owner cascades the bookmark. `#/favorites` displays this feed as normal gall
 
 Administrator routes never return another user's prompts, parameters, uploads, results, or history.
 
+## Generation activity
+
+`GET /api/generation-activity` returns the signed-in owner's latest combined run and
+activity across all of their execution runtimes, independent of gallery pagination.
+`run` is null before the first run. Otherwise it includes `id`, `total_count`,
+`resolved_count`, `remaining_count`, `succeeded_count`, `failed_count`,
+`cancelled_count`, and `completed_at` (null while work remains). Failed submissions,
+failed/interrupted jobs, and cancellations resolve planned work without counting as
+successful generation. Deleting a card preserves its outcome and original denominator.
+
+The top-level `remaining_count` includes queued, dispatching, running and
+cancel-requested generations. `collection_remaining_counts` maps every owned folder
+ID to its remaining jobs including descendants. `collection_generation_counts`
+contains direct non-pending-delete item counts; absent entries mean zero. Stopping
+jobs continue to count as remaining until cancellation reconciles.
+
+`POST /api/generations/batch` accepts `{ "items": [GenerationCreate, ...] }` with
+1–256 items and requires the same authentication and CSRF protection as individual
+submission. It returns `201` with ordered `items`, each containing either a
+`generation` summary or an `error` (`code`, `message`, `fields`, `details`, `status`).
+Each item is validated independently. The full planned total, accepted jobs and
+submission failures commit together before queued events are published. An unexpected
+transaction failure rolls back the entire batch. Requests are never retried automatically.
+The single-generation endpoint preserves its existing contract and joins the same run.
+
+New requests append to the current run while any member remains active; the first
+request after completion starts a new run. Adding work can lower the displayed
+percentage. A run survives browser and server restarts. Migration adopts already
+active generations into one run per owner without including historical completions.
+
 ## Server-Sent Events
 
 `GET /api/events` is an authenticated `text/event-stream`. Reconnection passes `Last-Event-ID` or `?last_event_id=N`. The route replays durable owner events and then subscribes to owner-only live fan-out.

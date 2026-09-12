@@ -1206,3 +1206,36 @@ export function clientValidate(contract, values) {
   }
   return errors;
 }
+// Coalesce event bursts by key, keeping at most one follow-up for a running key.
+// Clearing drops queued work without allowing old completions to restart it.
+export function createCoalescedTaskQueue(run, concurrency = 3) {
+  const pending = new Map();
+  const running = new Set();
+  let epoch = 0;
+  const drain = () => {
+    for (const [key, value] of pending) {
+      if (running.size >= concurrency) break;
+      if (running.has(key)) continue;
+      pending.delete(key);
+      running.add(key);
+      const startedEpoch = epoch;
+      Promise.resolve()
+        .then(() => startedEpoch === epoch ? run(key, value) : undefined)
+        .catch(() => {})
+        .finally(() => {
+          running.delete(key);
+          drain();
+        });
+    }
+  };
+  return {
+    enqueue(key, value) {
+      pending.set(key, value);
+      drain();
+    },
+    clear() {
+      epoch += 1;
+      pending.clear();
+    },
+  };
+}

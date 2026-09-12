@@ -30,6 +30,7 @@ from ..models import (
     Favorite,
     Generation,
     GenerationEvent,
+    GenerationRunMember,
     GenerationStatus,
     GenerationUpload,
     PromptAssistantRun,
@@ -44,6 +45,9 @@ from ..schemas import (
     ArtifactSummary,
     FavoritePage,
     FavoriteSummary,
+    GenerationBatchCreate,
+    GenerationBatchItem,
+    GenerationBatchResult,
     GenerationCreate,
     GenerationDetail,
     GenerationMove,
@@ -61,6 +65,7 @@ from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
+from .generation_activity import begin_run, retain_deleted_outcome
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -156,6 +161,59 @@ class GenerationService:
     async def accept(
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> GenerationSummary:
+        run = begin_run(session, user.id, 1)
+        generation, event = self._prepare_accept(session, user=user, request=request)
+        session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
+        session.commit()
+        await publish_event(self.broker, event)
+        with self.session_factory() as fresh:
+            stored = self.get_owned(fresh, user.id, generation.id)
+            return self.summary(fresh, stored)
+
+    async def accept_batch(
+        self, session: Session, *, user: User, request: GenerationBatchCreate
+    ) -> GenerationBatchResult:
+        run = begin_run(session, user.id, len(request.items))
+        results: list[Generation | AppError] = []
+        events: list[GenerationEvent] = []
+        for item in request.items:
+            try:
+                with session.begin_nested():
+                    generation, event = self._prepare_accept(session, user=user, request=item)
+                    session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
+                results.append(generation)
+                events.append(event)
+            except AppError as error:
+                run.submission_failed_count += 1
+                results.append(error)
+        # All planned jobs and submission failures become visible together. There
+        # are no abandoned reservations if the browser disconnects or we restart.
+        session.commit()
+        for event in events:
+            await publish_event(self.broker, event)
+        with self.session_factory() as fresh:
+            return GenerationBatchResult(
+                items=[
+                    GenerationBatchItem(
+                        error={
+                            "code": item.code,
+                            "message": item.message,
+                            "fields": item.fields,
+                            "details": item.details,
+                            "status": item.status_code,
+                        }
+                    )
+                    if isinstance(item, AppError)
+                    else GenerationBatchItem(
+                        generation=self.summary(fresh, self.get_owned(fresh, user.id, item.id))
+                    )
+                    for item in results
+                ]
+            )
+
+    def _prepare_accept(
+        self, session: Session, *, user: User, request: GenerationCreate
+    ) -> tuple[Generation, GenerationEvent]:
         instance = self._instance_for_request(session, request, require_available=True)
         collection = self._collection_for_owner(session, user.id, request.collection_id)
         profile = self._profile_for_request(session, request)
@@ -223,11 +281,7 @@ class GenerationService:
                 "comfyui_instance_label": instance.label,
             },
         )
-        session.commit()
-        await publish_event(self.broker, event)
-        with self.session_factory() as fresh:
-            stored = self.get_owned(fresh, user.id, generation.id)
-            return self.summary(fresh, stored)
+        return generation, event
 
     def _instance_for_request(
         self,
@@ -1393,6 +1447,7 @@ class GenerationService:
         session.execute(
             delete(PromptAssistantRun).where(PromptAssistantRun.generation_id == generation_id)
         )
+        retain_deleted_outcome(session, generation)
         session.delete(generation)
         session.flush()
         upload_paths: list[str] = []

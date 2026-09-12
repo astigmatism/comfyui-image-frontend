@@ -14,6 +14,7 @@ Install the included [`comfyui_extension/cif_artifact_cleanup`](comfyui_extensio
 - Network-only ComfyUI integration with recursive userdata discovery, strict publication validation, request-local graph compilation, prompt submission, WebSocket/history reconciliation, and safe output retrieval.
 - Optional server-side Prompt Assistant through an Ollama-compatible router with persisted effective-model provenance.
 - Optional browser voice input through a server-side OpenAI-compatible speech-to-text proxy; service credentials never reach the browser.
+- Persistent overall generation progress, animated folder activity including nested folders, and an auto-generation status indicator.
 - A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, private image and folder favorites with gold indicators and a mixed Favorites gallery, detail/recall, cancellation, and deletion.
 - Deterministic fake services, backend/frontend/browser tests, production image, Compose example, validation scripts, and maintained API/architecture/schema documentation.
 
