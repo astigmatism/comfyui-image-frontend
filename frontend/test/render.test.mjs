@@ -583,7 +583,7 @@ test("password change fields allow eight-character passwords", () => {
   assert.match(html, /name="confirm_password"[^>]*minlength="8"/);
 });
 
-test("prompt is contract-rendered with helper text removed and Creative Direction exposed", () => {
+test("prompt is contract-rendered with helper text removed and Creative Direction moved out", () => {
   const describedPrompt = { ...promptControl, description: "Describe the image." };
   const html = controlMarkup(describedPrompt, { "prompt.text": "hello" }, contract);
   assert.match(html, />Prompt</);
@@ -595,21 +595,53 @@ test("prompt is contract-rendered with helper text removed and Creative Directio
   assert.ok(html.indexOf('data-action="open-prompt-editor"') < html.indexOf('data-control-id="prompt.text"'));
   assert.match(html, /data-control-id="prompt.text"[^>]*rows="10"/);
   assert.doesNotMatch(html, /Describe the image\.|help-text|role="tooltip"|has-contextual-help/);
-  assert.match(html, /<section class="prompt-assistant" id="prompt-assistant"/);
-  assert.match(html, /data-speech-target="creative-direction"/);
+  assert.doesNotMatch(html, /<section class="prompt-assistant" id="prompt-assistant"/);
+  assert.doesNotMatch(html, /data-speech-target="creative-direction"/);
+  assert.doesNotMatch(html, /Refine Current Prompt|New Prompt from Creative Direction|Apply Creative Direction/);
   assert.doesNotMatch(html, /<details|<summary|>Mode</);
-  assert.match(html, /Refine Current Prompt/);
-  assert.match(html, /New Prompt from Creative Direction/);
-  assert.match(html, /Apply Creative Direction/);
-  assert.match(html, /id="prompt-assistant-thinking-mode" type="checkbox" checked/);
-  assert.match(html, /Thinking mode/);
+});
+
+test("creative direction renders as its own collapsible section beneath the prompt", () => {
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    workflows: [{ profile_id: "p1", display_name: "Portrait" }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello", "sampling.steps": 8 },
+    fieldErrors: {},
+    formError: null,
+    selectedPreset: null,
+  };
+  const html = generationPanelMarkup(state, state.workflows[0], contract);
+  const promptSectionIndex = html.indexOf('data-control-section="prompt"');
+  const assistantSectionIndex = html.indexOf('data-control-section="creative-direction"');
+  const advancedSectionIndex = html.indexOf('data-control-section="advanced"');
+  assert.ok(promptSectionIndex >= 0);
+  assert.ok(
+    promptSectionIndex < assistantSectionIndex &&
+      assistantSectionIndex < advancedSectionIndex,
+  );
   assert.match(
     html,
+    /<section class="control-section control-section-creative-direction is-expanded" data-control-section="creative-direction">/,
+  );
+  assert.match(html, /<span class="control-section-title">Creative Direction<\/span>/);
+  const section = html.slice(assistantSectionIndex, advancedSectionIndex);
+  assert.match(section, /<section class="prompt-assistant" id="prompt-assistant"/);
+  assert.match(section, /data-speech-target="creative-direction"/);
+  assert.doesNotMatch(section, /<details|<summary|>Mode</);
+  assert.match(section, /Refine Current Prompt/);
+  assert.match(section, /New Prompt from Creative Direction/);
+  assert.match(section, /Apply Creative Direction/);
+  assert.match(section, /id="prompt-assistant-thinking-mode" type="checkbox" checked/);
+  assert.match(section, /Thinking mode/);
+  assert.match(
+    section,
     /id="prompt-assistant-thinking-mode"[\s\S]*id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden/,
   );
   assert.ok(
-    html.indexOf('data-action="compose-prompt"') <
-      html.indexOf('id="prompt-assistant-thinking-mode"'),
+    section.indexOf('data-action="compose-prompt"') <
+      section.indexOf('id="prompt-assistant-thinking-mode"'),
   );
 });
 

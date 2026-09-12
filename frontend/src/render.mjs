@@ -670,29 +670,44 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
       sections.push({ ...descriptor, controls: [input] });
     }
   }
+  const promptSectionIndex = sections.reduce(
+    (index, section, offset) => (section.kind === "prompt" ? offset : index),
+    -1,
+  );
+  if (promptSectionIndex !== -1) {
+    sections.splice(promptSectionIndex + 1, 0, {
+      key: "creative-direction",
+      kind: "creative-direction",
+      title: "Creative Direction",
+      controls: [],
+    });
+  }
   return sections
     .map((section) => {
       const first = section.controls[0];
-      const content = section.resolutionPair
-        ? pairedResolutionMarkup(
-            section.resolutionPair.width,
-            section.resolutionPair.height,
-            values,
-            contract,
-            errors,
-            { hideLegend: true },
-          )
-        : section.controls
-            .map((input) =>
-              controlMarkup(input, values, contract, errors, {
-                hideLabel:
-                  section.kind === "prompt" ||
-                  section.kind === "seed" ||
-                  input.type === "image" ||
-                  input.type === "resolution",
-              }),
-            )
-            .join("");
+      const content =
+        section.kind === "creative-direction"
+          ? promptAssistantMarkup()
+          : section.resolutionPair
+            ? pairedResolutionMarkup(
+                section.resolutionPair.width,
+                section.resolutionPair.height,
+                values,
+                contract,
+                errors,
+                { hideLegend: true },
+              )
+            : section.controls
+                .map((input) =>
+                  controlMarkup(input, values, contract, errors, {
+                    hideLabel:
+                      section.kind === "prompt" ||
+                      section.kind === "seed" ||
+                      input.type === "image" ||
+                      input.type === "resolution",
+                  }),
+                )
+                .join("");
       return controlSectionMarkup({
         key: section.key,
         title: section.title,
@@ -965,11 +980,9 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
         : `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><div class="prompt-field-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div>${input}</div>`
       : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
   }
-  const assistant = isPrompt ? promptAssistantMarkup() : "";
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
     ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
-    ${assistant}
   </div>`;
 }
 

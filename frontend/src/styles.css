@@ -2407,10 +2407,6 @@ code {
   min-width: 0;
 }
 
-.prompt-assistant {
-  margin-top: 10px;
-}
-
 .prompt-assistant-mode-options {
   display: flex;
   flex-wrap: wrap;
