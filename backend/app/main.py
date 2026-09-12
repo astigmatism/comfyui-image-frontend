@@ -28,6 +28,7 @@ from .api import (
     comfyui_instances,
     events,
     favorites,
+    gallery,
     generations,
     preferences,
     prompt_assistant,
@@ -349,6 +350,7 @@ def create_app(
     app.include_router(speech_to_text.router)
     app.include_router(preferences.router)
     app.include_router(collections.router)
+    app.include_router(gallery.router)
     app.include_router(generations.router)
     app.include_router(favorites.router)
     app.include_router(events.router)

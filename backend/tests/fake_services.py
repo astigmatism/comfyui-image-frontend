@@ -85,6 +85,7 @@ class FakeServiceState:
     initial_event_delay: float = 0.02
     default_stage_delay: float = 0.08
     slow_stage_delay: float = 0.5
+    stage_delay_overrides: dict[str, float] = field(default_factory=dict)
     listing_mode: str = "v2"
     history_delay_polls: int = 0
     hide_history: bool = False
@@ -136,6 +137,7 @@ class FakeServiceState:
         self.initial_event_delay = 0.02
         self.default_stage_delay = 0.08
         self.slow_stage_delay = 0.5
+        self.stage_delay_overrides.clear()
         self.listing_mode = "v2"
         self.history_delay_polls = 0
         self.hide_history = False
@@ -205,6 +207,7 @@ class FakeServiceState:
         delay = (
             self.slow_stage_delay if "slow" in prompt_text.casefold() else self.default_stage_delay
         )
+        delay = self.stage_delay_overrides.get(prompt_text, delay)
         self.queued_prompt_ids.discard(prompt_id)
         self.running_prompt_ids.add(prompt_id)
         self.histories[prompt_id] = {

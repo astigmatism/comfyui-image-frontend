@@ -1273,7 +1273,7 @@ code {
 
 .card-actions {
   display: grid;
-  grid-template-columns: repeat(6, 30px);
+  grid-template-columns: repeat(5, 30px);
   justify-self: end;
   gap: 7px;
 }
@@ -1367,7 +1367,7 @@ code {
   }
 
   .card-actions {
-    grid-template-columns: repeat(6, 44px);
+    grid-template-columns: repeat(5, 44px);
     gap: 4px;
   }
 
@@ -1400,7 +1400,8 @@ code {
 .delete-generation-button,
 .rename-collection-button,
 .delete-collection-button,
-.collection-previews-button {
+.collection-previews-button,
+.card-select-button {
   display: grid;
   place-items: center;
   width: 30px;
@@ -4562,4 +4563,209 @@ tr:last-child td {
 .gallery-card:has(.card-media:focus-visible) {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* Selection shares the existing card hover controller and the fixed title bar. */
+.gallery-card,
+.collection-tile {
+  position: relative;
+}
+
+.card-select-button {
+  grid-column: -2;
+}
+
+.card-select-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.card-select-button[aria-checked="false"] .selection-checkmark {
+  visibility: hidden;
+}
+
+.card-select-button[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #071322;
+}
+
+.card-select-button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.gallery-selection-mode .collection-bar-host {
+  display: none;
+}
+
+.gallery-selection-mode .card-actions,
+.gallery-selection-mode .collection-tile-actions {
+  display: flex;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gallery-selection-mode [data-gallery-card] .card-hover-scrim {
+  opacity: 0;
+}
+
+.gallery-selection-mode [data-gallery-card].is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.gallery-selection-mode .card-actions > :not(.card-select-button),
+.gallery-selection-mode .collection-tile-actions > :not(.card-select-button),
+.gallery-selection-mode .card-cancel-button,
+.gallery-selection-mode .card-checkpoint {
+  display: none;
+}
+
+.gallery-selection-mode [data-gallery-card] {
+  cursor: pointer;
+}
+
+.gallery-selection-mode .card-media {
+  cursor: pointer;
+}
+
+.gallery-selection-toolbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 4px;
+}
+
+.gallery-selection-toolbar[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .gallery-selection-toolbar:not([hidden]) {
+    animation: selection-toolbar-enter var(--motion) cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  @keyframes selection-toolbar-enter {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+.selection-count {
+  margin-right: 4px;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font-size: 0.77rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.button.low.selection-tool {
+  display: grid;
+  place-items: center;
+  flex: 0 0 31px;
+  width: 31px;
+  height: 31px;
+  padding: 0;
+}
+
+.selection-tool svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.selection-tool[data-bulk-action="transfer"] {
+  color: #b9d5fa;
+}
+
+.selection-tool[data-bulk-action="delete"] {
+  color: var(--danger);
+}
+
+.transfer-commit-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gallery-transfer-dialog {
+  width: min(580px, calc(100vw - 36px));
+  height: min(650px, calc(100dvh - 36px));
+}
+
+.gallery-delete-dialog {
+  width: min(510px, calc(100vw - 36px));
+  height: auto;
+  max-height: calc(100dvh - 36px);
+}
+
+.gallery-delete-dialog .dialog-frame {
+  height: auto;
+  max-height: calc(100dvh - 40px);
+}
+
+.gallery-bulk-dialog .dialog-actions {
+  justify-content: space-between;
+}
+
+.transfer-destinations {
+  display: grid;
+  gap: 7px;
+}
+
+.destination-unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gallery-bulk-dialog [data-operation-error]:empty,
+.gallery-bulk-dialog [data-transfer-help]:empty {
+  display: none;
+}
+
+@media (max-width: 1000px) {
+  .selection-count-label {
+    display: none;
+  }
+
+  .gallery-selection-mode .account-menu > summary {
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@media (max-width: 800px) {
+  .gallery-bulk-dialog .dialog-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 400px) {
+  .gallery-selection-toolbar {
+    gap: 2px;
+  }
+
+  .gallery-selection-mode .account-menu > summary {
+    max-width: 48px;
+  }
 }

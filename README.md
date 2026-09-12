@@ -16,6 +16,7 @@ Install the included [`comfyui_extension/cif_artifact_cleanup`](comfyui_extensio
 - Optional browser voice input through a server-side OpenAI-compatible speech-to-text proxy; service credentials never reach the browser.
 - Persistent overall generation progress, animated folder activity including nested folders, and an auto-generation status indicator.
 - A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, private image and folder favorites with gold indicators and a mixed Favorites gallery, detail/recall, cancellation, and deletion.
+- Image and folder multiselect with shared Move / Copy and Delete actions, recursive folder operations, and independent image copies. Try the [local gallery preview](docs/gallery-selection-preview.md).
 - Deterministic fake services, backend/frontend/browser tests, production image, Compose example, validation scripts, and maintained API/architecture/schema documentation.
 
 ## Architecture at a glance

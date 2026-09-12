@@ -351,6 +351,8 @@ them. They resolve only to current validated publications and do not restore leg
 | `PATCH` | `/api/collections/{id}` | Rename and/or move a collection |
 | `DELETE` | `/api/collections/{id}` | Recursively delete a collection subtree and its generations; `202` while active deletion reconciles |
 | `POST` | `/api/generations/{id}/move` | Move an owned generation to a collection or to unfiled root |
+| `POST` | `/api/gallery/transfer` | Move or copy a mixed selection of generations and collection subtrees |
+| `POST` | `/api/gallery/delete` | Delete a mixed selection using the existing cancellation and cleanup lifecycle |
 
 Collections are returned as a flat `created_at, id` ordered list; clients construct the tree from
 `parent_id`. Names are trimmed and must contain 1–100 characters. Duplicate sibling names are
@@ -378,6 +380,33 @@ Gallery listing has three compatibility-preserving modes:
 The two scoped modes exclude `pending_delete` rows and preserve the existing newest-first
 `(accepted_at, id)` cursor. The unscoped mode retains its prior pending-row behavior for existing
 consumers.
+
+### Bulk selection operations
+
+Both gallery endpoints require a ready authenticated user and `X-CSRF-Token`. The selection
+contains `generation_ids` and `collection_ids` arrays, with at least one ID and at most 500
+explicitly selected IDs in total. Repeated IDs are deduplicated. Every ID is checked for ownership
+before any mutation; inaccessible IDs return 404, including for administrators. A selected folder
+subsumes its descendants and separately selected generations inside it, so overlapping Favorites
+selections affect each item once.
+
+`POST /api/gallery/transfer` also takes `operation` (`"move"` or `"copy"`) and `collection_id`
+(destination folder ID, or null for Home). The destination cannot be inside a selected subtree;
+the five-level collection limit also applies to copies. Success returns 200 with `operation`,
+`generation_ids`, and `collection_ids`. Move returns the directly moved generation and root folder
+IDs; copy returns all new generation IDs and new root folder IDs.
+
+Copy duplicates all retained artifacts into independent files, preserves controls, recall data,
+folder structure, preview preferences and favorites, and does not submit a new ComfyUI job.
+Input uploads retain the existing reference-counted lifetime. Active or pending-delete generations
+anywhere in the selection reject the copy with 409 `copy_generation_active`. Move permits active
+generations. Transfers commit once; a failed copy rolls back new rows and removes newly copied files.
+
+`POST /api/gallery/delete` returns 200 with an `items` array, each containing `kind`
+(`"generation"` or `"collection"`), `id`, and `status` (`"deleted"`, `"pending"`, or `"failed"`).
+Failed items include a safe `message`; clients retain those items for retry. Pending items have
+entered the existing active-generation cancellation/deletion lifecycle. Deletion is permanent
+and applies to whole generation cards (all their images), including all contents of selected folders.
 
 ## Generation summaries and detail
 

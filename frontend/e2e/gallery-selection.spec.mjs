@@ -1,0 +1,139 @@
+import { expect, test } from "@playwright/test";
+
+async function mountSelection(page) {
+  await page.route("**/app.mjs", (route) => route.fulfill({ contentType: "text/javascript", body: "export {};" }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const base = document.querySelector('script[type="module"]').src;
+    const { galleryMarkup, shellMarkup } = await import(new URL("./render.mjs", base));
+    const { bindGalleryCardHover } = await import(new URL("./gallery-hover.mjs", base));
+    const { bindGallerySelection } = await import(new URL("./gallery-selection.mjs", base));
+    const image = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="%233c6575"/></svg>';
+    const state = {
+      session: { authenticated: true, user: { username: "selection", role: "user" }, app_title: "ImageGen V2" },
+      galleryScale: 20, currentCollectionId: null, collectionsStatus: "ready", favoritesView: false,
+      collections: [{ id: "folder", name: "Studies", parent_id: null, generation_count: 3 }, { id: "destination", name: "Archive", parent_id: null, generation_count: 0 }, { id: "child", name: "Winter", parent_id: "folder", generation_count: 1 }],
+      generations: Array.from({ length: 4 }, (_, index) => ({ id: `g${index}`, collection_id: null, status: "succeeded", accepted_at: `2026-09-11T12:0${4-index}:00Z`, image_count: index === 1 ? 3 : 1, is_favorite: index === 1, display_artifact: { id: `a${index}`, kind: "image", thumbnail_url: image, content_url: image, width: 512, height: 512 } })),
+    };
+    const root = document.querySelector("#app");
+    root.innerHTML = shellMarkup(state);
+    const hover = bindGalleryCardHover(root);
+    window.redrawSelectionFixture = (add = false) => {
+      if (add) state.generations.unshift({ ...state.generations[0], id: "new-card", accepted_at: "2026-09-11T13:00:00Z" });
+      hover.preserveDuring(() => { root.querySelector("#gallery").innerHTML = galleryMarkup(state.generations, { collections: state.collections }); });
+    };
+    window.redrawSelectionFixture();
+    bindGallerySelection(root, { getState: () => state, refresh: async () => {}, notify: () => {} });
+    root.querySelector("#gallery").style.setProperty("--gallery-card-min", "220px");
+  });
+}
+
+for (const cardSelector of ['[data-gallery-card="generation"][data-generation-id="g0"]', '[data-gallery-card="collection"][data-collection-id="folder"]']) {
+  test(`hover toolkit starts selection and the last deselection restores the gallery: ${cardSelector}`, async ({ page }) => {
+    await mountSelection(page);
+    const toolkits = page.locator("#gallery .card-actions, #gallery .collection-tile-actions");
+    const card = page.locator(cardSelector);
+    const toolkit = card.locator('[role="group"]');
+    const checkbox = toolkit.locator(".card-select-button");
+    for (const controls of await toolkits.all()) await expect(controls).toHaveCSS("opacity", "0");
+    await card.scrollIntoViewIfNeeded();
+    // Scrolling cancels hover intent; begin the mouse movement after it settles.
+    await card.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await card.hover();
+    await expect(toolkit).toHaveCSS("opacity", "1");
+    const before = await checkbox.boundingBox();
+    const tools = await toolkit.boundingBox();
+    expect(before.x + before.width).toBeCloseTo(tools.x + tools.width, 0);
+    expect(before.y + before.height).toBeCloseTo(tools.y + tools.height, 0);
+    await checkbox.click();
+    await expect(page.locator("#gallery-selection-toolbar")).toContainText("1 selected");
+    await page.mouse.move(2, 2);
+    for (const controls of await toolkits.all()) {
+      await expect(controls).toHaveCSS("opacity", "1");
+      await expect(controls.locator(".card-select-button")).toBeVisible();
+      await expect(controls.locator(":scope > :not(.card-select-button):visible")).toHaveCount(0);
+    }
+    await checkbox.click();
+    await expect(page.locator("#gallery-selection-toolbar")).toBeHidden();
+    await page.mouse.move(2, 2);
+    for (const controls of await toolkits.all()) await expect(controls).toHaveCSS("opacity", "0");
+    await card.hover();
+    await expect(toolkit).toHaveCSS("opacity", "1");
+    await checkbox.click();
+    await page.getByRole("button", { name: "Clear selection", exact: true }).click();
+    await expect(page.locator("#gallery-selection-toolbar")).toBeHidden();
+    await page.mouse.move(2, 2);
+    for (const controls of await toolkits.all()) await expect(controls).toHaveCSS("opacity", "0");
+  });
+}
+
+test("selection reveals all controls, survives incoming cards, and supports ranges and Escape", async ({ page }) => {
+  await mountSelection(page);
+  const initial = page.locator('[data-generation-id="g0"] .card-select-button');
+  await initial.focus();
+  await initial.press("Space");
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("1 selected");
+  await expect(page.locator('[data-generation-id="g1"] .card-actions')).toHaveCSS("opacity", "1");
+  await page.locator('[data-generation-id="g2"] .card-media').click({ modifiers: ["Shift"] });
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("3 selected");
+  await expect(page.locator("#photo-viewer")).not.toHaveAttribute("open", "");
+  await page.evaluate(() => window.redrawSelectionFixture(true));
+  await expect(initial).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator('[data-generation-id="new-card"] .card-select-button')).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator('[data-generation-id="new-card"] .card-actions')).toHaveCSS("opacity", "1");
+  await page.getByRole("button", { name: "Select loaded (7)" }).click();
+  await expect(page.locator("#gallery-selection-toolbar")).toContainText("7 selected");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#gallery-selection-toolbar")).toBeHidden();
+  await expect(page.locator(".card-select-button[aria-checked=true]")).toHaveCount(0);
+});
+
+test("move and copy share the destination picker and preserve selection on a rejected copy", async ({ page }) => {
+  await mountSelection(page);
+  const folder = page.getByRole("checkbox", { name: "Select collection Studies" });
+  await folder.focus(); await folder.press("Space");
+  await page.locator('[data-generation-id="g0"] .card-media').click();
+  await page.getByRole("button", { name: "Move / Copy…" }).click();
+  const dialog = page.locator("#gallery-transfer-dialog");
+  await expect(dialog.getByRole("radio", { name: "Studies Inside the selection" })).toBeDisabled();
+  await expect(dialog.getByRole("radio", { name: "Winter Inside the selection" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Move here" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Copy here" })).toBeEnabled();
+  await dialog.getByRole("radio", { name: "Archive", exact: true }).check();
+  await expect(dialog.getByRole("button", { name: "Move here" })).toBeEnabled();
+  let payload;
+  await page.route("**/api/gallery/transfer", async (route) => {
+    payload = route.request().postDataJSON();
+    await route.fulfill({ status: 409, json: { error: { message: "Wait for active generations to finish.", code: "copy_generation_active" } } });
+  });
+  await dialog.getByRole("button", { name: "Copy here" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Wait for active generations to finish.");
+  expect(payload).toEqual({ operation: "copy", generation_ids: ["g0"], collection_ids: ["folder"], collection_id: "destination" });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(folder).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Delete…", exact: true }).click();
+  const deletion = page.locator("#gallery-delete-dialog");
+  await expect(deletion).toContainText("5 generations");
+  await expect(deletion).toContainText("including nested folders");
+});
+
+for (const width of [320, 390, 850, 1024]) test(`selection toolbar and both destination buttons fit ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
+  await mountSelection(page);
+  const headerBefore = await page.locator(".topbar").boundingBox();
+  const checkbox = page.locator('[data-generation-id="g0"] .card-select-button');
+  await checkbox.focus(); await checkbox.press("Space");
+  expect((await page.locator(".topbar").boundingBox()).height).toBe(headerBefore.height);
+  await expect(page.getByRole("button", { name: "Favorites", exact: true })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "Gallery scale" })).toBeVisible();
+  for (const button of await page.locator('#gallery-selection-toolbar button, .favorites-launch-button, #gallery-scale, .account-menu > summary').all()) {
+    await expect(button).toBeInViewport();
+    const bounds = await button.boundingBox();
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+  }
+  await page.getByRole("button", { name: "Move / Copy…" }).click();
+  const dialog = page.locator("#gallery-transfer-dialog");
+  await expect(dialog.getByRole("button", { name: "Copy here" })).toBeInViewport();
+  await expect(dialog.getByRole("button", { name: "Move here" })).toBeInViewport();
+});

@@ -19,6 +19,8 @@ def main() -> None:
     primary.state.workflow_files.update(build_publication_bundle("image").files)
     primary.state.workflow_files.update(build_publication_bundle("moody").files)
     primary.state.slow_stage_delay = 2.0
+    # Keep this sample running through image persistence and the cancellation round trip.
+    primary.state.stage_delay_overrides["slow cancellation sample"] = 10.0
     primary.start()
     worker.start()
     configured_data = os.getenv("CIF_E2E_DATA_DIR")

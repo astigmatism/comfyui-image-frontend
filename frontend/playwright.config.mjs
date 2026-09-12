@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const baseURL = `http://127.0.0.1:${process.env.CIF_E2E_PORT || "8765"}`;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -8,14 +10,14 @@ export default defineConfig({
   expect: { timeout: 20_000 },
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: "http://127.0.0.1:8765",
+    baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     ...devices["Desktop Chrome"],
   },
   webServer: {
     command: "node scripts/build.mjs && PYTHONPATH=../backend python3 ../backend/tests/e2e_server.py",
-    url: "http://127.0.0.1:8765/api/health",
+    url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 60_000,
   },

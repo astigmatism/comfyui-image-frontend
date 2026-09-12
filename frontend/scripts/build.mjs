@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["api.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "app.mjs"];
+const modules = ["api.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -78,6 +78,7 @@ const assets = {
   lib: `${assetPrefix}/lib.mjs`,
   render: `${assetPrefix}/render.mjs`,
   gallery_hover: `${assetPrefix}/gallery-hover.mjs`,
+  gallery_selection: `${assetPrefix}/gallery-selection.mjs`,
   styles: `${assetPrefix}/styles.css`,
   font: `${assetPrefix}/syncopate-latin.woff2`,
   font_license: `${assetPrefix}/LICENSE-syncopate.txt`,

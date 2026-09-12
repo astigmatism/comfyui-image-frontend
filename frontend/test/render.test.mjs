@@ -1283,7 +1283,7 @@ test("source picker shows architecture only as workflow subtitle metadata", () =
   assert.doesNotMatch(html, /June 2026|Introduced|Generation type|Technologies/);
 });
 
-test("card overlay groups generation actions and exposes permanent deletion", () => {
+test("card overlay keeps viewing actions while move and deletion use selection", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
@@ -1309,15 +1309,14 @@ test("card overlay groups generation actions and exposes permanent deletion", ()
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
-  assert.equal((html.match(/<button/g) || []).length, 5);
+  assert.equal((html.match(/<button/g) || []).length, 4);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
-  assert.match(html, /data-action="move-generation"[^>]+aria-label="Move to collection"/);
+  assert.doesNotMatch(html, /data-action="move-generation"/);
   assert.match(html, /aria-label="Recall settings"[^>]*>[\s\S]*?<svg[^>]+viewBox="0 0 24 24"/);
   assert.doesNotMatch(html, />Recall settings<\/button>/);
-  assert.match(html, /data-action="delete-generation"[^>]+aria-label="Delete generation"/);
-  assert.ok(html.indexOf('data-action="recall"') < html.indexOf('data-action="delete-generation"'));
+  assert.doesNotMatch(html, /data-action="delete-generation"/);
   assert.doesNotMatch(html, /Failed|private prompt|99|Cancel/);
 
   const historical = cardActionsMarkup({
@@ -1333,8 +1332,6 @@ test("card overlay groups generation actions and exposes permanent deletion", ()
   assert.match(active, /aria-label="Remove from Favorites" aria-pressed="true"/);
   assert.match(active, /<svg[^>]+viewBox="0 0 24 24"/);
 
-  const pending = cardActionsMarkup({ ...generation, delete_pending: true });
-  assert.match(pending, /data-action="delete-generation"[^>]+disabled[^>]+aria-label="Deletion pending"/);
 });
 
 test("generation source controls omit legacy color and comparison presentation", () => {
@@ -1424,7 +1421,7 @@ test("Favorites gallery reuses cards and tiles in feed order with pressed hearts
   assert.match(html, /data-action="open-photo"/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /data-action="recall"/);
-  assert.match(html, /data-action="delete-generation"/);
+  assert.match(html, /data-action="select-gallery-card"/);
   assert.match(html, /loading="lazy"/);
   assert.ok(html.indexOf('data-action="toggle-collection-favorite"') < html.indexOf('data-action="rename-collection"'));
   const inactive = collectionTileMarkup({ ...collection, is_favorite: false });
@@ -2227,7 +2224,7 @@ test("collection tiles escape names, cap previews at four, and collapse previews
   );
   assert.match(
     overlay,
-    /class="delete-collection-button" data-action="delete-collection" data-collection-id="collection-1" aria-label="Delete collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
+    /class="card-select-button" data-action="select-gallery-card" data-collection-id="collection-1" role="checkbox" aria-checked="false" aria-label="Select collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
   );
 
   const gallery = galleryMarkup([], { collections: [collection] });

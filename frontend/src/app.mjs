@@ -1,5 +1,6 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
+import { bindGallerySelection } from "./gallery-selection.mjs";
 import {
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   CHECKPOINT_TIER_DEFINITIONS,
@@ -259,6 +260,11 @@ async function startupGet(path, { operation, deadlineMs, signal } = {}) {
 }
 
 function bindDelegatedEvents() {
+  bindGallerySelection(root, {
+    getState: () => state,
+    refresh: refreshAfterGalleryOperation,
+    notify: toast,
+  });
   root.addEventListener("submit", handleSubmit);
   root.addEventListener("click", handleClick);
   root.addEventListener("change", handleChange);
@@ -280,6 +286,24 @@ function bindDelegatedEvents() {
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
   window.addEventListener("resize", handlePhotoViewerResize);
   window.addEventListener("hashchange", handleCollectionHashChange);
+}
+
+async function refreshAfterGalleryOperation({ operation, plan, result, destination }) {
+  if (operation === "move") {
+    const ids = new Set(result.generation_ids);
+    state.generations = state.generations.map((item) => ids.has(item.id) ? { ...item, collection_id: destination } : item);
+    state.favorites.items = state.favorites.items.map((item) => ids.has(item.generation?.id) ? { ...item, generation: { ...item.generation, collection_id: destination } } : item);
+    if (!state.favoritesView) state.generations = state.generations.filter(generationBelongsToView);
+  } else if (operation === "confirm-delete") {
+    const removed = result.items.filter((item) => item.status !== "failed");
+    const generationIds = new Set(removed.filter((item) => item.kind === "generation").map((item) => item.id));
+    const collectionIds = new Set(removed.filter((item) => item.kind === "collection").flatMap((item) => collectionSubtree(state.collections, item.id).map((child) => child.id)));
+    state.generations = state.generations.filter((item) => !generationIds.has(item.id) && !collectionIds.has(item.collection_id));
+    state.favorites.items = state.favorites.items.filter((item) => !collectionIds.has(item.collection?.id) && !generationIds.has(item.generation?.id) && !collectionIds.has(item.generation?.collection_id));
+    for (const id of plan.generation_ids) if (generationIds.has(id)) pendingGenerationIds.delete(id);
+  }
+  await loadCollections();
+  await loadStartupGallery();
 }
 
 async function handleSubmit(event) {

@@ -504,6 +504,43 @@ class GenerationMove(APIModel):
     collection_id: str | None = None
 
 
+class GallerySelection(APIModel):
+    generation_ids: list[str] = Field(default_factory=list, max_length=500)
+    collection_ids: list[str] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> GallerySelection:
+        self.generation_ids = list(dict.fromkeys(self.generation_ids))
+        self.collection_ids = list(dict.fromkeys(self.collection_ids))
+        if not self.generation_ids and not self.collection_ids:
+            raise ValueError("Select at least one image card or collection.")
+        if len(self.generation_ids) + len(self.collection_ids) > 500:
+            raise ValueError("Select at most 500 items at a time.")
+        return self
+
+
+class GalleryTransfer(GallerySelection):
+    operation: Literal["move", "copy"]
+    collection_id: str | None = None
+
+
+class GalleryTransferResult(APIModel):
+    operation: Literal["move", "copy"]
+    generation_ids: list[str]
+    collection_ids: list[str]
+
+
+class GalleryDeleteItem(APIModel):
+    kind: Literal["generation", "collection"]
+    id: str
+    status: Literal["deleted", "pending", "failed"]
+    message: str | None = None
+
+
+class GalleryDeleteResult(APIModel):
+    items: list[GalleryDeleteItem]
+
+
 class GenerationDetail(GenerationSummary):
     workflow: WorkflowIdentity
     generation_source: dict[str, Any] = Field(default_factory=dict)
