@@ -1668,6 +1668,26 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
+test("clipboard paste replaces the prompt text in both prompt surfaces", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("existing draft");
+  await page.evaluate(() => navigator.clipboard.writeText("clipboard one"));
+  await page.getByRole("button", { name: "Replace prompt with clipboard contents" }).click();
+  await expect(prompt).toHaveValue("clipboard one");
+
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  const dialog = page.locator("#prompt-editor-dialog");
+  await expect(dialog).toHaveAttribute("open", "");
+  await page.evaluate(() => navigator.clipboard.writeText("clipboard two"));
+  await dialog.getByRole("button", { name: "Paste", exact: true }).click();
+  await expect(dialog.getByRole("textbox", { name: "Prompt editor" })).toHaveValue("clipboard two");
+});
+
 test("voice input records and inserts transcripts at the cursor in every prompt surface", async ({
   page,
 }) => {

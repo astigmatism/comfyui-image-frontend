@@ -404,6 +404,8 @@ async function handleClick(event) {
     else if (action === "apply-prompt-editor") applyPromptEditor();
     else if (action === "select-prompt-editor-text") selectPromptEditorText();
     else if (action === "clear-prompt-editor-text") clearPromptEditorText();
+    else if (action === "paste-prompt-text") await pastePromptTextFromClipboard(target);
+    else if (action === "paste-prompt-editor-text") await pastePromptEditorTextFromClipboard();
     else if (action === "compose-prompt-editor") await composePromptEditor(target);
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "retry-auto-generate") retryAutoGenerate();
@@ -1015,6 +1017,36 @@ function clearPromptEditorText() {
   editor.value = "";
   updatePromptEditorStats("");
   editor.focus();
+}
+
+async function readClipboardText() {
+  if (!navigator.clipboard?.readText) {
+    throw new Error("Clipboard access is unavailable in this browser.");
+  }
+  return String(await navigator.clipboard.readText() ?? "");
+}
+
+async function pastePromptTextFromClipboard(button) {
+  const controlId = button.dataset.promptControlId;
+  const element = document.querySelector(`[data-control-id="${CSS.escape(controlId || "")}"]`);
+  if (!controlId || !element) return;
+  const text = await readClipboardText();
+  element.value = text;
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.focus({ preventScroll: true });
+  element.setSelectionRange?.(0, 0);
+  toast("Clipboard contents replaced the prompt.", "success");
+}
+
+async function pastePromptEditorTextFromClipboard() {
+  const editor = document.querySelector("#prompt-editor-dialog[open] [data-prompt-editor-input]");
+  if (!editor) return;
+  const text = await readClipboardText();
+  editor.value = text;
+  editor.dispatchEvent(new Event("input", { bubbles: true }));
+  editor.focus({ preventScroll: true });
+  editor.setSelectionRange?.(0, 0);
+  toast("Clipboard contents replaced the prompt.", "success");
 }
 
 function updatePromptEditorStats(value) {

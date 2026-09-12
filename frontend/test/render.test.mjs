@@ -601,6 +601,33 @@ test("prompt is contract-rendered with helper text removed and Creative Directio
   assert.doesNotMatch(html, /<details|<summary|>Mode</);
 });
 
+test("clipboard paste button renders above the prompt input in both prompt locations", () => {
+  const html = controlMarkup(promptControl, { "prompt.text": "hello" }, contract);
+  assert.match(html, /data-action="paste-prompt-text"/);
+  assert.match(html, /data-prompt-control-id="prompt.text"/);
+  assert.match(html, /aria-label="Replace prompt with clipboard contents"/);
+  assert.ok(
+    html.indexOf('data-action="paste-prompt-text"') <
+      html.indexOf('data-control-id="prompt.text"'),
+  );
+  const editorHtml = promptEditorMarkup("prompt.text", "Prompt", "hello", {});
+  assert.match(editorHtml, /data-action="paste-prompt-editor-text"/);
+  assert.match(editorHtml, /title="Replace with clipboard contents">Paste<\/button>/);
+  assert.ok(
+    editorHtml.indexOf('data-action="paste-prompt-editor-text"') <
+      editorHtml.indexOf('id="prompt-editor-textarea"'),
+  );
+});
+
+test("clipboard paste button is disabled when the prompt control is unavailable", () => {
+  const unavailableControl = { ...promptControl, available: false, unavailable_reason: "No runtime." };
+  const html = controlMarkup(unavailableControl, { "prompt.text": "hello" }, contract);
+  assert.match(
+    html,
+    /data-action="paste-prompt-text"[^>]*data-prompt-control-id="prompt.text"[^>]*disabled/,
+  );
+});
+
 test("creative direction renders as its own collapsible section beneath the prompt", () => {
   const state = {
     submitting: false,

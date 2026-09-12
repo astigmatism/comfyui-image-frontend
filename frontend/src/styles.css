@@ -1676,7 +1676,8 @@ code {
   color: var(--text-soft);
 }
 
-.speech-button {
+.speech-button,
+.paste-clipboard-button {
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
@@ -1684,7 +1685,8 @@ code {
   color: var(--text-soft);
 }
 
-.speech-button svg {
+.speech-button svg,
+.paste-clipboard-button svg {
   width: 17px;
   height: 17px;
   fill: none;

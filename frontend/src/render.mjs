@@ -815,7 +815,7 @@ function promptSectionActionsMarkup(control, values, contract) {
   const disabled = !presentation.enabled;
   const id = `control-${control.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
   const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
-  return `<div class="prompt-field-actions control-section-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`;
+  return `<div class="prompt-field-actions control-section-actions">${speechButtonMarkup(id, label, disabled)}${pasteClipboardButtonMarkup(control.id, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`;
 }
 
 function groupedControlsMarkup(inputs, values, contract, errors, options = {}) {
@@ -977,7 +977,7 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
     field = isPrompt
       ? options.hideLabel
         ? `<div class="field prompt-field prompt-field-section-content">${input}</div>`
-        : `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><div class="prompt-field-actions">${speechButtonMarkup(id, label, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div>${input}</div>`
+        : `<div class="field prompt-field"><div class="prompt-field-heading"><label for="${id}">${labelContent}</label><div class="prompt-field-actions">${speechButtonMarkup(id, label, disabled)}${pasteClipboardButtonMarkup(control.id, disabled)}<button type="button" class="icon-button prompt-editor-launch" data-action="open-prompt-editor" data-prompt-control-id="${escapeHtml(control.id)}" aria-label="Open focused prompt editor" title="Open focused prompt editor" ${disabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div>${input}</div>`
       : `<label class="field" for="${id}"><span>${labelContent}</span>${input}</label>`;
   }
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
@@ -1201,6 +1201,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
         <div class="prompt-editor-stats" aria-label="Draft statistics"><span data-prompt-word-count>${words.toLocaleString()} ${words === 1 ? "word" : "words"}</span><span aria-hidden="true">·</span><span data-prompt-character-count>${text.length.toLocaleString()} ${text.length === 1 ? "character" : "characters"}</span></div>
         <div class="prompt-editor-tools">
           ${speechButtonMarkup("prompt-editor-textarea", "Prompt editor")}
+          <button type="button" class="button low" data-action="paste-prompt-editor-text" title="Replace with clipboard contents">Paste</button>
           <button type="button" class="button low" data-action="select-prompt-editor-text">Select all</button>
           <button type="button" class="button low" data-action="clear-prompt-editor-text">Clear</button>
         </div>
@@ -1231,6 +1232,10 @@ function speechTextareaMarkup(id, label, value, rows) {
 
 function speechButtonMarkup(targetId, label, controlDisabled = false) {
   return `<button type="button" class="icon-button speech-button" data-action="toggle-speech-recording" data-speech-target="${escapeHtml(targetId)}" data-speech-label="${escapeHtml(label)}" data-speech-control-disabled="${controlDisabled}" aria-label="Start voice input for ${escapeHtml(label)}" aria-pressed="false" title="Start voice input for ${escapeHtml(label)}" ${controlDisabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7" /></svg></button>`;
+}
+
+function pasteClipboardButtonMarkup(controlId, controlDisabled = false) {
+  return `<button type="button" class="icon-button paste-clipboard-button" data-action="paste-prompt-text" data-prompt-control-id="${escapeHtml(controlId)}" aria-label="Replace prompt with clipboard contents" title="Replace prompt with clipboard contents" ${controlDisabled ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1Z" /><path d="M16 5h1a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1" /><path d="M12 10.5v5M9.8 13.3 12 15.5l2.2-2.2" /></svg></button>`;
 }
 
 export function galleryMarkup(
