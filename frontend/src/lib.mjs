@@ -983,11 +983,13 @@ export function resolutionGridConstraints(control) {
   const limits = resolutionConstraints(control);
   const maximumWidth = Number(limits.maximumWidth);
   const maximumHeight = Number(limits.maximumHeight);
+  // Use the 4K long edge in either orientation, respecting smaller workflow limits.
+  const maximumDimension = 3840;
   return {
     minimumWidth: 0,
-    maximumWidth: Number.isFinite(maximumWidth) && maximumWidth > 0 ? maximumWidth : 2048,
+    maximumWidth: Number.isFinite(maximumWidth) && maximumWidth > 0 ? Math.min(maximumWidth, maximumDimension) : maximumDimension,
     minimumHeight: 0,
-    maximumHeight: Number.isFinite(maximumHeight) && maximumHeight > 0 ? maximumHeight : 2048,
+    maximumHeight: Number.isFinite(maximumHeight) && maximumHeight > 0 ? Math.min(maximumHeight, maximumDimension) : maximumDimension,
     widthStep: 64,
     heightStep: 64,
   };

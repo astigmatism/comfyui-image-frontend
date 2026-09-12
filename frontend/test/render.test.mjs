@@ -1696,7 +1696,7 @@ test("resolution markup includes the responsive three-handle grid and live capti
     label: "Resolution",
     type: "resolution",
     tier: "basic",
-    constraints: { minimum: 64, maximum: 2048, multiple: 8 },
+    constraints: { minimum: 64, maximum: 16384, multiple: 8 },
   };
   const html = controlMarkup(
     control,
@@ -1704,7 +1704,8 @@ test("resolution markup includes the responsive three-handle grid and live capti
     { capability_states: {} },
   );
   assert.match(html, /data-resolution-grid/);
-  assert.match(html, /data-resolution-min-width="0" data-resolution-max-width="2048"/);
+  assert.match(html, /data-resolution-min-width="0" data-resolution-max-width="3840"/);
+  assert.match(html, /data-resolution-min-height="0" data-resolution-max-height="3840"/);
   assert.match(html, /data-resolution-width-step="64" data-resolution-height-step="64"/);
   assert.match(html, /data-resolution-handle="both"/);
   assert.match(html, /data-resolution-handle="width"/);

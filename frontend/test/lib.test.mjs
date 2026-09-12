@@ -802,6 +802,16 @@ test("resolution grid mirrors Resolution Master snapping and live details", () =
     widthStep: 64,
     heightStep: 64,
   });
+  const largeGrid = resolutionGridConstraints({ constraints: { maximum: 16384 } });
+  assert.equal(largeGrid.maximumWidth, 3840);
+  assert.equal(largeGrid.maximumHeight, 3840);
+  assert.deepEqual(resolutionGridConstraints({}), largeGrid);
+  const mixedGrid = resolutionGridConstraints({
+    constraints: { maximum_width: 16384, maximum_height: 2048 },
+  });
+  assert.equal(mixedGrid.maximumWidth, 3840);
+  assert.equal(mixedGrid.maximumHeight, 2048);
+  assert.equal(snapResolutionValue(16384, 0, largeGrid.maximumWidth, largeGrid.widthStep), 3840);
   assert.equal(snapResolutionValue(1051, 0, 2048, 64), 1024);
   assert.equal(snapResolutionValue(2029, 0, 2048, 64), 2048);
   assert.deepEqual(resolutionSummary(1024, 1600), {
