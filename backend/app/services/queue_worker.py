@@ -33,6 +33,8 @@ from ..models import (
     ComfyUIInstanceHealth,
     Generation,
     GenerationEvent,
+    GenerationRun,
+    GenerationRunMember,
     GenerationStatus,
     GenerationUpload,
     SchedulerState,
@@ -45,7 +47,7 @@ from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, event_payload, publish_event
-from .generation_eta import GenerationEtaEstimator
+from .generation_eta import _MAX_SAMPLE_SECONDS, GenerationEtaEstimator
 from .generations import GenerationService
 from .ollama import OllamaAdapter
 
@@ -65,6 +67,24 @@ RecoveryPlan = tuple[tuple[RecoveryNotification, ...], tuple[tuple[str, str, str
 _PROGRESS_WRITE_INTERVAL_SECONDS = 0.15
 _RUNTIME_READY_TIMEOUT_SECONDS = 3.25
 _RUNTIME_EVENT_BATCH_SIZE = 128
+_MAX_TRACKED_TIMING_RUNS = 512
+_MAX_RUN_SIBLING_DURATIONS = 64
+
+
+def _wall_duration(started_at: datetime, completed_at: datetime) -> float | None:
+    """Execution wall time in seconds, or None when the interval is not sane."""
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    else:
+        started_at = started_at.astimezone(UTC)
+    if completed_at.tzinfo is None:
+        completed_at = completed_at.replace(tzinfo=UTC)
+    else:
+        completed_at = completed_at.astimezone(UTC)
+    duration = (completed_at - started_at).total_seconds()
+    if math.isfinite(duration) and 0 < duration <= _MAX_SAMPLE_SECONDS:
+        return duration
+    return None
 
 
 @dataclass
@@ -126,6 +146,13 @@ class QueueWorker:
         self._active: dict[str, asyncio.Task[None]] = {}
         self._active_instance_ids: dict[str, str] = {}
         self._progress_trackers: dict[str, _ProgressTracker] = {}
+        # In-memory same-run timing state used for sibling ETA estimation. Only
+        # the event-loop thread touches these structures, so no locking is
+        # needed; the database remains the source of truth after a restart.
+        self._generation_run_ids: dict[str, str] = {}
+        self._run_members: dict[str, set[str]] = {}
+        self._run_sibling_durations: dict[str, list[float]] = {}
+        self._run_cohorts: dict[str, tuple[str, str]] = {}
         self._dispatcher_started = asyncio.Event()
         self._dispatcher_state: DispatcherState = "not_started"
         self._dispatcher_done = False
@@ -601,7 +628,82 @@ class QueueWorker:
             session.commit()
             return generation.id, event
 
+    def _cohort_identity(self, generation: Generation) -> tuple[str, str]:
+        source_data = (
+            generation.generation_source_json
+            if isinstance(generation.generation_source_json, Mapping)
+            else {}
+        )
+        source_key = source_data.get("source_key")
+        source = str(source_key if source_key is not None else generation.workflow_id or "")[:512]
+        return source, str(generation.comfyui_instance_id or "")
+
+    def _register_run_timing(self, generation_id: str) -> None:
+        """Track multi-member runs so completed siblings can estimate the rest.
+
+        One indexed lookup per dispatch; single-generation runs are untouched.
+        On first registration of a run, durations of siblings that already
+        succeeded in an earlier process are seeded from the database so the
+        estimate survives an application restart mid-batch.
+        """
+        with self.session_factory() as session:
+            member = session.get(GenerationRunMember, generation_id)
+            if member is None:
+                return
+            run = session.get(GenerationRun, member.run_id)
+            generation = session.get(Generation, generation_id)
+            if run is None or generation is None or run.total_count <= 1:
+                return
+            if (
+                run.id not in self._run_members
+                and len(self._run_members) >= _MAX_TRACKED_TIMING_RUNS
+            ):
+                return
+            run_id = str(run.id)
+            first_registration = run_id not in self._run_members
+            self._generation_run_ids[generation_id] = run_id
+            members = self._run_members.setdefault(run_id, set())
+            members.add(generation_id)
+            if not first_registration:
+                return
+            self._run_cohorts[run_id] = self._cohort_identity(generation)
+            completed = session.execute(
+                select(Generation.started_at, Generation.completed_at)
+                .join(
+                    GenerationRunMember,
+                    GenerationRunMember.generation_id == Generation.id,
+                )
+                .where(
+                    GenerationRunMember.run_id == run_id,
+                    Generation.id != generation_id,
+                    Generation.status == GenerationStatus.SUCCEEDED,
+                    Generation.started_at.is_not(None),
+                    Generation.completed_at.is_not(None),
+                )
+            ).all()
+            durations = self._run_sibling_durations.setdefault(run_id, [])
+            for started_at, completed_at in completed:
+                if not isinstance(started_at, datetime) or not isinstance(completed_at, datetime):
+                    continue
+                duration = _wall_duration(started_at, completed_at)
+                if duration is not None and len(durations) < _MAX_RUN_SIBLING_DURATIONS:
+                    durations.append(duration)
+
+    def _sibling_durations_for(self, generation: Generation) -> tuple[float, ...] | None:
+        """Completed-sibling durations applicable to this generation, if any."""
+        run_id = self._generation_run_ids.get(generation.id)
+        if run_id is None:
+            return None
+        cohort = self._run_cohorts.get(run_id)
+        if cohort is None or self._cohort_identity(generation) != cohort:
+            return None
+        durations = self._run_sibling_durations.get(run_id)
+        if not durations:
+            return None
+        return tuple(durations)
+
     async def _execute(self, generation_id: str) -> None:
+        self._register_run_timing(generation_id)
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None:
@@ -752,6 +854,7 @@ class QueueWorker:
                     generation,
                     progress=progress,
                     now=generation.started_at,
+                    sibling_durations=self._sibling_durations_for(generation),
                 )
                 if estimate is not None:
                     progress["eta"] = estimate
@@ -1311,18 +1414,27 @@ class QueueWorker:
     async def _persist_progress_snapshot(
         self,
         generation_id: str,
-        snapshot: Mapping[str, Any],
+        snapshot: Mapping[str, Any] | None = None,
         *,
         audit: bool,
     ) -> None:
-        stored_snapshot = copy.deepcopy(dict(snapshot))
         event = None
         owner_id = None
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None or generation.status in TERMINAL_STATUSES:
                 return
-            estimate = self.generation_eta.estimate(generation, progress=stored_snapshot)
+            if snapshot is not None:
+                stored_snapshot = copy.deepcopy(dict(snapshot))
+            elif isinstance(generation.progress_json, Mapping):
+                stored_snapshot = copy.deepcopy(dict(generation.progress_json))
+            else:
+                return
+            estimate = self.generation_eta.estimate(
+                generation,
+                progress=stored_snapshot,
+                sibling_durations=self._sibling_durations_for(generation),
+            )
             if estimate is not None:
                 stored_snapshot["eta"] = estimate
             else:
@@ -2004,7 +2116,9 @@ class QueueWorker:
         )
         if committed is None:
             return
-        event, pending_delete, owner_id, pruned_paths = committed
+        event, pending_delete, owner_id, pruned_paths, terminal_timing = committed
+        self._record_run_timing(generation_id, terminal_timing)
+        await self._refresh_run_siblings(generation_id)
         if pruned_paths:
             await asyncio.to_thread(self.assets.delete_paths, pruned_paths)
         await self._publish_event_best_effort(event, generation_id=generation_id)
@@ -2022,6 +2136,60 @@ class QueueWorker:
                 },
                 generation_id=generation_id,
             )
+
+    def _record_run_timing(
+        self,
+        generation_id: str,
+        timing: tuple[GenerationStatus | None, datetime | None, datetime | None] | None,
+    ) -> None:
+        """Fold a terminal generation into its run's in-memory sibling durations."""
+        run_id = self._generation_run_ids.get(generation_id)
+        if run_id is None:
+            return
+        if (
+            timing is not None
+            and timing[0] == GenerationStatus.SUCCEEDED
+            and timing[1] is not None
+            and timing[2] is not None
+        ):
+            duration = _wall_duration(timing[1], timing[2])
+            if duration is not None:
+                durations = self._run_sibling_durations.setdefault(run_id, [])
+                if len(durations) < _MAX_RUN_SIBLING_DURATIONS:
+                    durations.append(duration)
+        members = self._run_members.get(run_id)
+        if members is not None:
+            members.discard(generation_id)
+            if not members:
+                stale_ids = [
+                    key for key, value in self._generation_run_ids.items() if value == run_id
+                ]
+                for tracked_id in stale_ids:
+                    self._generation_run_ids.pop(tracked_id, None)
+                self._run_members.pop(run_id, None)
+                self._run_sibling_durations.pop(run_id, None)
+                self._run_cohorts.pop(run_id, None)
+
+    async def _refresh_run_siblings(self, generation_id: str) -> None:
+        """Recompute sibling ETAs after a same-run generation reached a terminal state."""
+        run_id = self._generation_run_ids.get(generation_id)
+        if run_id is None:
+            return
+        for sibling_id in list(self._run_members.get(run_id, ())):
+            if sibling_id != generation_id:
+                await self._refresh_sibling_eta(sibling_id)
+
+    async def _refresh_sibling_eta(self, generation_id: str) -> None:
+        with self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            eligible = generation is not None and generation.status in {
+                GenerationStatus.DISPATCHING,
+                GenerationStatus.RUNNING,
+            }
+        if not eligible:
+            return
+        tracker = self._progress_tracker(generation_id)
+        await self._persist_progress_snapshot(generation_id, tracker.last_snapshot, audit=False)
 
     async def _cleanup_comfyui_sources(
         self,
@@ -2105,7 +2273,16 @@ class QueueWorker:
         raw_history: dict[str, Any],
         normalized: NormalizedHistory,
         outcome: str,
-    ) -> tuple[Any, bool, str, list[str]] | None:
+    ) -> (
+        tuple[
+            Any,
+            bool,
+            str,
+            list[str],
+            tuple[GenerationStatus | None, datetime | None, datetime | None],
+        ]
+        | None
+    ):
         """Atomically persist the terminal result using a thread-confined session."""
 
         with self.session_factory() as session:
@@ -2293,7 +2470,13 @@ class QueueWorker:
             pending_delete = generation.pending_delete
             owner_id = generation.owner_id
             session.commit()
-            return event, pending_delete, owner_id, pruned_paths
+            return (
+                event,
+                pending_delete,
+                owner_id,
+                pruned_paths,
+                (generation.status, generation.started_at, generation.completed_at),
+            )
 
     def _delete_terminal_if_present(self, generation_id: str) -> None:
         """Delete a reconciled pending generation and its files in one worker thread."""
@@ -2370,6 +2553,7 @@ class QueueWorker:
             pending_delete = generation.pending_delete
             owner_id = generation.owner_id
             session.commit()
+        self._record_run_timing(generation_id, None)
         await self._publish_event_best_effort(event, generation_id=generation_id)
         if pending_delete:
             with self.session_factory() as session:

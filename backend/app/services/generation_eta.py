@@ -54,8 +54,10 @@ _PERFORMANCE_TOKENS = frozenset(
     }
 )
 _CONTENT_TOKENS = frozenset({"caption", "content", "negative_prompt", "prompt", "text"})
+_CHECKPOINT_ROLES = frozenset({"model", "checkpoint"})
 _TOTAL_SCOPES = (
     "total_exact",
+    "total_checkpoint",
     "total_revision_resolution",
     "total_revision",
     "total_source",
@@ -72,16 +74,22 @@ class GenerationTimingFeatures:
     revision_key: str
     source_key: str
     instance_key: str
+    checkpoint_key: str | None = None
     feature_version: int = TIMING_FEATURE_VERSION
 
     def total_profile_keys(self) -> tuple[tuple[str, str], ...]:
-        return (
-            (_TOTAL_SCOPES[0], self.exact_key),
-            (_TOTAL_SCOPES[1], self.revision_resolution_key),
-            (_TOTAL_SCOPES[2], self.revision_key),
-            (_TOTAL_SCOPES[3], self.source_key),
-            (_TOTAL_SCOPES[4], self.instance_key),
+        keys: list[tuple[str, str]] = [(_TOTAL_SCOPES[0], self.exact_key)]
+        if self.checkpoint_key is not None:
+            keys.append((_TOTAL_SCOPES[1], self.checkpoint_key))
+        keys.extend(
+            (
+                (_TOTAL_SCOPES[2], self.revision_resolution_key),
+                (_TOTAL_SCOPES[3], self.revision_key),
+                (_TOTAL_SCOPES[4], self.source_key),
+                (_TOTAL_SCOPES[5], self.instance_key),
+            )
         )
+        return tuple(keys)
 
     def persisted_hashes(self) -> dict[str, Any]:
         return {
@@ -114,6 +122,29 @@ def _empty_audit_result() -> _AuditBatchResult:
         profile_updates={},
         removed_profile_keys=frozenset(),
     )
+
+
+def is_checkpoint_declaration(declaration: Mapping[str, Any] | None) -> bool:
+    """True for the contract choice input that selects the checkpoint model.
+
+    Mirrors the selector rule used to display the checkpoint label: a ``choice``
+    input whose semantic role is ``model`` or ``checkpoint``, or whose id is
+    ``checkpoint``.
+    """
+    if not isinstance(declaration, Mapping) or declaration.get("type") != "choice":
+        return False
+    semantic_role = declaration.get("semantic_role")
+    if isinstance(semantic_role, str) and semantic_role in _CHECKPOINT_ROLES:
+        return True
+    control_id = declaration.get("id")
+    return isinstance(control_id, str) and control_id == "checkpoint"
+
+
+def _prompt_size_bucket(length: int) -> int:
+    """Coarse content-free prompt-length band (0..8); prompt text is never stored."""
+    if length <= 0:
+        return 0
+    return min(8, math.floor(math.log2(length + 1)) // 2)
 
 
 def build_generation_timing_features(generation: Generation) -> GenerationTimingFeatures:
@@ -158,6 +189,7 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
     width: int | None = None
     height: int | None = None
     performance_controls: dict[str, Any] = {}
+    checkpoint_value: str | None = None
     for raw_definition in definitions:
         if not isinstance(raw_definition, Mapping):
             continue
@@ -168,6 +200,10 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
         semantic_role = str(raw_definition.get("semantic_role", ""))
         value = effective.get(control_id)
 
+        if checkpoint_value is None and is_checkpoint_declaration(raw_definition):
+            bounded = _bounded_choice(value)
+            if isinstance(bounded, str) and bounded:
+                checkpoint_value = bounded
         if semantic_role == "width":
             width = _positive_integer(value) or width
             continue
@@ -225,12 +261,31 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
             ),
         },
     )
+    # The checkpoint scope deliberately omits the API revision: a republished
+    # source keeps its model-variant cohort, while revision sensitivity is
+    # already covered by total_revision_resolution further down the ladder.
+    # Prompt size enters only as a coarse length band; prompt text is never hashed.
+    final_prompt = getattr(generation, "final_prompt", None)
+    prompt_bucket = _prompt_size_bucket(len(final_prompt) if isinstance(final_prompt, str) else 0)
+    checkpoint_key: str | None = None
+    if checkpoint_value is not None:
+        checkpoint_key = _digest(
+            "checkpoint",
+            {
+                "instance": instance_id,
+                "source": source_identity,
+                "checkpoint": checkpoint_value,
+                "prompt_bucket": prompt_bucket,
+                "resolution": resolution_shape,
+            },
+        )
     return GenerationTimingFeatures(
         exact_key=exact_key,
         revision_resolution_key=revision_resolution_key,
         revision_key=revision_key,
         source_key=source_key,
         instance_key=instance_key,
+        checkpoint_key=checkpoint_key,
     )
 
 
@@ -346,6 +401,7 @@ class GenerationEtaEstimator:
         generation: Generation,
         progress: Mapping[str, Any] | None = None,
         now: datetime | None = None,
+        sibling_durations: Sequence[float] | None = None,
     ) -> dict[str, Any] | None:
         status = getattr(generation, "status", None)
         normalized_status = status.value if isinstance(status, GenerationStatus) else str(status)
@@ -372,11 +428,28 @@ class GenerationEtaEstimator:
                 basis = "progress_landmark"
                 subtract_elapsed = False
         if profile is None:
+            # Live evidence from this run: completed siblings share the same
+            # prompt, resolution, instance, and machine state, so their wall
+            # durations are the closest prediction for this generation.
+            sibling_samples = _valid_sibling_durations(sibling_durations)
+            if sibling_samples:
+                median, lower, upper = _robust_stats(sibling_samples)
+                profile = _ProfileSnapshot(
+                    median_seconds=median,
+                    lower_seconds=lower,
+                    upper_seconds=upper,
+                    sample_count=len(sibling_samples),
+                    recent_sample_count=len(sibling_samples),
+                )
+                basis = "run_sibling"
+                subtract_elapsed = True
+        if profile is None:
             for scope, scope_key in features.total_profile_keys():
                 profile = self._profiles.get((scope, scope_key))
                 if profile is not None:
                     basis = {
                         "total_exact": "historical_exact",
+                        "total_checkpoint": "historical_checkpoint",
                         "total_revision_resolution": "historical_revision_resolution",
                         "total_revision": "historical_revision",
                         "total_source": "historical_source",
@@ -390,7 +463,13 @@ class GenerationEtaEstimator:
         remaining = max(0.0, profile.median_seconds - offset)
         lower = max(0.0, min(remaining, profile.lower_seconds - offset))
         upper = max(remaining, profile.upper_seconds - offset, 0.0)
-        confidence = _cap_confidence(_profile_confidence(profile), basis)
+        if basis == "run_sibling":
+            # A single fresh same-batch observation is stronger than a sparse
+            # historical cohort, so one sibling already earns medium confidence.
+            confidence = "high" if profile.sample_count >= 3 else "medium"
+        else:
+            confidence = _profile_confidence(profile)
+        confidence = _cap_confidence(confidence, basis)
         if subtract_elapsed and remaining <= 0:
             # A still-running job has survived beyond the historical median. Move to the
             # compatible upper tail instead of presenting a misleading zero-second ETA.
@@ -530,6 +609,7 @@ class GenerationEtaEstimator:
                     Generation.effective_controls_json,
                     Generation.selected_preset,
                     Generation.requested_outputs_json,
+                    Generation.final_prompt,
                 )
             )
             .where(
@@ -988,6 +1068,22 @@ def _valid_samples(raw_samples: Any) -> list[float]:
     ]
 
 
+def _valid_sibling_durations(
+    raw_durations: Sequence[float] | None,
+) -> list[float]:
+    """Keep only sane same-run wall durations; the caller supplies trusted floats."""
+    if not raw_durations:
+        return []
+    return [
+        float(value)
+        for value in raw_durations
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0 < value <= _MAX_SAMPLE_SECONDS
+    ]
+
+
 def _robust_stats(samples: list[float]) -> tuple[float, float, float]:
     clean = _valid_samples(samples)
     if not clean:
@@ -1047,8 +1143,10 @@ def _cap_confidence(confidence: str, basis: str) -> str:
     levels = ("low", "medium", "high")
     maximum = {
         "progress_landmark": "high",
+        "run_sibling": "high",
         "historical_exact": "high",
         "historical_revision_resolution": "medium",
+        "historical_checkpoint": "medium",
         "historical_revision": "low",
         "historical_source": "low",
         "historical_instance": "low",

@@ -66,6 +66,7 @@ from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
 from .generation_activity import begin_run, retain_deleted_outcome
+from .generation_eta import is_checkpoint_declaration
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -1490,12 +1491,9 @@ def _checkpoint_label(
     if not isinstance(inputs, list):
         return None
     for declaration in inputs:
-        if not isinstance(declaration, Mapping) or declaration.get("type") != "choice":
+        if not isinstance(declaration, Mapping) or not is_checkpoint_declaration(declaration):
             continue
         input_id = declaration.get("id")
-        semantic_role = declaration.get("semantic_role")
-        if semantic_role not in ("model", "checkpoint") and input_id != "checkpoint":
-            continue
         value = controls.get(input_id)
         if not isinstance(value, str) or not value:
             continue

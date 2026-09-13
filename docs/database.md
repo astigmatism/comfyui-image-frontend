@@ -124,15 +124,27 @@ when evidence is sparse; that fallback is reflected by lower confidence and a sa
 Total-duration and progress-landmark rows have independent fixed quotas so high-cardinality node
 history cannot evict all useful source fallbacks.
 
+Total-duration profiles exist in several coarsening scopes so sparse cohorts can fall back to
+broader ones. Besides the exact source/revision/resolution/control cohort, the estimator folds
+successful runs into a checkpoint cohort keyed by instance, source, checkpoint (model-selector)
+value, a coarse prompt-size band, and normalized resolution. The prompt contributes only its length
+band to that key — never its text — so the cohort is content-free like every other scope, and an
+API republish does not invalidate it (revision sensitivity is carried by the broader
+revision/resolution scope instead). This checkpoint scope is an additive key namespace: existing
+scope keys are byte-identical, so it requires no feature-version bump, no schema migration, and no
+re-audit of historical rows.
+
 Normal request acceptance and generation start never scan historical generations or aggregate
-timings. They perform only a lookup against the prepared cache. A bounded legacy audit can seed or
-repair profiles from older successful rows, but runs only while generation work is idle and uses
-scalar lifecycle/source/control projections rather than compiled graphs, raw history, or results.
-One versioned completion-time/ID cursor advances transactionally with each batch; the database does
-not accumulate a per-generation training marker. Progress-event reads are capped independently for
-each generation, and maintenance uses a short time/lock budget plus cooperative shutdown.
-Completing a generation clears `progress_json` and its ETA; the successful lifecycle interval can
-still be incorporated into a later profile update.
+timings. They perform only a lookup against the prepared cache. Fresh same-run sibling durations
+used to estimate a checkpoint batch are kept in worker memory only — never in the database — so
+the progress path stays database-free and the run's evidence disappears with the run. A bounded
+legacy audit can seed or repair profiles from older successful rows, but runs only while generation
+work is idle and uses scalar lifecycle/source/control projections rather than compiled graphs, raw
+history, or results. One versioned completion-time/ID cursor advances transactionally with each
+batch; the database does not accumulate a per-generation training marker. Progress-event reads are
+capped independently for each generation, and maintenance uses a short time/lock budget plus
+cooperative shutdown. Completing a generation clears `progress_json` and its ETA; the successful
+lifecycle interval can still be incorporated into a later profile update.
 
 ## Files and deletion
 

@@ -150,15 +150,37 @@ quotas, every profile keeps only a fixed recent sample window, and cache updates
 profiles touched by a batch. Maintenance work therefore remains bounded as history grows; evicted
 exact cohorts safely fall back to broader profiles until matching runs make them recent again.
 
-An initial estimate comes from the best compatible source/resolution/control cohort. As safe runtime
-events arrive, the estimator may refine it with historical remaining-time observations for the
-current node and counter range. Per-generation audit windows preserve both early and late landmarks
-without allowing one verbose run to crowd out another. The observed `fraction` is still local to that node: neither backend
+The estimate ladder, in priority order, is: an exact node-landmark residual for the current node and
+counter range; fresh same-run sibling durations; the exact source/revision/resolution/control
+cohort; the checkpoint cohort; then broader revision/resolution/source/instance cohorts. Sparse
+evidence at every rung yields no ETA rather than a guess.
+
+The sibling stage exists for checkpoint batches: several generations submitted as one run share the
+same prompt, resolution, instance, and machine state, so each completed sibling is the closest
+possible prediction for the next one. The worker keeps completed sibling durations in memory per
+run (event-loop thread only, no database traffic on the progress path), seeds already-completed
+siblings on registration so the estimate survives an application restart mid-batch, and discards
+everything with the run. A failed sibling contributes no duration, and a run's source/instance
+cohort identity excludes mixed-batch outliers. Sibling confidence is deliberately stronger than
+historical confidence: one or two completed siblings already report medium, three or more report
+high, because the evidence is current rather than recalled.
+
+Successful generations also train a persistent `total_checkpoint` profile keyed by instance,
+source, checkpoint (model-selector) value, a coarse prompt-size band, and normalized resolution.
+Prompt content is never hashed or stored — only its length band enters the key — so the cohort is
+content-free like every other scope, and an API republish does not invalidate it; revision
+sensitivity stays with the `total_revision_resolution` scope below it. Because the scope is an
+additive key namespace that leaves existing keys byte-identical, no feature-version bump or
+migration accompanies it. As safe runtime events arrive, the estimator may refine the estimate
+with historical remaining-time observations for the current node and counter range. Per-generation
+audit windows preserve both early and late landmarks without allowing one verbose run to crowd out
+another. The observed `fraction` is still local to that node: neither backend
 nor browser treats it as workflow completion or applies `elapsed / fraction` extrapolation. Sparse
 evidence yields a wider interval, lower confidence, a broader safe basis description, or no ETA.
-Confidence is also capped by compatibility: only exact technical cohorts or exact node landmarks
-can become high confidence, resolution-matched revision cohorts top out at medium, and broader
-revision/source/instance fallbacks remain low confidence regardless of sample count.
+Confidence is also capped by compatibility: only exact technical cohorts, exact node landmarks, or
+three or more same-run siblings can become high confidence; resolution-matched revision cohorts and
+checkpoint cohorts top out at medium, and broader revision/source/instance fallbacks remain low
+confidence regardless of sample count.
 
 Each estimate carries remaining seconds, an absolute completion timestamp, lower/upper
 remaining-time bounds, confidence, basis, and its own update timestamp under `progress.eta`. The

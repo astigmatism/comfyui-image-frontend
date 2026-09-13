@@ -131,6 +131,15 @@ def _progress(*, node_id: str = "sampler-1", fraction: float = 0.5) -> dict[str,
     }
 
 
+def _checkpoint_generation(**kwargs: Any) -> Generation:
+    """A generation whose model selector matches the checkpoint rule (role "model")."""
+    generation = _generation(**kwargs)
+    for definition in generation.resolved_contract_json["inputs"]:
+        if definition.get("id") == "model":
+            definition["semantic_role"] = "model"
+    return generation
+
+
 def test_timing_features_hash_compute_inputs_without_content_or_identity() -> None:
     first = _generation(
         owner_id="private-owner-a",
@@ -591,3 +600,282 @@ async def test_stop_cooperatively_joins_inflight_audit(
     assert await asyncio.to_thread(entered.wait, 0.5)
     await asyncio.wait_for(estimator.stop(), timeout=0.5)
     assert exited.is_set()
+
+
+def test_prompt_size_bucket_is_coarse_monotone_and_bounded() -> None:
+    from app.services.generation_eta import _prompt_size_bucket
+
+    assert _prompt_size_bucket(0) == 0
+    assert _prompt_size_bucket(2) == 0
+    assert _prompt_size_bucket(3) == 1
+    assert _prompt_size_bucket(14) == 1
+    assert _prompt_size_bucket(15) == 2
+    assert _prompt_size_bucket(62) == 2
+    assert _prompt_size_bucket(63) == 3
+    assert _prompt_size_bucket(254) == 3
+    assert _prompt_size_bucket(255) == 4
+    assert _prompt_size_bucket(1022) == 4
+    assert _prompt_size_bucket(1023) == 5
+    assert _prompt_size_bucket(4094) == 5
+    assert _prompt_size_bucket(4095) == 6
+    assert _prompt_size_bucket(16382) == 6
+    assert _prompt_size_bucket(16383) == 7
+    assert _prompt_size_bucket(65534) == 7
+    assert _prompt_size_bucket(65535) == 8
+    assert _prompt_size_bucket(10_000_000) == 8
+    previous = 0
+    for length in range(0, 2000):
+        bucket = _prompt_size_bucket(length)
+        assert bucket >= previous
+        previous = bucket
+
+
+def test_checkpoint_scope_tracks_checkpoint_prompt_size_and_resolution() -> None:
+    base = _checkpoint_generation()
+    base_features = build_generation_timing_features(base)
+
+    assert base_features.checkpoint_key is not None
+    assert [scope for scope, _ in base_features.total_profile_keys()] == [
+        "total_exact",
+        "total_checkpoint",
+        "total_revision_resolution",
+        "total_revision",
+        "total_source",
+        "total_instance",
+    ]
+
+    # A different checkpoint value splits the cohort.
+    changed_model = build_generation_timing_features(_checkpoint_generation(choice="model-b"))
+    assert changed_model.checkpoint_key != base_features.checkpoint_key
+    assert changed_model.exact_key != base_features.exact_key
+    # The coarser scopes are unaffected by the checkpoint value.
+    assert changed_model.revision_resolution_key == base_features.revision_resolution_key
+    assert changed_model.source_key == base_features.source_key
+
+    # Prompt content never enters the key; only its length band does.
+    same_length = "totally other!"
+    assert len(same_length) == len("private prompt")
+    other_content = build_generation_timing_features(_checkpoint_generation(prompt=same_length))
+    assert other_content.checkpoint_key == base_features.checkpoint_key
+    assert other_content.exact_key == base_features.exact_key
+
+    # Crossing a prompt-size bucket splits the cohort.
+    longer_prompt = build_generation_timing_features(
+        _checkpoint_generation(prompt="one more word!!")
+    )
+    assert longer_prompt.checkpoint_key != base_features.checkpoint_key
+    assert longer_prompt.revision_key == base_features.revision_key
+
+    # Resolution and instance still split the cohort.
+    changed_width = build_generation_timing_features(_checkpoint_generation(width=1536))
+    assert changed_width.checkpoint_key != base_features.checkpoint_key
+    changed_instance = build_generation_timing_features(
+        _checkpoint_generation(instance_id="worker-2")
+    )
+    assert changed_instance.checkpoint_key != base_features.checkpoint_key
+
+    # Sources without a checkpoint selector keep the five historical scopes.
+    plain = build_generation_timing_features(_generation())
+    assert plain.checkpoint_key is None
+    assert "total_checkpoint" not in [scope for scope, _ in plain.total_profile_keys()]
+
+    # An id-based selector (id "checkpoint") matches without a role; an empty
+    # value does not create a cohort.
+    by_id = _generation()
+    by_id.resolved_contract_json["inputs"].append(
+        {"id": "checkpoint", "type": "choice", "semantic_role": "model_selector"}
+    )
+    by_id.effective_controls_json["checkpoint"] = "TYJR MXFP8"
+    assert build_generation_timing_features(by_id).checkpoint_key is not None
+    by_id.effective_controls_json["checkpoint"] = ""
+    assert build_generation_timing_features(by_id).checkpoint_key is None
+
+
+def test_sibling_stage_estimates_running_generation_from_completed_siblings(
+    tmp_path: Path,
+) -> None:
+    factory = _session_factory(tmp_path / "eta-sibling.db")
+    estimator = GenerationEtaEstimator(factory)
+    generation = _generation()
+    current = generation.started_at + timedelta(seconds=10)  # type: ignore[operator]
+
+    estimate = estimator.estimate(generation, now=current, sibling_durations=[40.0])
+    assert estimate is not None
+    assert estimate["basis"] == "run_sibling"
+    assert estimate["confidence"] == "medium"
+    assert estimate["remaining_seconds"] == 30.0
+    # Single sample expands to [30, 50]; subtracting 10s elapsed gives [20, 40].
+    assert estimate["lower_seconds"] == 20.0
+    assert estimate["upper_seconds"] == 40.0
+
+    three = estimator.estimate(generation, now=current, sibling_durations=[40.0, 42.0, 38.0])
+    assert three is not None
+    assert three["confidence"] == "high"
+    assert three["remaining_seconds"] == 30.0
+
+    # Surviving past the sibling median falls back to the upper tail.
+    overrun = estimator.estimate(
+        generation,
+        now=generation.started_at + timedelta(seconds=50),  # type: ignore[operator]
+        sibling_durations=[40.0],
+    )
+    assert overrun is not None
+    assert overrun["basis"] == "run_sibling"
+    assert overrun["confidence"] == "low"
+    assert overrun["remaining_seconds"] == 4.0
+
+    # Invalid durations are ignored entirely; with no usable evidence and no
+    # historical profile there is no ETA at all.
+    assert (
+        estimator.estimate(
+            generation,
+            now=current,
+            sibling_durations=[0.0, -5.0, 99_999_999.0, float("nan"), None],  # type: ignore[list-item]
+        )
+        is None
+    )
+    assert estimator.estimate(generation, now=current, sibling_durations=[]) is None
+    assert estimator.estimate(generation, now=current) is None
+
+
+def test_sibling_stage_ranks_below_landmark_and_above_historical_totals(
+    tmp_path: Path,
+) -> None:
+    factory = _session_factory(tmp_path / "eta-sibling-order.db")
+    estimator = GenerationEtaEstimator(factory)
+    generation = _generation()
+    features = build_generation_timing_features(generation)
+    progress = _progress(fraction=0.5)
+    landmark_key = build_progress_landmark_key(features, progress)
+    assert landmark_key is not None
+    with factory() as session:
+        for index in range(20):
+            estimator._add_profile_sample(
+                session, "progress_landmark", landmark_key, 12.0 + (index % 3)
+            )
+            estimator._add_profile_sample(session, "total_revision", features.revision_key, 100.0)
+        session.commit()
+    estimator._profiles = estimator._load_profiles()
+    current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
+
+    # With node progress, the node-local landmark still wins.
+    landmark = estimator.estimate(
+        generation, progress=progress, now=current, sibling_durations=[40.0]
+    )
+    assert landmark is not None
+    assert landmark["basis"] == "progress_landmark"
+    assert landmark["remaining_seconds"] == 13.0
+
+    # Without node progress (or for other nodes) the fresh sibling beats the
+    # historical cohort.
+    sibling = estimator.estimate(generation, now=current, sibling_durations=[40.0])
+    assert sibling is not None
+    assert sibling["basis"] == "run_sibling"
+    other_node = estimator.estimate(
+        generation,
+        progress=_progress(node_id="different-node", fraction=0.5),
+        now=current,
+        sibling_durations=[40.0],
+    )
+    assert other_node is not None
+    assert other_node["basis"] == "run_sibling"
+
+
+def test_audit_folds_total_checkpoint_scope_with_prompt_bucket(
+    tmp_path: Path,
+) -> None:
+    factory = _session_factory(tmp_path / "eta-checkpoint-audit.db")
+    estimator = GenerationEtaEstimator(factory)
+    base = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+    generations = [
+        _checkpoint_generation(
+            generation_id=f"00000000-0000-4000-8000-{index:012d}",
+            status=GenerationStatus.SUCCEEDED,
+            started_at=base + timedelta(seconds=index * 10),
+            completed_at=base + timedelta(seconds=index * 10 + 30),
+        )
+        for index in range(1, 3)
+    ]
+    with factory() as session:
+        session.add_all(generations)
+        session.commit()
+
+    result = estimator._audit_batch()
+    assert result.observed == 2
+    estimator._apply_audit_result(result)
+
+    with factory() as session:
+        rows = session.execute(
+            select(
+                GenerationTimingProfile.scope,
+                GenerationTimingProfile.scope_key,
+                GenerationTimingProfile.sample_count,
+            )
+        ).all()
+    assert {scope for scope, _, _ in rows} == {
+        "total_exact",
+        "total_checkpoint",
+        "total_revision_resolution",
+        "total_revision",
+        "total_source",
+        "total_instance",
+    }
+    checkpoint_rows = [row for row in rows if row[0] == "total_checkpoint"]
+    # Both siblings share one (source, checkpoint, prompt bucket, resolution) cohort.
+    assert len(checkpoint_rows) == 1
+    assert checkpoint_rows[0][2] == 2
+
+    # A different prompt-size band starts a new checkpoint cohort.
+    longer = _checkpoint_generation(
+        generation_id="00000000-0000-4000-8000-000000000009",
+        status=GenerationStatus.SUCCEEDED,
+        prompt="a" * 100,
+        started_at=base + timedelta(seconds=100),
+        completed_at=base + timedelta(seconds=130),
+    )
+    with factory() as session:
+        session.add(longer)
+        session.commit()
+    result = estimator._audit_batch()
+    assert result.observed == 1
+    estimator._apply_audit_result(result)
+    with factory() as session:
+        checkpoint_rows = session.execute(
+            select(GenerationTimingProfile.scope_key).where(
+                GenerationTimingProfile.scope == "total_checkpoint"
+            )
+        ).all()
+    assert len(checkpoint_rows) == 2
+
+
+def test_ladder_prefers_checkpoint_scope_between_exact_and_revision(
+    tmp_path: Path,
+) -> None:
+    factory = _session_factory(tmp_path / "eta-checkpoint-ladder.db")
+    estimator = GenerationEtaEstimator(factory)
+    generation = _checkpoint_generation()
+    features = build_generation_timing_features(generation)
+    current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
+    with factory() as session:
+        for _ in range(6):
+            estimator._add_profile_sample(
+                session, "total_checkpoint", features.checkpoint_key, 60.0
+            )
+            estimator._add_profile_sample(session, "total_revision", features.revision_key, 100.0)
+        session.commit()
+    estimator._profiles = estimator._load_profiles()
+
+    estimate = estimator.estimate(generation, now=current)
+    assert estimate is not None
+    assert estimate["basis"] == "historical_checkpoint"
+    assert estimate["confidence"] == "medium"
+    assert estimate["remaining_seconds"] == 55.0
+
+    with factory() as session:
+        for _ in range(20):
+            estimator._add_profile_sample(session, "total_exact", features.exact_key, 40.0)
+        session.commit()
+    estimator._profiles = estimator._load_profiles()
+    estimate = estimator.estimate(generation, now=current)
+    assert estimate is not None
+    assert estimate["basis"] == "historical_exact"
