@@ -28,6 +28,7 @@ import {
   parametersForRequest,
   photoViewerImageLayout,
   positivePromptInput,
+  promptInstructionsForMode,
   recalledComfyuiInstanceState,
   reconcileInterfaceValues,
   resolutionPresetForValue,
@@ -108,6 +109,8 @@ const state = {
     available: false,
     message: null,
     error: null,
+    defaultInstructions: {},
+    instructionOverrides: {},
   },
   speechToText: { available: false, message: null },
   collections: [],
@@ -165,6 +168,7 @@ const liveGenerationRefreshQueue = createCoalescedTaskQueue((id, options) => ref
 let activeResolutionDrag = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
+let promptEditorInstructionOverrides = {};
 let sourcePickerReturnFocus = null;
 let collectionDialogReturnFocus = null;
 let collectionDeleteReturnFocus = null;
@@ -408,6 +412,7 @@ async function handleClick(event) {
     else if (action === "paste-prompt-editor-text") await pastePromptEditorTextFromClipboard();
     else if (action === "compose-prompt-editor") await composePromptEditor(target);
     else if (action === "compose-prompt") await composePrompt(target);
+    else if (action === "reset-prompt-instructions") resetPromptInstructions(target);
     else if (action === "retry-auto-generate") retryAutoGenerate();
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
@@ -882,10 +887,27 @@ function handleInput(event) {
   }
   if (
     element.matches(
-      "#prompt-editor-dialog [data-prompt-editor-input], #prompt-editor-creative-direction, [name=prompt-editor-assistant-mode], #prompt-editor-thinking-mode",
+      "#prompt-editor-dialog [data-prompt-editor-input], #prompt-editor-creative-direction, [name=prompt-editor-assistant-mode], #prompt-editor-thinking-mode, #prompt-editor-instructions",
     )
   ) {
-    setPromptEditorAssistantError(element.closest("#prompt-editor-dialog"), null);
+    const dialog = element.closest("#prompt-editor-dialog");
+    setPromptEditorAssistantError(dialog, null);
+    delete dialog.dataset.promptAssistantCompositionId;
+  }
+  if (element.id === "prompt-editor-instructions" || element.name === "prompt-editor-assistant-mode") {
+    const dialog = element.closest("#prompt-editor-dialog");
+    capturePromptInstructions(dialog, promptEditorInstructionOverrides);
+    syncPromptInstructions(dialog, promptEditorInstructionOverrides, promptEditorMode(dialog));
+    delete dialog.dataset.promptAssistantCompositionId;
+    return;
+  }
+  if (element.id === "prompt-assistant-instructions") {
+    capturePromptInstructions(element.closest("#prompt-assistant"), state.promptAssistant.instructionOverrides);
+    persistPromptInstructions();
+    setPromptAssistantError(null);
+    preparedAutoGenerateAssistantFingerprint = null;
+    scheduleAutoGenerate();
+    return;
   }
   if (element.matches("[data-prompt-editor-input]")) {
     updatePromptEditorStats(element.value);
@@ -903,7 +925,10 @@ function handleInput(event) {
     return;
   }
   if (element.name === "assistant-mode") {
+    const assistant = element.closest("#prompt-assistant");
+    capturePromptInstructions(assistant, state.promptAssistant.instructionOverrides);
     state.promptAssistant.mode = element.value;
+    syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, element.value);
     setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
     scheduleAutoGenerate();
@@ -950,11 +975,13 @@ function openPromptEditor(button) {
     direction: source.selectionDirection || "none",
   };
   promptEditorReturnFocus = button;
+  promptEditorInstructionOverrides = structuredClone(state.promptAssistant.instructionOverrides);
   dialog.dataset.promptControlId = controlId;
   delete dialog.dataset.promptAssistantCompositionId;
   delete dialog.dataset.promptAssistantModel;
   dialog.returnValue = "";
   dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, state.promptAssistant);
+  syncPromptInstructions(dialog, promptEditorInstructionOverrides, state.promptAssistant.mode);
   dialog.showModal();
   syncSpeechControls();
   queueMicrotask(() => {
@@ -992,6 +1019,9 @@ function applyPromptEditor() {
   state.promptAssistant.creativeDirection = creativeDirection?.value || "";
   state.promptAssistant.mode = assistantMode?.value === "create" ? "create" : "refine";
   state.promptAssistant.think = assistantThinking?.checked !== false;
+  capturePromptInstructions(dialog, promptEditorInstructionOverrides);
+  state.promptAssistant.instructionOverrides = structuredClone(promptEditorInstructionOverrides);
+  persistPromptInstructions();
   preparedAutoGenerateAssistantFingerprint = null;
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
@@ -999,6 +1029,8 @@ function applyPromptEditor() {
     if (state.autoGenerate && state.autoGenerateCreativeDirection) {
       preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }
+  } else {
+    state.compositionId = null;
   }
   persistActiveParameterState();
   renderPanel();
@@ -2015,6 +2047,7 @@ async function enterApplication() {
   checkpointTiersRevision += 1;
   state.promptAssistant = {
     ...state.promptAssistant,
+    instructionOverrides: loadPromptInstructions(),
     available: false,
     message: "Checking Prompt Assistant availability…",
     error: null,
@@ -2494,6 +2527,7 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
       ...state.promptAssistant,
       available: Boolean(assistant.available),
       message: assistant.message,
+      defaultInstructions: assistant.default_instructions || {},
     };
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
@@ -2930,6 +2964,7 @@ function renderPanel() {
     if (mode) mode.checked = true;
     const thinkingMode = assistant.querySelector("#prompt-assistant-thinking-mode");
     if (thinkingMode) thinkingMode.checked = state.promptAssistant.think !== false;
+    syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, state.promptAssistant.mode);
   }
   syncPromptAssistantAction();
   syncPromptAssistantError();
@@ -2975,6 +3010,84 @@ function setPromptEditorAssistantError(dialog, message) {
   else thinkingMode?.removeAttribute("aria-describedby");
 }
 
+function promptInstructionsStorageKey() {
+  return `cif.prompt-instructions.${state.session?.user?.id || "anonymous"}`;
+}
+
+function loadPromptInstructions() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(promptInstructionsStorageKey()) || "{}");
+    return Object.fromEntries(["create", "refine"]
+      .filter((mode) => typeof saved?.[mode] === "string" && saved[mode].length <= 8000)
+      .map((mode) => [mode, saved[mode]]));
+  } catch {
+    return {};
+  }
+}
+
+function persistPromptInstructions() {
+  try {
+    localStorage.setItem(promptInstructionsStorageKey(), JSON.stringify(state.promptAssistant.instructionOverrides));
+  } catch {
+    // Editing remains available when browser storage is disabled.
+  }
+}
+
+function promptEditorMode(dialog) {
+  return dialog?.querySelector('[name="prompt-editor-assistant-mode"]:checked')?.value === "create"
+    ? "create" : "refine";
+}
+
+function capturePromptInstructions(container, overrides) {
+  const textarea = container?.querySelector("[data-prompt-instructions]");
+  if (!textarea || textarea.disabled) return;
+  const mode = textarea.dataset.instructionsMode;
+  if (textarea.value === state.promptAssistant.defaultInstructions[mode]) delete overrides[mode];
+  else overrides[mode] = textarea.value;
+  textarea.setCustomValidity(textarea.value.trim() ? "" : "Enter instructions or reset to the default.");
+}
+
+function syncPromptInstructions(container, overrides, mode) {
+  const textarea = container?.querySelector("[data-prompt-instructions]");
+  if (!textarea) return;
+  const value = promptInstructionsForMode({ ...state.promptAssistant, instructionOverrides: overrides }, mode);
+  if (textarea.value !== value) textarea.value = value;
+  textarea.dataset.instructionsMode = mode;
+  textarea.disabled = typeof state.promptAssistant.defaultInstructions[mode] !== "string";
+  textarea.setCustomValidity(value.trim() ? "" : "Enter instructions or reset to the default.");
+  container.querySelector("[data-instructions-mode-label]").textContent = mode === "create"
+    ? "Instructions for a new prompt" : "Instructions for refining your prompt";
+  container.querySelector('[data-action="reset-prompt-instructions"]').disabled = textarea.disabled;
+}
+
+function validatePromptInstructions(textarea) {
+  if (!textarea) return true;
+  if (!textarea.checkValidity()) {
+    const disclosure = textarea.closest("details");
+    if (disclosure) disclosure.open = true;
+  }
+  return textarea.reportValidity();
+}
+
+function resetPromptInstructions(button) {
+  const dialog = button.closest("#prompt-editor-dialog");
+  const container = dialog || button.closest("#prompt-assistant");
+  const mode = dialog ? promptEditorMode(dialog) : state.promptAssistant.mode;
+  const overrides = dialog ? promptEditorInstructionOverrides : state.promptAssistant.instructionOverrides;
+  delete overrides[mode];
+  syncPromptInstructions(container, overrides, mode);
+  if (dialog) {
+    delete dialog.dataset.promptAssistantCompositionId;
+    setPromptEditorAssistantError(dialog, null);
+  } else {
+    persistPromptInstructions();
+    preparedAutoGenerateAssistantFingerprint = null;
+    setPromptAssistantError(null);
+    scheduleAutoGenerate();
+  }
+  container.querySelector("[data-prompt-instructions]").focus();
+}
+
 function syncPromptAssistantDraftFromPanel() {
   const assistant = document.querySelector("#prompt-assistant");
   if (!assistant) return;
@@ -2987,12 +3100,15 @@ function syncPromptAssistantDraftFromPanel() {
   const nextDirection = direction?.value ?? state.promptAssistant.creativeDirection ?? "";
   const nextMode = mode?.value === "create" ? "create" : "refine";
   const nextThinkingMode = thinkingMode?.checked ?? state.promptAssistant.think !== false;
+  const previousInstructions = promptInstructionsForMode(state.promptAssistant);
+  capturePromptInstructions(assistant, state.promptAssistant.instructionOverrides);
   const nextAutomaticCreativeDirection =
     automaticCreativeDirection?.checked ?? state.autoGenerateCreativeDirection;
   if (
     nextDirection !== state.promptAssistant.creativeDirection ||
     nextMode !== state.promptAssistant.mode ||
     nextThinkingMode !== (state.promptAssistant.think !== false) ||
+    previousInstructions !== promptInstructionsForMode(state.promptAssistant, nextMode) ||
     nextAutomaticCreativeDirection !== state.autoGenerateCreativeDirection
   ) {
     preparedAutoGenerateAssistantFingerprint = null;
@@ -3001,11 +3117,14 @@ function syncPromptAssistantDraftFromPanel() {
   state.promptAssistant.mode = nextMode;
   state.promptAssistant.think = nextThinkingMode;
   state.autoGenerateCreativeDirection = nextAutomaticCreativeDirection;
+  syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, nextMode);
+  persistPromptInstructions();
 }
 
 function capturePanelView(panel) {
   const view = {
     scrollTop: panel.querySelector("#panel-scroll")?.scrollTop || 0,
+    promptInstructionsOpen: Boolean(panel.querySelector(".prompt-preprocessor")?.open),
     textareaHeights: [...panel.querySelectorAll("textarea[id]")]
       .filter((textarea) => textarea.style.height)
       .map((textarea) => ({ id: textarea.id, height: textarea.style.height })),
@@ -3047,6 +3166,8 @@ function capturePanelView(panel) {
 }
 
 function restorePanelView(panel, view) {
+  const promptInstructions = panel.querySelector(".prompt-preprocessor");
+  if (promptInstructions) promptInstructions.open = view.promptInstructionsOpen;
   const scroller = panel.querySelector("#panel-scroll");
   if (scroller) scroller.scrollTop = view.scrollTop;
   for (const { id, height } of view.textareaHeights || []) {
@@ -3294,6 +3415,7 @@ function currentAutoGenerateAssistantFingerprint() {
     creativeDirection: state.promptAssistant.creativeDirection,
     prompt: promptInput ? state.parameters[promptInput.id] : "",
     think: state.promptAssistant.think !== false,
+    instructions: promptInstructionsForMode(state.promptAssistant),
   });
 }
 
@@ -3733,6 +3855,15 @@ async function composePrompt(
   const requestPrompt = state.parameters[promptInput.id] || "";
   const requestDirection = state.promptAssistant.creativeDirection || "";
   const requestThink = state.promptAssistant.think !== false;
+  const instructionsInput = document.querySelector("#prompt-assistant-instructions");
+  if (!validatePromptInstructions(instructionsInput)) {
+    if (automatic) scheduleAutoGenerateCompositionRetry({
+      code: "instructions_required",
+      message: "Enter prompt pre-processor instructions or reset to the default.",
+    }, autoGenerateContext || currentAutoGenerateRetryContext());
+    return false;
+  }
+  const requestInstructions = promptInstructionsForMode(state.promptAssistant);
   promptCompositionRequests += 1;
   setPromptAssistantError(null);
   syncPromptAssistantAction();
@@ -3744,10 +3875,12 @@ async function composePrompt(
         prompt: requestPrompt,
         creative_direction: requestDirection,
         think: requestThink,
+        ...(instructionsInput?.disabled ? {} : { instructions: requestInstructions }),
       }),
     });
     if (
       !sourceContextIsCurrent(requestSourceKey, requestRevision) ||
+      promptInstructionsForMode(state.promptAssistant) !== requestInstructions ||
       (automatic &&
         (!state.autoGenerate ||
           !state.autoGenerateCreativeDirection ||
@@ -3757,7 +3890,7 @@ async function composePrompt(
           (state.promptAssistant.think !== false) !== requestThink))
     ) {
       if (!automatic) {
-        toast("Prompt composition finished after the source changed and was not applied.");
+        toast("Prompt composition finished after its inputs changed and was not applied.");
       }
       return false;
     }
@@ -3771,7 +3904,8 @@ async function composePrompt(
       state.autoGenerateCreativeDirection &&
       state.promptAssistant.mode === requestMode &&
       state.promptAssistant.creativeDirection === requestDirection &&
-      (state.promptAssistant.think !== false) === requestThink
+      (state.promptAssistant.think !== false) === requestThink &&
+      promptInstructionsForMode(state.promptAssistant) === requestInstructions
     ) {
       preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
     }
@@ -3834,6 +3968,11 @@ async function composePromptEditor(button) {
   const requestMode = checkedMode.value === "create" ? "create" : "refine";
   const requestPrompt = editor.value;
   const requestDirection = direction.value;
+  const requestThink = thinkingMode.checked;
+  const instructionsInput = dialog.querySelector("[data-prompt-instructions]");
+  capturePromptInstructions(dialog, promptEditorInstructionOverrides);
+  if (!validatePromptInstructions(instructionsInput)) return;
+  const requestInstructions = instructionsInput?.disabled ? undefined : instructionsInput?.value;
   button.disabled = true;
   button.textContent = "Applying…";
   setPromptEditorAssistantError(dialog, null);
@@ -3844,7 +3983,8 @@ async function composePromptEditor(button) {
         mode: requestMode,
         prompt: requestPrompt,
         creative_direction: requestDirection,
-        think: thinkingMode.checked,
+        think: requestThink,
+        instructions: requestInstructions,
       }),
     });
     if (!sourceContextIsCurrent(requestSourceKey, requestRevision)) {
@@ -3853,6 +3993,14 @@ async function composePromptEditor(button) {
     }
     if (!dialog.open || !button.isConnected || dialog.dataset.promptControlId !== controlId) {
       toast("Prompt composition finished after the focused editor closed and was not applied.");
+      return;
+    }
+    if (
+      editor.value !== requestPrompt || direction.value !== requestDirection ||
+      promptEditorMode(dialog) !== requestMode || thinkingMode.checked !== requestThink ||
+      (!instructionsInput?.disabled && instructionsInput?.value !== requestInstructions)
+    ) {
+      toast("Prompt composition finished after its inputs changed and was not applied.");
       return;
     }
     editor.value = result.prompt;

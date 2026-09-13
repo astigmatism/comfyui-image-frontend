@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING
 from app.main import create_app
 from app.models import ServiceHealth
@@ -489,7 +490,7 @@ def test_successful_empty_listing_retires_current_catalog(fake_state, settings_f
         assert client.get("/api/workflows").json() == []
 
 
-def test_prompt_assistant_uses_router_selected_model_and_records_effective_model(
+def test_prompt_assistant_uses_configured_alias_and_records_effective_model(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client)
@@ -512,9 +513,9 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
     assert composed["prompt"] == "portrait, soft window light"
     assert composed["model"] == "router-active:latest"
     request_payload = fake_state.ollama_calls[-1]
-    assert "model" not in request_payload
+    assert request_payload["model"] == "nighttime"
     assert request_payload["stream"] is False
-    assert request_payload["think"] is True
+    assert request_payload["think"] == "xhigh"
     assert request_payload["format"] == {
         "type": "object",
         "properties": {"prompt": {"type": "string"}},
@@ -526,7 +527,7 @@ def test_prompt_assistant_uses_router_selected_model_and_records_effective_model
         "seed": 600,
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
-    assert request_payload["prompt"] == (
+    assert request_payload["messages"][0]["content"] == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
         "Refine the current prompt according to the creative direction. The returned prompt "
         "must incorporate that direction and must not repeat the current prompt unchanged.\n\n"
@@ -585,7 +586,7 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
 
     assert response.status_code == 200, response.text
     request_payload = fake_state.ollama_calls[-1]
-    instruction = request_payload["prompt"]
+    instruction = request_payload["messages"][0]["content"]
     assert instruction == (
         "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
         "Create one complete, polished, directly usable image prompt from this creative "
@@ -593,7 +594,7 @@ def test_create_prompt_assistant_requests_a_complete_creative_krea_2_prompt(
         "subject details, setting, lighting, camera, and style or quality terms. Never "
         "return the direction verbatim or unchanged:\n\na red fox"
     )
-    assert request_payload["think"] is True
+    assert request_payload["think"] == "xhigh"
     assert request_payload["options"] == {
         "temperature": 0.5,
         "seed": 700,
@@ -643,10 +644,10 @@ def test_prompt_assistant_recovers_production_length_shape_without_changing_cand
     assert response.json()["model"] == "router-thinking-model"
     assert len(fake_state.ollama_calls) == 2
     first, recovered = fake_state.ollama_calls
-    assert first["think"] is True
-    assert recovered["think"] is True
+    assert first["think"] == "xhigh"
+    assert recovered["think"] == "xhigh"
     assert first["format"] == recovered["format"]
-    assert first["prompt"] == recovered["prompt"]
+    assert first["messages"][0]["content"] == recovered["messages"][0]["content"]
     assert first["options"] == {
         "temperature": 0.5,
         "seed": 712,
@@ -771,8 +772,8 @@ def test_create_prompt_assistant_retries_an_unchanged_current_prompt(
         "seed": 801,
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
-    assert retry_request["prompt"] == first_request["prompt"]
-    assert retry_request["prompt"].endswith(
+    assert retry_request["messages"][0]["content"] == first_request["messages"][0]["content"]
+    assert retry_request["messages"][0]["content"].endswith(
         "return the direction verbatim or unchanged:\n\na red fox"
     )
 
@@ -802,7 +803,7 @@ def test_create_prompt_assistant_accepts_a_useful_paraphrase_without_retrying(
         "A vibrant red fox stands beneath pines washed in moonlight."
     )
     assert len(fake_state.ollama_calls) == 1
-    assert fake_state.ollama_calls[0]["think"] is True
+    assert fake_state.ollama_calls[0]["think"] == "xhigh"
 
 
 def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
@@ -859,7 +860,9 @@ def test_create_prompt_assistant_never_accepts_a_recent_two_prompt_cycle(
         "subject details, setting, lighting, camera, and style or quality terms. Never "
         "return the direction verbatim or unchanged:\n\na red fox beneath moonlit pines"
     )
-    assert {call["prompt"] for call in fake_state.ollama_calls} == {expected_instruction}
+    assert {call["messages"][0]["content"] for call in fake_state.ollama_calls} == {
+        expected_instruction
+    }
 
 
 def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
@@ -884,7 +887,7 @@ def test_prompt_assistant_accepts_structured_final_prompt_from_thinking_field(
         "a red fox, detailed photographic rendering, soft natural light, "
         "shallow depth of field, high detail"
     )
-    assert fake_state.ollama_calls[-1]["think"] is True
+    assert fake_state.ollama_calls[-1]["think"] == "xhigh"
 
 
 def test_prompt_assistant_accepts_response_only_output_and_records_a_warning(
@@ -906,7 +909,7 @@ def test_prompt_assistant_accepts_response_only_output_and_records_a_warning(
 
     assert response.status_code == 200, response.text
     assert response.json()["prompt"] == "a portrait in cool light, make the light warmer"
-    assert fake_state.ollama_calls[-1]["think"] is True
+    assert fake_state.ollama_calls[-1]["think"] == "xhigh"
     container = app_client.app.state.container
     from app.models import PromptAssistantRun
 
@@ -1186,7 +1189,7 @@ def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
     assert error["code"] == "prompt_refinement_unchanged"
     assert "after retrying" in error["message"]
     assert error["details"]["validation_stage"] == "refinement_distinctness"
-    assert error["details"]["model"] == fake_state.models[0]
+    assert error["details"]["model"] == "nighttime"
     assert error["details"]["status"] == 200
     assert len(error["details"]["attempt_diagnostics"]) == 3
     assert [call["options"]["seed"] for call in fake_state.ollama_calls] == [700, 701, 702]
@@ -1352,7 +1355,11 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
     )
     response = app_client.get("/api/prompt-assistant/status")
     assert response.status_code == 200
-    assert response.json() == {"available": True, "message": None}
+    assert response.json() == {
+        "available": True,
+        "message": None,
+        "default_instructions": DEFAULT_PROMPT_INSTRUCTIONS,
+    }
 
     _cache_ollama_health(
         app_client,

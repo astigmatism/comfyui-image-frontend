@@ -1247,6 +1247,7 @@ class GenerationService:
                 "creative_direction": prompt_run.creative_direction,
                 "ollama_output": prompt_run.ollama_output,
                 "model": prompt_run.model_name,
+                "instructions": prompt_run.instructions,
             }
         runtime = self._recall_runtime(session, generation)
         historical = {

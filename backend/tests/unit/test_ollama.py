@@ -27,6 +27,7 @@ def _settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path,
         session_secret="test-session-secret-material-0123456789",
         ollama_base_url="http://ollama.test",
+        ollama_model=None,
         test_mode=True,
     )
 
@@ -80,13 +81,13 @@ def test_duplicate_create_retry_changes_sampling_without_adding_instructions() -
     instruction = _instruction(mode="create", prompt="", direction="a ceramic robot")
     payload = _generate_payload(mode="create", instruction=instruction, attempt=1, seed=90210)
 
-    assert payload["prompt"] == instruction
+    assert payload["messages"][0]["content"] == instruction
     assert payload["options"] == {
         "temperature": 0.7,
         "seed": 90210,
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
-    assert payload["think"] is True
+    assert payload["think"] == "xhigh"
 
 
 def test_refine_retry_changes_sampling() -> None:
@@ -120,7 +121,7 @@ def test_response_only_structured_output_is_accepted_with_a_capability_warning(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
                 json={
@@ -173,7 +174,7 @@ def test_thinking_only_structured_output_remains_supported(tmp_path: Path) -> No
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
                 json={
@@ -218,7 +219,7 @@ def test_thinking_create_retries_length_with_only_a_larger_output_budget(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if len(payloads) == 1:
                 return httpx.Response(
@@ -274,10 +275,10 @@ def test_thinking_create_retries_length_with_only_a_larger_output_budget(
 
     assert len(payloads) == 2
     first, second = payloads
-    assert first["think"] is True
-    assert second["think"] is True
+    assert first["think"] == "xhigh"
+    assert second["think"] == "xhigh"
     assert first["format"] == second["format"]
-    assert first["prompt"] == second["prompt"]
+    assert first["messages"][0]["content"] == second["messages"][0]["content"]
     assert first["options"] == {
         "temperature": 0.5,
         "seed": 90210,
@@ -321,7 +322,7 @@ def test_output_budget_retry_does_not_consume_create_distinctness_attempt(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(200, json=responses.pop(0))
         raise AssertionError(f"unexpected request {request.method} {request.url}")
@@ -351,7 +352,7 @@ def test_output_budget_retry_does_not_consume_create_distinctness_attempt(
     ]
     assert [payload["options"]["seed"] for payload in payloads] == [500, 500, 501]
     assert [payload["options"]["temperature"] for payload in payloads] == [0.5, 0.5, 0.7]
-    assert len({payload["prompt"] for payload in payloads}) == 1
+    assert len({payload["messages"][0]["content"] for payload in payloads}) == 1
 
 
 def test_refine_retries_length_with_deterministic_sampling(tmp_path: Path) -> None:
@@ -360,7 +361,7 @@ def test_refine_retries_length_with_deterministic_sampling(tmp_path: Path) -> No
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if len(payloads) == 1:
                 return httpx.Response(
@@ -416,7 +417,7 @@ def test_complete_structured_prompt_is_accepted_even_when_done_reason_is_length(
         nonlocal generate_calls
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             generate_calls += 1
             return httpx.Response(
                 200,
@@ -456,7 +457,7 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
@@ -529,7 +530,7 @@ def test_malformed_or_empty_structured_output_is_rejected_with_safe_diagnostics(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
                 json={
@@ -583,7 +584,7 @@ def test_refine_redraws_an_unchanged_candidate_and_returns_the_changed_prompt(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             candidate = "A PORTRAIT" if len(payloads) == 1 else "a portrait in warm window light"
             return httpx.Response(
@@ -631,7 +632,7 @@ def test_refine_rejects_unchanged_output_only_after_bounded_redraws(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
@@ -712,7 +713,7 @@ def test_create_retries_a_direction_echo_and_returns_the_expansion(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             # Attempt 1 returns a case/whitespace variant of the direction verbatim,
             # modelling the degenerate echo observed in the incident.
@@ -795,7 +796,7 @@ def test_create_direction_echo_on_every_attempt_raises_prompt_creation_unchanged
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
@@ -853,7 +854,7 @@ def test_create_rejects_a_truncated_direction_and_returns_the_expansion(tmp_path
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             candidate = truncated if len(payloads) == 1 else expansion
             return httpx.Response(
@@ -898,7 +899,7 @@ def test_create_accepts_an_expansion_that_starts_with_the_direction(tmp_path: Pa
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
@@ -944,7 +945,7 @@ def test_create_exhaustion_with_non_echo_duplicates_keeps_the_generic_error(tmp_
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
@@ -995,7 +996,7 @@ def test_read_timeout_is_classified_without_retrying_or_retaining_prompt_text(
         nonlocal generate_calls
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             generate_calls += 1
             raise httpx.ReadTimeout("private prompt must not be retained", request=request)
         raise AssertionError(f"unexpected request {request.method} {request.url}")
@@ -1030,7 +1031,7 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
         nonlocal generate_calls
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
-        if request.url.path == "/api/generate":
+        if request.url.path == "/api/chat":
             generate_calls += 1
             return httpx.Response(
                 200,

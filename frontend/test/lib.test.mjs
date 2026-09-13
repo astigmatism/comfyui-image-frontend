@@ -420,6 +420,10 @@ test("auto-generation fingerprints non-empty Prompt Assistant input for one prep
     think: true,
   });
   assert.ok(refine);
+  assert.notEqual(refine, autoGenerationPromptAssistantFingerprint({
+    sourceKey: "landscape", mode: "refine", creativeDirection: "cinematic light",
+    prompt: "a lighthouse", think: true, instructions: "Write in French.",
+  }));
   assert.equal(
     autoGenerationPromptAssistantFingerprint({
       sourceKey: "landscape",

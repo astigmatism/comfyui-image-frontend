@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from .config import COMFYUI_INSTANCE_ID_PATTERN
+from .domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
 
 
@@ -611,6 +612,14 @@ class PromptComposeRequest(APIModel):
     prompt: str = ""
     creative_direction: str
     think: bool = True
+    instructions: str | None = Field(default=None, min_length=1, max_length=8000)
+
+    @field_validator("instructions")
+    @classmethod
+    def validate_instructions(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Enter instructions or reset to the default.")
+        return value.strip() if value is not None else None
 
 
 class PromptComposeResponse(APIModel):
@@ -623,6 +632,9 @@ class PromptComposeResponse(APIModel):
 class PromptAssistantStatus(APIModel):
     available: bool
     message: str | None = None
+    default_instructions: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_PROMPT_INSTRUCTIONS)
+    )
 
 
 class SpeechToTextStatus(APIModel):

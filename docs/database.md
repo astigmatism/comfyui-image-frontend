@@ -25,6 +25,8 @@ backfill; the estimator incorporates eligible legacy rows later in idle-only bat
 
 Migration `d72f6a8c9e10_add_comfyui_execution_instances.py` adds independent execution routing without rewriting publication identity. It creates `comfyui_instance_health`, adds non-null `generations.comfyui_instance_id` and `generations.comfyui_instance_label`, and adds the instance/status/queue index. Existing rows derive the ID from the retained generation source, then workflow profile, then the legacy `default` fallback; their initial display label is that ID. The migration does not contact, restart, or mutate ComfyUI.
 
+Migration `82bc14d6e9a0_record_prompt_instructions.py` adds nullable `prompt_assistant_runs.instructions`. Successful compositions store the effective pre-processor instructions and expose them on recall. Historical and failed rows retain `null`; raw custom instructions are excluded from failure diagnostics. Per-mode editing drafts are stored in the browser under the signed-in user's ID, independently of saved composition history.
+
 Migration `f3a91c7d2b64_record_prompt_assistant_thinking.py` adds non-null `prompt_assistant_runs.thinking_enabled`. Historical rows are backfilled to `true`, matching the only behavior available before the focused-editor toggle. New failed runs retain bounded model/status, field-presence, response/thinking-length, done-reason, validation-stage, and output-budget attempt/allowance details in `raw_response_json`. Their prompt and creative-direction columns are left empty, and raw reasoning is never copied into diagnostics, so failed composition content is not retained by default.
 
 Migration `b1e7c4a92d60_add_collections.py` adds the owner-scoped `collections` tree,

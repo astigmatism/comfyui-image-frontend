@@ -656,7 +656,9 @@ test("creative direction renders as its own collapsible section beneath the prom
   const section = html.slice(assistantSectionIndex, advancedSectionIndex);
   assert.match(section, /<section class="prompt-assistant" id="prompt-assistant"/);
   assert.match(section, /data-speech-target="creative-direction"/);
-  assert.doesNotMatch(section, /<details|<summary|>Mode</);
+  assert.doesNotMatch(section, />Mode</);
+  assert.match(section, /<details class="prompt-preprocessor">/);
+  assert.match(section, /<\/details>[\s\S]*data-action="compose-prompt"/);
   assert.match(section, /Refine Current Prompt/);
   assert.match(section, /New Prompt from Creative Direction/);
   assert.match(section, /Apply Creative Direction/);
@@ -666,10 +668,7 @@ test("creative direction renders as its own collapsible section beneath the prom
     section,
     /id="prompt-assistant-thinking-mode"[\s\S]*id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden/,
   );
-  assert.ok(
-    section.indexOf('data-action="compose-prompt"') <
-      section.indexOf('id="prompt-assistant-thinking-mode"'),
-  );
+  assert.match(section, /<details class="prompt-preprocessor">[^]*id="prompt-assistant-thinking-mode"[^]*<\/details>/);
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {
@@ -679,6 +678,8 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
     creativeDirection: "Moody <light>",
     think: false,
     historicalModel: "model-one",
+    defaultInstructions: { create: "Default instructions", refine: "Refine instructions" },
+    instructionOverrides: { create: "Write <one> concise scene." },
   });
   assert.match(html, /<h2 id="prompt-editor-title">Focused prompt editor<\/h2>/);
   assert.match(html, /aria-label="Prompt editor"/);
@@ -709,6 +710,12 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.doesNotMatch(html, /Historical composition used model-one|prompt-editor-assistant-message/);
   assert.match(html, /data-action="compose-prompt-editor"/);
   assert.match(html, /Apply Creative Direction/);
+  assert.match(html, /Prompt pre-processor/);
+  assert.match(html, /<details class="prompt-preprocessor">/);
+  assert.match(html, /<details class="prompt-preprocessor">[^]*id="prompt-editor-thinking-mode"[^]*<\/details>/);
+  assert.match(html, /<\/details>[\s\S]*data-action="compose-prompt-editor"/);
+  assert.match(html, /id="prompt-editor-instructions"[^>]*>Write &lt;one&gt; concise scene\.<\/textarea>/);
+  assert.match(html, /Reset to default/);
   assert.ok(
     html.indexOf('id="prompt-editor-creative-direction"') <
       html.indexOf('class="prompt-editor-assistant-action-row"'),

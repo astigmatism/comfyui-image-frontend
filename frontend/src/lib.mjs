@@ -557,6 +557,7 @@ export function autoGenerationPromptAssistantFingerprint({
   creativeDirection,
   prompt,
   think = true,
+  instructions = "",
 }) {
   const direction = String(creativeDirection || "");
   if (!direction.trim()) return null;
@@ -566,7 +567,14 @@ export function autoGenerationPromptAssistantFingerprint({
     direction,
     String(prompt || ""),
     think !== false,
+    String(instructions || ""),
   ]);
+}
+
+export function promptInstructionsForMode(assistant, mode = assistant.mode) {
+  const selectedMode = mode === "create" ? "create" : "refine";
+  return assistant.instructionOverrides?.[selectedMode] ??
+    assistant.defaultInstructions?.[selectedMode] ?? "";
 }
 
 export const AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS = 3;
@@ -824,6 +832,11 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
       mode: recall.prompt_assistant?.mode || "refine",
       creativeDirection: recall.prompt_assistant?.creative_direction || "",
       historicalModel: recall.prompt_assistant?.model || null,
+      instructionOverrides: {
+        ...(current.promptAssistant?.instructionOverrides || {}),
+        [recall.prompt_assistant?.mode === "create" ? "create" : "refine"]:
+          recall.prompt_assistant?.instructions ?? undefined,
+      },
       error: null,
     },
     fieldErrors: {},

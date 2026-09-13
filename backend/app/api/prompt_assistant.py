@@ -14,6 +14,7 @@ from ..dependencies import (
     require_ready_csrf,
     require_ready_user,
 )
+from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
 from ..models import PromptAssistantRun, ServiceHealth
 from ..schemas import PromptAssistantStatus, PromptComposeRequest, PromptComposeResponse
@@ -122,6 +123,7 @@ async def compose(
             direction=payload.creative_direction,
             think=payload.think,
             excluded_prompts=excluded_prompts,
+            instructions=payload.instructions,
         )
     except AppError as exc:
         session.add(
@@ -148,6 +150,7 @@ async def compose(
         mode=payload.mode,
         thinking_enabled=payload.think,
         prompt_before=payload.prompt,
+        instructions=payload.instructions or DEFAULT_PROMPT_INSTRUCTIONS[payload.mode],
         creative_direction=payload.creative_direction,
         model_name=result.model,
         template_version=container.settings.prompt_template_version,

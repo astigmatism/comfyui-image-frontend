@@ -2420,6 +2420,118 @@ code {
   font-size: 0.78rem;
 }
 
+.prompt-preprocessor {
+  min-width: 0;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.prompt-preprocessor > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+.prompt-preprocessor > summary::-webkit-details-marker {
+  display: none;
+}
+
+.prompt-preprocessor > summary:hover {
+  color: var(--text);
+}
+
+.prompt-preprocessor > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.prompt-preprocessor > summary svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.prompt-preprocessor[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.prompt-preprocessor-content {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 4px;
+}
+
+.prompt-preprocessor textarea {
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: #080d14;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.prompt-preprocessor-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.prompt-preprocessor-context {
+  margin: -5px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.prompt-preprocessor-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.prompt-preprocessor-tools .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 0 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.prompt-preprocessor-tools .button:hover {
+  color: var(--text);
+}
+
+.prompt-preprocessor-tools svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
 .prompt-assistant-error {
   margin: 0;
   padding: 9px 10px;
@@ -3664,7 +3776,7 @@ dialog::backdrop {
   gap: var(--space-3);
   min-height: 0;
   padding: 20px;
-  overflow: hidden;
+  overflow-y: auto;
   background: #0b1119;
 }
 
@@ -3736,6 +3848,16 @@ dialog::backdrop {
   resize: none;
 }
 
+.prompt-editor-assistant .prompt-preprocessor textarea {
+  min-height: 190px;
+  resize: vertical;
+}
+
+.prompt-editor-compose-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .prompt-editor-assistant-action-row {
   display: flex;
   align-items: end;
@@ -3757,14 +3879,17 @@ dialog::backdrop {
 }
 
 .prompt-editor-assistant-mode-options label,
-.prompt-editor-thinking-option,
-.prompt-assistant-thinking-option {
+.prompt-preprocessor-thinking-option {
   color: var(--text-soft);
   font-size: 0.78rem;
 }
 
-.prompt-editor-thinking-option,
-.prompt-assistant-thinking-option {
+.prompt-preprocessor-thinking-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
   white-space: nowrap;
 }
 

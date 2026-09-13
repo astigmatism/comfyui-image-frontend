@@ -274,6 +274,7 @@ class PromptAssistantRun(Base):
     template_version: Mapped[str] = mapped_column(String(64), nullable=False)
     ollama_output: Mapped[str | None] = mapped_column(Text)
     raw_response_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    instructions: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[int | None] = mapped_column(Integer)

@@ -151,6 +151,8 @@ class Settings(BaseSettings):
     reconciliation_grace_seconds: float = 5.0
 
     ollama_base_url: str | None = None
+    ollama_model: str | None = "nighttime"
+    ollama_api_key: SecretStr | None = None
     prompt_template_version: str = "v5"
 
     speech_to_text_url: str | None = None
@@ -172,10 +174,26 @@ class Settings(BaseSettings):
     enable_background_worker: bool = True
     test_mode: bool = False
 
-    @field_validator("comfyui_base_url", "ollama_base_url", "speech_to_text_url")
+    @field_validator("comfyui_base_url", "speech_to_text_url")
     @classmethod
     def strip_trailing_slash(cls, value: str | None) -> str | None:
         return value.rstrip("/") if value else value
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def normalize_ollama_base_url(cls, value: str | None) -> str | None:
+        if not value or not value.strip():
+            return None
+        normalized = _validate_service_url(
+            value, schemes={"http", "https"}, context="Ollama router base URL"
+        )
+        # Accept the router's advertised OpenAI base as well as its native API root.
+        return normalized.removesuffix("/v1")
+
+    @field_validator("ollama_model")
+    @classmethod
+    def normalize_ollama_model(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
     @field_validator("speech_to_text_model")
     @classmethod

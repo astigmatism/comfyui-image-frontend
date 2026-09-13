@@ -1590,9 +1590,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   const columnCreateMode = columnAssistant.getByRole("radio", {
     name: "New Prompt from Creative Direction",
   });
-  const columnThinkingMode = columnAssistant.getByRole("checkbox", {
-    name: "Thinking mode",
-  });
+  const columnThinkingMode = columnAssistant.locator("#prompt-assistant-thinking-mode");
   await columnDirection.fill("column direction");
   await columnCreateMode.check();
   await prompt.fill("draft that should remain");
@@ -1608,12 +1606,14 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   const focusedCreateMode = dialog.getByRole("radio", {
     name: "New Prompt from Creative Direction",
   });
-  const focusedThinkingMode = dialog.getByRole("checkbox", { name: "Thinking mode" });
+  const focusedThinkingMode = dialog.locator("#prompt-editor-thinking-mode");
   await expect(focusedPrompt).toHaveValue("draft that should remain");
   await expect(focusedDirection).toHaveValue("column direction");
   await expect(focusedCreateMode).toBeChecked();
   await expect(focusedThinkingMode).toBeChecked();
   await expect(columnThinkingMode).toBeChecked();
+  await expect(focusedThinkingMode).toBeHidden();
+  await dialog.locator(".prompt-preprocessor summary").click();
   await focusedPrompt.fill("this canceled draft should not be applied");
   await focusedDirection.fill("canceled direction");
   await focusedRefineMode.check();
@@ -1637,7 +1637,9 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
     `${longPrompt.length.toLocaleString()} characters`,
   );
   await focusedDirection.fill("focused assistant direction");
+  await dialog.locator(".prompt-preprocessor summary").click();
   await focusedThinkingMode.uncheck();
+  await dialog.locator(".prompt-preprocessor summary").click();
   const focusedCompositionRequest = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
@@ -2597,7 +2599,9 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   await direction.fill("a crimson fox beneath moonlit pines");
   await createMode.check();
   await expect(thinkingMode).toBeChecked();
+  await page.locator("#prompt-assistant .prompt-preprocessor summary").click();
   await thinkingMode.uncheck();
+  await page.locator("#prompt-assistant .prompt-preprocessor summary").click();
   await page.evaluate(() => {
     const promptElement = document.querySelector('[data-control-id="prompt"]');
     const directionElement = document.querySelector("#creative-direction");
@@ -2632,6 +2636,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
     prompt: "the prompt that must be replaced",
     creative_direction: "a crimson fox beneath moonlit pines",
     think: false,
+    instructions: await page.locator("#prompt-assistant-instructions").inputValue(),
   });
   await expect(applyCreativeDirection).toBeDisabled();
   await expect(applyCreativeDirection).toHaveText("Applying…");
@@ -2734,7 +2739,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   });
 });
 
-test("Prompt Assistant failures remain visible beneath Thinking mode", async ({ page }) => {
+test("Prompt Assistant failures remain visible with the pre-processor collapsed", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
@@ -3652,4 +3657,82 @@ test("mixed selection copies independently, moves originals, and deletes only th
   }
   await deleteSelectedCard(page, folderCard(destination.id));
   await expect(folderCard(destination.id)).toHaveCount(0);
+});
+
+test("prompt pre-processor starts collapsed, keeps per-mode edits, and sends focused drafts", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+  const panel = page.locator("#prompt-assistant");
+  const disclosure = panel.locator(".prompt-preprocessor");
+  const instructions = panel.getByRole("textbox", { name: "Prompt pre-processor", exact: true });
+  const create = panel.getByRole("radio", { name: "New Prompt from Creative Direction" });
+  const refine = panel.getByRole("radio", { name: "Refine Current Prompt" });
+  const defaults = await (await page.request.get("/api/prompt-assistant/status")).json();
+  await expect(panel.locator("[data-prompt-instructions]")).toBeHidden();
+  await expect(panel.locator("#prompt-assistant-thinking-mode")).toBeHidden();
+  await expect(panel.locator("#prompt-assistant-thinking-mode")).toBeChecked();
+  await expect(panel.getByRole("button", { name: "Apply Creative Direction" })).toBeVisible();
+  await disclosure.locator("summary").click();
+  await refine.check();
+  await expect(instructions).toHaveValue(defaults.default_instructions.refine);
+  await instructions.fill("Refine using one concise sentence in French.");
+  await create.check();
+  await expect(instructions).toHaveValue(defaults.default_instructions.create);
+  await instructions.fill("Create a cinematic image prompt using one sentence.");
+  await refine.check();
+  await expect(instructions).toHaveValue("Refine using one concise sentence in French.");
+  await create.check();
+  await expect(instructions).toHaveValue("Create a cinematic image prompt using one sentence.");
+
+  await page.reload();
+  await expect(panel.locator("[data-prompt-instructions]")).toBeHidden();
+  await disclosure.locator("summary").click();
+  await create.check();
+  await expect(instructions).toHaveValue("Create a cinematic image prompt using one sentence.");
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  const dialog = page.locator("#prompt-editor-dialog");
+  const draftDisclosure = dialog.locator(".prompt-preprocessor");
+  const draft = dialog.getByRole("textbox", { name: "Prompt pre-processor", exact: true });
+  await expect(dialog.locator("[data-prompt-instructions]")).toBeHidden();
+  await expect(dialog.locator("#prompt-editor-thinking-mode")).toBeHidden();
+  await expect(dialog.locator("#prompt-editor-thinking-mode")).toBeChecked();
+  await expect(dialog.getByRole("button", { name: "Apply Creative Direction" })).toBeVisible();
+  await draftDisclosure.locator("summary").click();
+  await expect(draft).toHaveValue("Create a cinematic image prompt using one sentence.");
+  await draft.fill("This canceled instruction must stay in the dialog.");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(instructions).toHaveValue("Create a cinematic image prompt using one sentence.");
+
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  await expect(dialog.locator("[data-prompt-instructions]")).toBeHidden();
+  await draftDisclosure.locator("summary").click();
+  await draft.fill("");
+  await draftDisclosure.locator("summary").click();
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(draft).toBeFocused();
+  await draft.fill("Create a cinematic image prompt under forty words.");
+  await draftDisclosure.locator("summary").click();
+  await dialog.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("a lighthouse at blue hour");
+  const composing = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/prompt-assistant/compose" && request.method() === "POST");
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  expect((await composing).postDataJSON()).toMatchObject({
+    mode: "create", instructions: "Create a cinematic image prompt under forty words.",
+  });
+  await expect(dialog.getByRole("textbox", { name: "Prompt editor" })).toHaveValue(/a lighthouse at blue hour/);
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(instructions).toHaveValue("Create a cinematic image prompt under forty words.");
+  await panel.getByRole("button", { name: "Reset to default" }).click();
+  await expect(instructions).toHaveValue(defaults.default_instructions.create);
+  await refine.check();
+  await expect(instructions).toHaveValue("Refine using one concise sentence in French.");
+  await panel.getByRole("button", { name: "Reset to default" }).click();
+  await expect(instructions).toHaveValue(defaults.default_instructions.refine);
+  await instructions.fill("");
+  await disclosure.locator("summary").click();
+  await panel.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(instructions).toBeFocused();
+  await panel.getByRole("button", { name: "Reset to default" }).click();
+  await expect(instructions).toHaveValue(defaults.default_instructions.refine);
 });

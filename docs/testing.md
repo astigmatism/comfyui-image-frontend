@@ -193,12 +193,14 @@ Expect HTTP 200, 2,659 node types from each target, and device names identifying
 
 ## Optional live Ollama verification
 
-The opt-in live suite exercises create, refine, and repeated-create behavior through the production `OllamaAdapter`. Successful cases require a schema-constrained final object in either `response` or `thinking`; create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. The same adapter uses the production `2048 → 4096 → 8192` output-budget policy, so a schema-incomplete length response may make bounded follow-up calls. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
+The opt-in live suite exercises create and refine with thinking both enabled and disabled, plus repeated-create behavior through the production `OllamaAdapter`. Successful cases require a schema-constrained final object in chat `message.content` or `message.thinking` (normalized into response/thinking diagnostics); create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. The same adapter uses the production `2048 → 4096 → 8192` output-budget policy, so a schema-incomplete length response may make bounded follow-up calls. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
 
 ```sh
 CIF_RUN_LIVE_OLLAMA_TESTS=1 \
 CIF_OLLAMA_BASE_URL=http://router-host:11434 \
+CIF_OLLAMA_MODEL=nighttime \
+CIF_OLLAMA_API_KEY=local-only \
 PYTHONPATH=backend pytest -q backend/tests/live/test_ollama_integration.py
 ```
 
-The repeated-create case deliberately submits the first generated prompt as the current prompt for the same Creative Direction and requires the adapter's duplicate-aware retry to return a distinct second prompt.
+The repeated-create case carries each generated prompt forward as the current prompt and requires four distinct results for the same Creative Direction. Two additional live cases exercise the authenticated application composition API, persistence, and generation preparation with a fake ComfyUI service and temporary storage.

@@ -93,7 +93,7 @@ class FakeServiceState:
     emit_cached_only: bool = False
     terminal_event_type: str | None = None
     orphan_prompt_substrings: set[str] = field(default_factory=set)
-    models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest"])
+    models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest", "nighttime"])
     ollama_effective_model: str | None = None
     ollama_include_thinking: bool = True
     ollama_response_in_thinking: bool = False
@@ -145,7 +145,7 @@ class FakeServiceState:
         self.emit_cached_only = False
         self.terminal_event_type = None
         self.orphan_prompt_substrings.clear()
-        self.models = ["zeta:latest", "alpha:latest"]
+        self.models = ["zeta:latest", "alpha:latest", "nighttime"]
         self.ollama_effective_model = None
         self.ollama_include_thinking = True
         self.ollama_response_in_thinking = False
@@ -759,7 +759,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             raise HTTPException(status_code=503)
         return {"models": [{"name": name} for name in state.models]}
 
-    @app.post("/api/generate")
+    @app.post("/api/chat")
     async def ollama_generate(request: Request) -> dict[str, Any]:
         if not state.ollama_available:
             raise HTTPException(status_code=503)
@@ -773,7 +773,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             )
         if state.ollama_generate_responses:
             return copy.deepcopy(state.ollama_generate_responses.pop(0))
-        instruction = str(payload.get("prompt", ""))
+        instruction = str(payload["messages"][0]["content"])
         current = ""
         if "Current prompt:\n" in instruction:
             current = (
@@ -783,7 +783,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             )
             direction = instruction.split("Creative direction:\n", 1)[-1].strip()
         else:
-            direction = instruction.rsplit(":\n\n", 1)[-1].strip()
+            direction = instruction.rsplit("\n\n", 1)[-1].strip()
         if state.ollama_response_prompts:
             composed = state.ollama_response_prompts.pop(0)
         elif state.ollama_response_prompt is not None:
@@ -814,12 +814,15 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             )
         result = {
             "model": str(effective_model or ""),
-            "response": "" if state.ollama_response_in_thinking else response_text,
+            "message": {
+                "role": "assistant",
+                "content": "" if state.ollama_response_in_thinking else response_text,
+            },
             "done": True,
             "done_reason": "stop",
         }
         if state.ollama_include_thinking:
-            result["thinking"] = thinking_text
+            result["message"]["thinking"] = thinking_text
         return result
 
     @app.post("/v1/audio/transcriptions")

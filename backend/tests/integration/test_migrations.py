@@ -24,7 +24,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "3ab76df901e2"
+HEAD_REVISION = "82bc14d6e9a0"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -295,6 +295,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert favorite.owner_id == user.id
         assert prompt_run is not None
         assert prompt_run.thinking_enabled is True
+        assert prompt_run.instructions is None
         assert prompt_run.ollama_output == "legacy composed prompt"
 
     with engine.connect() as connection:

@@ -12,6 +12,7 @@ from typing import Any, Literal
 import httpx
 
 from ..config import Settings
+from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
 
 CANDIDATE_SEED_MAXIMUM = 2**31 - 1
@@ -21,6 +22,9 @@ MAX_CREATE_EXCLUSIONS = 8
 MAX_GENERATE_ATTEMPTS = 3
 GENERATE_RETRY_BASE_SECONDS = 0.25
 RETRYABLE_GENERATE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Nighttime advertises xhigh as its highest effort; max is an alias for xhigh.
+# Boolean true selects the router's default effort, so request the level explicitly.
+THINKING_EFFORT = "xhigh"
 # Ollama's generated-token allowance is shared by thinking and final output. Creative prompt
 # composition therefore starts with enough room for reasoning and escalates deterministically if
 # the upstream response reports that it exhausted the allowance before completing the schema.
@@ -63,6 +67,11 @@ class OllamaAdapter:
                 base_url=self.base_url,
                 timeout=httpx.Timeout(connect=5.0, read=900.0, write=30.0, pool=5.0),
                 transport=transport,
+                headers=(
+                    {"Authorization": f"Bearer {settings.ollama_api_key.get_secret_value()}"}
+                    if settings.ollama_api_key and settings.ollama_api_key.get_secret_value()
+                    else {}
+                ),
             )
             if self.base_url
             else None
@@ -86,23 +95,33 @@ class OllamaAdapter:
         except (httpx.HTTPError, ValueError):
             return []
         models = payload.get("models", []) if isinstance(payload, dict) else []
+        if not isinstance(models, list):
+            return []
         names = {
-            str(item.get("name"))
+            item["name"].strip()
             for item in models
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and item["name"].strip()
+            and _router_model_is_available(item)
         }
         return sorted(names, key=lambda item: (item.casefold(), item))
+
+    def _model_unavailable_message(self, models: Sequence[str]) -> str | None:
+        if not models:
+            return (
+                "Prompt Assistant is unavailable because the Ollama router has no reachable model."
+            )
+        if self.settings.ollama_model and self.settings.ollama_model not in models:
+            return "Prompt Assistant's configured model is unavailable on the Ollama router."
+        return None
 
     async def status(self) -> tuple[bool, str | None]:
         if not self._client:
             return False, "Prompt Assistant is not configured."
         models = await self.available_models()
-        if not models:
-            return (
-                False,
-                "Prompt Assistant is unavailable because the Ollama router has no reachable model.",
-            )
-        return True, None
+        message = self._model_unavailable_message(models)
+        return message is None, message
 
     async def compose(
         self,
@@ -112,16 +131,18 @@ class OllamaAdapter:
         direction: str,
         think: bool = True,
         excluded_prompts: Sequence[str] = (),
+        instructions: str | None = None,
     ) -> ComposeResult:
         if not self._client:
             raise AppError(
                 "ollama_unavailable", "Prompt Assistant is not configured.", status_code=503
             )
         models = await self.available_models()
-        if not models:
+        unavailable_message = self._model_unavailable_message(models)
+        if unavailable_message:
             raise AppError(
                 "ollama_unavailable",
-                "The Ollama router has no reachable model; manual prompting still works.",
+                f"{unavailable_message} Manual prompting still works.",
                 status_code=503,
             )
         started = time.monotonic()
@@ -144,7 +165,9 @@ class OllamaAdapter:
         ):
             raise RuntimeError("candidate seed resolver returned an out-of-range value")
         for attempt in range(maximum_attempts):
-            instruction = _instruction(mode=mode, prompt=prompt, direction=direction)
+            instruction = _instruction(
+                mode=mode, prompt=prompt, direction=direction, instructions=instructions
+            )
             output_budget_diagnostics: list[dict[str, Any]] = []
             final = ""
             selected_field: str | None = None
@@ -160,6 +183,8 @@ class OllamaAdapter:
                     seed=candidate_seed + attempt,
                     output_budget=output_budget,
                 )
+                if self.settings.ollama_model:
+                    payload["model"] = self.settings.ollama_model
                 received = await self._generate(payload, mode=mode, think=think)
                 received_status = received.status
                 if not isinstance(received.data, dict):
@@ -399,7 +424,7 @@ class OllamaAdapter:
             raise RuntimeError("Ollama client is not configured")
         for attempt in range(1, MAX_GENERATE_ATTEMPTS + 1):
             try:
-                response = await self._client.post("/api/generate", json=payload)
+                response = await self._client.post("/api/chat", json=payload)
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 upstream_status = exc.response.status_code
@@ -482,7 +507,7 @@ class OllamaAdapter:
                     ),
                 ) from exc
             try:
-                received: Any = response.json()
+                received: Any = _normalize_chat_response(response.json())
             except ValueError as exc:
                 self._log_generate_failure(
                     exc,
@@ -577,6 +602,27 @@ class OllamaAdapter:
         )
 
 
+def _normalize_chat_response(data: Any) -> Any:
+    if not isinstance(data, dict) or not isinstance(data.get("message"), dict):
+        return data
+    # Keep the existing structured-output parser and bounded diagnostics shared across
+    # final content and parser-compatible thinking, without retaining raw reasoning.
+    normalized = {key: value for key, value in data.items() if key != "message"}
+    message = data["message"]
+    normalized["response"] = message.get("content", "")
+    if "thinking" in message:
+        normalized["thinking"] = message["thinking"]
+    return normalized
+
+
+def _router_model_is_available(item: dict[str, Any]) -> bool:
+    # Ordinary Ollama tags have no router metadata. When the router supplies health,
+    # an advertised alias with an offline backend must not enable the assistant.
+    metadata = item.get("x_ollama_router")
+    health = metadata.get("health") if isinstance(metadata, dict) else None
+    return not (isinstance(health, dict) and health.get("available") is False)
+
+
 def _generate_error_details(
     *,
     attempt: int,
@@ -668,22 +714,11 @@ def _with_output_budget_diagnostics(
     return enriched
 
 
-def _instruction(*, mode: str, prompt: str, direction: str) -> str:
+def _instruction(*, mode: str, prompt: str, direction: str, instructions: str | None = None) -> str:
+    prefix = DEFAULT_PROMPT_INSTRUCTIONS[mode] if instructions is None else instructions.strip()
     if mode == "refine":
-        return (
-            "You are an expert prompt writer for Krea 2 and other current text-to-image models. "
-            "Refine the current prompt according to the creative direction. The returned prompt "
-            "must incorporate that direction and must not repeat the current prompt unchanged.\n\n"
-            f"Current prompt:\n{prompt}\n\nCreative direction:\n{direction}"
-        )
-    return (
-        "You are an expert prompt writer for Krea 2 and other current text-to-image models. Create "
-        "one complete, polished, directly usable image prompt from this creative direction. Expand "
-        "the direction: keep its subject and intent, and add concrete subject details, setting, "
-        "lighting, camera, and style or quality terms. Never return the direction verbatim or "
-        "unchanged:\n\n"
-        f"{direction}"
-    )
+        return f"{prefix}\n\nCurrent prompt:\n{prompt}\n\nCreative direction:\n{direction}"
+    return f"{prefix}\n\n{direction}"
 
 
 def _extract_prompt(raw_text: str) -> str:
@@ -761,9 +796,9 @@ def _generate_payload(
             "num_predict": output_budget,
         }
     return {
-        "prompt": instruction,
+        "messages": [{"role": "user", "content": instruction}],
         "stream": False,
-        "think": think,
+        "think": THINKING_EFFORT if think else False,
         "format": {
             "type": "object",
             "properties": {"prompt": {"type": "string"}},

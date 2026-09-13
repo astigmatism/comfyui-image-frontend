@@ -1172,13 +1172,31 @@ function optionValues(control) {
   );
 }
 
+function promptInstructionsMarkup(id, assistant = {}) {
+  const mode = assistant.mode === "create" ? "create" : "refine";
+  const instructions = assistant.instructionOverrides?.[mode] ??
+    assistant.defaultInstructions?.[mode] ?? "";
+  const ready = typeof assistant.defaultInstructions?.[mode] === "string";
+  const thinkingId = id.replace("-instructions", "-thinking-mode");
+  return `<details class="prompt-preprocessor">
+    <summary id="${id}-summary"><span id="${id}-label">Prompt pre-processor</span><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="m7 4 6 6-6 6" /></svg></summary>
+    <div class="prompt-preprocessor-content">
+      <p class="prompt-preprocessor-context" data-instructions-mode-label>${mode === "create" ? "Instructions for a new prompt" : "Instructions for refining your prompt"}</p>
+      <textarea id="${id}" data-prompt-instructions data-instructions-mode="${mode}" rows="8" maxlength="8000" required aria-labelledby="${id}-label" aria-describedby="${id}-hint" placeholder="Loading default instructions…" ${ready ? "" : "disabled"}>${escapeHtml(instructions)}</textarea>
+      <div class="prompt-preprocessor-tools"><button type="button" class="button low" data-action="reset-prompt-instructions" ${ready ? "" : "disabled"}><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3.5 8a6.5 6.5 0 1 1 .7 6M3.5 3.5V8H8" /></svg>Reset to default</button></div>
+      <p id="${id}-hint" class="prompt-preprocessor-hint">Your prompt and Creative Direction are added automatically.</p>
+      <label class="prompt-preprocessor-thinking-option"><input id="${thinkingId}" type="checkbox" ${assistant.think !== false ? "checked" : ""} /> Thinking mode</label>
+    </div>
+  </details>`;
+}
+
 function promptAssistantMarkup() {
   return `<section class="prompt-assistant" id="prompt-assistant" aria-label="Creative Direction">
     <div class="assistant-body">
       ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" /> New Prompt from Creative Direction</label></div>
+      ${promptInstructionsMarkup("prompt-assistant-instructions")}
       <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
-      <label class="prompt-assistant-thinking-option"><input id="prompt-assistant-thinking-mode" type="checkbox" checked /> Thinking mode</label>
       <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
   </section>`;
@@ -1189,7 +1207,6 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
   const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
   const assistantMode = promptAssistant.mode === "create" ? "create" : "refine";
   const creativeDirection = String(promptAssistant.creativeDirection ?? "");
-  const thinkingEnabled = promptAssistant.think !== false;
   const assistantAvailable = promptAssistant.available !== false;
   return `<form class="dialog-frame prompt-editor-frame" method="dialog">
     <header class="dialog-header prompt-editor-header">
@@ -1211,9 +1228,10 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
         <div class="prompt-editor-assistant-controls">
           ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative Direction", creativeDirection, 3)}
           <div class="prompt-editor-assistant-action-row">
-            <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div><label class="prompt-editor-thinking-option"><input id="prompt-editor-thinking-mode" type="checkbox" ${thinkingEnabled ? "checked" : ""} /> Thinking mode</label></div>
-            <button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button>
+            <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
+          ${promptInstructionsMarkup("prompt-editor-instructions", promptAssistant)}
+          <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
         </div>
       </section>
