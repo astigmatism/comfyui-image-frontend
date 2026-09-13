@@ -19,8 +19,9 @@ make validate
 5. Complete pytest suite.
 6. Node frontend unit/component tests.
 7. Python bytecode compile, production frontend build, and Python wheel build.
-8. Playwright principal journeys against deterministic network fake services.
-9. Production Docker build/start/health smoke.
+8. Playwright loopback principal journeys against deterministic network fake services.
+9. Playwright TLS-edge browser journeys over `https://` — the real Compose stack when a Docker daemon is reachable, otherwise a local Caddy edge in front of the in-process app (`make e2e-tls`).
+10. Production Docker build/start/health smoke.
 
 A constrained environment can run all available checks while printing explicit skips:
 
@@ -127,11 +128,20 @@ overlapping subtrees, independent artifacts and recall, copy rollback, and folde
 
 `frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. It also covers collection creation/rename/navigation, in-collection generation, preview preference persistence, moving a completed card, and recursive collection deletion. Auto-generate journeys verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
-Run browser tests alone:
+`frontend/e2e/tls-edge.spec.mjs` is a second, standalone Playwright project that runs the principal journeys against a **real TLS origin**. Its global setup (`scripts/e2e-tls-stack.sh up`) starts the real Compose stack (`cif-tls-edge` + app) when a Docker daemon is reachable, otherwise a local Caddy edge in front of the in-process app, then waits for the edge to answer a 200 over `https://` with a valid, hostname-matching leaf. The suite uses an untrusted-CA-tolerant browser context (equivalent to an operator's one-time trust-store import) and verifies: the edge terminates TLS and proxies to the app over plaintext (the app receives no client-address / `X-Forwarded-For` header from the browser); the session cookie is `Secure` and is actually sent by a real browser over `https://`; and the clipboard-paste and microphone APIs are present in the secure context (the `mediaDevices` guard mirrors the app's own availability check, so the suite stays honest on browser builds without a media pipeline).
+
+Run the loopback browser journeys alone:
 
 ```sh
 cd frontend
 npx playwright test
+```
+
+Run the TLS-edge journeys alone (the runner auto-selects the Compose stack or a local Caddy, and cleans the stack on exit):
+
+```sh
+cd frontend
+npx playwright test -c playwright.tls.config.mjs
 ```
 
 ## Focused commands
