@@ -1,0 +1,68 @@
+# Compose overlay for the TLS-edge Playwright project.
+#
+# Layered onto compose.example.yml and driven by scripts/e2e-tls-stack.sh:
+#   docker compose -f compose.example.yml -f frontend/e2e/tls-edge.overlay.yml up
+#
+# It re-points the application's ComfyUI / Ollama / speech services at an
+# in-project deterministic fake, isolates the data volume from any real
+# deployment, and re-binds the only user-facing port (the TLS edge) to
+# 127.0.0.1. The application's plain-HTTP listener is deliberately NOT
+# published to the host: the browser reaches it only through the edge, which
+# proxies to the app over the Compose network. No published port is ever bound
+# to 0.0.0.0/[::] in this overlay.
+name: cif-e2e-tls
+
+services:
+  comfyui-image-frontend:
+    depends_on:
+      e2e-fake-comfyui:
+        condition: service_healthy
+    # `environment` wins over the image ENV and the env_file defaults, so this
+    # is authoritative for the e2e run. ComfyUI/Ollama/speech all point at the
+    # fake container; a dedicated session secret and bootstrap admin keep the
+    # e2e stack independent of any operator .env.
+    environment:
+      CIF_COMFYUI_INSTANCES: '[{"id":"default","label":"Primary","base_url":"http://e2e-fake-comfyui:8188","ws_url":"ws://e2e-fake-comfyui:8188/ws","concurrency":1}]'
+      CIF_COMFYUI_DEFAULT_INSTANCE_ID: default
+      CIF_BOOTSTRAP_ADMIN_USERNAME: admin
+      CIF_BOOTSTRAP_ADMIN_TEMPORARY_PASSWORD: "E2EAdminTemporary123!"
+      CIF_SESSION_SECRET: "e2e-tls-session-secret-material-0123456789abcdef"
+      CIF_OLLAMA_BASE_URL: "http://e2e-fake-comfyui:8188"
+      CIF_SPEECH_TO_TEXT_URL: "http://e2e-fake-comfyui:8188/v1/audio/transcriptions"
+      CIF_SPEECH_TO_TEXT_API_KEY: "e2e-whisper-secret"
+      CIF_EXTERNAL_HEALTH_INTERVAL_SECONDS: "2"
+      CIF_DISPATCH_POLL_SECONDS: "0.1"
+      CIF_RECONCILIATION_GRACE_SECONDS: "0.05"
+      CIF_LOG_LEVEL: WARNING
+    # The app's plain-HTTP listener stays on its internal port 8000. Its
+    # host-published port is bound to the loopback address by the runner's
+    # CIF_BIND_IP/CIF_HOST_PORT env (compose port lists merge rather than
+    # replace, so it is controlled there, not in this overlay). The browser
+    # reaches the app only through the edge over the Compose network.
+
+  # Deterministic fake ComfyUI / Ollama / speech for the e2e app container.
+  # Reuses the application image (Python 3.13 + project dependencies) and
+  # overrides only the entrypoint. Never host-published: reachable on the
+  # Compose network at e2e-fake-comfyui:8188.
+  e2e-fake-comfyui:
+    image: comfyui-image-frontend:local
+    entrypoint: ["python", "/app/backend/tests/fake_comfyui_live.py"]
+    user: "1000"
+    environment:
+      CIF_E2E_FAKE_COMFYUI_PORT: "8188"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8188/object_info', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 10
+
+volumes:
+  application-data:
+    # Distinct from the real deployment's volume so the e2e stack never
+    # reuses or clobbers production data.
+    name: comfyui-image-frontend-e2e-tls-data
