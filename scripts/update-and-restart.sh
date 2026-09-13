@@ -23,14 +23,19 @@
 #   8. Builds the replacement image while the current application stays
 #      available (there is no external application image to pull; the
 #      build pulls the base images it needs).
-#   9. Reconciles the complete Compose project (here: a single long-lived
-#      service) instead of touching one container ad hoc.
-#  10. Recreates and health-checks with `docker compose up -d --wait` and a
+#   9. Issues (or reuses) the appliance-local TLS certificate material for
+#      CIF_TLS_HOSTNAME via scripts/issue-local-cert.sh before the project is
+#      reconciled, so the Caddy edge always starts with a valid leaf. The
+#      root is created once; the leaf is reissued only when the hostname
+#      changed or the leaf falls inside the renewal window.
+#  10. Reconciles the complete Compose project (here: the application plus
+#      its TLS edge) instead of touching one container ad hoc.
+#  11. Recreates and health-checks with `docker compose up -d --wait` and a
 #      bounded wait timeout; never `docker compose down`, which would create
 #      unnecessary downtime.
-#  11. Preserves named volumes, bind mounts, and user data; never runs any
+#  12. Preserves named volumes, bind mounts, and user data; never runs any
 #      prune command.
-#  12. Exits 0 only after the updated application is healthy; every failure
+#  13. Exits 0 only after the updated application is healthy; every failure
 #      prints a concise line containing "Error" or "Refusing" so Service
 #      Portal can surface the cause.
 #
@@ -71,6 +76,26 @@ die() {
 refuse() {
   echo "Refusing: $*" >&2
   exit 1
+}
+
+# dotenv_get KEY FILE prints the last assignment of KEY in a dotenv file with
+# surrounding quotes stripped. It never executes file contents, so an .env can
+# be read safely for the few keys the update flow needs.
+dotenv_get() {
+  local key=$1 file=$2 line val=""
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%$'\r'}
+    case $line in '' | \#*) continue ;; esac
+    case $line in "$key"=*) val=${line#"$key"=} ;; esac
+  done < "$file"
+  if (( ${#val} >= 2 )); then
+    case $val in
+      \"*\") val=${val:1:${#val}-2} ;;
+      \'*\') val=${val:1:${#val}-2} ;;
+    esac
+  fi
+  printf '%s' "$val"
 }
 
 if [[ "${SERVICE_PORTAL_UPDATE_DELEGATED:-0}" == "1" || "${DSH_UPDATE_DELEGATED:-0}" == "1" ]]; then
@@ -203,6 +228,25 @@ log "Updated $BRANCH from origin/$EXPECTED_BRANCH."
 # stopped until the final reconcile below.
 log "Building replacement image(s) while the current application remains available..."
 "${compose[@]}" build || die "Compose build of the replacement image failed."
+
+# --- Ensure the TLS edge has current certificate material ----------------------
+
+# The Caddy edge terminates TLS for CIF_TLS_HOSTNAME using a locally issued
+# leaf (the root is imported once per client device). Resolve the identity the
+# same way Compose interpolation does (environment first, then .env, then the
+# shared defaults) and (re)issue the material before the project is reconciled,
+# so the edge never starts with a missing or hostname-mismatched leaf. The
+# script reuses the existing root, is idempotent, and writes only under the
+# mounted data directory (never into the repository).
+TLS_HOSTNAME=${CIF_TLS_HOSTNAME:-$(dotenv_get CIF_TLS_HOSTNAME .env)}
+[[ -n "$TLS_HOSTNAME" ]] || TLS_HOSTNAME=image-studio.lan
+TLS_CERT_DIR=${CIF_TLS_CERT_DIR:-$(dotenv_get CIF_TLS_CERT_DIR .env)}
+[[ -n "$TLS_CERT_DIR" ]] || TLS_CERT_DIR=./data/certificates
+
+log "Ensuring local TLS certificate material is current (host: $TLS_HOSTNAME)..."
+CIF_TLS_HOSTNAME="$TLS_HOSTNAME" CIF_TLS_CERT_DIR="$TLS_CERT_DIR" \
+  "$SCRIPT_DIR/issue-local-cert.sh" \
+  || die "Local TLS certificate issuance failed; the TLS edge would start with an invalid leaf."
 
 # --- Reconcile the complete project with a bounded health wait -------------------
 
