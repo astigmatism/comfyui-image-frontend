@@ -18,12 +18,16 @@
 https://{$CIF_TLS_HOSTNAME}:8443 {
 	tls /etc/caddy/certificates/tls.crt /etc/caddy/certificates/tls.key
 
-	reverse_proxy comfyui-image-frontend:8000 {
+	reverse_proxy {$CIF_TLS_UPSTREAM:comfyui-image-frontend:8000} {
 		# The upstream is plain HTTP, so Caddy's default reverse-proxy
 		# behavior preserves the request as-is while forwarding
 		# X-Forwarded-For and X-Forwarded-Proto (https) to the app.
 		# Stream Server-Sent Events and WebSocket frames to the client
 		# immediately instead of buffering them.
+		#
+		# The upstream is overridable via CIF_TLS_UPSTREAM so the local
+		# (non-Docker) e2e can point this same Caddyfile at a loopback app;
+		# the committed default keeps the compose deployment unchanged.
 		flush_interval -1
 	}
 }

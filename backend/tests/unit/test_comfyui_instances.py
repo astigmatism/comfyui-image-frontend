@@ -121,7 +121,9 @@ def test_standard_compose_defaults_extend_the_existing_household_primary(
 
     compose = (REPOSITORY_ROOT / "compose.example.yml").read_text(encoding="utf-8")
     defaults_index = compose.index("- deployment/comfyui-instances.env")
-    private_index = compose.index("- .env")
+    # The private .env is an optional env_file entry (required: false) so a
+    # fresh checkout can bring the stack up before the operator supplies one.
+    private_index = compose.index("path: .env")
     assert defaults_index < private_index
     assert "\n.env\n" in (REPOSITORY_ROOT / ".dockerignore").read_text(encoding="utf-8")
     defaults = defaults_file.read_text(encoding="utf-8")

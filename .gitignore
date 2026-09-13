@@ -7,6 +7,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# Local (non-Docker) e2e Caddy binary cache, populated by scripts/e2e-tls-stack.sh.
+.cache/
 .coverage
 htmlcov/
 backend/data/

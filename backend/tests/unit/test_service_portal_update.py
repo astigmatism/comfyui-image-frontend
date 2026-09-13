@@ -161,6 +161,15 @@ def fake_checkout(tmp_path: Path) -> dict:
     script = root / "scripts" / "update-and-restart.sh"
     script.write_text(REAL_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
     script.chmod(0o755)
+    # The updater issues the appliance-local TLS leaf via a sibling script
+    # before recreating the project, so it must be present in the synthetic
+    # checkout too (it shells out to the host's OpenSSL).
+    cert_script = root / "scripts" / "issue-local-cert.sh"
+    cert_script.write_text(
+        (REPOSITORY_ROOT / "scripts" / "issue-local-cert.sh").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    cert_script.chmod(0o755)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
