@@ -2,7 +2,7 @@ SHELL := /bin/sh
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: install-dev format-check lint typecheck test test-backend test-frontend build traceability container-smoke e2e validate validate-available clean
+.PHONY: install-dev format-check lint typecheck test test-backend test-frontend build traceability container-smoke e2e e2e-tls validate validate-available clean
 
 install-dev:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -41,7 +41,13 @@ container-smoke:
 e2e:
 	cd frontend && npx playwright test
 
-validate: format-check lint typecheck traceability test build e2e container-smoke
+# TLS-edge e2e (second Playwright project). The runner brings up the real
+# Compose stack when a Docker daemon is reachable, otherwise a local Caddy in
+# front of the in-process app, then runs tls-edge.spec.mjs over https://.
+e2e-tls:
+	cd frontend && npx playwright test -c playwright.tls.config.mjs
+
+validate: format-check lint typecheck traceability test build e2e e2e-tls container-smoke
 
 validate-available:
 	VALIDATE_STRICT=0 ./scripts/validate.sh

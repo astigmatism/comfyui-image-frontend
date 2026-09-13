@@ -22,19 +22,6 @@ optional_python_check() {
   fi
 }
 
-optional_command() {
-  name=$1
-  shift
-  if command -v "$name" >/dev/null 2>&1; then
-    "$@"
-  elif [ "$STRICT" = "1" ]; then
-    echo "Missing required command: $name" >&2
-    exit 2
-  else
-    echo "SKIP: $name is not installed in this environment." >&2
-  fi
-}
-
 optional_python_check ruff python3 -m ruff format --check backend/app backend/tests comfyui_extension
 optional_python_check ruff python3 -m ruff check backend/app backend/tests comfyui_extension
 optional_python_check mypy env PYTHONPATH=backend python3 -m mypy backend/app
@@ -51,6 +38,10 @@ PYTHONPATH=backend python3 -m pytest -q
 
 if [ -x frontend/node_modules/.bin/playwright ]; then
   (cd frontend && ./node_modules/.bin/playwright test)
+  # TLS-edge e2e (second Playwright project). The runner (scripts/e2e-tls-stack.sh)
+  # starts the real Compose stack when a Docker daemon is reachable, otherwise a
+  # local Caddy in front of the in-process app. Same degrade behavior as above.
+  (cd frontend && ./node_modules/.bin/playwright test -c playwright.tls.config.mjs)
 elif [ "$STRICT" = "1" ]; then
   echo "Missing Playwright installation. Run 'cd frontend && npm install && npx playwright install chromium'." >&2
   exit 2
@@ -58,4 +49,15 @@ else
   echo "SKIP: Playwright package/browser is unavailable in this environment." >&2
 fi
 
-optional_command docker ./scripts/container-smoke.sh
+# The container smoke test needs a reachable Docker daemon. In strict mode that
+# is required; in validate-available it degrades like the other optional steps
+# (a present CLI with an unreachable daemon must not hard-fail the run).
+if [ "$STRICT" = "1" ]; then
+  command -v docker >/dev/null 2>&1 || { echo "Missing required command: docker" >&2; exit 2; }
+  docker info >/dev/null 2>&1 || { echo "Docker daemon is not reachable." >&2; exit 2; }
+  ./scripts/container-smoke.sh
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  ./scripts/container-smoke.sh
+else
+  echo "SKIP: Docker daemon not available; container smoke test skipped." >&2
+fi
