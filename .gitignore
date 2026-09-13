@@ -10,6 +10,9 @@ __pycache__/
 .coverage
 htmlcov/
 backend/data/
+# Locally issued TLS root/leaf/key material (scripts/issue-local-cert.sh).
+# Never committed: the Compose file mounts this directory into the edge.
+/data/
 frontend/node_modules/
 frontend/dist/
 playwright-report/

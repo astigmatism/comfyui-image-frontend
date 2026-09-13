@@ -6,12 +6,18 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     ports:
-      - "8000:8000"
+      # Plain-HTTP listener, bound to the appliance's LAN address only.
+      # Keep this reachable for health checks and service traffic; browsers
+      # should use the TLS edge below on ${CIF_TLS_HOST_PORT:-8443} instead.
+      - "${CIF_BIND_IP:-192.168.1.5}:${CIF_HOST_PORT:-8000}:8000"
     env_file:
       # Non-secret deployment defaults supply both household ComfyUI runtimes.
-      # The private .env is loaded last so an explicit operator configuration wins.
+      # The private .env is loaded last so an explicit operator configuration
+      # wins. A missing .env is tolerated: the published defaults above carry
+      # the stack until the operator supplies session and bootstrap values.
       - deployment/comfyui-instances.env
-      - .env
+      - path: .env
+        required: false
     volumes:
       - application-data:/data
     # Allows host.docker.internal URLs to reach services running directly on
@@ -42,6 +48,61 @@ services:
         - python
         - -c
         - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3); p=json.load(r); assert r.status == 200 and p['database'] and p['worker']['ready']"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # TLS edge in front of the plain-HTTP app container. Browsers reach the
+  # appliance through this service at https://<CIF_TLS_HOSTNAME>:<CIF_TLS_HOST_PORT>,
+  # which is a secure context, so the page can expose clipboard and
+  # microphone APIs that plain-HTTP origins never receive. It terminates TLS
+  # with a locally issued leaf (scripts/issue-local-cert.sh; the root is
+  # imported once per client device) and proxies HTTP, WebSocket upgrades,
+  # and Server-Sent Events streams to the app container unchanged.
+  cif-tls-edge:
+    image: caddy/caddy:2.11.4-alpine
+    restart: unless-stopped
+    depends_on:
+      - comfyui-image-frontend
+    # Same unprivileged identity as the rest of the stack; no capability is
+    # needed because the edge listens on the unprivileged port 8443.
+    user: "1000:1000"
+    environment:
+      # Expanded into the Caddyfile site address; must match the leaf SAN
+      # that scripts/issue-local-cert.sh issued for it.
+      CIF_TLS_HOSTNAME: ${CIF_TLS_HOSTNAME:-image-studio.lan}
+    ports:
+      # User-facing TLS edge, bound to the appliance's LAN address only.
+      - "${CIF_TLS_BIND_IP:-${CIF_BIND_IP:-192.168.1.5}}:${CIF_TLS_HOST_PORT:-8443}:8443"
+    volumes:
+      - ./deployment/tls/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Locally issued root/leaf/key, written by scripts/issue-local-cert.sh
+      # under the mounted data directory. Never committed; survives image
+      # rebuilds and container recreation.
+      - ${CIF_TLS_CERT_DIR:-./data/certificates}:/etc/caddy/certificates:ro
+    read_only: true
+    # Caddy's runtime directories (admin state, logs, temp files) live on
+    # ephemeral tmpfs owned by the unprivileged container user.
+    tmpfs:
+      - /config:uid=1000,gid=1000,mode=1750
+      - /data:uid=1000,gid=1000,mode=1750
+      - /tmp:uid=1000,gid=1000,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 100
+    healthcheck:
+      # Probes the full edge (TLS termination, proxying, app response) from
+      # inside the container. -k is required because the leaf is signed by
+      # the appliance-local root, which is deliberately not in the image's
+      # system trust store; clients import that root on each device.
+      test:
+        - CMD
+        - curl
+        - -fsk
+        - https://127.0.0.1:8443/api/health
       interval: 30s
       timeout: 5s
       start_period: 15s
