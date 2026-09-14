@@ -1351,7 +1351,7 @@ test("source picker shows architecture only as workflow subtitle metadata", () =
   assert.doesNotMatch(html, /June 2026|Introduced|Generation type|Technologies/);
 });
 
-test("card overlay keeps viewing actions while move and deletion use selection", () => {
+test("card overlay keeps viewing actions, selection, and individual delete", () => {
   const generation = {
     id: "g1",
     workflow_display_name: "Portrait Workflow",
@@ -1377,14 +1377,15 @@ test("card overlay keeps viewing actions while move and deletion use selection",
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
-  assert.equal((html.match(/<button/g) || []).length, 4);
+  assert.equal((html.match(/<button/g) || []).length, 5);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
   assert.doesNotMatch(html, /data-action="move-generation"/);
   assert.match(html, /aria-label="Recall settings"[^>]*>[\s\S]*?<svg[^>]+viewBox="0 0 24 24"/);
   assert.doesNotMatch(html, />Recall settings<\/button>/);
-  assert.doesNotMatch(html, /data-action="delete-generation"/);
+  assert.match(html, /class="delete-generation-button" data-action="delete-generation" data-generation-id="g1" aria-label="Delete generation" title="Permanently delete this generation"/);
+  assert.ok(html.indexOf('data-action="select-gallery-card"') < html.indexOf('data-action="delete-generation"'));
   assert.doesNotMatch(html, /Failed|private prompt|99|Cancel/);
 
   const historical = cardActionsMarkup({
@@ -2343,6 +2344,11 @@ test("collection tiles escape names, cap previews at four, and collapse previews
     overlay,
     /class="card-select-button" data-action="select-gallery-card" data-collection-id="collection-1" role="checkbox" aria-checked="false" aria-label="Select collection &lt;Alpine &amp; &quot;Friends&quot;&gt;/,
   );
+  assert.match(
+    overlay,
+    /class="delete-collection-button" data-action="delete-collection" data-collection-id="collection-1" aria-label="Delete collection &lt;Alpine &amp; &quot;Friends&quot;&gt;" title="Delete collection"/,
+  );
+  assert.ok(overlay.indexOf('data-action="select-gallery-card"') < overlay.indexOf('data-action="delete-collection"'));
 
   const gallery = galleryMarkup([], { collections: [collection] });
   assert.match(gallery, /<div class="collection-grid"><div[^>]+collection-tile/);

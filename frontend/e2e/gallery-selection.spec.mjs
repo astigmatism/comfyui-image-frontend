@@ -51,10 +51,13 @@ for (const cardSelector of ['[data-gallery-card="generation"][data-generation-id
     await card.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await card.hover();
     await expect(toolkit).toHaveCSS("opacity", "1");
+    // Individual delete is rightmost; the select checkbox sits directly to its left.
     const before = await checkbox.boundingBox();
+    const del = await toolkit.locator(".delete-generation-button, .delete-collection-button").boundingBox();
     const tools = await toolkit.boundingBox();
-    expect(before.x + before.width).toBeCloseTo(tools.x + tools.width, 0);
-    expect(before.y + before.height).toBeCloseTo(tools.y + tools.height, 0);
+    expect(del.x + del.width).toBeCloseTo(tools.x + tools.width, 0);
+    expect(del.y + del.height).toBeCloseTo(tools.y + tools.height, 0);
+    expect(before.x + before.width + 7).toBeCloseTo(del.x, 0);
     await checkbox.click();
     await expect(page.locator("#gallery-selection-toolbar")).toContainText("1 selected");
     await page.mouse.move(2, 2);

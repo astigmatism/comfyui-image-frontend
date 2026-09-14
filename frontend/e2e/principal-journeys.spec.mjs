@@ -334,12 +334,12 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
   const actions = page.locator(".gallery-card .card-actions").first();
-  await expect(actions.locator("button")).toHaveCount(4);
+  await expect(actions.locator("button")).toHaveCount(5);
   await expect(actions.getByRole("link", { name: "Download current image" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Recall settings" })).toBeVisible();
   await expect(page.locator(".gallery-card .card-select-button").first()).toBeVisible();
-  await expect(actions.getByRole("button", { name: "Delete generation" })).toHaveCount(0);
+  await expect(actions.getByRole("button", { name: "Delete generation" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Generation details" })).toBeVisible();
   await expect(page.locator(".gallery-card .card-footer")).toHaveCount(0);
   await expect(actions).not.toContainText(/seed|Complete|Running|slow multi/i);
@@ -1062,6 +1062,76 @@ test("photo viewer delete asks for confirmation and removes the generation", asy
   await expect(photoViewer).not.toHaveAttribute("open", "");
   await expect(card).toHaveCount(0);
   await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
+});
+
+test("image card toolbar delete confirms and removes the generation", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("card toolbar delete");
+  const acceptedResponse = await generateAndExpectAccepted(page);
+  const accepted = await acceptedResponse.json();
+  const card = page.locator(`.gallery-card[data-generation-id="${accepted.id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/);
+  const cardDelete = card.getByRole("button", { name: "Delete generation" });
+
+  // Activate the restored delete button via keyboard. A mouse click on the
+  // hover-revealed button is reset mid-click when the confirm round-trip
+  // shifts scroll/focus, leaving the media button to intercept the pointer.
+  // Focus + Enter fires the same native click the delegated handler acts on.
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("It will disappear from your history and cannot be undone.");
+    return dialog.dismiss();
+  });
+  await cardDelete.focus();
+  await expect(cardDelete).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveCount(1);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await cardDelete.focus();
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveCount(0);
+  await expect(page.locator("#toast-region")).toContainText("Generation deleted.");
+});
+
+test("folder card toolbar delete confirms and removes the collection", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  const session = await (await page.request.get("/api/auth/session")).json();
+  const response = await page.request.post("/api/collections", {
+    headers: { "X-CSRF-Token": session.csrf_token }, data: { name: "Card delete folder" },
+  });
+  expect(response.status()).toBe(201);
+  const folder = await response.json();
+  await page.reload();
+  const tile = page.locator(`[data-gallery-card="collection"][data-collection-id="${folder.id}"]`);
+  await expect(tile).toHaveCount(1);
+  const tileDelete = tile.getByRole("button", { name: "Delete collection Card delete folder" });
+  const dialog = page.locator("#collection-delete-dialog");
+
+  // Activate the restored delete button via keyboard. A mouse click on the
+  // hover-revealed button is reset mid-click when the confirm dialog
+  // round-trip shifts focus/scroll, leaving the full-face open button to
+  // intercept the pointer. Focus + Enter fires the same native click the
+  // delegated handler acts on.
+  await tileDelete.focus();
+  await expect(tileDelete).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveAttribute("open", "");
+  await expect(dialog).toContainText("Delete ‘Card delete folder’ and everything inside?");
+  await dialog.locator(".dialog-actions").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).not.toHaveAttribute("open", "");
+  await expect(tile).toHaveCount(1);
+
+  await tileDelete.focus();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveAttribute("open", "");
+  await dialog.getByRole("button", { name: "Delete everything", exact: true }).click();
+  await expect(tile).toHaveCount(0);
+  await expect(page.locator("#toast-region")).toContainText("Collection and its contents were deleted.");
 });
 
 test("photo viewer download control downloads the image being viewed", async ({ page }) => {

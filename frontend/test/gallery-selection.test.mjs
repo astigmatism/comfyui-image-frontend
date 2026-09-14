@@ -54,10 +54,14 @@ test("active descendants disable copy and deletion explains cancellation", () =>
   assert.match(deleteSelectionMarkup(plan), /cancelled and deleted/);
 });
 
-test("image and folder cards have a selection control without individual move or delete", () => {
-  for (const html of [galleryCardMarkup({ id: "g", status: "succeeded" }), collectionTileMarkup(collections[0])]) {
+test("image and folder cards keep a selection control and individual delete, without individual move", () => {
+  const imageCard = galleryCardMarkup({ id: "g", status: "succeeded" });
+  const folderCard = collectionTileMarkup(collections[0]);
+  for (const html of [imageCard, folderCard]) {
     assert.match(html, /role="checkbox" aria-checked="false"/);
     assert.match(html, /data-action="select-gallery-card"/);
-    assert.doesNotMatch(html, /data-action="(?:move-generation|delete-generation|delete-collection)"/);
+    assert.doesNotMatch(html, /data-action="move-generation"/);
   }
+  assert.match(imageCard, /data-action="delete-generation"/);
+  assert.match(folderCard, /data-action="delete-collection"/);
 });

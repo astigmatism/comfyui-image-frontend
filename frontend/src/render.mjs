@@ -1380,6 +1380,9 @@ export function collectionTileMarkup(collection) {
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
         </button>
         ${cardSelectButtonMarkup(collection, "collection")}
+        <button type="button" class="delete-collection-button" data-action="delete-collection" data-collection-id="${id}" aria-label="Delete collection ${escapeHtml(name)}" title="Delete collection">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
+        </button>
       </div>
     </div>
   </div>`;
@@ -1710,7 +1713,7 @@ export function cardActionsMarkup(generation) {
     || "Load this request into the generation panel";
   return `<div class="card-actions card-hover-reveal" role="group" aria-label="Generation actions"><button type="button" class="card-details-button" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Generation details" title="Open generation details"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
-  </button>${cardSelectButtonMarkup(generation)}</div>`;
+  </button>${cardSelectButtonMarkup(generation)}${deleteGenerationButtonMarkup(generation)}</div>`;
 }
 
 export function deleteGenerationButtonMarkup(generation, extraClasses = "") {
