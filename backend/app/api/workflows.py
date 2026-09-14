@@ -207,6 +207,11 @@ def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
                 if public_input.get("default_mode") == "random"
                 else str(public_input.get("default"))
             )
+        elif public_input.get("type") == "lora_stack":
+            public_input["items"] = [
+                {key: item[key] for key in ("id", "label", "description") if key in item}
+                for item in raw.get("items", [])
+            ]
         elif public_input.get("type") == "choice":
             public_input["choices"] = [
                 {

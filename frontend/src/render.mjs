@@ -1,3 +1,4 @@
+import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
   controlPresentation,
@@ -894,6 +895,10 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   let input = "";
   let field = "";
   switch (control.type) {
+    case "lora_stack":
+      input = loraStackMarkup(control, value, disabled, errorId);
+      field = `<fieldset class="field semantic-fieldset"><legend>${labelContent}</legend>${input}</fieldset>`;
+      break;
     case "multiline_string":
       input = `<textarea ${common} rows="${escapeHtml(control.ui?.rows || (control.id === "prompt.text" ? 10 : 3))}">${escapeHtml(value ?? "")}</textarea>`;
       break;
@@ -1929,6 +1934,9 @@ function resolutionDisplayValue(effective, widthInput, heightInput, resolutionIn
 }
 
 function inputDisplayValue(input, value) {
+  if (input.type === "lora_stack" && Array.isArray(value)) {
+    return value.map((entry, index) => `${index + 1}. ${input.items?.find((item) => item.id === entry.id)?.label || entry.id}: ${entry.strength}${entry.strength === 0 ? " (skipped)" : ""}`).join(" → ");
+  }
   if (input.type === "choice" && Array.isArray(input.choices)) {
     const choice = input.choices.find((item) => (item?.value ?? item) === value);
     if (choice && typeof choice === "object") return choice.label || choice.value;

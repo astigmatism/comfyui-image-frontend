@@ -1,3 +1,4 @@
+import { loraStackError } from "./lora-stack.mjs";
 export function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -816,6 +817,13 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
       )
     : { values: historicalParameters, explicitInputIds: historicalExplicitInputIds };
   const parameters = migrated.values;
+  // Recalling a generation from before stacks existed must reproduce its zero
+  // LoRA use, even if the current form has nonzero strengths.
+  for (const input of interfaceInputs(currentContract)) {
+    if (input.type === "lora_stack" && !Object.hasOwn(historicalParameters, input.id)) {
+      parameters[input.id] = structuredClone(input.default);
+    }
+  }
   const historicalRevision = structuredClone(recall.revision || recall.identity || null);
   return {
     ...current,
@@ -1130,6 +1138,11 @@ export function clientValidate(contract, values) {
     const presentation = controlPresentation(control, values, capabilities);
     if (!presentation.visible || !presentation.enabled || presentation.forbidden) continue;
     const value = values[control.id];
+    if (control.type === "lora_stack") {
+      const error = loraStackError(control, value === undefined ? control.default : value);
+      if (error) errors[control.id] = error;
+      continue;
+    }
     if (control.type === "choice" && value === "") {
       errors[control.id] = `Choose one of: ${choiceOptions(control)
         .map((option) => option.value)

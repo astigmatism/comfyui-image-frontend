@@ -45,16 +45,17 @@ test("production build emits one content-addressed frontend module graph", async
   assert.doesNotMatch(index, /(?:href|src)="\/assets\/(?:styles\.css|app\.mjs)"/u);
 
   const expectedImports = {
-    app: new Set([first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_selection, first.assets.generation_countdown]),
+    app: new Set([first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_selection, first.assets.generation_countdown]),
     gallery_selection: new Set([first.assets.api, first.assets.lib]),
     gallery_hover: new Set(),
     api: new Set([first.assets.server_clock]),
     server_clock: new Set(),
     generation_countdown: new Set([first.assets.render]),
-    lib: new Set(),
-    render: new Set([first.assets.lib, first.assets.server_clock]),
+    lib: new Set([first.assets.lora_stack]),
+    lora_stack: new Set(),
+    render: new Set([first.assets.lib, first.assets.lora_stack, first.assets.server_clock]),
   };
-  for (const name of ["app", "api", "lib", "render", "gallery_hover", "gallery_selection", "server_clock", "generation_countdown"]) {
+  for (const name of ["app", "api", "lib", "render", "gallery_hover", "gallery_selection", "server_clock", "generation_countdown", "lora_stack"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

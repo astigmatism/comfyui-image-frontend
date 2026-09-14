@@ -1455,6 +1455,11 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
     .getByRole("textbox", { name: "Prompt", exact: true })
     .fill("checkpoint tier lighthouse");
 
+  const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
+  if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
+  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await page.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
+  const submittedStack = [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }];
   const trigger = page.locator("#workflow-source");
   await trigger.click();
   const dialog = page.locator("#source-picker-dialog");
@@ -1514,6 +1519,9 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
       .sort((first, second) => first.localeCompare(second)),
   ).toEqual(["cutie_x_int8", "tyjr_mxfp8", "v4_bf16", "v4_int8", "v5_bf16"]);
   expect(new Set(generationRequests.map((request) => request.parameters.seed)).size).toBe(1);
+  for (const request of generationRequests) expect(request.parameters.loras).toEqual(submittedStack);
+  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("0.25");
+  for (const request of generationRequests) expect(request.parameters.loras).toEqual(submittedStack);
   expect(
     generationRequests.every(
       (request) =>
