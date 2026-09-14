@@ -124,27 +124,25 @@ when evidence is sparse; that fallback is reflected by lower confidence and a sa
 Total-duration and progress-landmark rows have independent fixed quotas so high-cardinality node
 history cannot evict all useful source fallbacks.
 
-Total-duration profiles exist in several coarsening scopes so sparse cohorts can fall back to
-broader ones. Besides the exact source/revision/resolution/control cohort, the estimator folds
-successful runs into a checkpoint cohort keyed by instance, source, checkpoint (model-selector)
-value, a coarse prompt-size band, and normalized resolution. The prompt contributes only its length
-band to that key — never its text — so the cohort is content-free like every other scope, and an
-API republish does not invalidate it (revision sensitivity is carried by the broader
-revision/resolution scope instead). This checkpoint scope is an additive key namespace: existing
-scope keys are byte-identical, so it requires no feature-version bump, no schema migration, and no
-re-audit of historical rows.
+Timing feature version 2 includes a coarse prompt-length band in exact profiles and their node
+landmarks as well as checkpoint profiles. Checkpoint history includes instance, source, model,
+prompt band, and normalized resolution, and deliberately survives API republishing. A feature-version
+change resets the existing audit watermark and rebuilds profiles from retained successful rows;
+no schema migration is required and generation history is preserved.
 
-Normal request acceptance and generation start never scan historical generations or aggregate
-timings. They perform only a lookup against the prepared cache. Fresh same-run sibling durations
-used to estimate a checkpoint batch are kept in worker memory only — never in the database — so
-the progress path stays database-free and the run's evidence disappears with the run. A bounded
-legacy audit can seed or repair profiles from older successful rows, but runs only while generation
-work is idle and uses scalar lifecycle/source/control projections rather than compiled graphs, raw
-history, or results. One versioned completion-time/ID cursor advances transactionally with each
-batch; the database does not accumulate a per-generation training marker. Progress-event reads are
-capped independently for each generation, and maintenance uses a short time/lock budget plus
-cooperative shutdown. Completing a generation clears `progress_json` and its ETA; the successful
-lifecycle interval can still be incorporated into a later profile update.
+Successful terminal commits publish feature-tagged durations into a bounded in-memory window
+immediately, so continuous generation can learn without waiting for database maintenance. The idle
+audit advances a versioned completion-time/ID watermark transactionally with each batch. Applying
+the committed result removes incorporated live observations and prevents duplicate training.
+Maintenance uses bounded lifecycle/source/control projections, per-generation progress-event caps,
+independent profile quotas, short time/lock budgets, and cooperative shutdown.
+
+The worker also retains bounded feature-tagged same-run durations. Dispatch/recovery restores at
+most 64 recent successful members with timing-only projections; lookup separates matching settings
+from otherwise-compatible checkpoints and excludes different runtimes or workloads. Acceptance and
+the progress path do not scan history. Completing a generation clears `progress_json` and its ETA,
+while its lifecycle interval remains available for durable training. A running snapshot's ETA retains
+its original deadline after expiry and across restart; requeue clears it for the new attempt.
 
 ## Files and deletion
 

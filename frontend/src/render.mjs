@@ -23,8 +23,16 @@ import {
   statusLabel,
 } from "./lib.mjs";
 
+import { serverClockOffset } from "./server-clock.mjs";
+
 const MAX_GENERATION_ETA_ANCHORS = 256;
 const generationEtaAnchors = new Map();
+const OVERDUE_ETA_TEXT = "Taking longer than expected";
+
+export function clearGenerationEtaAnchors(generationId) {
+  if (generationId) generationEtaAnchors.delete(generationId);
+  else generationEtaAnchors.clear();
+}
 
 export function loginMarkup(appTitle) {
   return `
@@ -1485,10 +1493,10 @@ export function galleryCardMarkup(generation) {
 }
 
 export function generationProgressMarkup(generation, { now = Date.now() } = {}) {
+  const eta = activeGenerationEta(generation, now);
   const progress = activeGenerationProgress(generation);
   if (!progress) return "";
   const label = String(progress.label || "Processing");
-  const eta = activeGenerationEta(generation, now);
   const runtimeName = generationComfyuiInstanceName(generation);
   const copy = generationProgressCopyMarkup(label, eta, runtimeName);
   const determinate = progress.kind === "node";
@@ -1539,7 +1547,10 @@ function generationProgressCopyMarkup(label, eta, runtimeName) {
 }
 
 export function activeGenerationEta(generation, now) {
-  if (!generation || !["dispatching", "running"].includes(generation.status)) return null;
+  if (!generation || !["dispatching", "running"].includes(generation.status)) {
+    if (generation?.id) clearGenerationEtaAnchors(generation.id);
+    return null;
+  }
   const eta = generation.progress?.eta;
   if (!eta || typeof eta !== "object" || Array.isArray(eta)) return null;
   const serverCompletionTimestamp = etaCompletionTimestamp(eta.completion_at);
@@ -1556,7 +1567,7 @@ export function activeGenerationEta(generation, now) {
     now,
   );
   const remainingSeconds =
-    completionTimestamp !== null && reportedRemainingSeconds !== null
+    completionTimestamp !== null
       ? (completionTimestamp - now) / 1000
       : reportedOrAbsoluteRemainingSeconds;
   const text = formatGenerationEta(remainingSeconds);
@@ -1592,12 +1603,16 @@ function anchoredEtaCompletionTimestamp(
     return cached.completionTimestamp;
   }
 
-  const completionTimestamp = now + reportedRemainingSeconds * 1_000;
+  // Hold the clock mapping fixed for this attempt. Receiving a delayed snapshot
+  // can change our knowledge of the deadline, but cannot change clock skew.
+  const clockOffset = cached?.clockOffset ?? serverClockOffset() ?? (now - etaUpdatedTimestamp);
+  const completionTimestamp = serverCompletionTimestamp + clockOffset;
   generationEtaAnchors.delete(generationId);
   generationEtaAnchors.set(generationId, {
     etaUpdatedAt,
     etaUpdatedTimestamp,
     completionTimestamp,
+    clockOffset,
   });
   while (generationEtaAnchors.size > MAX_GENERATION_ETA_ANCHORS) {
     generationEtaAnchors.delete(generationEtaAnchors.keys().next().value);
@@ -1616,7 +1631,7 @@ function nonnegativeFiniteNumber(value) {
 }
 
 function generationEtaAccessibleText(text) {
-  return text === "Finishing…" ? "finishing" : text.replace(/^About/, "about");
+  return text.replace(/^About/, "about");
 }
 
 function activeGenerationProgress(generation) {
@@ -1724,13 +1739,13 @@ export function formatGenerationDuration(value) {
 
 export function formatGenerationEta(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  if (value <= 0) return "Finishing…";
+  if (value <= 0) return OVERDUE_ETA_TEXT;
   return `About ${formatGenerationDuration(Math.ceil(value))} left`;
 }
 
 export function formatNextInCountdown(remainingSeconds) {
   if (typeof remainingSeconds !== "number" || !Number.isFinite(remainingSeconds)) return "Next in…";
-  if (remainingSeconds <= 0.5) return "Next up…";
+  if (remainingSeconds <= 0) return OVERDUE_ETA_TEXT;
   return `Next in ${formatGenerationDuration(Math.ceil(remainingSeconds))}`;
 }
 

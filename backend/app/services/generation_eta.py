@@ -30,7 +30,7 @@ from ..models import (
 
 logger = logging.getLogger(__name__)
 
-TIMING_FEATURE_VERSION = 1
+TIMING_FEATURE_VERSION = 2
 _DEFAULT_AUDIT_INTERVAL_SECONDS = 300.0
 _DEFAULT_AUDIT_BATCH_SIZE = 24
 _DEFAULT_MAX_PROFILE_SAMPLES = 64
@@ -75,6 +75,7 @@ class GenerationTimingFeatures:
     source_key: str
     instance_key: str
     checkpoint_key: str | None = None
+    compatible_key: str | None = None
     feature_version: int = TIMING_FEATURE_VERSION
 
     def total_profile_keys(self) -> tuple[tuple[str, str], ...]:
@@ -105,6 +106,40 @@ class _ProfileSnapshot:
     upper_seconds: float
     sample_count: int
     recent_sample_count: int
+    samples: tuple[float, ...] = ()
+
+
+_BASIS_ORDER = (
+    "run_sibling",
+    "progress_landmark",
+    "historical_exact",
+    "historical_checkpoint",
+    "run_sibling_compatible",
+    "historical_revision_resolution",
+    "historical_revision",
+    "historical_source",
+    "historical_instance",
+)
+
+
+@dataclass
+class _Deadline:
+    attempt: datetime
+    evidence: tuple[Any, ...]
+    basis: str
+    completion: datetime
+    lower: datetime
+    upper: datetime
+    confidence: str
+    progress_at: datetime | None
+    seen_landmarks: set[str]
+
+
+@dataclass(frozen=True)
+class _RecentCompletion:
+    features: GenerationTimingFeatures
+    seconds: float
+    completed_at: datetime
 
 
 @dataclass(frozen=True)
@@ -113,6 +148,7 @@ class _AuditBatchResult:
     has_more: bool
     profile_updates: dict[tuple[str, str], _ProfileSnapshot]
     removed_profile_keys: frozenset[tuple[str, str]]
+    observed_through: tuple[datetime, str] | None = None
 
 
 def _empty_audit_result() -> _AuditBatchResult:
@@ -246,27 +282,46 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
         "revision-resolution",
         {"revision": revision_key, "resolution": resolution_shape},
     )
-    exact_key = _digest(
-        "exact",
-        {
-            "revision_resolution": revision_resolution_key,
-            "width": width,
-            "height": height,
-            "controls": performance_controls,
-            "preset": _bounded_choice(getattr(generation, "selected_preset", None)),
-            "requested_outputs": sorted(
-                value[:200]
-                for value in (getattr(generation, "requested_outputs_json", None) or [])
-                if isinstance(value, str) and value
-            ),
-        },
+    final_prompt = getattr(generation, "final_prompt", None)
+    prompt_bucket = _prompt_size_bucket(len(final_prompt) if isinstance(final_prompt, str) else 0)
+    exact_shape = {
+        "revision_resolution": revision_resolution_key,
+        "width": width,
+        "height": height,
+        "controls": performance_controls,
+        "prompt_bucket": prompt_bucket,
+        "preset": _bounded_choice(getattr(generation, "selected_preset", None)),
+        "requested_outputs": sorted(
+            value[:200]
+            for value in (getattr(generation, "requested_outputs_json", None) or [])
+            if isinstance(value, str) and value
+        ),
+    }
+    exact_key = _digest("exact", exact_shape)
+    checkpoint_ids = {
+        definition.get("id")
+        for definition in definitions
+        if isinstance(definition, Mapping) and is_checkpoint_declaration(definition)
+    }
+    compatible_key = (
+        _digest(
+            "checkpoint-compatible",
+            {
+                **exact_shape,
+                "controls": {
+                    key: value
+                    for key, value in performance_controls.items()
+                    if key not in checkpoint_ids
+                },
+            },
+        )
+        if checkpoint_value is not None
+        else None
     )
     # The checkpoint scope deliberately omits the API revision: a republished
     # source keeps its model-variant cohort, while revision sensitivity is
     # already covered by total_revision_resolution further down the ladder.
     # Prompt size enters only as a coarse length band; prompt text is never hashed.
-    final_prompt = getattr(generation, "final_prompt", None)
-    prompt_bucket = _prompt_size_bucket(len(final_prompt) if isinstance(final_prompt, str) else 0)
     checkpoint_key: str | None = None
     if checkpoint_value is not None:
         checkpoint_key = _digest(
@@ -286,6 +341,7 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
         source_key=source_key,
         instance_key=instance_key,
         checkpoint_key=checkpoint_key,
+        compatible_key=compatible_key,
     )
 
 
@@ -346,6 +402,9 @@ class GenerationEtaEstimator:
         self.audit_time_budget_seconds = max(0.05, float(audit_time_budget_seconds))
         self._profiles: dict[tuple[str, str], _ProfileSnapshot] = {}
         self._feature_cache: OrderedDict[str, GenerationTimingFeatures] = OrderedDict()
+        self._deadlines: OrderedDict[str, _Deadline] = OrderedDict()
+        self._recent: OrderedDict[str, _RecentCompletion] = OrderedDict()
+        self._audited_through: tuple[datetime, str] | None = None
         self._stop_event = asyncio.Event()
         self._wake_event = asyncio.Event()
         self._audit_stop_event = threading.Event()
@@ -378,6 +437,8 @@ class GenerationEtaEstimator:
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
         self._feature_cache.clear()
+        self._deadlines.clear()
+        self._recent.clear()
         self._loop = None
 
     def notify(self) -> None:
@@ -396,104 +457,212 @@ class GenerationEtaEstimator:
             with suppress(Exception):
                 interrupt()
 
+    def forget(self, generation_id: str) -> None:
+        self._deadlines.pop(generation_id, None)
+        self._feature_cache.pop(generation_id, None)
+
+    def observe_success(
+        self,
+        generation_id: str,
+        features: GenerationTimingFeatures,
+        seconds: float,
+        completed_at: datetime,
+    ) -> None:
+        """Publish bounded live evidence; durable training still happens only when idle."""
+        completed_at = _aware_utc(completed_at)
+        if not _valid_sibling_durations([seconds]):
+            return
+        if self._audited_through and (completed_at, generation_id) <= self._audited_through:
+            return
+        self._recent[generation_id] = _RecentCompletion(features, seconds, completed_at)
+        self._recent.move_to_end(generation_id)
+        while len(self._recent) > self.max_profile_samples:
+            self._recent.popitem(last=False)
+
+    def _profile_for(self, scope: str, key: str) -> _ProfileSnapshot | None:
+        persisted = self._profiles.get((scope, key))
+        recent = [
+            sample.seconds
+            for sample in self._recent.values()
+            if (scope, key) in sample.features.total_profile_keys()
+        ]
+        if not recent:
+            return persisted
+        samples = [*(persisted.samples if persisted else ()), *recent][-self.max_profile_samples :]
+        median, lower, upper = _robust_stats(samples)
+        return _ProfileSnapshot(
+            median,
+            lower,
+            upper,
+            (persisted.sample_count if persisted else 0) + len(recent),
+            len(samples),
+            tuple(samples),
+        )
+
     def estimate(
         self,
         generation: Generation,
         progress: Mapping[str, Any] | None = None,
         now: datetime | None = None,
         sibling_durations: Sequence[float] | None = None,
+        compatible_sibling_durations: Sequence[float] | None = None,
     ) -> dict[str, Any] | None:
+        generation_id = str(generation.id)
         status = getattr(generation, "status", None)
         normalized_status = status.value if isinstance(status, GenerationStatus) else str(status)
         if normalized_status != GenerationStatus.RUNNING.value:
+            self.forget(generation_id)
             return None
         started_at = getattr(generation, "started_at", None)
         if not isinstance(started_at, datetime):
             return None
+        started_at = _aware_utc(started_at)
         current = _aware_utc(now or datetime.now(UTC))
-        elapsed = max(0.0, (current - _aware_utc(started_at)).total_seconds())
+        previous = self._deadlines.get(generation_id)
+        if previous is not None and previous.attempt != started_at:
+            self.forget(generation_id)
+            previous = None
         features = self._active_features(generation)
-        active_progress = progress
-        if active_progress is None:
-            saved_progress = getattr(generation, "progress_json", None)
-            active_progress = saved_progress if isinstance(saved_progress, Mapping) else None
-
-        landmark_key = build_progress_landmark_key(features, active_progress)
+        if progress is None:
+            saved = getattr(generation, "progress_json", None)
+            progress = saved if isinstance(saved, Mapping) else None
+        progress_at = _parse_timestamp(progress.get("updated_at")) if progress else None
+        stale = bool(
+            previous and previous.progress_at and progress_at and progress_at < previous.progress_at
+        )
+        landmark_key = build_progress_landmark_key(features, progress)
         profile: _ProfileSnapshot | None = None
         basis = ""
-        subtract_elapsed = True
-        if landmark_key is not None:
-            profile = self._profiles.get(("progress_landmark", landmark_key))
-            if profile is not None:
-                basis = "progress_landmark"
-                subtract_elapsed = False
-        if profile is None:
-            # Live evidence from this run: completed siblings share the same
-            # prompt, resolution, instance, and machine state, so their wall
-            # durations are the closest prediction for this generation.
-            sibling_samples = _valid_sibling_durations(sibling_durations)
-            if sibling_samples:
-                median, lower, upper = _robust_stats(sibling_samples)
-                profile = _ProfileSnapshot(
-                    median_seconds=median,
-                    lower_seconds=lower,
-                    upper_seconds=upper,
-                    sample_count=len(sibling_samples),
-                    recent_sample_count=len(sibling_samples),
+        evidence: tuple[Any, ...] = ()
+        for candidate in _BASIS_ORDER:
+            if candidate in {"run_sibling", "run_sibling_compatible"}:
+                samples = _valid_sibling_durations(
+                    sibling_durations
+                    if candidate == "run_sibling"
+                    else compatible_sibling_durations
                 )
-                basis = "run_sibling"
-                subtract_elapsed = True
-        if profile is None:
-            for scope, scope_key in features.total_profile_keys():
-                profile = self._profiles.get((scope, scope_key))
-                if profile is not None:
-                    basis = {
-                        "total_exact": "historical_exact",
-                        "total_checkpoint": "historical_checkpoint",
-                        "total_revision_resolution": "historical_revision_resolution",
-                        "total_revision": "historical_revision",
-                        "total_source": "historical_source",
-                        "total_instance": "historical_instance",
-                    }[scope]
-                    break
-        if profile is None:
-            return None
+                if not samples:
+                    continue
+                median, lower, upper = _robust_stats(samples)
+                profile = _ProfileSnapshot(median, lower, upper, len(samples), len(samples))
+                evidence = (candidate, tuple(samples))
+            elif candidate == "progress_landmark":
+                if stale or landmark_key is None:
+                    continue
+                profile = self._profile_for("progress_landmark", landmark_key)
+                evidence = (candidate, landmark_key)
+            else:
+                scope = candidate.replace("historical_", "total_")
+                key = dict(features.total_profile_keys()).get(scope)
+                if key is None:
+                    continue
+                profile = self._profile_for(scope, key)
+                evidence = (candidate, key, profile)
+            if profile is not None:
+                basis = candidate
+                break
 
-        offset = elapsed if subtract_elapsed else 0.0
-        remaining = max(0.0, profile.median_seconds - offset)
-        lower = max(0.0, min(remaining, profile.lower_seconds - offset))
-        upper = max(remaining, profile.upper_seconds - offset, 0.0)
-        if basis == "run_sibling":
-            # A single fresh same-batch observation is stronger than a sparse
-            # historical cohort, so one sibling already earns medium confidence.
-            confidence = "high" if profile.sample_count >= 3 else "medium"
-        else:
-            confidence = _profile_confidence(profile)
-        confidence = _cap_confidence(confidence, basis)
-        if subtract_elapsed and remaining <= 0:
-            # A still-running job has survived beyond the historical median. Move to the
-            # compatible upper tail instead of presenting a misleading zero-second ETA.
-            upper_tail = max(0.0, profile.upper_seconds - elapsed)
-            fallback_tail = min(30.0, max(1.0, profile.median_seconds * 0.1))
-            remaining = max(upper_tail, fallback_tail)
-            lower = 0.0
-            upper = max(remaining, upper_tail, remaining * 1.5)
-            if elapsed >= profile.upper_seconds:
-                confidence = "low"
-            elif confidence == "high":
-                confidence = "medium"
-        confidence = _cap_confidence(confidence, basis)
-        remaining = round(remaining, 1)
-        lower = round(lower, 1)
-        upper = round(upper, 1)
-        completion_at = current + timedelta(seconds=remaining)
+        # The saved deadline survives process restarts and cache eviction. The progress
+        # snapshot is cleared on requeue, so it cannot belong to a previous attempt.
+        saved_progress = getattr(generation, "progress_json", None)
+        if not isinstance(saved_progress, Mapping) or not isinstance(
+            saved_progress.get("eta"), Mapping
+        ):
+            saved_progress = progress
+        if previous is None and saved_progress:
+            saved_eta = saved_progress.get("eta")
+            if isinstance(saved_eta, Mapping):
+                completion = _parse_timestamp(saved_eta.get("completion_at"))
+                updated = _parse_timestamp(saved_eta.get("updated_at"))
+                saved_basis = saved_eta.get("basis")
+                saved_lower = _finite_number(saved_eta.get("lower_seconds"))
+                saved_upper = _finite_number(saved_eta.get("upper_seconds"))
+                saved_progress_at = _parse_timestamp(saved_progress.get("updated_at"))
+                saved_landmark = build_progress_landmark_key(features, saved_progress)
+                if (
+                    completion
+                    and updated
+                    and updated >= started_at
+                    and saved_basis in _BASIS_ORDER
+                    and saved_lower is not None
+                    and saved_upper is not None
+                ):
+                    previous = _Deadline(
+                        started_at,
+                        evidence
+                        if basis == saved_basis
+                        and (basis != "progress_landmark" or landmark_key == saved_landmark)
+                        else (),
+                        str(saved_basis),
+                        completion,
+                        updated + timedelta(seconds=saved_lower),
+                        updated + timedelta(seconds=saved_upper),
+                        str(saved_eta.get("confidence", "low")),
+                        saved_progress_at,
+                        {saved_landmark}
+                        if saved_landmark and saved_basis == "progress_landmark"
+                        else set(),
+                    )
+                    if (
+                        basis == "progress_landmark"
+                        and saved_progress_at
+                        and progress_at
+                        and progress_at < saved_progress_at
+                    ):
+                        profile = None
+
+        revise = profile is not None and (
+            previous is None
+            or (
+                _BASIS_ORDER.index(basis) <= _BASIS_ORDER.index(previous.basis)
+                and evidence != previous.evidence
+                and not (basis == "progress_landmark" and landmark_key in previous.seen_landmarks)
+            )
+        )
+        if revise and profile is not None:
+            # A landmark measures residual time at entry, not at each progress tick.
+            origin = (
+                max(started_at, min(current, progress_at or current))
+                if basis == "progress_landmark"
+                else started_at
+            )
+            confidence = (
+                ("high" if profile.sample_count >= 3 else "medium")
+                if basis == "run_sibling"
+                else _profile_confidence(profile)
+            )
+            seen = set(previous.seen_landmarks) if previous else set()
+            if basis == "progress_landmark" and landmark_key and len(seen) < 256:
+                seen.add(landmark_key)
+            previous = _Deadline(
+                started_at,
+                evidence,
+                basis,
+                origin + timedelta(seconds=profile.median_seconds),
+                origin + timedelta(seconds=profile.lower_seconds),
+                origin + timedelta(seconds=profile.upper_seconds),
+                _cap_confidence(confidence, basis),
+                progress_at,
+                seen,
+            )
+        if previous is None:
+            return None
+        if progress_at and (previous.progress_at is None or progress_at > previous.progress_at):
+            previous.progress_at = progress_at
+        self._deadlines[generation_id] = previous
+        self._deadlines.move_to_end(generation_id)
+        while len(self._deadlines) > _MAX_ACTIVE_FEATURE_CACHE:
+            self._deadlines.popitem(last=False)
+        remaining = max(0.0, (previous.completion - current).total_seconds())
         return {
-            "remaining_seconds": remaining,
-            "completion_at": completion_at.isoformat(),
-            "lower_seconds": lower,
-            "upper_seconds": upper,
-            "confidence": confidence,
-            "basis": basis,
+            "remaining_seconds": round(remaining, 3),
+            "completion_at": previous.completion.isoformat(),
+            "lower_seconds": round(
+                max(0.0, min(remaining, (previous.lower - current).total_seconds())), 3
+            ),
+            "upper_seconds": round(max(remaining, (previous.upper - current).total_seconds()), 3),
+            "confidence": previous.confidence if remaining > 0 else "low",
+            "basis": previous.basis,
             "updated_at": current.isoformat(),
         }
 
@@ -541,6 +710,11 @@ class GenerationEtaEstimator:
             raise
 
     def _apply_audit_result(self, result: _AuditBatchResult) -> None:
+        if result.observed_through is not None:
+            self._audited_through = result.observed_through
+            for generation_id, sample in list(self._recent.items()):
+                if (sample.completed_at, generation_id) <= result.observed_through:
+                    del self._recent[generation_id]
         if not result.profile_updates and not result.removed_profile_keys:
             return
         profiles = dict(self._profiles)
@@ -602,6 +776,7 @@ class GenerationEtaEstimator:
                     Generation.status,
                     Generation.started_at,
                     Generation.completed_at,
+                    Generation.comfyui_instance_id,
                     Generation.generation_source_json,
                     Generation.workflow_id,
                     Generation.api_graph_sha256,
@@ -729,6 +904,9 @@ class GenerationEtaEstimator:
             has_more=has_more,
             profile_updates=profile_updates,
             removed_profile_keys=frozenset(removed_keys),
+            observed_through=(_aware_utc(state.cursor_completed_at), state.cursor_generation_id)
+            if state.cursor_completed_at is not None and state.cursor_generation_id is not None
+            else None,
         )
 
     @staticmethod
@@ -1136,6 +1314,7 @@ def _profile_snapshot(profile: GenerationTimingProfile) -> _ProfileSnapshot:
         upper_seconds=float(profile.upper_seconds),
         sample_count=int(profile.sample_count),
         recent_sample_count=len(_valid_samples(profile.samples_json)),
+        samples=tuple(_valid_samples(profile.samples_json)),
     )
 
 
@@ -1144,6 +1323,7 @@ def _cap_confidence(confidence: str, basis: str) -> str:
     maximum = {
         "progress_landmark": "high",
         "run_sibling": "high",
+        "run_sibling_compatible": "low",
         "historical_exact": "high",
         "historical_revision_resolution": "medium",
         "historical_checkpoint": "medium",
@@ -1161,3 +1341,12 @@ def _aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return _aware_utc(datetime.fromisoformat(value))
+    except ValueError:
+        return None

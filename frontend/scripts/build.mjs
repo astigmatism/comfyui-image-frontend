@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["api.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-selection.mjs", "app.mjs"];
+const modules = ["api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -75,6 +75,8 @@ await writeFile(join(dist, "index.html"), productionHtml);
 const assets = {
   app: `${assetPrefix}/app.mjs`,
   api: `${assetPrefix}/api.mjs`,
+  server_clock: `${assetPrefix}/server-clock.mjs`,
+  generation_countdown: `${assetPrefix}/generation-countdown.mjs`,
   lib: `${assetPrefix}/lib.mjs`,
   render: `${assetPrefix}/render.mjs`,
   gallery_hover: `${assetPrefix}/gallery-hover.mjs`,

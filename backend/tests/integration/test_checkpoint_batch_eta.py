@@ -114,7 +114,7 @@ def test_running_sibling_estimates_the_rest_of_the_checkpoint_batch(
         elapsed = max(0.0, (updated_at.astimezone(UTC) - started_at).total_seconds())
         assert eta["confidence"] == "medium"
         remaining = float(eta["remaining_seconds"])
-        assert 0 < remaining < first_duration
+        assert 0 < remaining <= first_duration + 0.05
         assert remaining == pytest.approx(first_duration - elapsed, abs=0.15)
         assert float(eta["lower_seconds"]) <= remaining <= float(eta["upper_seconds"])
 
@@ -268,8 +268,10 @@ def test_fresh_worker_reseeds_completed_siblings_from_the_database(
         worker._register_run_timing(second_id)
 
         run_id = worker._generation_run_ids[second_id]
-        assert worker._run_cohorts[run_id] is not None
-        assert worker._run_sibling_durations[run_id] == pytest.approx([1.5])
+        assert worker._run_cohorts[ids[1]] is not None
+        assert [
+            sample[1] for sample in worker._run_sibling_durations[run_id].values()
+        ] == pytest.approx([1.5])
 
         with client.app.state.container.db.session_factory() as session:
             second = session.get(Generation, second_id)

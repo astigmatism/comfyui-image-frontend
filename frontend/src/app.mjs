@@ -1,4 +1,5 @@
 import { api, setCsrfToken, upload } from "./api.mjs";
+import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
 import {
@@ -41,7 +42,7 @@ import {
   sourceModelSelectors,
 } from "./lib.mjs";
 import {
-  activeGenerationEta,
+  clearGenerationEtaAnchors,
   collectionDeleteDialogMarkup,
   collectionDialogMarkup,
   collectionTileMarkup,
@@ -49,8 +50,6 @@ import {
   generationActivityMarkup,
   detailMarkup,
   favoritesGalleryMarkup,
-  formatGenerationEta,
-  formatNextInCountdown,
   galleryCardMarkup,
   galleryMarkup,
   generationProgressMarkup,
@@ -5257,44 +5256,9 @@ function updatePhotoViewerPlaybackControl() {
   }
 }
 
-function photoViewerNextCompletionTimestamp() {
-  const now = Date.now();
-  let earliest = null;
-  for (const generation of state.generations) {
-    if (!["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status)) continue;
-    const completion = activeGenerationEta(generation, now)?.completionTimestamp;
-    if (
-      typeof completion === "number" &&
-      Number.isFinite(completion) &&
-      (earliest === null || completion < earliest)
-    ) {
-      earliest = completion;
-    }
-  }
-  return earliest;
-}
-
-function updatePhotoViewerNextIn() {
-  const dialog = document.querySelector("#photo-viewer");
-  if (!dialog?.open) return;
-  const badge = dialog.querySelector(".photo-viewer-next-in");
-  if (!badge) return;
-  const visible = state.photoViewerPlaybackMode === "slideshow" && state.autoGenerate === true;
-  if (!visible) {
-    if (!badge.hidden) {
-      badge.hidden = true;
-      badge.textContent = "";
-    }
-    return;
-  }
-  const now = Date.now();
-  const completion = photoViewerNextCompletionTimestamp();
-  const text =
-    completion === null
-      ? "Next in…"
-      : formatNextInCountdown((completion - now) / 1_000);
-  badge.hidden = false;
-  if (badge.textContent !== text) badge.textContent = text;
+function updatePhotoViewerNextIn(now = Date.now()) {
+  refreshPhotoViewerNextIn(root, state.generations,
+    state.photoViewerPlaybackMode === "slideshow" && state.autoGenerate === true, now);
 }
 
 function handlePhotoViewerResize() {
@@ -5562,6 +5526,9 @@ function startLiveUpdates({ paused = false } = {}) {
 }
 
 function applyLiveUpdate({ type, payload }) {
+  if (["generation.queued", "generation.requeued", "generation.terminal", "generation.deleted"].includes(type)) {
+    clearGenerationEtaAnchors(payload.generation_id);
+  }
   if (type !== "generation.progress" && type !== "generation.stage") scheduleActivityRefresh();
   if (type === "generation.deleted") removeGeneration(payload.generation_id);
   else if (type === "generation.progress") applyGenerationProgress(payload);
@@ -5610,21 +5577,8 @@ function stopGenerationEtaTimer() {
 function refreshGenerationEtaCountdowns() {
   const now = Date.now();
   renderGenerationActivity();
-  for (const eta of root.querySelectorAll("[data-generation-eta-completion]")) {
-    const completionTimestamp = Number(eta.getAttribute("data-generation-eta-completion"));
-    if (!Number.isFinite(completionTimestamp)) continue;
-    const text = formatGenerationEta((completionTimestamp - now) / 1000);
-    if (!text) continue;
-    if (eta.textContent !== text) eta.textContent = text;
-    const progress = eta.closest(".generation-progress");
-    const bar = progress?.querySelector("[data-progress-valuetext-base]");
-    const baseValueText = bar?.getAttribute("data-progress-valuetext-base");
-    if (baseValueText) {
-      const accessibleEta = text === "Finishing…" ? "finishing" : text.replace(/^About/, "about");
-      bar.setAttribute("aria-valuetext", `${baseValueText}, ${accessibleEta}`);
-    }
-  }
-  updatePhotoViewerNextIn();
+  refreshGenerationEtaElements(root, now);
+  updatePhotoViewerNextIn(now);
 }
 
 function resumeLiveUpdates() {
@@ -5700,6 +5654,7 @@ function stopServicePolling() {
 }
 
 function stopLiveUpdates() {
+  clearGenerationEtaAnchors();
   activityRequestToken += 1;
   window.clearTimeout(activityRefreshTimer);
   activityRefreshTimer = null;

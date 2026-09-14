@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import httpx
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..config import Settings
 from ..domain.publication import sha256_json
@@ -47,7 +47,12 @@ from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, event_payload, publish_event
-from .generation_eta import _MAX_SAMPLE_SECONDS, GenerationEtaEstimator
+from .generation_eta import (
+    _MAX_SAMPLE_SECONDS,
+    GenerationEtaEstimator,
+    GenerationTimingFeatures,
+    build_generation_timing_features,
+)
 from .generations import GenerationService
 from .ollama import OllamaAdapter
 
@@ -151,8 +156,10 @@ class QueueWorker:
         # needed; the database remains the source of truth after a restart.
         self._generation_run_ids: dict[str, str] = {}
         self._run_members: dict[str, set[str]] = {}
-        self._run_sibling_durations: dict[str, list[float]] = {}
-        self._run_cohorts: dict[str, tuple[str, str]] = {}
+        self._run_sibling_durations: dict[
+            str, dict[str, tuple[GenerationTimingFeatures, float]]
+        ] = {}
+        self._run_cohorts: dict[str, GenerationTimingFeatures] = {}
         self._dispatcher_started = asyncio.Event()
         self._dispatcher_state: DispatcherState = "not_started"
         self._dispatcher_done = False
@@ -628,24 +635,8 @@ class QueueWorker:
             session.commit()
             return generation.id, event
 
-    def _cohort_identity(self, generation: Generation) -> tuple[str, str]:
-        source_data = (
-            generation.generation_source_json
-            if isinstance(generation.generation_source_json, Mapping)
-            else {}
-        )
-        source_key = source_data.get("source_key")
-        source = str(source_key if source_key is not None else generation.workflow_id or "")[:512]
-        return source, str(generation.comfyui_instance_id or "")
-
     def _register_run_timing(self, generation_id: str) -> None:
-        """Track multi-member runs so completed siblings can estimate the rest.
-
-        One indexed lookup per dispatch; single-generation runs are untouched.
-        On first registration of a run, durations of siblings that already
-        succeeded in an earlier process are seeded from the database so the
-        estimate survives an application restart mid-batch.
-        """
+        """Restore bounded, feature-tagged sibling observations at dispatch/recovery."""
         with self.session_factory() as session:
             member = session.get(GenerationRunMember, generation_id)
             if member is None:
@@ -662,45 +653,76 @@ class QueueWorker:
             run_id = str(run.id)
             first_registration = run_id not in self._run_members
             self._generation_run_ids[generation_id] = run_id
-            members = self._run_members.setdefault(run_id, set())
-            members.add(generation_id)
+            self._run_members.setdefault(run_id, set()).add(generation_id)
+            self._run_cohorts[generation_id] = build_generation_timing_features(generation)
             if not first_registration:
                 return
-            self._run_cohorts[run_id] = self._cohort_identity(generation)
-            completed = session.execute(
-                select(Generation.started_at, Generation.completed_at)
-                .join(
-                    GenerationRunMember,
-                    GenerationRunMember.generation_id == Generation.id,
+            completed = list(
+                session.scalars(
+                    select(Generation)
+                    .options(
+                        load_only(
+                            Generation.id,
+                            Generation.started_at,
+                            Generation.completed_at,
+                            Generation.comfyui_instance_id,
+                            Generation.generation_source_json,
+                            Generation.workflow_id,
+                            Generation.api_graph_sha256,
+                            Generation.resolved_contract_json,
+                            Generation.effective_controls_json,
+                            Generation.selected_preset,
+                            Generation.requested_outputs_json,
+                            Generation.final_prompt,
+                        )
+                    )
+                    .join(GenerationRunMember, GenerationRunMember.generation_id == Generation.id)
+                    .where(
+                        GenerationRunMember.run_id == run_id,
+                        Generation.id != generation_id,
+                        Generation.status == GenerationStatus.SUCCEEDED,
+                        Generation.started_at.is_not(None),
+                        Generation.completed_at.is_not(None),
+                    )
+                    .order_by(Generation.completed_at.desc(), Generation.id.desc())
+                    .limit(_MAX_RUN_SIBLING_DURATIONS)
                 )
-                .where(
-                    GenerationRunMember.run_id == run_id,
-                    Generation.id != generation_id,
-                    Generation.status == GenerationStatus.SUCCEEDED,
-                    Generation.started_at.is_not(None),
-                    Generation.completed_at.is_not(None),
-                )
-            ).all()
-            durations = self._run_sibling_durations.setdefault(run_id, [])
-            for started_at, completed_at in completed:
-                if not isinstance(started_at, datetime) or not isinstance(completed_at, datetime):
+            )
+            durations = self._run_sibling_durations.setdefault(run_id, {})
+            for sibling in reversed(completed):
+                if sibling.started_at is None or sibling.completed_at is None:
                     continue
-                duration = _wall_duration(started_at, completed_at)
-                if duration is not None and len(durations) < _MAX_RUN_SIBLING_DURATIONS:
-                    durations.append(duration)
+                duration = _wall_duration(sibling.started_at, sibling.completed_at)
+                if duration is not None:
+                    durations[sibling.id] = (build_generation_timing_features(sibling), duration)
 
-    def _sibling_durations_for(self, generation: Generation) -> tuple[float, ...] | None:
-        """Completed-sibling durations applicable to this generation, if any."""
+    def _sibling_durations_for(
+        self,
+        generation: Generation,
+        *,
+        compatible: bool = False,
+    ) -> tuple[float, ...] | None:
         run_id = self._generation_run_ids.get(generation.id)
-        if run_id is None:
+        features = self._run_cohorts.get(generation.id)
+        if run_id is None or features is None:
             return None
-        cohort = self._run_cohorts.get(run_id)
-        if cohort is None or self._cohort_identity(generation) != cohort:
-            return None
-        durations = self._run_sibling_durations.get(run_id)
-        if not durations:
-            return None
-        return tuple(durations)
+        samples = self._run_sibling_durations.get(run_id, {})
+        return (
+            tuple(
+                seconds
+                for sibling, seconds in samples.values()
+                if (
+                    sibling.exact_key == features.exact_key
+                    if not compatible
+                    else (
+                        features.compatible_key is not None
+                        and sibling.compatible_key == features.compatible_key
+                        and sibling.exact_key != features.exact_key
+                    )
+                )
+            )
+            or None
+        )
 
     async def _execute(self, generation_id: str) -> None:
         self._register_run_timing(generation_id)
@@ -855,6 +877,9 @@ class QueueWorker:
                     progress=progress,
                     now=generation.started_at,
                     sibling_durations=self._sibling_durations_for(generation),
+                    compatible_sibling_durations=self._sibling_durations_for(
+                        generation, compatible=True
+                    ),
                 )
                 if estimate is not None:
                     progress["eta"] = estimate
@@ -1434,6 +1459,9 @@ class QueueWorker:
                 generation,
                 progress=stored_snapshot,
                 sibling_durations=self._sibling_durations_for(generation),
+                compatible_sibling_durations=self._sibling_durations_for(
+                    generation, compatible=True
+                ),
             )
             if estimate is not None:
                 stored_snapshot["eta"] = estimate
@@ -2140,12 +2168,14 @@ class QueueWorker:
     def _record_run_timing(
         self,
         generation_id: str,
-        timing: tuple[GenerationStatus | None, datetime | None, datetime | None] | None,
+        timing: tuple[
+            GenerationStatus | None, datetime | None, datetime | None, GenerationTimingFeatures
+        ]
+        | None,
     ) -> None:
         """Fold a terminal generation into its run's in-memory sibling durations."""
+        self.generation_eta.forget(generation_id)
         run_id = self._generation_run_ids.get(generation_id)
-        if run_id is None:
-            return
         if (
             timing is not None
             and timing[0] == GenerationStatus.SUCCEEDED
@@ -2154,9 +2184,15 @@ class QueueWorker:
         ):
             duration = _wall_duration(timing[1], timing[2])
             if duration is not None:
-                durations = self._run_sibling_durations.setdefault(run_id, [])
-                if len(durations) < _MAX_RUN_SIBLING_DURATIONS:
-                    durations.append(duration)
+                self.generation_eta.observe_success(generation_id, timing[3], duration, timing[2])
+                if run_id is not None:
+                    durations = self._run_sibling_durations.setdefault(run_id, {})
+                    durations[generation_id] = (timing[3], duration)
+                    while len(durations) > _MAX_RUN_SIBLING_DURATIONS:
+                        del durations[next(iter(durations))]
+        self._run_cohorts.pop(generation_id, None)
+        if run_id is None:
+            return
         members = self._run_members.get(run_id)
         if members is not None:
             members.discard(generation_id)
@@ -2168,7 +2204,6 @@ class QueueWorker:
                     self._generation_run_ids.pop(tracked_id, None)
                 self._run_members.pop(run_id, None)
                 self._run_sibling_durations.pop(run_id, None)
-                self._run_cohorts.pop(run_id, None)
 
     async def _refresh_run_siblings(self, generation_id: str) -> None:
         """Recompute sibling ETAs after a same-run generation reached a terminal state."""
@@ -2279,7 +2314,9 @@ class QueueWorker:
             bool,
             str,
             list[str],
-            tuple[GenerationStatus | None, datetime | None, datetime | None],
+            tuple[
+                GenerationStatus | None, datetime | None, datetime | None, GenerationTimingFeatures
+            ],
         ]
         | None
     ):
@@ -2475,7 +2512,12 @@ class QueueWorker:
                 pending_delete,
                 owner_id,
                 pruned_paths,
-                (generation.status, generation.started_at, generation.completed_at),
+                (
+                    generation.status,
+                    generation.started_at,
+                    generation.completed_at,
+                    build_generation_timing_features(generation),
+                ),
             )
 
     def _delete_terminal_if_present(self, generation_id: str) -> None:
@@ -2494,6 +2536,7 @@ class QueueWorker:
         )
 
     async def _requeue_after_outage(self, generation_id: str) -> None:
+        self.generation_eta.forget(generation_id)
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
             if generation is None:

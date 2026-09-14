@@ -116,7 +116,9 @@ def _generation(
     )
 
 
-def _progress(*, node_id: str = "sampler-1", fraction: float = 0.5) -> dict[str, Any]:
+def _progress(
+    *, node_id: str = "sampler-1", fraction: float = 0.5, at: datetime | None = None
+) -> dict[str, Any]:
     return {
         "kind": "node",
         "node_id": node_id,
@@ -127,7 +129,7 @@ def _progress(*, node_id: str = "sampler-1", fraction: float = 0.5) -> dict[str,
         "value": fraction * 100,
         "maximum": 100,
         "fraction": fraction,
-        "updated_at": "2026-07-18T12:00:00Z",
+        "updated_at": at.isoformat() if at else "2026-07-18T12:00:00Z",
     }
 
 
@@ -231,7 +233,8 @@ def test_hierarchical_fallback_uses_robust_recent_statistics_and_low_confidence_
         now=generation.started_at + timedelta(seconds=40),  # type: ignore[operator]
     )
     assert overrun is not None
-    assert overrun["remaining_seconds"] > 0
+    assert overrun["remaining_seconds"] == 0
+    assert overrun["completion_at"] == first_sample["completion_at"]
     assert overrun["confidence"] == "low"
 
     generation.status = GenerationStatus.CANCEL_REQUESTED
@@ -301,7 +304,7 @@ def test_idle_audit_deduplicates_success_and_learns_exact_node_decile_residual(
     current = completed + timedelta(seconds=10)
     landmark_estimate = estimator.estimate(
         running,
-        progress=_progress(fraction=0.5),
+        progress=_progress(fraction=0.5, at=current),
         now=current,
     )
 
@@ -316,8 +319,8 @@ def test_idle_audit_deduplicates_success_and_learns_exact_node_decile_residual(
         now=current,
     )
     assert other_node is not None
-    assert other_node["basis"] == "historical_exact"
-    assert other_node["remaining_seconds"] == 90.0
+    assert other_node["basis"] == "progress_landmark"
+    assert other_node["completion_at"] == landmark_estimate["completion_at"]
 
 
 def test_confidence_is_capped_by_profile_compatibility(tmp_path: Path) -> None:
@@ -552,10 +555,10 @@ def test_progress_event_cap_is_per_generation_and_uses_earliest_bucket_sample(
     )
     assert verbose_eta is not None
     assert verbose_eta["basis"] == "progress_landmark"
-    assert verbose_eta["remaining_seconds"] == 100.0
+    assert verbose_eta["remaining_seconds"] == 99.0
     assert quiet_eta is not None
     assert quiet_eta["basis"] == "progress_landmark"
-    assert quiet_eta["remaining_seconds"] == 15.0
+    assert quiet_eta["remaining_seconds"] == 14.0
 
 
 def test_audit_rolls_back_if_generation_becomes_active_before_commit(
@@ -713,7 +716,7 @@ def test_sibling_stage_estimates_running_generation_from_completed_siblings(
     assert three["confidence"] == "high"
     assert three["remaining_seconds"] == 30.0
 
-    # Surviving past the sibling median falls back to the upper tail.
+    # Surviving past the sibling median retains the expired deadline.
     overrun = estimator.estimate(
         generation,
         now=generation.started_at + timedelta(seconds=50),  # type: ignore[operator]
@@ -722,8 +725,10 @@ def test_sibling_stage_estimates_running_generation_from_completed_siblings(
     assert overrun is not None
     assert overrun["basis"] == "run_sibling"
     assert overrun["confidence"] == "low"
-    assert overrun["remaining_seconds"] == 4.0
+    assert overrun["remaining_seconds"] == 0.0
+    assert overrun["completion_at"] == estimate["completion_at"]
 
+    estimator.forget(generation.id)
     # Invalid durations are ignored entirely; with no usable evidence and no
     # historical profile there is no ETA at all.
     assert (
@@ -738,7 +743,7 @@ def test_sibling_stage_estimates_running_generation_from_completed_siblings(
     assert estimator.estimate(generation, now=current) is None
 
 
-def test_sibling_stage_ranks_below_landmark_and_above_historical_totals(
+def test_matching_sibling_stage_ranks_above_landmark_and_historical_totals(
     tmp_path: Path,
 ) -> None:
     factory = _session_factory(tmp_path / "eta-sibling-order.db")
@@ -758,13 +763,13 @@ def test_sibling_stage_ranks_below_landmark_and_above_historical_totals(
     estimator._profiles = estimator._load_profiles()
     current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
 
-    # With node progress, the node-local landmark still wins.
+    # Matching live evidence wins even with a well-trained historical landmark.
     landmark = estimator.estimate(
         generation, progress=progress, now=current, sibling_durations=[40.0]
     )
     assert landmark is not None
-    assert landmark["basis"] == "progress_landmark"
-    assert landmark["remaining_seconds"] == 13.0
+    assert landmark["basis"] == "run_sibling"
+    assert landmark["remaining_seconds"] == 35.0
 
     # Without node progress (or for other nodes) the fresh sibling beats the
     # historical cohort.

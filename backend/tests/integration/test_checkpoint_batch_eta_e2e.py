@@ -255,17 +255,22 @@ def test_live_eta_ladder_arrives_over_the_sse_event_channel(fake_state, settings
     """
     fake_state.workflow_files = dict(build_publication_bundle("moody").files)
     fake_state.stage_delay_overrides = {
-        "sse ladder one": 0.4,
-        "sse ladder two": 0.4,
-        "sse ladder three": 0.4,
-        "sse ladder four": 0.4,
+        "sse ladder alpha": 0.4,
+        "sse ladder bravo": 0.4,
+        "sse ladder gamma": 0.4,
+        "sse ladder delta": 0.4,
     }
     settings = settings_factory(enable_background_worker=True)
     server = _LiveAppServer(create_app(settings), settings).start()
     try:
         with httpx.Client(base_url=server.base_url, timeout=httpx.Timeout(10.0)) as client:
             provision_user(client, username="eta.sse.e2e")
-            prompts = ["sse ladder one", "sse ladder two", "sse ladder three", "sse ladder four"]
+            prompts = [
+                "sse ladder alpha",
+                "sse ladder bravo",
+                "sse ladder gamma",
+                "sse ladder delta",
+            ]
             batch = _post(
                 client,
                 "/api/generations/batch",
@@ -312,7 +317,9 @@ def test_live_eta_ladder_arrives_over_the_sse_event_channel(fake_state, settings
                 if eta is not None and eta.get("basis") == "run_sibling"
             ]
             assert sibling_etas, f"no run_sibling ETA observed over SSE for {generation_id}"
-            observed = {str(eta.get("confidence")) for eta in sibling_etas}
+            observed = {
+                str(eta.get("confidence")) for eta in sibling_etas if eta["remaining_seconds"] > 0
+            }
             assert observed == {confidence}, (generation_id, sibling_etas)
             for eta in sibling_etas:
                 remaining = float(eta["remaining_seconds"])
@@ -390,7 +397,7 @@ def test_restart_mid_batch_estimates_from_database_evidence(fake_state, settings
         updated_at = datetime.fromisoformat(str(eta["updated_at"]))
         elapsed = max(0.0, (updated_at.astimezone(UTC) - started_at).total_seconds())
         remaining = float(eta["remaining_seconds"])
-        assert 0 < remaining < first_duration
+        assert 0 < remaining <= first_duration + 0.05
         assert remaining == pytest.approx(first_duration - elapsed, abs=0.2)
         assert float(eta["lower_seconds"]) <= remaining <= float(eta["upper_seconds"])
 

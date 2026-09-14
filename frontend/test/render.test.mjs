@@ -379,17 +379,17 @@ test("rerendered ETA snapshots keep aging until a genuinely newer estimate arriv
     },
     { now: refreshedNow },
   );
-  assert.match(refreshed, /About 1m 20s left/);
+  assert.match(refreshed, /About 1m 15s left/);
   assert.match(
     refreshed,
-    new RegExp(`data-generation-eta-completion="${refreshedNow + 80_000}"`),
+    new RegExp(`data-generation-eta-completion="${initialNow + 115_000}"`),
   );
 
   const staleRerender = generationProgressMarkup(generation, { now: initialNow + 50_000 });
-  assert.match(staleRerender, /About 1m 10s left/);
+  assert.match(staleRerender, /About 1m 5s left/);
   assert.match(
     staleRerender,
-    new RegExp(`data-generation-eta-completion="${refreshedNow + 80_000}"`),
+    new RegExp(`data-generation-eta-completion="${initialNow + 115_000}"`),
   );
 });
 
@@ -1461,21 +1461,21 @@ test("generation duration uses only whole minutes and seconds", () => {
   assert.equal(formatGenerationDuration(-1), null);
 });
 
-test("generation ETA rounds up while active and becomes finishing at zero", () => {
+test("generation ETA rounds up while active and becomes overdue at zero", () => {
   assert.equal(formatGenerationEta(29.1), "About 30s left");
   assert.equal(formatGenerationEta(90), "About 1m 30s left");
-  assert.equal(formatGenerationEta(0), "Finishing…");
-  assert.equal(formatGenerationEta(-0.1), "Finishing…");
+  assert.equal(formatGenerationEta(0), "Taking longer than expected");
+  assert.equal(formatGenerationEta(-0.1), "Taking longer than expected");
   assert.equal(formatGenerationEta(null), null);
   assert.equal(formatGenerationEta(Number.NaN), null);
 });
 
-test("next-in countdown rounds up, flips to next up at zero, and waits without an estimate", () => {
+test("next-in countdown rounds up, becomes overdue at zero, and waits without an estimate", () => {
   assert.equal(formatNextInCountdown(90), "Next in 1m 30s");
   assert.equal(formatNextInCountdown(29.1), "Next in 30s");
-  assert.equal(formatNextInCountdown(0.4), "Next up…");
-  assert.equal(formatNextInCountdown(0), "Next up…");
-  assert.equal(formatNextInCountdown(-5), "Next up…");
+  assert.equal(formatNextInCountdown(0.4), "Next in 1s");
+  assert.equal(formatNextInCountdown(0), "Taking longer than expected");
+  assert.equal(formatNextInCountdown(-5), "Taking longer than expected");
   assert.equal(formatNextInCountdown(null), "Next in…");
   assert.equal(formatNextInCountdown(Number.NaN), "Next in…");
 });

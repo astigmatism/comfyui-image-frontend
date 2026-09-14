@@ -486,12 +486,21 @@ Confidence reflects both sample strength and cohort compatibility. Exact technic
 exact node landmarks may reach `high`; revision-and-resolution matches are capped at `medium`; and
 broader revision, source, or instance fallbacks remain `low` even with many samples.
 
-Clients anchor the local countdown from the `completion_at` / `remaining_seconds` pair and replace
-it when a newer ETA arrives; this avoids requiring synchronized browser and server clocks. The
-server does not write or broadcast timer-only ticks. Node counters and fractions remain local
-to the current ComfyUI node and must never be promoted into a workflow-wide percentage or used by
-the client to extrapolate its own completion time. `progress` is null for fair-queued and terminal
-generations, so every terminal outcome clears both progress and its nested ETA.
+`remaining_seconds` and interval bounds describe the estimate at `updated_at`. Clients count down
+toward `completion_at`, using a stable server-to-browser clock mapping calibrated from HTTP Date
+responses. A delayed or replayed update must not move an unchanged server deadline. When HTTP
+clock calibration is unavailable, the first snapshot supplies a fallback relative clock anchor.
+
+After an overrun, remaining seconds clamp to zero and `completion_at` retains the expired deadline;
+clients show “Taking longer than expected”. Fresh evidence can provide a new deadline, including a
+later one. Matching batch completions outrank history; checkpoint history outranks timing borrowed
+from a different checkpoint. `run_sibling_compatible` is a new low-confidence diagnostic basis.
+The ETA object's fields and endpoints are unchanged.
+
+The server does not write or broadcast timer-only ticks. Node fractions remain local to the current
+node and must never be promoted into a workflow-wide percentage or used by the client to extrapolate
+completion time. `progress` is null for fair-queued and terminal generations; requeue clears the old
+attempt's ETA, and every terminal outcome clears both progress and its nested ETA.
 
 List and favorites pages are bounded summary projections. They do not fetch generation compiled/submitted graphs, raw history, full result diagnostics, or full workflow-profile JSON. Related artifact, image-count, favorite, exact-revision, dependency-health data is resolved in a low constant number of batched statements while preserving owner and cursor ordering.
 

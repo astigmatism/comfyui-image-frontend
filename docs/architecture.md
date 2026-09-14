@@ -130,65 +130,50 @@ and error interpretation continue through the pinned adapter even if the user ch
 
 ### Cached completion estimates
 
-The completion estimator is a passive companion to node-local progress, not a second execution
-probe. Successful terminal generations contribute only privacy-safe technical timing observations:
-stable source revision, normalized resolution and performance-relevant controls, and the measured
-running interval. Bounded robust profiles resist outliers and use hierarchical fallbacks when an
-exact source/control cohort is sparse. Cancelled, failed, and interrupted durations are not treated
-as successful completion samples, and no prompt, seed, user, upload content, graph, or result data is
-part of a profile.
+The estimator learns passively from successful, history-backed terminal generations. Timing
+feature version 2 includes the execution instance, source revision, checkpoint, exact resolution,
+performance controls, output selection, preset, and coarse prompt-length band. Prompt text, seeds,
+user identity, upload content, graphs, and results are never stored in profiles. Changing the feature
+version resets the bounded audit cursor and rebuilds statistics from retained successful generations;
+no generation records or database schema are changed. Until rebuilt, missing evidence yields a
+broader available estimate or no ETA.
 
-Prepared profiles are persisted and atomically exposed as an in-memory lookup cache. Dispatch uses
-that history-size-independent cache; accepting or starting a generation never scans or collates
-historical rows. A bounded audit of legacy successful rows may seed or repair the cache, but it runs
-only while generation work is idle and never submits synthetic ComfyUI jobs. This keeps both normal
-request latency and active generation throughput independent of retained gallery size.
+Successful completions immediately enter a bounded in-memory observation window, including during
+continuous generation. Durable profiles are maintained only while the queue is idle, with bounded
+batches, time/lock budgets, independent total/landmark quotas, and recent sample windows. The audit's
+completion-time/ID watermark removes already-incorporated live observations, so the same success
+cannot train an estimate twice. Progress estimation never scans historical generation rows or
+submits synthetic work.
 
-The audit advances a single feature-versioned `(completed_at, generation_id)` watermark instead of
-retaining one marker per generation. Total-duration and node-landmark profiles have separate hard
-quotas, every profile keeps only a fixed recent sample window, and cache updates merge only the
-profiles touched by a batch. Maintenance work therefore remains bounded as history grows; evicted
-exact cohorts safely fall back to broader profiles until matching runs make them recent again.
+The priority ladder is: matching same-run completions; exact historical node landmarks; exact
+historical totals; checkpoint history; otherwise-compatible same-run completions from other
+checkpoints; broader revision/resolution, revision, source, and instance history. One matching
+sibling is usable immediately, and subsequent matching completions contribute to the robust median.
+Cross-checkpoint sibling evidence is capped at low confidence and never overrides checkpoint
+history. Failed, cancelled, and interrupted generations contribute no completion durations.
 
-The estimate ladder, in priority order, is: an exact node-landmark residual for the current node and
-counter range; fresh same-run sibling durations; the exact source/revision/resolution/control
-cohort; the checkpoint cohort; then broader revision/resolution/source/instance cohorts. Sparse
-evidence at every rung yields no ETA rather than a guess.
+Run membership alone does not imply compatibility: an activity run can contain different settings
+or runtimes. The worker retains feature-tagged durations, filters matching versus compatible
+checkpoint evidence at lookup, and restores a bounded recent set using the same rules after restart.
+Restoration fetches only timing-relevant fields, never compiled graphs, raw histories, or results.
 
-The sibling stage exists for checkpoint batches: several generations submitted as one run share the
-same prompt, resolution, instance, and machine state, so each completed sibling is the closest
-possible prediction for the next one. The worker keeps completed sibling durations in memory per
-run (event-loop thread only, no database traffic on the progress path), seeds already-completed
-siblings on registration so the estimate survives an application restart mid-batch, and discards
-everything with the run. A failed sibling contributes no duration, and a run's source/instance
-cohort identity excludes mixed-batch outliers. Sibling confidence is deliberately stronger than
-historical confidence: one or two completed siblings already report medium, three or more report
-high, because the evidence is current rather than recalled.
+Each generation attempt has a bounded cached completion deadline. Repeated updates in the same
+node/decile age that deadline; a gap in landmark coverage cannot replace it with a broader estimate.
+New matching successes or newly observed landmarks may revise it. Stale or repeated landmarks do
+not restart it. Overruns retain the expired deadline instead of repeatedly allocating more time.
+Saved progress preserves the deadline after restart; requeue starts a new attempt, and terminal
+completion clears attempt state. Node fractions remain local to their nodes and are never treated
+as whole-workflow percentages.
 
-Successful generations also train a persistent `total_checkpoint` profile keyed by instance,
-source, checkpoint (model-selector) value, a coarse prompt-size band, and normalized resolution.
-Prompt content is never hashed or stored — only its length band enters the key — so the cohort is
-content-free like every other scope, and an API republish does not invalidate it; revision
-sensitivity stays with the `total_revision_resolution` scope below it. Because the scope is an
-additive key namespace that leaves existing keys byte-identical, no feature-version bump or
-migration accompanies it. As safe runtime events arrive, the estimator may refine the estimate
-with historical remaining-time observations for the current node and counter range. Per-generation
-audit windows preserve both early and late landmarks without allowing one verbose run to crowd out
-another. The observed `fraction` is still local to that node: neither backend
-nor browser treats it as workflow completion or applies `elapsed / fraction` extrapolation. Sparse
-evidence yields a wider interval, lower confidence, a broader safe basis description, or no ETA.
-Confidence is also capped by compatibility: only exact technical cohorts, exact node landmarks, or
-three or more same-run siblings can become high confidence; resolution-matched revision cohorts and
-checkpoint cohorts top out at medium, and broader revision/source/instance fallbacks remain low
-confidence regardless of sample count.
-
-Each estimate carries remaining seconds, an absolute completion timestamp, lower/upper
-remaining-time bounds, confidence, basis, and its own update timestamp under `progress.eta`. The
-browser anchors the visible countdown locally from the absolute timestamp and reported remaining
-duration, so client/server clock skew does not require timer-only server events. That client anchor
-is bounded and keyed by generation plus ETA update time, so unrelated rerenders and stale snapshots
-cannot restart or extend the countdown. A genuinely newer progress snapshot replaces the estimate. History-backed terminal
-reconciliation clears the whole active progress snapshot, including ETA, for every terminal outcome.
+The existing `progress.eta` object carries remaining seconds and bounds as of `updated_at`, a
+completion timestamp, confidence, and basis. The timestamp remains in the past after expiry while
+remaining seconds clamp to zero. Cards and slideshow use the same countdown functions, displaying
+“Taking longer than expected” until fresh evidence supports a revised deadline or completion arrives.
+The slideshow selects the earliest estimate among the current gallery's active generations.
+HTTP Date responses calibrate browser/server clock skew; each attempt freezes its clock mapping,
+so delayed events and reconnect replay cannot move an unchanged server deadline. A fallback anchor
+from the first ETA is used when HTTP clock calibration is unavailable. No timer-only server events
+are needed; the browser updates the visible countdown every second.
 
 ## Result normalization and files
 

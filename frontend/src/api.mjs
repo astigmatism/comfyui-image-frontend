@@ -1,3 +1,5 @@
+import { observeServerDate, resetServerClock } from "./server-clock.mjs";
+
 let csrfToken = null;
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -14,6 +16,7 @@ export class ApiTimeoutError extends Error {
 
 export function setCsrfToken(value) {
   csrfToken = value || null;
+  if (!csrfToken) resetServerClock();
 }
 
 export function getCsrfToken() {
@@ -44,6 +47,7 @@ export async function api(path, options = {}) {
   delete fetchOptions.headers;
 
   const deadline = composeDeadlineSignal(method, callerSignal, deadlineMs);
+  const sentAt = Date.now();
   try {
     const response = await fetch(path, {
       credentials: "same-origin",
@@ -52,6 +56,7 @@ export async function api(path, options = {}) {
       headers,
       signal: deadline.signal,
     });
+    observeServerDate(response.headers.get("date"), sentAt, Date.now());
     if (response.status === 204) return null;
     if (response.ok && responseType === "blob") return await response.blob();
     const contentType = response.headers.get("content-type") || "";

@@ -187,3 +187,17 @@ test("mutating requests are sent exactly once without an implicit deadline or re
   );
   assert.equal(calls, 1);
 });
+
+test("API response Date calibrates the countdown clock without changing payloads", async (context) => {
+  const { serverClockOffset } = await import("../src/server-clock.mjs");
+  const originalFetch = globalThis.fetch;
+  setCsrfToken(null);
+  context.after(() => { globalThis.fetch = originalFetch; setCsrfToken(null); });
+  const start = Date.parse("2026-09-14T12:00:00Z");
+  context.mock.method(Date, "now", () => start + 10_500);
+  globalThis.fetch = async () => jsonResponse({ ok: true }, {
+    headers: { date: new Date(start).toUTCString() },
+  });
+  assert.deepEqual(await api("/api/auth/session"), { ok: true });
+  assert.equal(serverClockOffset(), 10_000);
+});
