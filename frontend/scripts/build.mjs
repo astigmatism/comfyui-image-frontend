@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["api.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-selection.mjs", "app.mjs"];
+const modules = ["lora-stack.mjs", "api.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -73,6 +73,7 @@ const productionHtml = sourceHtml
 await writeFile(join(dist, "index.html"), productionHtml);
 
 const assets = {
+  lora_stack: `${assetPrefix}/lora-stack.mjs`,
   app: `${assetPrefix}/app.mjs`,
   api: `${assetPrefix}/api.mjs`,
   lib: `${assetPrefix}/lib.mjs`,

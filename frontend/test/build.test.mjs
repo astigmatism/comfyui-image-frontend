@@ -45,14 +45,15 @@ test("production build emits one content-addressed frontend module graph", async
   assert.doesNotMatch(index, /(?:href|src)="\/assets\/(?:styles\.css|app\.mjs)"/u);
 
   const expectedImports = {
-    app: new Set([first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_selection]),
+    app: new Set([first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_selection]),
     gallery_selection: new Set([first.assets.api, first.assets.lib]),
     gallery_hover: new Set(),
     api: new Set(),
-    lib: new Set(),
-    render: new Set([first.assets.lib]),
+    lib: new Set([first.assets.lora_stack]),
+    lora_stack: new Set(),
+    render: new Set([first.assets.lib, first.assets.lora_stack]),
   };
-  for (const name of ["app", "api", "lib", "render", "gallery_hover", "gallery_selection"]) {
+  for (const name of ["app", "api", "lib", "render", "gallery_hover", "gallery_selection", "lora_stack"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

@@ -18,6 +18,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import Settings
+from ..domain.lora_stack import validate_lora_runtime
 from ..domain.publication import sha256_json
 from ..domain.results import (
     NativeFileOutput,
@@ -827,6 +828,7 @@ class QueueWorker:
         extra_data: dict[str, Any] | None,
     ) -> tuple[str, Any | None]:
         adapter = comfyui or self.comfyui
+        validate_lora_runtime(materialized, adapter.cached_object_info())
         prompt_id = await adapter.submit_prompt(
             materialized,
             client_id,

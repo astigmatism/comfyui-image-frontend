@@ -1,3 +1,4 @@
+import { installLoraControls } from "./lora-stack.mjs";
 import { api, setCsrfToken, upload } from "./api.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
@@ -284,6 +285,17 @@ function bindDelegatedEvents() {
     getState: () => state,
     refresh: refreshAfterGalleryOperation,
     notify: toast,
+  });
+  installLoraControls(root, {
+    read: (id) => state.parameters[id],
+    write: (id, value) => {
+      state.parameters[id] = structuredClone(value);
+      state.explicitParameterIds.add(id);
+      delete state.serverFieldErrors[id];
+      state.formError = null;
+      persistActiveParameterState();
+      syncParameterValidation(id);
+    },
   });
   root.addEventListener("submit", handleSubmit);
   root.addEventListener("click", handleClick);
@@ -1884,7 +1896,7 @@ function syncFieldError(block, controlId, message) {
   }
 
   for (const element of block.querySelectorAll(
-    "[data-control-id]:not([data-resolution-grid])",
+    "[data-control-id]:not([data-resolution-grid]), [data-lora-strength]",
   )) {
     const describedBy = new Set((element.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
     describedBy.delete(errorId);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 import secrets
@@ -10,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ..errors import AppError, ContractError
+from .lora_stack import validate_lora_stack
 from .publication import canonical_json_bytes, sha256_json
 
 CANONICAL_INTEGER_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
@@ -118,7 +120,7 @@ class WorkflowCompiler:
                 effective[input_id] = str(concrete)
                 resolved_seeds[input_id] = str(concrete)
                 continue
-            if value is _MISSING or value is None:
+            if value is _MISSING or (value is None and input_type != "lora_stack"):
                 value = copy.deepcopy(declaration.get("default", _MISSING))
             if value is _MISSING:
                 if required:
@@ -173,6 +175,8 @@ class WorkflowCompiler:
                     )
                 selected_uploads[input_id] = asset_id
                 graph_value: Any = {"__app_upload_id__": asset_id}
+            elif input_type == "lora_stack":
+                graph_value = json.dumps(value, separators=(",", ":"), allow_nan=False)
             else:
                 graph_value = int(value) if input_type == "seed" else value
             bindings = declaration.get("bindings")
@@ -284,6 +288,8 @@ def _parse_seed(value: Any) -> int:
 
 def _validate_value(declaration: Mapping[str, Any], value: Any) -> Any:
     input_type = declaration.get("type")
+    if input_type == "lora_stack":
+        return validate_lora_stack(value, declaration)
     if input_type == "string":
         if not isinstance(value, str):
             raise ValueError("Enter text.")

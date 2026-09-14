@@ -10,14 +10,16 @@ from app.config import Settings
 from app.main import create_app
 
 from tests.fake_services import LiveFakeServer
-from tests.publication_fixtures import build_publication_bundle
+from tests.publication_fixtures import add_lora_stack, build_publication_bundle
 
 
 def main() -> None:
     primary = LiveFakeServer()
     worker = LiveFakeServer()
     primary.state.workflow_files.update(build_publication_bundle("image").files)
-    primary.state.workflow_files.update(build_publication_bundle("moody").files)
+    primary.state.workflow_files.update(
+        build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
+    )
     primary.state.slow_stage_delay = 2.0
     # Keep this sample running through image persistence and the cancellation round trip.
     primary.state.stage_delay_overrides["slow cancellation sample"] = 10.0

@@ -420,3 +420,7 @@ Authenticated startup is progressive. Only `/api/auth/session` is an essential f
 - [`docs/traceability.md`](docs/traceability.md) — generated product/publication acceptance mapping
 - [`docs/normative-product-requirements-v1.0.md`](docs/normative-product-requirements-v1.0.md) — historical original product specification
 - [`docs/normative-workflow-contract-v1.1.md`](docs/normative-workflow-contract-v1.1.md) — historical retired embedded-contract design
+
+### Ordered LoRA controls
+
+The complete ComfyUI interface/publisher extension is maintained in `comfyui_extension/comfyui-image-frontend-interface`, alongside the artifact-cleanup extension. Published `lora_stack` inputs support independent strengths and drag, keyboard, or touch ordering. See [ordered LoRA controls](docs/lora-controls.md) for the contract, package installation, workflow conversion, tests, and rollback procedure.

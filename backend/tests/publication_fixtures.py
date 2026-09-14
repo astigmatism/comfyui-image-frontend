@@ -88,6 +88,12 @@ class PublicationBundle:
 
 def object_info_fixture() -> JsonObject:
     return {
+        "CIFLoraStack": {"input": {"required": {"value": ["STRING"]}}},
+        "LoraLoaderModelOnly": {
+            "input": {
+                "required": {"lora_name": [["private/a.safetensors", "private/b.safetensors"]]}
+            }
+        },
         "CIFTextParameter": {"input": {"required": {"value": ["STRING"]}}},
         "CIFIntegerParameter": {"input": {"required": {"value": ["INT"]}}},
         "CIFDecimalParameter": {"input": {"required": {"value": ["FLOAT"]}}},
@@ -872,3 +878,52 @@ def build_publication_files(*, include_generic: bool = True) -> dict[str, bytes]
     if include_generic:
         files.update(build_publication_bundle("generic").files)
     return files
+
+
+def add_lora_stack(manifest: JsonObject, workflow: JsonObject, api: JsonObject) -> None:
+    catalog = [
+        {"id": "a", "label": "Alpha", "filename": "private/a.safetensors"},
+        {"id": "b", "label": "Beta", "filename": "private/b.safetensors"},
+    ]
+    metadata = {
+        "instance_uuid": "93cb0d2e-3d0f-4c3f-9ac6-f9a1ff289d62",
+        "label": "LoRAs",
+        "description": "Ordered model-only LoRAs.",
+        "semantic_role": "lora",
+        "required": False,
+        "advanced": False,
+        "group": "LoRAs",
+        "order": 150,
+    }
+    constraints = {"minimum": 0, "maximum": 2, "step": 0.05}
+    default = [{"id": item["id"], "strength": 0} for item in catalog]
+    api["99"] = {
+        "class_type": "CIFLoraStack",
+        "inputs": {
+            "parameter_id": "loras",
+            **metadata,
+            **constraints,
+            "catalog_json": json.dumps(catalog),
+            "value": json.dumps(default),
+            "model": ["30", 0],
+        },
+    }
+    workflow.setdefault("nodes", []).append(
+        {
+            "id": 99,
+            "type": "CIFLoraStack",
+            "properties": {"cif_contract_schema": "comfyui-image-frontend.interface/v1"},
+        }
+    )
+    manifest["interface"]["inputs"].append(
+        {
+            "id": "loras",
+            "type": "lora_stack",
+            **metadata,
+            **constraints,
+            "items": [{"id": item["id"], "label": item["label"]} for item in catalog],
+            "default": default,
+            "bindings": [{"node_id": "99", "input": "value"}],
+        }
+    )
+    manifest["dependencies"]["class_types"] = sorted({node["class_type"] for node in api.values()})

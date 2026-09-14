@@ -4969,3 +4969,15 @@ tr:last-child td {
     max-width: 48px;
   }
 }
+
+
+/* LoRA controls fit the narrow generation panel as well as phone screens. */
+.lora-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.8rem; }
+.lora-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 88px; align-items: center; gap: 0.4rem; }
+.lora-label { grid-column: 2; overflow-wrap: anywhere; }
+.lora-handle { grid-row: span 2; cursor: grab; }
+.lora-row input[type="range"] { grid-column: 2; min-width: 0; width: 100%; }
+.lora-row input[type="number"] { grid-column: 3; min-width: 0; width: 100%; }
+.lora-movement { grid-column: 3; grid-row: 1; display: flex; }
+.lora-row button { min-width: 44px; min-height: 44px; padding: 0.35rem; }
+.lora-stack .hint { margin-top: 0; color: var(--muted); }

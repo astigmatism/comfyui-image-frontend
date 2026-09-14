@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import ComfyUIInstanceConfig
 from ..domain.compiler import CompileResult, WorkflowCompiler
+from ..domain.lora_stack import validate_lora_runtime
 from ..domain.results import project_public_declared_outputs, project_public_result
 from ..errors import AppError
 from ..models import (
@@ -218,6 +219,13 @@ class GenerationService:
         instance = self._instance_for_request(session, request, require_available=True)
         collection = self._collection_for_owner(session, user.id, request.collection_id)
         profile = self._profile_for_request(session, request)
+        try:
+            validate_lora_runtime(
+                profile.source_api_json,
+                self.comfyui_instances.get(instance.id).cached_object_info(),
+            )
+        except ValueError as exc:
+            raise AppError("lora_runtime_unavailable", str(exc), status_code=422) from exc
         prompt_run = self._verify_prompt_run(session, user, request.prompt_assistant_run_id)
         effective_request = self._apply_prompt_assistant_output(profile, request, prompt_run)
         compiled = self._compile(session, user=user, profile=profile, request=effective_request)
@@ -1122,6 +1130,7 @@ class GenerationService:
             "group",
             "order",
             "choices",
+            "items",
         }
         return [
             {key: copy.deepcopy(value) for key, value in item.items() if key in public_keys}

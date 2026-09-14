@@ -15,6 +15,7 @@ from typing import Any, TypeGuard
 import orjson
 
 from ..errors import ContractError
+from .lora_stack import validate_lora_stack
 from .source_metadata import recognize_source_metadata
 
 PUBLICATION_SCHEMA = "comfyui-image-frontend.publication/v1"
@@ -27,7 +28,16 @@ FROZEN_API_DRIFT_WARNING = (
     "Frozen API graph bytes do not match the publication's recorded SHA-256; "
     "generation remains pinned to the observed, validated API graph."
 )
-SUPPORTED_INPUT_TYPES = {"string", "integer", "number", "boolean", "seed", "choice", "image"}
+SUPPORTED_INPUT_TYPES = {
+    "string",
+    "integer",
+    "number",
+    "boolean",
+    "seed",
+    "choice",
+    "image",
+    "lora_stack",
+}
 SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 OUTPUT_ROLES = {"final", "preview", "comparison", "auxiliary"}
 OUTPUT_KINDS = {"image"}
@@ -57,6 +67,7 @@ EXPECTED_PARAMETER_CLASSES: dict[str, set[str]] = {
     "seed": {"CIFSeedParameter", "CIFImageFrontendInterface"},
     "choice": {"CIFChoiceParameter"},
     "image": {"CIFImageParameter"},
+    "lora_stack": {"CIFLoraStack"},
 }
 EXPECTED_RUNTIME_INPUT_TYPES = {
     "string": "STRING",
@@ -65,8 +76,10 @@ EXPECTED_RUNTIME_INPUT_TYPES = {
     "boolean": "BOOLEAN",
     "seed": "INT",
     "choice": "STRING",
+    "lora_stack": "STRING",
 }
 TYPED_PARAMETER_CLASSES = {
+    "CIFLoraStack",
     "CIFTextParameter",
     "CIFIntegerParameter",
     "CIFDecimalParameter",
@@ -652,6 +665,10 @@ def _validate_input(
         default, choices = _choice_contract(raw_input, context)
         private_input.update(default=default, choices=copy.deepcopy(choices))
         public_input.update(default=default, choices=choices)
+    elif input_type == "lora_stack":
+        stack = _lora_contract(raw_input, context, bindings, api_document)
+        private_input.update(copy.deepcopy(stack))
+        public_input.update(stack)
     elif input_type == "image":
         media = _image_contract(raw_input, context, bindings, api_document)
         private_input["media"] = copy.deepcopy(media)
@@ -686,6 +703,46 @@ def _validate_input(
             private_input["default"] = numeric_default
             public_input["default"] = numeric_default
     return private_input, public_input
+
+
+def _lora_contract(
+    raw: Mapping[str, Any],
+    context: str,
+    bindings: Sequence[Mapping[str, str]],
+    api_document: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        stack = {
+            key: copy.deepcopy(raw[key])
+            for key in ("items", "minimum", "maximum", "step", "default")
+        }
+        stack["default"] = validate_lora_stack(stack["default"], stack)
+        if any(entry["strength"] != 0 for entry in stack["default"]):
+            raise ValueError("Published LoRA defaults must all be zero.")
+        if raw.get("semantic_role") != "lora" or raw.get("required") is not False:
+            raise ValueError("LoRA stacks must be optional with semantic role lora.")
+        for binding in bindings:
+            inputs = api_document[binding["node_id"]]["inputs"]
+            catalog = json.loads(inputs["catalog_json"])
+            if not isinstance(catalog, list) or any(
+                not isinstance(item, dict)
+                or set(item) != {"id", "label", "filename"}
+                or not isinstance(item["filename"], str)
+                or not item["filename"]
+                or len(item["filename"]) > 1000
+                for item in catalog
+            ):
+                raise ValueError("Invalid frozen LoRA catalog.")
+            public_items = [{"id": item["id"], "label": item["label"]} for item in catalog]
+            if stack["items"] != public_items:
+                raise ValueError("LoRA items differ from the frozen catalog.")
+            if any(stack[key] != inputs[key] for key in ("minimum", "maximum", "step")):
+                raise ValueError("LoRA constraints differ from the frozen node.")
+            if stack["default"] != validate_lora_stack(json.loads(inputs["value"]), stack):
+                raise ValueError("LoRA defaults differ from the frozen node.")
+        return stack
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ContractError("manifest_invalid", f"{context}: {exc}") from exc
 
 
 def _image_contract(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -396,6 +397,29 @@ def _public_choice_loras_are_safe(section: Mapping[str, Any]) -> bool:
     if not isinstance(raw_loras, list):
         return False
     for raw_lora in raw_loras:
+        if isinstance(raw_lora, Mapping) and raw_lora.get("usage") == "public_stack":
+            from .lora_stack import validate_lora_stack
+
+            if set(raw_lora) != {
+                "usage",
+                "parameter_id",
+                "items",
+                "default",
+                "minimum",
+                "maximum",
+                "step",
+            }:
+                return False
+            parameter_id = raw_lora.get("parameter_id")
+            if not isinstance(parameter_id, str) or not re.fullmatch(
+                r"[a-z][a-z0-9_]{0,63}", parameter_id
+            ):
+                return False
+            try:
+                validate_lora_stack(raw_lora.get("default"), raw_lora)
+            except (ValueError, KeyError, TypeError):
+                return False
+            continue
         if not isinstance(raw_lora, Mapping) or raw_lora.get("usage") != "public_choice":
             continue
         if private_keys.intersection(raw_lora):
