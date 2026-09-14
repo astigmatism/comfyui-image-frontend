@@ -1850,6 +1850,53 @@ code {
   border-color: var(--danger);
 }
 
+/* Creative-direction border signal: gold and pulsing while the prompt is
+   being composed, green once the composed text is in the field. These rules
+   must stay after the hover/invalid rules above so the signal wins. */
+.field.prompt-field textarea.is-direction-composing,
+.field.prompt-field input.is-direction-composing {
+  border-color: var(--favorite-gold);
+  animation: direction-composing-pulse 1.4s ease-in-out infinite;
+}
+
+.field.prompt-field textarea.is-direction-applied,
+.field.prompt-field input.is-direction-applied {
+  border-color: var(--success);
+  transition: border-color var(--motion) ease;
+}
+
+@keyframes direction-composing-pulse {
+  0%,
+  100% {
+    border-color: var(--favorite-gold);
+    box-shadow:
+      0 0 0 4px rgb(227 181 75 / 12%),
+      inset 0 1px 2px rgb(0 0 0 / 23%);
+  }
+  50% {
+    border-color: #ffe08a;
+    box-shadow:
+      0 0 0 7px rgb(227 181 75 / 6%),
+      inset 0 1px 2px rgb(0 0 0 / 23%);
+  }
+}
+
+@keyframes direction-composing-pulse-editor {
+  0%,
+  100% {
+    border-color: var(--favorite-gold);
+    box-shadow:
+      0 0 0 4px rgb(227 181 75 / 12%),
+      inset 0 2px 7px rgb(0 0 0 / 28%);
+  }
+  50% {
+    border-color: #ffe08a;
+    box-shadow:
+      0 0 0 7px rgb(227 181 75 / 6%),
+      inset 0 2px 7px rgb(0 0 0 / 28%);
+  }
+}
+
 .required-mark {
   margin-left: 3px;
   color: #e9a2a7;
@@ -3872,6 +3919,18 @@ dialog::backdrop {
 
 #prompt-editor-textarea:hover {
   border-color: #506985;
+}
+
+/* Creative-direction border signal for the focused prompt editor, matching
+   the main generation panel's prompt field. Must stay after the hover rule. */
+#prompt-editor-textarea.is-direction-composing {
+  border-color: var(--favorite-gold);
+  animation: direction-composing-pulse-editor 1.4s ease-in-out infinite;
+}
+
+#prompt-editor-textarea.is-direction-applied {
+  border-color: var(--success);
+  transition: border-color var(--motion) ease;
 }
 
 .prompt-editor-assistant {

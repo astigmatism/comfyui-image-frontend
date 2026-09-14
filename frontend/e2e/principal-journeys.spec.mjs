@@ -2878,6 +2878,216 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   });
 });
 
+test("Creative Direction shows a gold-while-composing and green-when-applied prompt border signal", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const direction = page.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  const createMode = page.getByRole("radio", {
+    name: "New Prompt from Creative Direction",
+  });
+  const applyCreativeDirection = page.locator(
+    '#prompt-assistant [data-action="compose-prompt"]',
+  );
+  // Directions are unique to this test: successful create runs are recorded in
+  // the assistant history, and the assistant rejects a repeated direction as a
+  // duplicate of a recorded output (earlier specs use other directions).
+  const firstDirection = "a silver heron over reed beds";
+  const composedPrompt =
+    "a silver heron over reed beds, detailed photographic rendering, soft natural " +
+    "light, shallow depth of field, high detail";
+  const composeRequest = (predicate) =>
+    page.waitForRequest((request) =>
+      new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
+      request.method() === "POST" && predicate(),
+    );
+
+  // Move the pointer off the prompt control so :hover styling cannot shadow
+  // the base border color when asserting the "normal" state.
+  const settlePointer = () => page.mouse.move(4, 4);
+
+  const mainSignalStatus = () =>
+    page.evaluate(() => {
+      const element = document.querySelector('[data-control-id="prompt"]');
+      if (!element) return null;
+      if (element.classList.contains("is-direction-composing")) return "composing";
+      if (element.classList.contains("is-direction-applied")) return "applied";
+      return "idle";
+    });
+  const dialogSignalStatus = () =>
+    page.evaluate(() => {
+      const element = document.querySelector(
+        "#prompt-editor-dialog[open] #prompt-editor-textarea",
+      );
+      if (!element) return null;
+      if (element.classList.contains("is-direction-composing")) return "composing";
+      if (element.classList.contains("is-direction-applied")) return "applied";
+      return "idle";
+    });
+
+  // 1. While a composition request is in flight, the prompt border pulses gold.
+  let releaseComposition;
+  const compositionGate = new Promise((resolve) => {
+    releaseComposition = resolve;
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await compositionGate;
+    await route.continue();
+  });
+
+  await prompt.fill("the prompt that must be replaced");
+  await direction.fill(firstDirection);
+  await createMode.check();
+  await page.locator("#prompt-assistant .prompt-preprocessor summary").click();
+  await page.locator("#prompt-assistant-thinking-mode").uncheck();
+  await page.locator("#prompt-assistant .prompt-preprocessor summary").click();
+
+  const inFlightRequest = composeRequest(() => true);
+  await applyCreativeDirection.click();
+  await inFlightRequest;
+  await expect.poll(mainSignalStatus).toBe("composing");
+
+  releaseComposition();
+  await expect(prompt).toHaveValue(composedPrompt);
+  await expect.poll(mainSignalStatus).toBe("applied");
+  await expect(prompt).toHaveCSS("border-color", "rgb(102, 198, 154)");
+
+  // 2. Editing the prompt immediately clears the applied signal.
+  await prompt.click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" more");
+  await expect.poll(mainSignalStatus).toBe("idle");
+  await settlePointer();
+  await expect(prompt).toHaveCSS("border-color", "rgb(40, 54, 71)");
+
+  // 3. Re-applying re-arms the green signal; queueing a generation resets it.
+  //    The assistant rejects a second creation for the same direction as a
+  //    duplicate of a recorded output, so vary the direction.
+  const secondDirection = "a lighthouse in a storm at dusk";
+  const secondComposedPrompt =
+    "a lighthouse in a storm at dusk, detailed photographic rendering, soft natural " +
+    "light, shallow depth of field, high detail";
+  await direction.fill(secondDirection);
+  await applyCreativeDirection.click();
+  await expect(prompt).toHaveValue(secondComposedPrompt);
+  await expect.poll(mainSignalStatus).toBe("applied");
+  await expect(prompt).toHaveCSS("border-color", "rgb(102, 198, 154)");
+  await generateAndExpectAccepted(page);
+  await expect.poll(mainSignalStatus).toBe("idle");
+  await settlePointer();
+  await expect(prompt).toHaveCSS("border-color", "rgb(40, 54, 71)");
+
+  // 4. A failed composition flashes gold and then returns to normal styling.
+  const failureMessage = "The prompt model is temporarily unavailable.";
+  let releaseFailure;
+  const failureGate = new Promise((resolve) => {
+    releaseFailure = resolve;
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await failureGate;
+    await route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "prompt_assistant_unavailable",
+          message: failureMessage,
+          fields: {},
+        },
+      }),
+    });
+  });
+  const failedRequest = composeRequest(() => true);
+  await applyCreativeDirection.click();
+  await failedRequest;
+  await expect.poll(mainSignalStatus).toBe("composing");
+  releaseFailure();
+  await expect(page.locator("#prompt-assistant-error")).toHaveText(failureMessage);
+  await expect(page.locator("#toast-region .toast.error")).toHaveText(failureMessage);
+  await expect.poll(mainSignalStatus).toBe("idle");
+  await settlePointer();
+  await expect(prompt).toHaveCSS("border-color", "rgb(40, 54, 71)");
+
+  // 5. The focused prompt editor shows the same signal locally, and applying the
+  //    committed draft transfers it to the main prompt field. Each composition
+  //    needs a fresh direction: the assistant rejects a repeated direction as a
+  //    duplicate of a recorded output.
+  const thirdDirection = "an abandoned greenhouse full of ferns";
+  const thirdComposedPrompt =
+    "an abandoned greenhouse full of ferns, detailed photographic rendering, soft " +
+    "natural light, shallow depth of field, high detail";
+  const fourthDirection = "a harbor town at first light";
+  const fourthComposedPrompt =
+    "a harbor town at first light, detailed photographic rendering, soft natural " +
+    "light, shallow depth of field, high detail";
+
+  await page.unroute("**/api/prompt-assistant/compose");
+  const dialog = page.locator("#prompt-editor-dialog");
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  await expect(dialog).toBeVisible();
+  const dialogPrompt = dialog.locator("#prompt-editor-textarea");
+  await expect(dialogPrompt).toHaveValue(secondComposedPrompt);
+  const dialogDirection = dialog.getByRole("textbox", {
+    name: "Creative Direction",
+    exact: true,
+  });
+  await dialogDirection.fill(thirdDirection);
+
+  let releaseDialogComposition;
+  const dialogCompositionGate = new Promise((resolve) => {
+    releaseDialogComposition = resolve;
+  });
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await dialogCompositionGate;
+    await route.continue();
+  });
+  const dialogInFlightRequest = composeRequest(() => true);
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await dialogInFlightRequest;
+  await expect.poll(dialogSignalStatus).toBe("composing");
+  expect(await mainSignalStatus()).toBe("idle");
+
+  releaseDialogComposition();
+  await expect(dialogPrompt).toHaveValue(thirdComposedPrompt);
+  await expect.poll(dialogSignalStatus).toBe("applied");
+  await expect(dialogPrompt).toHaveCSS("border-color", "rgb(102, 198, 154)");
+
+  // Editing the draft clears the dialog signal without touching the main field.
+  await dialogPrompt.click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" more");
+  await expect.poll(dialogSignalStatus).toBe("idle");
+  await settlePointer();
+  await expect(dialogPrompt).toHaveCSS("border-color", "rgb(59, 79, 103)");
+  expect(await mainSignalStatus()).toBe("idle");
+
+  // Re-composing the edited draft re-arms the green dialog signal.
+  await dialogDirection.fill(fourthDirection);
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(dialogPrompt).toHaveValue(fourthComposedPrompt);
+  await expect.poll(dialogSignalStatus).toBe("applied");
+
+  // Applying the committed draft transfers the signal to the main prompt field.
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(prompt).toHaveValue(fourthComposedPrompt);
+  await expect.poll(mainSignalStatus).toBe("applied");
+  await expect(prompt).toHaveCSS("border-color", "rgb(102, 198, 154)");
+
+  // Queueing a generation resets the main field to normal styling.
+  await generateAndExpectAccepted(page);
+  await expect.poll(mainSignalStatus).toBe("idle");
+  await settlePointer();
+  await expect(prompt).toHaveCSS("border-color", "rgb(40, 54, 71)");
+});
+
 test("Prompt Assistant failures remain visible with the pre-processor collapsed", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);

@@ -17,6 +17,7 @@ import {
   createLatestRequestGate,
   createCoalescedTaskQueue,
   defaultsForInterface,
+  directionSignalNextStatus,
   hasActiveGeneration,
   interfaceInputs,
   insertTranscription,
@@ -104,6 +105,14 @@ const state = {
   pendingSourceMigration: null,
   selectedPreset: null,
   compositionId: null,
+  promptDirectionSignal: {
+    sourceKey: null,
+    controlId: null,
+    status: "idle",
+    appliedValue: null,
+  },
+  promptEditorDirectionStatus: "idle",
+  promptEditorDirectionAppliedValue: null,
   promptAssistant: {
     mode: "refine",
     creativeDirection: "",
@@ -941,6 +950,7 @@ function handleInput(event) {
   }
   if (element.matches("[data-prompt-editor-input]")) {
     updatePromptEditorStats(element.value);
+    if (state.promptEditorDirectionStatus === "applied") setPromptEditorDirectionSignal("idle");
     return;
   }
   if (element.id === "gallery-scale") {
@@ -968,6 +978,13 @@ function handleInput(event) {
     const control = updateControlFromElement(element);
     if (control?.semantic_role === "positive_prompt" || control?.id === "prompt.text") {
       setPromptAssistantError(null);
+      if (
+        state.promptDirectionSignal.status === "applied" &&
+        state.promptDirectionSignal.sourceKey === state.activeSourceKey &&
+        state.promptDirectionSignal.controlId === control.id
+      ) {
+        setPromptDirectionSignal("idle");
+      }
     }
     syncNumberControlPair(element);
     syncChoiceStrengthControl(control);
@@ -1010,6 +1027,8 @@ function openPromptEditor(button) {
   delete dialog.dataset.promptAssistantCompositionId;
   delete dialog.dataset.promptAssistantModel;
   dialog.returnValue = "";
+  state.promptEditorDirectionStatus = "idle";
+  state.promptEditorDirectionAppliedValue = null;
   dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, state.promptAssistant);
   syncPromptInstructions(dialog, promptEditorInstructionOverrides, state.promptAssistant.mode);
   dialog.showModal();
@@ -1062,6 +1081,14 @@ function applyPromptEditor() {
   } else {
     state.compositionId = null;
   }
+  if (
+    state.promptEditorDirectionStatus === "applied" &&
+    state.promptEditorDirectionAppliedValue === editor.value
+  ) {
+    setPromptDirectionSignal("applied", editor.value);
+  }
+  state.promptEditorDirectionStatus = "idle";
+  state.promptEditorDirectionAppliedValue = null;
   persistActiveParameterState();
   renderPanel();
   dialog.close("apply");
@@ -1078,6 +1105,7 @@ function clearPromptEditorText() {
   if (!editor) return;
   editor.value = "";
   updatePromptEditorStats("");
+  if (state.promptEditorDirectionStatus === "applied") setPromptEditorDirectionSignal("idle");
   editor.focus();
 }
 
@@ -2909,6 +2937,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
   state.sourceDetailError = null;
   state.selectedPreset = null;
   state.compositionId = null;
+  state.promptDirectionSignal = { sourceKey: null, controlId: null, status: "idle", appliedValue: null };
   state.serverFieldErrors = {};
   state.formError = null;
   renderPanel();
@@ -3013,6 +3042,7 @@ function renderPanel() {
   }
   syncPromptAssistantAction();
   syncPromptAssistantError();
+  syncPromptDirectionSignalInPanel();
   restorePanelView(panel, panelView);
   syncSpeechControls();
   scheduleAutoGenerate();
@@ -3026,6 +3056,70 @@ function syncPromptAssistantAction() {
   button.textContent = busy ? "Applying…" : "Apply Creative Direction";
   if (busy) button.setAttribute("aria-busy", "true");
   else button.removeAttribute("aria-busy");
+}
+
+// Creative-direction border signal: the prompt control's border animates
+// gold while a composition request is in flight, turns green when the
+// composed text lands ("ready to go"), and returns to normal styling when a
+// generation is queued or the text is changed in any way.
+
+const DIRECTION_SIGNAL_CLASSES = ["is-direction-composing", "is-direction-applied"];
+
+function setDirectionSignalClasses(element, status) {
+  if (!element) return;
+  for (const className of DIRECTION_SIGNAL_CLASSES) element.classList.remove(className);
+  if (status === "composing") element.classList.add("is-direction-composing");
+  else if (status === "applied") element.classList.add("is-direction-applied");
+}
+
+function promptDirectionSignalControl() {
+  const contract = sourceInterface(state.activeSource);
+  return positivePromptInput(contract)
+    || interfaceInputs(contract).find((input) => input.id === "prompt.text")
+    || null;
+}
+
+function setPromptDirectionSignal(status, value = null) {
+  const control = promptDirectionSignalControl();
+  const normalized = status === "composing" || status === "applied" ? status : "idle";
+  state.promptDirectionSignal = {
+    sourceKey: state.activeSourceKey,
+    controlId: control?.id ?? null,
+    status: normalized,
+    appliedValue: normalized === "applied" ? value : null,
+  };
+  setDirectionSignalClasses(
+    document.querySelector(
+      `[data-control-id="${CSS.escape(state.promptDirectionSignal.controlId || "")}"]`,
+    ),
+    normalized,
+  );
+}
+
+function syncPromptDirectionSignalInPanel() {
+  const signal = state.promptDirectionSignal;
+  if (!signal || signal.sourceKey !== state.activeSourceKey || !signal.controlId) return;
+  const element = document.querySelector(
+    `[data-control-id="${CSS.escape(signal.controlId)}"]`,
+  );
+  if (!element) return;
+  const status = directionSignalNextStatus({
+    status: signal.status,
+    appliedValue: signal.appliedValue,
+    currentValue: element.value,
+  });
+  if (status !== signal.status) state.promptDirectionSignal = { ...signal, status };
+  setDirectionSignalClasses(element, status);
+}
+
+function setPromptEditorDirectionSignal(status, value = null) {
+  const normalized = status === "composing" || status === "applied" ? status : "idle";
+  state.promptEditorDirectionStatus = normalized;
+  state.promptEditorDirectionAppliedValue = normalized === "applied" ? value : null;
+  setDirectionSignalClasses(
+    document.querySelector("#prompt-editor-dialog[open] #prompt-editor-textarea"),
+    normalized,
+  );
 }
 
 function setPromptAssistantError(message) {
@@ -3595,6 +3689,7 @@ async function generateSingleSource({ automatic = false } = {}) {
   state.formError = null;
   state.serverFieldErrors = {};
   syncGenerationSubmissionState();
+  setPromptDirectionSignal("idle");
   let focusErrors = false;
   try {
     const [modelParameters] = modelParameterVariantsForSource(
@@ -3711,6 +3806,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
   state.formError = null;
   state.serverFieldErrors = {};
   syncGenerationSubmissionState();
+  setPromptDirectionSignal("idle");
   let focusErrors = false;
   try {
     const modelVariants = orderedModelParameterVariants(
@@ -3922,6 +4018,7 @@ async function composePrompt(
   promptCompositionRequests += 1;
   setPromptAssistantError(null);
   syncPromptAssistantAction();
+  setPromptDirectionSignal("composing");
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -3947,6 +4044,7 @@ async function composePrompt(
       if (!automatic) {
         toast("Prompt composition finished after its inputs changed and was not applied.");
       }
+      setPromptDirectionSignal("idle");
       return false;
     }
     state.parameters[promptInput.id] = result.prompt;
@@ -3968,6 +4066,7 @@ async function composePrompt(
       `[data-control-id="${CSS.escape(promptInput.id)}"]`,
     );
     if (prompt) prompt.value = result.prompt;
+    setPromptDirectionSignal("applied", result.prompt);
     syncParameterValidation(promptInput.id, {
       scheduleAutomaticGeneration: !automatic,
     });
@@ -3980,11 +4079,13 @@ async function composePrompt(
     return true;
   } catch (error) {
     if (automatic) {
+      setPromptDirectionSignal("idle");
       scheduleAutoGenerateCompositionRetry(
         error,
         autoGenerateContext || currentAutoGenerateRetryContext(),
       );
     } else if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+      setPromptDirectionSignal("idle");
       const message = error.message || "Creative direction could not be applied.";
       setPromptAssistantError(message);
       toast(message, "error");
@@ -4031,6 +4132,9 @@ async function composePromptEditor(button) {
   button.disabled = true;
   button.textContent = "Applying…";
   setPromptEditorAssistantError(dialog, null);
+  setPromptEditorDirectionSignal("composing");
+  let directionOutcome = "idle";
+  let directionAppliedValue = null;
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -4060,6 +4164,9 @@ async function composePromptEditor(button) {
     }
     editor.value = result.prompt;
     updatePromptEditorStats(result.prompt);
+    setPromptEditorDirectionSignal("applied", result.prompt);
+    directionOutcome = "applied";
+    directionAppliedValue = result.prompt;
     dialog.dataset.promptAssistantCompositionId = result.composition_id;
     dialog.dataset.promptAssistantModel = result.model;
     editor.focus();
@@ -4077,6 +4184,7 @@ async function composePromptEditor(button) {
       button.disabled = false;
       button.textContent = "Apply Creative Direction";
     }
+    setPromptEditorDirectionSignal(directionOutcome, directionAppliedValue);
   }
 }
 

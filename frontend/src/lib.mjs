@@ -578,6 +578,16 @@ export function promptInstructionsForMode(assistant, mode = assistant.mode) {
     assistant.defaultInstructions?.[selectedMode] ?? "";
 }
 
+// The "applied" creative-direction signal means "this exact text is the
+// composed result and is ready to generate". Any other current value (user
+// edits, paste, recall, presets, form restore) invalidates it; "composing"
+// persists until the in-flight request resolves.
+export function directionSignalNextStatus({ status, appliedValue, currentValue }) {
+  if (status === "composing") return "composing";
+  if (status === "applied" && appliedValue === currentValue) return "applied";
+  return "idle";
+}
+
 export const AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS = 3;
 export const AUTO_GENERATE_COMPOSITION_RETRY_BASE_MS = 1_000;
 export const AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS = 5_000;

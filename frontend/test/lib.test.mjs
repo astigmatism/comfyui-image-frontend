@@ -18,6 +18,7 @@ import {
   createLatestRequestGate,
   defaultsForContract,
   defaultsForInterface,
+  directionSignalNextStatus,
   formatTimelineMonth,
   generationSourceModelVariant,
   hasActiveGeneration,
@@ -461,6 +462,27 @@ test("auto-generation fingerprints non-empty Prompt Assistant input for one prep
       think: false,
     }),
   );
+});
+
+test("the creative-direction border signal invalidates applied text but keeps in-flight composition", () => {
+  assert.equal(
+    directionSignalNextStatus({ status: "composing", appliedValue: null, currentValue: "a lighthouse" }),
+    "composing",
+  );
+  assert.equal(
+    directionSignalNextStatus({ status: "applied", appliedValue: "composed text", currentValue: "composed text" }),
+    "applied",
+  );
+  assert.equal(
+    directionSignalNextStatus({ status: "applied", appliedValue: "composed text", currentValue: "composed text, edited" }),
+    "idle",
+  );
+  assert.equal(
+    directionSignalNextStatus({ status: "applied", appliedValue: "composed text", currentValue: "recalled prompt" }),
+    "idle",
+  );
+  assert.equal(directionSignalNextStatus({ status: "idle", appliedValue: null, currentValue: "" }), "idle");
+  assert.equal(directionSignalNextStatus({ status: "unexpected", appliedValue: "x", currentValue: "x" }), "idle");
 });
 
 test("auto-generation retries only recoverable Prompt Assistant failures with bounded backoff", () => {
