@@ -2442,6 +2442,56 @@ test("auto activity replaces percentages and distinguishes preparing, retrying a
   assert.match(generationActivityMarkup({ autoGenerate: true }), /Auto waiting/);
 });
 
+test("auto activity tooltip names the pinned target collection", () => {
+  const pinned = {
+    autoGenerate: true,
+    autoGeneratePinned: true,
+    autoGeneratePinnedCollectionId: "c-1",
+    collections: [{ id: "c-1", name: "Pinned folder" }],
+    generationActivity: { remaining_count: 3 },
+  };
+  assert.match(generationActivityMarkup(pinned), /Auto-generation is targeting Pinned folder\./);
+  assert.match(generationActivityMarkup(pinned), /Auto active/);
+
+  // A null pin means Home (enabled from Home or the virtual Favorites view).
+  assert.match(
+    generationActivityMarkup({ ...pinned, autoGeneratePinnedCollectionId: null }),
+    /Auto-generation is targeting Home\./,
+  );
+
+  // Without a pin (and when paused, where the pin is cleared) no target is named.
+  assert.doesNotMatch(generationActivityMarkup({ autoGenerate: true }), /targeting/);
+  assert.doesNotMatch(
+    generationActivityMarkup({ ...pinned, autoGenerate: false, autoGenerateStatus: "paused" }),
+    /targeting/,
+  );
+
+  // A pin whose collection is not (yet) in the loaded tree names nothing.
+  assert.doesNotMatch(
+    generationActivityMarkup({ ...pinned, collections: [] }),
+    /targeting/,
+  );
+
+  // The target line coexists with a retrying status message.
+  assert.match(
+    generationActivityMarkup({
+      ...pinned,
+      autoGenerateStatus: "retrying",
+      autoGenerateStatusMessage: "Prompt Assistant is temporarily unavailable. Retrying.",
+    }),
+    /Retrying\. Auto-generation is targeting Pinned folder\./,
+  );
+
+  // Folder names are escaped in the tooltip.
+  assert.doesNotMatch(
+    generationActivityMarkup({
+      ...pinned,
+      collections: [{ id: "c-1", name: '<img src=x onerror=alert(1)>' }],
+    }),
+    /<img /,
+  );
+});
+
 test("folder activity extends the direct count and labels descendant work explicitly", () => {
   const markup = collectionCountMarkup({ generation_count: 2, remaining_count: 5 });
   assert.match(markup, /2 generations; 5 remaining including nested folders/);

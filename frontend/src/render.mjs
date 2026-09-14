@@ -1311,6 +1311,12 @@ export function generationActivityMarkup(state, now = Date.now()) {
         : state.submitting || state.promptAssistantComposing ? "Auto preparing"
           : remaining > 0 ? "Auto active" : "Auto waiting";
     description = state.autoGenerateStatusMessage || `${label}. ${remaining} generations remaining. Auto-generation is enabled in this tab.`;
+    if (state.autoGenerate && state.autoGeneratePinned) {
+      const pinned = (Array.isArray(state.collections) ? state.collections : [])
+        .find((collection) => collection.id === state.autoGeneratePinnedCollectionId);
+      const target = state.autoGeneratePinnedCollectionId ? pinned?.name : "Home";
+      if (target) description += ` Auto-generation is targeting ${target}.`;
+    }
   } else if (run?.total_count > 0) {
     const completedAt = Date.parse(run.completed_at || "");
     if (!run.remaining_count && Number.isFinite(completedAt) && now - completedAt > 5000) return "";

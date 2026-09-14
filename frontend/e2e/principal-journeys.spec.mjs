@@ -3021,6 +3021,103 @@ test("auto-generate applies enabled Creative Direction before every generation a
   await page.unroute("**/api/generations");
 });
 
+test("auto-generate keeps targeting the enabled folder while browsing elsewhere", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  const session = await (await page.request.get("/api/auth/session")).json();
+  const created = [];
+  for (const name of ["Auto pin source", "Auto pin browse"]) {
+    const response = await page.request.post("/api/collections", {
+      headers: { "X-CSRF-Token": session.csrf_token },
+      data: { name },
+    });
+    expect(response.status()).toBe(201);
+    created.push(await response.json());
+  }
+  const [sourceFolder, browseFolder] = created;
+  await page.reload();
+  const folderCard = (id) =>
+    page.locator(`[data-gallery-card="collection"][data-collection-id="${id}"]`);
+
+  await selectPublishedSource(page, "Generic Landscape");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("pinned auto lighthouse");
+
+  await folderCard(sourceFolder.id)
+    .getByRole("button", { name: /Open collection/ })
+    .click();
+  await expect(page).toHaveURL(/#\/c\//u);
+
+  const generationRequests = [];
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/generations" &&
+      request.method() === "POST"
+    ) generationRequests.push(request);
+  });
+  const firstResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/generations" &&
+      response.request().method() === "POST",
+  );
+  await page.locator("#auto-generate").check();
+  const first = await (await firstResponsePromise).json();
+  expect(first.collection_id).toBe(sourceFolder.id);
+  await expect(
+    page.locator(`.gallery-card[data-generation-id="${first.id}"]`),
+  ).toHaveClass(/status-succeeded/u);
+
+  // Browse to a different folder while auto-generate keeps running.
+  const secondResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/generations" &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("link", { name: "Home" }).click();
+  await folderCard(browseFolder.id)
+    .getByRole("button", { name: /Open collection/ })
+    .click();
+  await expect(page).toHaveURL(/#\/c\//u);
+
+  const second = await (await secondResponsePromise).json();
+  expect(generationRequests[0].postDataJSON().collection_id).toBe(sourceFolder.id);
+  expect(generationRequests[1].postDataJSON().collection_id).toBe(sourceFolder.id);
+  expect(second.collection_id).toBe(sourceFolder.id);
+  // The image belongs to the pinned folder, not the one being browsed.
+  await expect(
+    page.locator(`.gallery-card[data-generation-id="${second.id}"]`),
+  ).toHaveCount(0);
+
+  const activity = page.locator("#generation-activity-host");
+  await activity.hover();
+  await expect(activity.locator(".activity-tooltip")).toBeVisible();
+  await expect(activity.locator(".activity-tooltip")).toContainText(
+    `Auto-generation is targeting ${sourceFolder.name}`,
+  );
+
+  // The pinned image lands in the source folder when the user returns to it.
+  await page.getByRole("link", { name: "Home" }).click();
+  await folderCard(sourceFolder.id)
+    .getByRole("button", { name: /Open collection/ })
+    .click();
+  await expect(
+    page.locator(`.gallery-card[data-generation-id="${second.id}"]`),
+  ).toHaveClass(/status-succeeded/u);
+
+  // Manual generation follows the folder on screen once auto-generate is off.
+  await page.locator("#auto-generate").uncheck();
+  await page.getByRole("link", { name: "Home" }).click();
+  await folderCard(browseFolder.id)
+    .getByRole("button", { name: /Open collection/ })
+    .click();
+  const manual = await (await generateAndExpectAccepted(page)).json();
+  expect(manual.collection_id).toBe(browseFolder.id);
+});
+
 test("auto-generate retries one recoverable composition without parallel requests and queues once", async ({
   page,
 }) => {

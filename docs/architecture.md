@@ -269,9 +269,14 @@ The toolbar's generation activity indicator sits between Gallery scale and the a
 It uses resolved jobs / planned jobs, displays outcome counts on hover or focus, shows
 completion for five seconds, and then hides. Auto-generation replaces the percentage
 with active/preparing/waiting/retrying/paused state; its scheduling remains local to the
-browser tab. Folder count badges add animated remaining counts including descendants,
-while the original count still describes direct contents. Reduced-motion preferences
-stop the animation.
+browser tab. Enabling the switch pins auto-generation to the collection currently on
+screen (Home when enabled from Home or Favorites), so the user can browse elsewhere while
+new images keep landing in that folder; re-enabling or retrying recaptures the current
+collection, and a pin to a deleted folder falls back to the collection on screen. Manual
+generation always follows the collection on screen. The indicator's hover/focus tooltip
+names the collection auto-generation is targeting. Folder count badges add animated
+remaining counts including descendants, while the original count still describes direct
+contents. Reduced-motion preferences stop the animation.
 
 A compact owner-scoped activity snapshot supplies both indicators without reading card
 or workflow JSON. The browser refreshes it on lifecycle events (coalesced), SSE connection,
@@ -284,7 +289,7 @@ selecting the current run, so overlapping tabs append to one run. Batch savepoin
 per-item validation errors while committing the full plan in one transaction. The worker
 continues to execute ordinary generations on their existing pinned runtimes.
 
-The gallery keeps one object/card per generation and displays its snapshotted execution label in status/history. Changing the current selector never changes existing cards or active-job routing. SSE replaces only the affected durable state and drops a refreshed card when its `collection_id` does not match the open view. Collection CRUD adds no SSE event in v1: the initiating tab refetches collections after its mutation, while another tab converges on navigation or reload. A terminal generation does not trigger a per-card collection-list refetch, so preview thumbnails may remain stale until that same navigation/reload boundary. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance. Favorites remain global: `#/favorites` renders the mixed feed as ordinary generation cards and collection tiles, with a static gold ring for saved items. The virtual route is separate from the current collection ID, so new generations are never assigned a synthetic collection. It uses the same scale, sentinel, image viewer, recall, move, and deletion controls; unfavoriting removes the item immediately. Generation actions preserve bookmark order while folder tiles navigate to their normal collection route. Recall reports whether the historical runtime is still configured and available before restoring the selector; it never submits automatically.
+The gallery keeps one object/card per generation and displays its snapshotted execution label in status/history. Changing the current selector never changes existing cards or active-job routing. SSE replaces only the affected durable state and drops a refreshed card when its `collection_id` does not match the open view. The same rule keeps auto-generated cards filed into their pinned collection invisible while the user browses a different one; they appear on return to that collection. Collection CRUD adds no SSE event in v1: the initiating tab refetches collections after its mutation, while another tab converges on navigation or reload. A terminal generation does not trigger a per-card collection-list refetch, so preview thumbnails may remain stale until that same navigation/reload boundary. Cursor pagination limits DOM growth; thumbnails are lazy while detail exposes every retained result and technical provenance. Favorites remain global: `#/favorites` renders the mixed feed as ordinary generation cards and collection tiles, with a static gold ring for saved items. The virtual route is separate from the current collection ID, so new generations are never assigned a synthetic collection. It uses the same scale, sentinel, image viewer, recall, move, and deletion controls; unfavoriting removes the item immediately. Generation actions preserve bookmark order while folder tiles navigate to their normal collection route. Recall reports whether the historical runtime is still configured and available before restoring the selector; it never submits automatically.
 
 ## Compatibility and migration
 

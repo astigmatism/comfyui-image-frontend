@@ -192,6 +192,20 @@ let autoGenerateRetryTimer = null;
 let autoGenerateRetryFailures = 0;
 let autoGenerateRetryContext = null;
 let preparedAutoGenerateAssistantFingerprint = null;
+// Auto-generate keeps submitting to the collection where the control was enabled,
+// so the user can browse elsewhere without re-aiming the queue. null pins Home.
+let autoGeneratePinned = false;
+let autoGeneratePinnedCollectionId = null;
+
+function setAutoGeneratePin() {
+  autoGeneratePinned = true;
+  autoGeneratePinnedCollectionId = state.currentCollectionId;
+}
+
+function clearAutoGeneratePin() {
+  autoGeneratePinned = false;
+  autoGeneratePinnedCollectionId = null;
+}
 let promptCompositionRequests = 0;
 let collectionNavigationToken = 0;
 let favoritesRevision = 0;
@@ -471,6 +485,8 @@ async function handleClick(event) {
   if (element.id === "auto-generate") {
     resetAutoGenerateRetryState();
     state.autoGenerate = element.checked;
+    if (state.autoGenerate) setAutoGeneratePin();
+    else clearAutoGeneratePin();
     preparedAutoGenerateAssistantFingerprint = null;
     syncGenerationSubmissionState();
     scheduleAutoGenerate();
@@ -1987,6 +2003,7 @@ async function logout() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.autoGenerateCreativeDirection = false;
+  clearAutoGeneratePin();
   resetAutoGenerateRetryState();
   const session = await api("/api/auth/session", {
     operation: "Session request",
@@ -2044,6 +2061,7 @@ async function enterApplication() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.autoGenerateCreativeDirection = false;
+  clearAutoGeneratePin();
   resetAutoGenerateRetryState();
   state.favorites = { items: [], nextCursor: null };
   state.checkpointTiers = {};
@@ -2384,6 +2402,19 @@ async function loadCollections(signal = applicationStartupController?.signal) {
     if (signal?.aborted) return;
     if (revision !== favoritesRevision) return loadCollections(signal);
     state.collections = Array.isArray(collections) ? collections : [];
+    if (
+      autoGeneratePinned &&
+      autoGeneratePinnedCollectionId &&
+      !state.collections.some((collection) => collection.id === autoGeneratePinnedCollectionId)
+    ) {
+      // The pinned folder no longer exists; continue auto-generation from the
+      // folder currently on screen instead of submitting to a stale id.
+      clearAutoGeneratePin();
+      if (state.autoGenerate) {
+        renderGenerationActivity();
+        scheduleAutoGenerate();
+      }
+    }
     applyCollectionActivity({ counts: false });
     scheduleActivityRefresh();
     const byId = new Map(state.collections.map((item) => [item.id, item]));
@@ -3316,6 +3347,7 @@ function resetAutoGenerateRetryState() {
 function retryAutoGenerate() {
   resetAutoGenerateRetryState();
   state.autoGenerate = true;
+  setAutoGeneratePin();
   preparedAutoGenerateAssistantFingerprint = null;
   const control = document.querySelector("#auto-generate");
   if (control) control.checked = true;
@@ -3326,6 +3358,7 @@ function retryAutoGenerate() {
 function pauseAutoGenerateAfterCompositionFailure(error) {
   cancelAutoGenerateRetryTimer();
   state.autoGenerate = false;
+  clearAutoGeneratePin();
   state.autoGenerateStatus = "paused";
   state.autoGenerateStatusMessage = `Auto-generate paused: ${
     error?.message || "Prompt Assistant composition failed."
@@ -3511,19 +3544,24 @@ async function generate({ automatic = false } = {}) {
     if (autoGenerationNeedsPromptAssistant()) return false;
   }
   if (plannedGenerationTargetCount() > 1) {
-    return generateSelectedCheckpoints();
+    return generateSelectedCheckpoints({ automatic });
   }
-  return generateSingleSource();
+  return generateSingleSource({ automatic });
 }
 
-async function generateSingleSource() {
+async function generateSingleSource({ automatic = false } = {}) {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestCompositionId = state.compositionId;
   const requestComfyuiInstance = selectedComfyuiInstance();
-  const requestCollectionId = state.currentCollectionId;
+  // Auto-generation stays aimed at the collection where the control was
+  // enabled; manual generation follows the collection currently on screen.
+  const requestCollectionId =
+    automatic && autoGeneratePinned
+      ? autoGeneratePinnedCollectionId
+      : state.currentCollectionId;
   if (
     !requestSourceKey ||
     !state.activeSource ||
@@ -3624,7 +3662,7 @@ async function generateSingleSource() {
   }
 }
 
-async function generateSelectedCheckpoints() {
+async function generateSelectedCheckpoints({ automatic = false } = {}) {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -3633,7 +3671,10 @@ async function generateSelectedCheckpoints() {
   const requestParameters = structuredClone(state.parameters);
   const requestSource = selectedGenerationSource();
   const requestComfyuiInstance = selectedComfyuiInstance();
-  const requestCollectionId = state.currentCollectionId;
+  const requestCollectionId =
+    automatic && autoGeneratePinned
+      ? autoGeneratePinnedCollectionId
+      : state.currentCollectionId;
   if (
     !requestSourceKey ||
     !requestSource ||
@@ -5393,7 +5434,12 @@ function beginGenerationActivitySubmission(count) {
 function renderGenerationActivity() {
   const host = document.querySelector("#generation-activity-host");
   if (!host) return;
-  const markup = generationActivityMarkup({ ...state, promptAssistantComposing: promptCompositionRequests > 0 });
+  const markup = generationActivityMarkup({
+    ...state,
+    promptAssistantComposing: promptCompositionRequests > 0,
+    autoGeneratePinned,
+    autoGeneratePinnedCollectionId,
+  });
   // Preserve focus, hover and animation between unchanged snapshots.
   if (host.dataset.markup !== markup) {
     const focused = host.contains(document.activeElement);
