@@ -1532,7 +1532,7 @@ function generationProgressCopyMarkup(label, eta, runtimeName) {
   return `<div class="generation-progress-copy"><strong class="generation-progress-label">${escapeHtml(label)}</strong><span class="generation-progress-context">${runtimeMarkup}${etaMarkup}</span></div>`;
 }
 
-function activeGenerationEta(generation, now) {
+export function activeGenerationEta(generation, now) {
   if (!generation || !["dispatching", "running"].includes(generation.status)) return null;
   const eta = generation.progress?.eta;
   if (!eta || typeof eta !== "object" || Array.isArray(eta)) return null;
@@ -1722,6 +1722,12 @@ export function formatGenerationEta(value) {
   return `About ${formatGenerationDuration(Math.ceil(value))} left`;
 }
 
+export function formatNextInCountdown(remainingSeconds) {
+  if (typeof remainingSeconds !== "number" || !Number.isFinite(remainingSeconds)) return "Next in…";
+  if (remainingSeconds <= 0.5) return "Next up…";
+  return `Next in ${formatGenerationDuration(Math.ceil(remainingSeconds))}`;
+}
+
 export function photoViewerMarkup(
   generation,
   navigation = {},
@@ -1769,6 +1775,7 @@ export function photoViewerMarkup(
     ${navigation.hasNewer ? '<button type="button" class="photo-viewer-nav photo-viewer-newer photo-viewer-control" data-action="navigate-photo" data-direction="newer" aria-label="View newer generation">‹</button>' : ""}
     ${navigation.hasOlder ? '<button type="button" class="photo-viewer-nav photo-viewer-older photo-viewer-control" data-action="navigate-photo" data-direction="older" aria-label="View older generation">›</button>' : ""}
     ${active ? `<div class="photo-viewer-status" role="status">${escapeHtml(status)}${runtimeName ? ` · ${escapeHtml(runtimeName)}` : ""}</div>` : ""}
+    <div class="photo-viewer-next-in" role="timer" hidden></div>
   </div>`;
 }
 

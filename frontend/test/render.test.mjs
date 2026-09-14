@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  activeGenerationEta,
   cardActionsMarkup,
   collectionDeleteDialogMarkup,
   collectionDialogMarkup,
@@ -11,6 +12,7 @@ import {
   favoritesGalleryMarkup,
   formatGenerationDuration,
   formatGenerationEta,
+  formatNextInCountdown,
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
@@ -1468,6 +1470,53 @@ test("generation ETA rounds up while active and becomes finishing at zero", () =
   assert.equal(formatGenerationEta(Number.NaN), null);
 });
 
+test("next-in countdown rounds up, flips to next up at zero, and waits without an estimate", () => {
+  assert.equal(formatNextInCountdown(90), "Next in 1m 30s");
+  assert.equal(formatNextInCountdown(29.1), "Next in 30s");
+  assert.equal(formatNextInCountdown(0.4), "Next up…");
+  assert.equal(formatNextInCountdown(0), "Next up…");
+  assert.equal(formatNextInCountdown(-5), "Next up…");
+  assert.equal(formatNextInCountdown(null), "Next in…");
+  assert.equal(formatNextInCountdown(Number.NaN), "Next in…");
+});
+
+test("active generation ETA anchors the server estimate to the client clock", () => {
+  const now = Date.parse("2026-07-17T12:00:00Z");
+  const generation = {
+    id: "generation-eta-direct",
+    status: "running",
+    progress: {
+      kind: "indeterminate",
+      label: "Main sampling",
+      updated_at: "2026-07-17T12:00:00Z",
+      eta: {
+        remaining_seconds: 90,
+        completion_at: "2026-07-17T12:01:30Z",
+        updated_at: "2026-07-17T12:00:00Z",
+      },
+    },
+  };
+  const eta = activeGenerationEta(generation, now);
+  assert.ok(eta);
+  assert.equal(eta.completionTimestamp, now + 90_000);
+
+  assert.equal(
+    activeGenerationEta({ id: "generation-eta-queued", status: "queued", progress: generation.progress }, now),
+    null,
+  );
+  assert.equal(
+    activeGenerationEta(
+      {
+        id: "generation-eta-missing",
+        status: "running",
+        progress: { kind: "indeterminate", label: "Loading model", updated_at: "2026-07-17T12:00:00Z" },
+      },
+      now,
+    ),
+    null,
+  );
+});
+
 test("Favorites gallery reuses cards and tiles in feed order with pressed hearts and gold rings", () => {
   const collection = { id: "c1", name: "Saved <folder>", is_favorite: true, generation_count: 2 };
   const generation = {
@@ -1590,6 +1639,7 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   assert.doesNotMatch(html, /data-direction="newer"/);
   assert.match(html, /photo-viewer-older[^>]*data-direction="older"[^>]*>›<\/button>/);
   assert.match(html, /<div class="photo-viewer-status" role="status">Refining details<\/div>/);
+  assert.match(html, /<div class="photo-viewer-next-in" role="timer" hidden><\/div>/);
 
   const middle = photoViewerMarkup(
     {

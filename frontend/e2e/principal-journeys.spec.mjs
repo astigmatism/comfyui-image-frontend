@@ -914,6 +914,67 @@ test("photo viewer slideshow waits for a generation's final completed image", as
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
 });
 
+test("photo viewer slideshow shows a next-in countdown while auto-generate is on", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("next-in countdown baseline");
+  const baselineResponse = await generateAndExpectAccepted(page);
+  const baseline = await baselineResponse.json();
+  const baselineCard = page.locator(`.gallery-card[data-generation-id="${baseline.id}"]`);
+  await expect(baselineCard).toHaveClass(/status-succeeded/);
+  await baselineCard.locator(".card-media").click();
+
+  const photoViewer = page.locator("#photo-viewer");
+  await expect(photoViewer).toHaveAttribute("open", "");
+  const nextIn = photoViewer.locator(".photo-viewer-next-in");
+  const playbackControl = photoViewer.getByRole("group", { name: "Playback mode" });
+
+  // Auto-generate off: the badge exists in the markup but stays hidden in both playback modes.
+  await expect(nextIn).toHaveCount(1);
+  await expect(nextIn).toBeHidden();
+  await playbackControl.getByRole("button", { name: "Slideshow", exact: true }).click();
+  await expect(
+    playbackControl.getByRole("switch", { name: "Slideshow mode" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(nextIn).toBeHidden();
+  await page.mouse.move(80, 80);
+  await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
+  await expect(photoViewer).not.toHaveAttribute("open", "");
+
+  // Auto-generate on: the badge appears in slideshow mode and survives the advance.
+  await page.getByRole("switch", { name: "Auto-generate" }).check();
+  await baselineCard.locator(".card-media").click();
+  await expect(photoViewer).toHaveAttribute("open", "");
+  await playbackControl.getByRole("button", { name: "Slideshow", exact: true }).click();
+  await expect(nextIn).toBeVisible();
+  await expect(nextIn).toHaveText(/Next (in|up)/);
+
+  await expect
+    .poll(async () => {
+      const frameId = await photoViewer
+        .locator(".photo-viewer-frame")
+        .getAttribute("data-photo-generation-id");
+      return frameId !== baseline.id;
+    }, { timeout: 60_000 })
+    .toBe(true);
+  await expect(nextIn).toBeVisible();
+  await expect(nextIn).toHaveText(/Next (in|up)/);
+
+  // Leaving slideshow (or auto-generate) hides the badge again.
+  await page.mouse.move(80, 80);
+  await playbackControl.getByRole("button", { name: "Hold", exact: true }).click();
+  await expect(nextIn).toBeHidden();
+  await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
+  await expect(photoViewer).not.toHaveAttribute("open", "");
+  await page.getByRole("switch", { name: "Auto-generate" }).uncheck();
+});
+
 test("photo viewer favorite toggle syncs with the gallery card and persists across viewer opens", async ({
   page,
 }) => {

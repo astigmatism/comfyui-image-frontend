@@ -3084,6 +3084,26 @@ dialog::backdrop {
   z-index: 1;
 }
 
+.photo-viewer-next-in {
+  position: absolute;
+  right: 18px;
+  bottom: 22px;
+  padding: 7px 13px;
+  max-width: calc(100vw - 40px);
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 999px;
+  background: rgb(7 12 18 / 78%);
+  box-shadow: 0 3px 14px rgb(0 0 0 / 34%);
+  color: #f4f7fb;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  backdrop-filter: blur(9px);
+  z-index: 2;
+}
+
 .admin-dialog {
   width: min(1050px, calc(100vw - 36px));
   height: min(820px, calc(100vh - 36px));

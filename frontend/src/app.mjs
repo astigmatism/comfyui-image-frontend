@@ -41,6 +41,7 @@ import {
   sourceModelSelectors,
 } from "./lib.mjs";
 import {
+  activeGenerationEta,
   collectionDeleteDialogMarkup,
   collectionDialogMarkup,
   collectionTileMarkup,
@@ -49,6 +50,7 @@ import {
   detailMarkup,
   favoritesGalleryMarkup,
   formatGenerationEta,
+  formatNextInCountdown,
   galleryCardMarkup,
   galleryMarkup,
   generationProgressMarkup,
@@ -472,6 +474,7 @@ async function handleClick(event) {
     preparedAutoGenerateAssistantFingerprint = null;
     syncGenerationSubmissionState();
     scheduleAutoGenerate();
+    updatePhotoViewerNextIn();
     return;
   }
   if (element.id === "auto-generate-creative-direction") {
@@ -4951,6 +4954,7 @@ function renderPhotoViewer() {
   );
   preparePhotoViewerImage();
   updatePhotoViewerFullscreenControl();
+  updatePhotoViewerNextIn();
 }
 
 function openPhotoViewer(id) {
@@ -5018,11 +5022,13 @@ function setPhotoViewerPlaybackMode(mode) {
   state.photoViewerPlaybackMode = mode;
   if (mode === "hold") {
     updatePhotoViewerPlaybackControl();
+    updatePhotoViewerNextIn();
     return;
   }
 
   if (showLatestCompletedSlideshowGeneration({ force: true })) return;
   updatePhotoViewerPlaybackControl();
+  updatePhotoViewerNextIn();
 }
 
 function showLatestCompletedSlideshowGeneration({
@@ -5208,6 +5214,46 @@ function updatePhotoViewerPlaybackControl() {
       String(label.dataset.photoPlaybackMode === state.photoViewerPlaybackMode),
     );
   }
+}
+
+function photoViewerNextCompletionTimestamp() {
+  const now = Date.now();
+  let earliest = null;
+  for (const generation of state.generations) {
+    if (!["queued", "dispatching", "running", "cancel_requested"].includes(generation?.status)) continue;
+    const completion = activeGenerationEta(generation, now)?.completionTimestamp;
+    if (
+      typeof completion === "number" &&
+      Number.isFinite(completion) &&
+      (earliest === null || completion < earliest)
+    ) {
+      earliest = completion;
+    }
+  }
+  return earliest;
+}
+
+function updatePhotoViewerNextIn() {
+  const dialog = document.querySelector("#photo-viewer");
+  if (!dialog?.open) return;
+  const badge = dialog.querySelector(".photo-viewer-next-in");
+  if (!badge) return;
+  const visible = state.photoViewerPlaybackMode === "slideshow" && state.autoGenerate === true;
+  if (!visible) {
+    if (!badge.hidden) {
+      badge.hidden = true;
+      badge.textContent = "";
+    }
+    return;
+  }
+  const now = Date.now();
+  const completion = photoViewerNextCompletionTimestamp();
+  const text =
+    completion === null
+      ? "Next in…"
+      : formatNextInCountdown((completion - now) / 1_000);
+  badge.hidden = false;
+  if (badge.textContent !== text) badge.textContent = text;
 }
 
 function handlePhotoViewerResize() {
@@ -5495,6 +5541,7 @@ function applyGenerationProgress(event) {
   ) {
     renderPhotoViewer();
   }
+  updatePhotoViewerNextIn();
 }
 
 function progressUpdatedAt(progress) {
@@ -5531,6 +5578,7 @@ function refreshGenerationEtaCountdowns() {
       bar.setAttribute("aria-valuetext", `${baseValueText}, ${accessibleEta}`);
     }
   }
+  updatePhotoViewerNextIn();
 }
 
 function resumeLiveUpdates() {
