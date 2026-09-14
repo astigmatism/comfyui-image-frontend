@@ -69,18 +69,18 @@ Bootstrap variables are read only when the database has no users. Replacing the 
 
 ### Browsers and the local TLS edge
 
-The appliance is reachable on the home network, not the public internet, so it cannot use Let's Encrypt/ACME. Instead, `compose.example.yml` runs an unprivileged `caddy` edge (`cif-tls-edge`) that terminates TLS with a **locally issued** certificate and reverse-proxies to the application (plain HTTP on port 8000, which stays the container's internal listener). The edge is what browsers connect to:
+The default `image-studio.lan` name uses a private certificate authority. `compose.example.yml` runs an unprivileged `caddy` edge (`cif-tls-edge`) that terminates TLS with a **locally issued** certificate and reverse-proxies to the application (plain HTTP on port 8000, which stays the container's internal listener). A LAN-only service could instead use a registered domain and ACME DNS validation, but that is a separate deployment configuration. The edge is what browsers connect to:
 
 - **Primary URL:** `https://<CIF_TLS_HOSTNAME>:<CIF_TLS_HOST_PORT>` — default `https://image-studio.lan:8443`.
 - **Plain HTTP (`http://<appliance-host>:8000`)** is now for health checks and tooling only. It is not a secure context (clipboard/mic are unavailable there) and, because the session cookie is flagged `Secure`, a plain-HTTP origin can no longer hold a login session.
 
-**Why HTTPS is required:** `navigator.clipboard.readText` (paste) and `navigator.mediaDevices.getUserMedia` (microphone) are only defined in a *secure context*. A LAN address over plain HTTP is not one, so those features simply do not exist there. `https://` (even with a self-issued certificate) *is* a secure context, so the browser exposes both APIs; the only extra step is making each client trust the local root.
+**Why HTTPS is required:** `navigator.clipboard.readText` (paste) and `navigator.mediaDevices.getUserMedia` (microphone) require a *secure context*. Use HTTPS with a trusted certificate matching the URL hostname, then grant the browser's requested permissions. A LAN address over plain HTTP is not a secure context. Clicking through a certificate warning is not a substitute for installing the local root.
 
 **One-time per-client setup** (do this on each phone/laptop that uses the app):
 
 1. **Trust the local root CA.** Copy `data/certificates/ca.crt` (`CIF_TLS_CERT_DIR`) to the client and add it to the client's trusted root store:
    - **macOS:** double-click `ca.crt` → Keychain Access → add it to the `system` keychain → set the certificate to **Always Trust** for TLS.
-   - **Windows:** `certutil -addstore -user Root ca.crt` (or `slmgr.vbs /addstore Root ca.crt` for all users).
+   - **Windows:** `certutil -addstore -user Root ca.crt` (or run `certutil -addstore Root ca.crt` as administrator for all users).
    - **Linux:** `sudo cp ca.crt /usr/local/share/ca-certificates/home-image-studio.crt && sudo update-ca-certificates` (or import it into Firefox's *Security → View Certificates → Authorities*, which does not use the OS store).
    - **iOS:** Settings → General → VPN & Device Management → install the profile, then Settings → General → About → Certificate Trust Settings → enable **full trust** for it.
    - **Android:** Settings → Security → Install certificates → CA certificate, and import the same file into Chrome/Firefox (which use the Android system store).
@@ -88,7 +88,12 @@ The appliance is reachable on the home network, not the public internet, so it c
 
 Once both steps are done, `https://<hostname>:8443` loads without a certificate warning on that client, and clipboard paste and voice input work.
 
-**Remote access via SSH tunnel** (no per-client CA import needed if you tunnel to loopback): from the client, run `ssh -N -L 8443:<appliance-ip>:8443 user@<appliance-ip>` and open `https://localhost:8443`. Loopback is itself a secure context, and you can still trust the local root as above (or allow the one-time browser exception) to silence the certificate warning.
+**Remote access via SSH tunnel:** forward the plain-HTTP app to loopback with `ssh -N -L 18000:<appliance-ip>:8000 user@<appliance-ip>`, then open `http://localhost:18000`. SSH encrypts the network connection; browsers treat localhost as a potentially trustworthy origin. This is a temporary access option; verify login behavior with your browser's handling of Secure cookies on localhost. To tunnel the TLS edge instead, keep the URL hostname `image-studio.lan`, map that name to loopback on the tunnel client, and trust the same CA. `https://localhost:8443` does not match the default certificate.
+
+**Service Portal:** the app's `io.service-portal.url` label advertises its HTTPS address;
+`io.service-portal.hidden` keeps the TLS edge out of the launcher. Use a portal version
+with explicit browser URL support and recreate the Compose services to apply labels.
+The portal opens the address; each client still needs DNS resolution and CA trust.
 
 The root and leaf are generated by `scripts/issue-local-cert.sh` (a stable root, a leaf for `CIF_TLS_HOSTNAME`, reissued only when the hostname changes or the leaf nears expiry). They live under `CIF_TLS_CERT_DIR` (outside git) and are revalidated/reused on every update and restart before the edge starts.
 

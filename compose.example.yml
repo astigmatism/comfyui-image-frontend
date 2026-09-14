@@ -38,6 +38,7 @@ services:
     # these labels, recreate this service so Docker records them. If you
     # deploy from another Compose file, keep the four labels identical there.
     labels:
+      io.service-portal.url: "https://${CIF_TLS_HOSTNAME:-image-studio.lan}:${CIF_TLS_HOST_PORT:-8443}/"
       io.service-portal.update.enabled: "true"
       io.service-portal.update.script: "scripts/update-and-restart.sh"
       io.service-portal.update.image: "${PROJECT_RUNNER_IMAGE:-comfyui-image-frontend-portal-runner:latest}"
@@ -62,6 +63,8 @@ services:
   # and Server-Sent Events streams to the app container unchanged.
   cif-tls-edge:
     image: caddy/caddy:2.11.4-alpine
+    labels:
+      io.service-portal.hidden: "true"
     restart: unless-stopped
     depends_on:
       - comfyui-image-frontend

@@ -91,14 +91,14 @@ are only defined in a *secure context*:
 - `navigator.clipboard.readText` (paste)
 - `navigator.mediaDevices.getUserMedia` (microphone)
 
-A plain-HTTP page on a LAN address (`http://192.168.1.5:8000`) is **not** a secure context, so
-those APIs do not exist there — the controls are simply unavailable. `https://` **is** a
-secure context even with a self-issued certificate, so the browser exposes both APIs. The
-only cost of a self-issued certificate is that each client must trust the local root **once**.
+A plain-HTTP page on a LAN address (`http://192.168.1.5:8000`) is **not** a secure context.
+Use HTTPS with a trusted certificate matching the URL hostname, then grant clipboard or
+microphone permission when requested. Each client must trust the local root **once**;
+clicking through a certificate warning is not a substitute for this setup.
 
-Because the appliance is on the home network (not the public internet), Let's Encrypt/ACME is
-not usable. The committed local-CA TLS edge (`cif-tls-edge`) is the solution: real TLS, a real
-secure context, and no public CA dependency.
+The default `image-studio.lan` identity uses a private CA. The committed TLS edge
+(`cif-tls-edge`) provides HTTPS without a public CA dependency. A registered domain with
+ACME DNS validation can also secure a LAN-only service, but is not configured here.
 
 ---
 
@@ -124,7 +124,8 @@ USB, etc.) and add it to the client's trusted root store:
 - **Windows**
   - Per user: `certutil -addstore -user Root ca.crt`
   - All users (elevation): right-click → **Install Certificate** → *Local Machine* →
-    *Trusted Root Certification Authorities*, **or** `slmgr.vbs /addstore Root ca.crt`.
+    *Trusted Root Certification Authorities*, **or** run `certutil -addstore Root ca.crt`
+    as administrator.
 - **Linux**
   - System: `sudo cp ca.crt /usr/local/share/ca-certificates/home-image-studio.crt && sudo update-ca-certificates`
   - **Firefox** does not use the OS store: *Settings → Privacy & Security → Certificates →
@@ -169,27 +170,37 @@ Sign in with the bootstrap administrator; the first sign-in requires setting a p
 password. Bootstrap variables are read only while the database has no users; replacing the
 container does **not** reset an existing password.
 
-### Remote access via SSH tunnel (no per-client CA import required to trust)
+### Remote access via SSH tunnel
 
-From a client, forward the edge port over SSH and use loopback (which is itself a secure
-context):
+For temporary access, forward the plain-HTTP app through SSH to loopback:
 
 ```sh
-ssh -N -L 8443:192.168.1.5:8443 user@192.168.1.5
-# then open https://localhost:8443
+ssh -N -L 18000:192.168.1.5:8000 user@192.168.1.5
+# then open http://localhost:18000
 ```
 
-The leaf is still signed by the local root, so you may still import `ca.crt` (step 5a) to
-silence the certificate warning — or accept the browser's one-time exception for the loopback
-origin.
+SSH encrypts the network connection; browsers treat localhost as potentially trustworthy.
+Verify login behavior with your browser's handling of Secure cookies on localhost.
+For a tunnel to the TLS edge, continue to use `https://image-studio.lan:8443`, map that
+hostname to loopback on the tunnel client, and trust the same CA. The default leaf does
+not cover `localhost`, so `https://localhost:8443` fails hostname validation.
+
+### Service Portal launch address
+
+The Compose app advertises `io.service-portal.url` using `CIF_TLS_HOSTNAME` and
+`CIF_TLS_HOST_PORT`. The TLS edge is marked `io.service-portal.hidden: "true"`.
+A portal version supporting explicit URLs opens the app through HTTPS by default.
+Recreate services after label changes. DNS resolution and CA trust remain per-client
+requirements; the portal cannot install either by opening a link.
 
 ---
 
 ## 7. Confirming the installation
 
 - `docker compose -f compose.example.yml ps` — both services `healthy`.
-- `curl -fsk https://image-studio.lan:8443/api/health` (from a client that trusts the root, or
-  `-k`) — returns 200 with `database` and `worker.ready` true.
+- `curl --cacert ca.crt https://image-studio.lan:8443/api/health` — verifies the certificate
+  and returns 200 with `database` and `worker.ready` true. Use `-k` only to diagnose
+  connectivity; it does not verify certificate trust or hostname matching.
 - `docker compose -f compose.example.yml logs cif-tls-edge` — Caddy bound to 8443 with the
   local leaf; no `leaf` errors.
 - In a trusting browser, `https://image-studio.lan:8443` loads, clipboard paste and the
