@@ -918,13 +918,20 @@ class CIFLoraStack:
         if not isinstance(catalog, list) or not 1 <= len(catalog) <= 100:
             raise ValueError("Publish between 1 and 100 LoRAs.")
         for item in catalog:
-            if not isinstance(item, dict) or set(item) != {"id", "label", "filename"}:
+            if (
+                not isinstance(item, dict)
+                or not {"id", "label", "filename"} <= set(item)
+                or set(item) - {"id", "label", "filename", "description"}
+            ):
                 raise ValueError("Invalid private LoRA catalog entry.")
             filename = item["filename"]
             if not isinstance(filename, str) or not filename or len(filename) > 1000:
                 raise ValueError("Invalid private LoRA filename.")
         declaration = {
-            "items": [{"id": item["id"], "label": item["label"]} for item in catalog],
+            "items": [
+                {key: item[key] for key in ("id", "label", "description") if key in item}
+                for item in catalog
+            ],
             "minimum": minimum,
             "maximum": maximum,
             "step": step,

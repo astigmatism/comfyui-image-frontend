@@ -726,14 +726,18 @@ def _lora_contract(
             catalog = json.loads(inputs["catalog_json"])
             if not isinstance(catalog, list) or any(
                 not isinstance(item, dict)
-                or set(item) != {"id", "label", "filename"}
+                or not {"id", "label", "filename"} <= set(item)
+                or set(item) - {"id", "label", "filename", "description"}
                 or not isinstance(item["filename"], str)
                 or not item["filename"]
                 or len(item["filename"]) > 1000
                 for item in catalog
             ):
                 raise ValueError("Invalid frozen LoRA catalog.")
-            public_items = [{"id": item["id"], "label": item["label"]} for item in catalog]
+            public_items = [
+                {key: item[key] for key in ("id", "label", "description") if key in item}
+                for item in catalog
+            ]
             if stack["items"] != public_items:
                 raise ValueError("LoRA items differ from the frozen catalog.")
             if any(stack[key] != inputs[key] for key in ("minimum", "maximum", "step")):

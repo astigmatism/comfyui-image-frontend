@@ -1388,7 +1388,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
   if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
   await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await page.getByRole("button", { name: "Move Beta up" }).click();
+  await page.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
   const submittedStack = [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }];
   const trigger = page.locator("#workflow-source");
   await trigger.click();

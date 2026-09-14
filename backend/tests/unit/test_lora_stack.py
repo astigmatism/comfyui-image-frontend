@@ -74,6 +74,40 @@ def test_order_default_private_projection_and_isolation():
         ]
 
 
+def test_usage_description_is_public_and_does_not_change_execution():
+    description = "Use: AlphaCharacter in your prompt (no angle brackets)."
+
+    def update(public, private):
+        public["items"][0]["description"] = description
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["description"] = description
+        private["catalog_json"] = json.dumps(catalog)
+
+    selected = source(update)
+    for interface in (selected.public_interface, _public_interface(selected.private_contract)):
+        item = interface["inputs"][-1]["items"][0]
+        assert item == {"id": "a", "label": "Alpha", "description": description}
+        assert "filename" not in json.dumps(item)
+    compiled = compile_stack(selected)
+    assert compiled.effective_controls["loras"] == [
+        {"id": "a", "strength": 0},
+        {"id": "b", "strength": 0},
+    ]
+    assert compiled.effective_controls["prompt"] == "lake"
+
+
+@pytest.mark.parametrize("description", [None, "", " ", 1, {}, "x" * 1001])
+def test_invalid_usage_description_is_rejected(description):
+    def update(public, private):
+        public["items"][0]["description"] = description
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["description"] = description
+        private["catalog_json"] = json.dumps(catalog)
+
+    with pytest.raises(ContractError):
+        source(update)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -101,6 +135,7 @@ def test_malformed_requests(value):
     [
         lambda public, private: public["items"][0].update(filename="private"),
         lambda public, private: public["items"][0].update(label="Changed"),
+        lambda public, private: public["items"][0].update(description="Unpublished usage"),
         lambda public, private: public.update(step=0.1),
         lambda public, private: public["default"][0].update(strength=0.05),
         lambda public, private: public["bindings"][0].update(input="catalog_json"),

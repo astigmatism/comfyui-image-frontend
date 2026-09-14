@@ -4974,10 +4974,15 @@ tr:last-child td {
 /* LoRA controls fit the narrow generation panel as well as phone screens. */
 .lora-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.8rem; }
 .lora-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 88px; align-items: center; gap: 0.4rem; }
-.lora-label { grid-column: 2; overflow-wrap: anywhere; }
-.lora-handle { grid-row: span 2; cursor: grab; }
+.lora-label { grid-column: 2 / 4; overflow-wrap: anywhere; }
+.lora-title { display: inline; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: help; }
+.lora-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+.lora-tooltip { position: fixed; inset: auto; margin: 0; width: min(280px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; white-space: pre-line; }
+.lora-tooltip:popover-open { display: block; }
+.lora-handle { grid-row: span 2; cursor: grab; touch-action: none; }
+.lora-row.is-dragging { opacity: 0.6; }
+.lora-row.lora-drop-target { box-shadow: 0 -2px 0 var(--accent); }
 .lora-row input[type="range"] { grid-column: 2; min-width: 0; width: 100%; }
 .lora-row input[type="number"] { grid-column: 3; min-width: 0; width: 100%; }
-.lora-movement { grid-column: 3; grid-row: 1; display: flex; }
-.lora-row button { min-width: 44px; min-height: 44px; padding: 0.35rem; }
+.lora-handle { min-width: 44px; min-height: 44px; padding: 0.35rem; }
 .lora-stack .hint { margin-top: 0; color: var(--muted); }

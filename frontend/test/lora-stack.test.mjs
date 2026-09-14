@@ -27,8 +27,21 @@ test("LoRA client validation rejects malformed entries and keeps zero rows", () 
   for (const value of [null, [], "[]", [{ id: "a", strength: 0 }, { id: "a", strength: 0 }]]) assert.ok(loraStackError(control, value));
   const markup = loraStackMarkup(control, [...control.default].reverse());
   assert.ok(markup.indexOf('data-lora-id="b"') < markup.indexOf('data-lora-id="a"'));
-  assert.match(markup, /Move Beta up/);
+  assert.doesNotMatch(markup, /data-lora-move|lora-movement|arrow buttons/);
+  assert.match(markup, /Reorder Beta/);
   assert.match(markup, /aria-live="polite"/);
+});
+
+test("usage tooltips escape text and distinguish unknown triggers", () => {
+  const withUsage = structuredClone(control);
+  withUsage.items[0].description = 'Use: <character> & "style". <script>alert(1)</script>';
+  const markup = loraStackMarkup(withUsage, withUsage.default);
+  assert.match(markup, /role="tooltip" popover="manual"/);
+  assert.match(markup, /aria-describedby="lora-usage-loras-a"/);
+  assert.match(markup, /Use: &lt;character&gt; &amp; &quot;style&quot;/);
+  assert.doesNotMatch(markup, /<script>/);
+  assert.match(markup, /trigger words have not been verified/);
+  assert.match(markup, /no &lt;lora:\.\.\.&gt; tag is needed/);
 });
 
 const publisherSource = await readFile(new URL("../../comfyui_extension/comfyui-image-frontend-interface/web/publication.js", import.meta.url), "utf8");
@@ -49,10 +62,13 @@ function fixture() {
 
 test("publisher exposes only public stack metadata and configurable inventory", () => {
   const { api, workflow, defs } = fixture();
+  const catalog = JSON.parse(api[2].inputs.catalog_json);
+  catalog[0].description = "Use: AlphaCharacter in your prompt.";
+  api[2].inputs.catalog_json = JSON.stringify(catalog);
   const validation = validatePublication(workflow, api, defs);
   assert.deepEqual(validation.errors, []);
   const stack = validation.inputs.find((input) => input.type === "lora_stack");
-  assert.deepEqual(stack.items, control.items);
+  assert.deepEqual(stack.items, [{ ...control.items[0], description: catalog[0].description }, control.items[1]]);
   assert.deepEqual(stack.default, control.default);
   assert.doesNotMatch(JSON.stringify(stack), /filename|catalog_json|private\//);
   const metadata = derivePublishedMetadata(workflow, api, validation);
@@ -66,6 +82,11 @@ test("publisher rejects duplicate IDs, nonzero defaults, missing files and inval
     (api) => { api[2].inputs.value = '[{"id":"a","strength":1},{"id":"b","strength":0}]'; },
     (api) => { api[2].inputs.minimum = -1; },
     (api, defs) => { defs.LoraLoaderModelOnly.input.required.lora_name = [[]]; },
+    ...[null, "", " ", 1, {}, "x".repeat(1001)].map((description) => (api) => {
+      const catalog = JSON.parse(api[2].inputs.catalog_json);
+      catalog[0].description = description;
+      api[2].inputs.catalog_json = JSON.stringify(catalog);
+    }),
   ]) {
     const { api, workflow, defs } = fixture();
     mutate(api, defs);
