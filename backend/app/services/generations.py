@@ -79,6 +79,7 @@ RECALL_SOURCE_WARNING = (
 @dataclass(frozen=True)
 class _GenerationSummaryRow:
     id: str
+    prompt_fingerprint: str
     collection_id: str | None
     status: GenerationStatus
     workflow_display_name: str
@@ -895,6 +896,7 @@ class GenerationService:
         status = row.status.value if isinstance(row.status, GenerationStatus) else str(row.status)
         return GenerationSummary(
             id=row.id,
+            prompt_fingerprint=row.prompt_fingerprint,
             collection_id=row.collection_id,
             status=status,
             workflow_display_name=row.workflow_display_name,
@@ -991,6 +993,7 @@ class GenerationService:
         )
         return GenerationSummary(
             id=generation.id,
+            prompt_fingerprint=generation.prompt_fingerprint,
             collection_id=generation.collection_id,
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
@@ -1589,6 +1592,7 @@ def _summary_projection() -> tuple[Any, ...]:
 
     return (
         Generation.id.label("id"),
+        Generation.prompt_fingerprint.label("prompt_fingerprint"),
         Generation.collection_id.label("collection_id"),
         Generation.status.label("status"),
         Generation.workflow_display_name.label("workflow_display_name"),
@@ -1634,6 +1638,7 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
     values = row._mapping
     return _GenerationSummaryRow(
         id=str(values["id"]),
+        prompt_fingerprint=str(values["prompt_fingerprint"]),
         collection_id=values["collection_id"],
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),

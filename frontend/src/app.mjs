@@ -1,3 +1,4 @@
+import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { installLoraControls } from "./lora-stack.mjs";
 import { api, setCsrfToken, upload } from "./api.mjs";
 import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
@@ -289,7 +290,17 @@ async function startupGet(path, { operation, deadlineMs, signal } = {}) {
   }
 }
 
+let galleryGroups = null;
+
 function bindDelegatedEvents() {
+  galleryGroups = bindGalleryGroups(root, {
+    getState: () => state, render: renderGallery, notify: toast,
+    appendMembers: (items) => {
+      const known = new Set(state.generations.map((item) => item.id));
+      state.generations.push(...items.filter((item) => !known.has(item.id)));
+      renderGallery();
+    },
+  });
   bindGallerySelection(root, {
     getState: () => state,
     refresh: refreshAfterGalleryOperation,
@@ -330,6 +341,7 @@ function bindDelegatedEvents() {
 }
 
 async function refreshAfterGalleryOperation({ operation, plan, result, destination }) {
+  galleryGroups?.invalidate();
   if (operation === "favorite") {
     favoritesRevision += 1;
     const generations = new Set(result.generation_ids);
@@ -4490,6 +4502,8 @@ function renderGallery() {
   if (!gallery) return;
   if (state.favoritesView) syncFavoriteGenerations();
   else state.generations = sortGenerationsNewestFirst(state.generations);
+  gallery.classList.toggle("has-prompt-groups", !state.favoritesView);
+  const groupFocus = document.activeElement?.closest(".prompt-group-header") ? { ...document.activeElement.dataset } : null;
   const focused = gallery.contains(document.activeElement) ? document.activeElement : null;
   const focusedCard = focused?.closest("[data-gallery-card]");
   const focusedIndex = focusedCard ? [...gallery.querySelectorAll("[data-gallery-card]")].indexOf(focusedCard) : -1;
@@ -4501,6 +4515,7 @@ function renderGallery() {
           message: state.galleryMessage,
           collections: state.collections,
           currentCollectionId: state.currentCollectionId,
+          promptGroups: galleryGroups?.options(),
         });
   });
   applyCollectionActivity({ counts: false });
@@ -4512,6 +4527,11 @@ function renderGallery() {
     const fallback = cards[Math.min(focusedIndex, cards.length - 1)]?.querySelector("[data-action]");
     (replacement || fallback || document.querySelector('[data-action="open-favorites"]'))?.focus({ preventScroll: true });
   }
+  if (groupFocus) {
+    const key = Object.keys(groupFocus)[0];
+    [...gallery.querySelectorAll(".prompt-group-header button")].find((button) => button.dataset[key] === groupFocus[key])?.focus({ preventScroll: true });
+  }
+  galleryGroups?.afterRender();
   const sentinel = document.querySelector("#gallery-sentinel");
   if (sentinel) sentinel.hidden = !galleryNextCursor();
 }
@@ -4775,6 +4795,7 @@ async function toggleCollectionPreviews(collectionId) {
 }
 
 function upsertGalleryCard(generation) {
+  if (!state.favoritesView && !document.querySelector(`#gallery [data-gallery-card="generation"][data-generation-id="${CSS.escape(generation.id)}"]`)) { renderGallery(); return; }
   if (state.favoritesView) {
     if (!generationBelongsToView(generation)) return;
     state.favorites.items = state.favorites.items.map((item) =>
@@ -4808,7 +4829,8 @@ async function loadMore() {
   const requestRoute = currentGalleryRoute();
   const revision = favoritesRevision;
   try {
-    const page = await api(galleryPageUrl(galleryNextCursor(), requestRoute));
+    const cursor = state.favoritesView ? galleryNextCursor() : galleryGroups?.paginationCursor(galleryNextCursor()) || galleryNextCursor();
+    const page = await api(galleryPageUrl(cursor, requestRoute));
     if (navigationToken !== collectionNavigationToken || requestRoute !== currentGalleryRoute()) return;
     if (state.favoritesView) {
       if (revision !== favoritesRevision) {
@@ -5520,8 +5542,9 @@ function removeGeneration(id) {
   state.generations = state.generations.filter((item) => item.id !== id);
   state.favorites.items = state.favorites.items.filter((item) => item.generation?.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
-  if (state.favoritesView || !state.generations.length) renderGallery();
-  else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
+  galleryGroups?.invalidate();
+  renderGallery();
+  if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
   scheduleAutoGenerate();
 }
 
@@ -5531,8 +5554,9 @@ function removeGalleryGeneration(id) {
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
   document.querySelector(`#gallery [data-generation-id="${CSS.escape(id)}"]`)?.remove();
-  if (state.favoritesView || !state.generations.length) renderGallery();
-  else if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
+  galleryGroups?.invalidate();
+  renderGallery();
+  if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
   scheduleAutoGenerate();
 }
 

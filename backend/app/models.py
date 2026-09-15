@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any, ClassVar
@@ -391,6 +392,13 @@ class Generation(Base):
     selected_preset: Mapped[str | None] = mapped_column(String(100))
     requested_outputs_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     final_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=lambda context: hashlib.sha256(
+            context.get_current_parameters()["final_prompt"].encode("utf-8")
+        ).hexdigest(),
+    )
     compiled_graph_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     compiled_graph_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     submitted_graph_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)

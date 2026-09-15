@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
 from alembic import command
@@ -24,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "82bc14d6e9a0"
+HEAD_REVISION = "93e4a2b7c610"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -269,6 +270,7 @@ def _assert_populated_head_rows(engine: Engine) -> None:
         assert generation.workflow_profile_id == profile.id
         assert generation.owner_id == user.id
         assert generation.final_prompt == "legacy prompt"
+        assert generation.prompt_fingerprint == sha256(b"legacy prompt").hexdigest()
         assert generation.effective_controls_json == {"prompt": "legacy prompt", "seed": 42}
         assert generation.generation_source_json == {}
         assert generation.raw_history_json == {}

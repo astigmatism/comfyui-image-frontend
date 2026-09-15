@@ -373,6 +373,7 @@ class GenerationProgress(APIModel):
 
 class GenerationSummary(APIModel):
     id: str
+    prompt_fingerprint: str | None = None
     status: str
     workflow_display_name: str
     checkpoint_label: str | None = None
@@ -407,6 +408,35 @@ class GenerationSummary(APIModel):
 class GenerationPage(APIModel):
     items: list[GenerationSummary]
     next_cursor: str | None = None
+
+
+class PromptGroupLookup(APIModel):
+    collection_id: str | None = None
+    generation_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class PromptGroupSummary(APIModel):
+    id: str
+    generation_count: int
+    previous_generation_id: str | None
+    after_cursor: str
+
+
+class PromptGroupMembership(APIModel):
+    generation_id: str
+    group: PromptGroupSummary
+
+
+class PromptChangePart(APIModel):
+    kind: Literal["context", "removed", "added"]
+    text: str
+
+
+class PromptChanges(APIModel):
+    first_prompt: bool = False
+    edit_count: int = 0
+    snippets: list[list[PromptChangePart]] = Field(default_factory=list)
+    omitted_edits: int = 0
 
 
 class GenerationBatchCreate(APIModel):

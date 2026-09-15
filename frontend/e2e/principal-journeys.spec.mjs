@@ -560,7 +560,10 @@ test("collection tiles match square generation cards and follow gallery scale", 
       const card = document.createElement("article");
       card.className = "gallery-card collection-size-reference";
       card.innerHTML = '<div class="card-media-frame"></div>';
-      document.querySelector("#gallery").append(card);
+      const groupGrid = document.createElement("div");
+      groupGrid.className = "prompt-group-grid";
+      groupGrid.append(card);
+      document.querySelector("#gallery").append(groupGrid);
       const media = card.querySelector(".card-media-frame");
       const geometry = {
         tileWidth: tileElement?.getBoundingClientRect().width || 0,
@@ -569,7 +572,7 @@ test("collection tiles match square generation cards and follow gallery scale", 
         cardWidth: card?.getBoundingClientRect().width || 0,
         mediaHeight: media?.getBoundingClientRect().height || 0,
       };
-      card.remove();
+      groupGrid.remove();
       return geometry;
     });
   const compactGeometry = await collectionGeometry();

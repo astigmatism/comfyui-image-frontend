@@ -7,9 +7,10 @@ const keyFor = (card) => `${card.dataset.galleryCard}:${card.dataset.generationI
 
 export function selectionPlan(keys, state) {
   const collections = state.collections || [];
-  const generations = state.favoritesView
+  const visibleGenerations = state.favoritesView
     ? (state.favorites?.items || []).flatMap((item) => item.generation ? [item.generation] : [])
     : state.generations || [];
+  const generations = [...new Map([...(state.selectionGenerations || []), ...visibleGenerations].map((item) => [item.id, item])).values()];
   const chosenFolders = collections.filter((item) => keys.has(`collection:${item.id}`));
   const chosenCards = generations.filter((item) => keys.has(`generation:${item.id}`));
   const covered = new Set(chosenFolders.flatMap((item) => collectionSubtree(collections, item.id).map((child) => child.id)));
@@ -79,6 +80,9 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   let operationPlan = null;
   let returnFocusKey = null;
   let syncQueued = false;
+  const extraGenerations = new Map();
+  const groupMembers = new Map();
+  const selectionState = () => ({ ...getState(), selectionGenerations: [...extraGenerations.values()] });
   const cards = () => [...root.querySelectorAll("#gallery [data-gallery-card]")];
   const dialogs = () => [...root.querySelectorAll(".gallery-bulk-dialog")];
   const activeDialog = () => dialogs().find((dialog) => dialog.open);
@@ -88,12 +92,14 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     const state = getState();
     const currentRoute = state.favoritesView ? "favorites" : state.currentCollectionId || "home";
     if (!state.session || route !== currentRoute) {
-      selected.clear(); selecting = false; anchor = null; route = currentRoute;
+      selected.clear(); extraGenerations.clear(); groupMembers.clear(); selecting = false; anchor = null; route = currentRoute;
       if (!busy) activeDialog()?.close();
     }
     const visibleCards = cards();
     const visibleKeys = new Set(visibleCards.map(keyFor));
-    selected = new Set([...selected].filter((key) => visibleKeys.has(key)));
+    for (const id of extraGenerations.keys()) if (visibleKeys.has(`generation:${id}`)) extraGenerations.delete(id);
+    selected = new Set([...selected].filter((key) => visibleKeys.has(key) || extraGenerations.has(key.slice("generation:".length))));
+    for (const [id] of extraGenerations) if (!selected.has(`generation:${id}`)) extraGenerations.delete(id);
     if (!selected.size) selecting = false;
     for (const card of visibleCards) {
       const checked = selected.has(keyFor(card));
@@ -103,14 +109,19 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
       control?.setAttribute("title", checked ? "Deselect card" : "Select card");
       card.querySelectorAll("[draggable]").forEach((image) => { image.draggable = !selecting; });
     }
+    for (const group of root.querySelectorAll("[data-prompt-group]")) {
+      const ids = new Set([...(groupMembers.get(group.dataset.promptGroup) || []), ...[...group.querySelectorAll('[data-gallery-card="generation"]')].map((card) => card.dataset.generationId)]);
+      const count = [...ids].filter((id) => selected.has(`generation:${id}`)).length;
+      group.querySelector("[data-prompt-group-select]")?.setAttribute("aria-checked", count === 0 ? "false" : count === Number(group.dataset.groupCount) ? "true" : "mixed");
+    }
     root.querySelector(".app-shell")?.classList.toggle("gallery-selection-mode", selecting);
     const host = root.querySelector("#gallery-selection-toolbar");
     if (!host) return;
     host.hidden = !selecting;
     host.setAttribute("aria-busy", String(busy));
     const focusedAction = host.contains(document.activeElement) ? document.activeElement.dataset.bulkAction : null;
-    const plan = selectionPlan(selected, state);
-    const all = visibleCards.length > 0 && selected.size === visibleCards.length;
+    const plan = selectionPlan(selected, selectionState());
+    const all = visibleCards.length > 0 && visibleCards.every((card) => selected.has(keyFor(card)));
     host.innerHTML = `<span class="selection-count" role="status" aria-label="${selected.size} selected" title="${escapeHtml(plan.summary)}">${selected.size}<span class="selection-count-label"> selected</span></span>
       <button type="button" class="button low selection-tool" data-bulk-action="all" aria-label="Select loaded (${visibleCards.length})" title="Select all ${visibleCards.length} loaded items" ${all || !visibleCards.length || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="14" height="14" rx="2" /><path d="M16 3H5a2 2 0 0 0-2 2v11m8-2 2 2 4-4" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="favorite" aria-label="Add to Favorites" title="${plan.favorites.allFavorited ? "All selected items are already favorites" : "Add selected image and folder cards to Favorites"}" ${!plan.favorites.count || plan.favorites.allFavorited || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" /></svg></button>
@@ -130,15 +141,22 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     const order = cards().map(keyFor);
     if (range && selecting && order.includes(anchor)) {
       const [start, end] = [order.indexOf(anchor), order.indexOf(key)].sort((a, b) => a - b);
-      order.slice(start, end + 1).forEach((item) => selected.add(item));
+      addKeys(order.slice(start, end + 1));
     } else {
       if (selected.has(key)) selected.delete(key);
-      else selected.add(key);
+      else if (selected.size < 500) selected.add(key);
+      else notify("Select at most 500 items at a time.", "error");
       anchor = key;
     }
     selecting = selected.size > 0;
     sync();
     card.querySelector(".card-select-button")?.focus({ preventScroll: true });
+  }
+
+  function addKeys(keys) {
+    const next = new Set([...selected, ...keys]);
+    if (next.size > 500) { notify("Select at most 500 items at a time.", "error"); return; }
+    selected = next;
   }
 
   function finish() {
@@ -163,7 +181,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   }
 
   function openDialog(kind) {
-    operationPlan = selectionPlan(selected, getState());
+    operationPlan = selectionPlan(selected, selectionState());
     if (!operationPlan.count) return;
     returnFocusKey = document.activeElement?.dataset.bulkAction;
     const state = getState();
@@ -224,7 +242,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
 
   async function performToolbarAction(operation) {
     if (busy) return;
-    const plan = selectionPlan(selected, getState());
+    const plan = selectionPlan(selected, selectionState());
     if (operation === "favorite" ? !plan.favorites.count || plan.favorites.allFavorited : !plan.downloadable) return;
     const selection = operation === "favorite" ? plan.favorites : plan;
     const body = JSON.stringify({ generation_ids: selection.generation_ids, collection_ids: selection.collection_ids });
@@ -245,6 +263,10 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
         notify("Selection download started.", "success");
       } else {
         const result = await api("/api/gallery/favorite", { method: "POST", body });
+        for (const id of result.generation_ids) {
+          const item = extraGenerations.get(id);
+          if (item) extraGenerations.set(id, { ...item, is_favorite: true });
+        }
         succeeded = true;
         await refresh({ operation, plan, result });
         notify(`Added ${plural(plan.favorites.count, "item")} to Favorites.`, "success");
@@ -261,6 +283,19 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     }
   }
 
+  root.addEventListener("gallery-select-group", (event) => {
+    if (busy) return;
+    const { id, generations } = event.detail;
+    const ids = generations.map((item) => item.id);
+    const all = ids.length && ids.every((item) => selected.has(`generation:${item}`));
+    const next = new Set(selected);
+    for (const item of ids) { if (all) next.delete(`generation:${item}`); else next.add(`generation:${item}`); }
+    if (next.size > 500) { notify("Select at most 500 items at a time. Clear some selections first.", "error"); return; }
+    groupMembers.set(id, new Set(ids));
+    for (const item of generations) extraGenerations.set(item.id, item);
+    selected = next; selecting = selected.size > 0;
+    sync();
+  });
   root.addEventListener("click", (event) => {
     const action = event.target.closest("[data-bulk-action]")?.dataset.bulkAction;
     const card = event.target.closest("#gallery [data-gallery-card]");
@@ -270,7 +305,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     if (!action) return;
     event.preventDefault(); event.stopImmediatePropagation();
     if (busy) return;
-    if (action === "all") { cards().forEach((item) => selected.add(keyFor(item))); sync(); }
+    if (action === "all") { addKeys(cards().map(keyFor)); sync(); }
     else if (action === "clear") finish();
     else if (action === "transfer" || action === "delete") openDialog(action);
     else if (action === "favorite" || action === "download") void performToolbarAction(action);
@@ -284,7 +319,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     if (!selecting || busy || activeDialog() || event.target.closest("input, textarea, select, [contenteditable=true]")) return;
     if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finish(); }
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
-      event.preventDefault(); cards().forEach((item) => selected.add(keyFor(item))); sync();
+      event.preventDefault(); addKeys(cards().map(keyFor)); sync();
     }
   }, true);
   root.addEventListener("dragstart", (event) => { if (selecting && event.target.closest("#gallery")) event.preventDefault(); }, true);

@@ -53,7 +53,7 @@ def main() -> None:
         ],
         comfyui_default_instance_id="primary",
         ollama_base_url=primary.base_url,
-        frontend_dist=Path("/app/frontend/dist"),
+        frontend_dist=Path(os.getenv("CIF_FRONTEND_DIST", "/app/frontend/dist")),
         dispatch_poll_seconds=0.1,
         external_health_interval_seconds=5,
         log_level="WARNING",
@@ -78,7 +78,13 @@ def main() -> None:
     app.router.lifespan_context = preview_lifespan
     try:
         # Docker publishes this port on host loopback only.
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_config=None, timeout_graceful_shutdown=5)  # noqa: S104
+        uvicorn.run(
+            app,
+            host=os.getenv("CIF_PREVIEW_HOST", "0.0.0.0"),  # noqa: S104
+            port=int(os.getenv("CIF_PREVIEW_PORT", "8000")),
+            log_config=None,
+            timeout_graceful_shutdown=5,
+        )
     finally:
         primary.stop()
         secondary.stop()
@@ -101,7 +107,22 @@ def seed_gallery(container, session, user) -> None:
     session.add(nested)
     session.merge(UserPreference(user_id=user.id, gallery_scale=20))
     session.flush()
-    samples = sorted(Path("/preview-assets").glob("*.jpg"))
+    samples = sorted(Path(os.getenv("CIF_PREVIEW_ASSETS", "/preview-assets")).glob("*.jpg"))
+    prompts = [
+        "A quiet mountain lake at sunrise, soft morning mist over still water. "
+        "Tall pines frame the foreground. Cinematic landscape photography, "
+        "natural color, fine detail.",
+        "A quiet mountain lake at sunset, low rolling clouds over still water. "
+        "Tall pines frame the foreground. Cinematic landscape photography, "
+        "warm color, fine detail.",
+        "A quiet mountain lake at sunset, soft evening haze over still water. "
+        "Tall pines frame the foreground. Cinematic landscape photography, "
+        "warm color, fine detail.",
+        "A quiet mountain lake at sunset, soft evening haze over still water. "
+        "Tall pines frame the foreground. Cinematic landscape photography, "
+        "warm color, fine detail. "
+        "A small wooden boat rests near the shore.",
+    ]
     for index in range(16):
         filed = (
             collections[0].id
@@ -119,7 +140,7 @@ def seed_gallery(container, session, user) -> None:
                 profile_id=profile.id,
                 collection_id=filed,
                 parameters={
-                    "prompt": f"Landscape study {index + 1}, cinematic light, natural detail",
+                    "prompt": prompts[index // 4],
                     "seed": str(4200 + index),
                     "width": 1024,
                     "height": 1024,

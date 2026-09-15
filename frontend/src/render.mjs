@@ -1,3 +1,4 @@
+import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
@@ -1276,6 +1277,7 @@ export function galleryMarkup(
     message = null,
     collections = [],
     currentCollectionId = null,
+    promptGroups = null,
   } = {},
 ) {
   const tiles = collections
@@ -1283,9 +1285,8 @@ export function galleryMarkup(
     .map((collection) => collectionTileMarkup(collection))
     .join("");
   const tileGrid = tiles ? `<div class="collection-grid">${tiles}</div>` : "";
-  const cards = sortGenerationsNewestFirst(generations)
-    .map((generation) => galleryCardMarkup(generation))
-    .join("");
+  const cards = promptGroups ? promptGroupsMarkup(generations, galleryCardMarkup, promptGroups)
+    : sortGenerationsNewestFirst(generations).map((generation) => galleryCardMarkup(generation)).join("");
   if (status === "loading") {
     return `${tileGrid}<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
   }

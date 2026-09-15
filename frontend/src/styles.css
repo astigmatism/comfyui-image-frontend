@@ -5139,3 +5139,46 @@ tr:last-child td {
 .lora-row input[type="number"] { grid-column: 3; min-width: 0; width: 100%; }
 .lora-handle { min-width: 44px; min-height: 44px; padding: 0.35rem; }
 .lora-stack .hint { margin-top: 0; color: var(--muted); }
+
+/* Consecutive prompt groups keep controls in the gallery's gutters. */
+.gallery-grid.has-prompt-groups { display: block; }
+.prompt-group + .prompt-group { margin-top: 27px; }
+.prompt-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--gallery-card-min)), 1fr)); align-items: start; gap: var(--space-4); }
+.gallery-full .prompt-group-grid { grid-template-columns: minmax(0, 1fr); }
+.prompt-group-grid[hidden], .prompt-group-more[hidden], .prompt-group-preview[hidden] { display: none; }
+.prompt-group-header { display: flex; align-items: center; gap: 12px; min-height: 32px; margin-bottom: 11px; color: #a5b2c1; font-size: 12px; }
+.prompt-group-header button { background: transparent; border: 0; color: inherit; padding: 0; min-height: 32px; cursor: pointer; font: inherit; }
+.prompt-group-header button:disabled { cursor: wait; opacity: .5; }
+.prompt-group-header button:focus-visible { outline: 2px solid var(--focus, #9ebbe0); outline-offset: 3px; border-radius: 3px; }
+.prompt-group-collapse { display: grid; place-items: center; width: 24px; flex: 0 0 24px; }
+.prompt-group-collapse svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; transition: transform 120ms ease; }
+.prompt-group-collapse[aria-expanded="true"] svg { transform: rotate(90deg); }
+.prompt-group-changes { text-align: left; font-weight: 500; }
+.prompt-group-changes:hover, .prompt-group-changes[aria-expanded="true"] { color: #e0e8f2; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: #64798f; }
+.prompt-group-rule { height: 1px; min-width: 10px; flex: 1; background: #273443; }
+.prompt-group-count { white-space: nowrap; color: #8493a6; font-size: 11px; }
+.prompt-group-select { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.prompt-group-check { display: grid; place-items: center; width: 13px; height: 13px; border: 1px solid #758699; border-radius: 3px; }
+.prompt-group-select[aria-checked="true"] .prompt-group-check::after { content: '✓'; font-size: 12px; }
+.prompt-group-select[aria-checked="mixed"] .prompt-group-check::after { content: '−'; font-size: 13px; }
+.prompt-group-select[aria-checked="true"], .prompt-group-select[aria-checked="mixed"] { color: #e0e8f2; }
+.prompt-group-more { margin-top: 12px; font-size: 12px; }
+.prompt-group-preview { position: fixed; z-index: 80; width: min(390px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 17px; color: #e0e8f2; background: #131e2b; border: 1px solid #3a4e65; border-radius: 12px; box-shadow: 0 12px 34px rgb(0 0 0 / 40%); font-size: 13px; line-height: 1.6; }
+.prompt-group-preview > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.prompt-group-preview .icon-button { min-width: 28px; min-height: 28px; padding: 0; }
+.prompt-diff-note { margin: 8px 0 14px; color: #99a9bb; font-size: 12px; }
+.prompt-diff-snippet { margin: 14px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-group-preview del { background: #4b3035; color: #edb4bc; text-decoration: line-through; }
+.prompt-group-preview ins { background: #25483e; color: #b4e6cd; text-decoration: none; }
+.prompt-diff-legend { display: flex; gap: 8px; margin-top: 20px; padding-top: 12px; border-top: 1px solid #2b3b4e; font-size: 11px; }
+.prompt-diff-legend del, .prompt-diff-legend ins { padding: 0 5px; border-radius: 3px; }
+@media (max-width: 480px) {
+  .prompt-group-header { gap: 8px; flex-wrap: wrap; }
+  .prompt-group-select > span:last-child { display: none; }
+  .prompt-group-header .prompt-group-select { width: 28px; justify-content: center; }
+}
+@media (hover: none), (pointer: coarse) {
+  .prompt-group-header button { min-height: 44px; }
+  .prompt-group-header .prompt-group-collapse, .prompt-group-header .prompt-group-select { min-width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .prompt-group-collapse svg { transition: none; } }

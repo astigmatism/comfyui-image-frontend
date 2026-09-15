@@ -5,16 +5,67 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
-from ..dependencies import AuthContext, get_container, get_db, require_ready_csrf
+from ..dependencies import (
+    AuthContext,
+    get_container,
+    get_db,
+    require_ready_csrf,
+    require_ready_user,
+)
 from ..schemas import (
     GalleryDeleteResult,
     GallerySelection,
     GalleryTransfer,
     GalleryTransferResult,
+    GenerationPage,
+    PromptChanges,
+    PromptGroupLookup,
+    PromptGroupMembership,
 )
 from ..services.gallery import GalleryService
+from ..services.prompt_groups import changes_for_group, lookup_groups, member_page
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
+
+
+@router.post("/prompt-groups/lookup", response_model=list[PromptGroupMembership])
+def prompt_group_lookup(
+    payload: PromptGroupLookup,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> list[PromptGroupMembership]:
+    return lookup_groups(session, context.user.id, payload.collection_id, payload.generation_ids)
+
+
+@router.get("/prompt-groups/{generation_id}/members", response_model=GenerationPage)
+def prompt_group_members(
+    generation_id: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+    collection_id: str | None = None,
+    cursor: str | None = None,
+    selection: bool = False,
+) -> GenerationPage:
+    return member_page(
+        session,
+        get_container(request).generations,
+        context.user.id,
+        collection_id or None,
+        generation_id,
+        cursor=cursor,
+        selection=selection,
+    )
+
+
+@router.get("/prompt-groups/{generation_id}/changes", response_model=PromptChanges)
+def prompt_group_changes(
+    generation_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+    collection_id: str | None = None,
+) -> PromptChanges:
+    return changes_for_group(session, context.user.id, collection_id or None, generation_id)
 
 
 @router.post("/favorite", response_model=GallerySelection)

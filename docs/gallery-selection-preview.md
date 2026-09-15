@@ -12,7 +12,7 @@ Open [the local preview](http://127.0.0.1:8765) and sign in with username `previ
 `cif-gallery-preview-data` Docker volume and survives preview restarts. Two in-process fake
 ComfyUI services provide workflow discovery and generation; household runtimes are not used.
 
-The initial gallery contains image cards, a three-image batch, favorites, and nested collections.
+The initial gallery contains consecutive prompt groups, a three-image batch, favorites, and nested collections.
 Optional JPEGs from `backend/data/gallery-preview-input/` are used when the empty database is
 seeded; without them, the fixture generates labeled sample images. The current preview uses
 these Unsplash samples: [mountain](https://images.unsplash.com/photo-1464822759023-fed622ff2c3b),
@@ -21,6 +21,19 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
 [sunrise](https://images.unsplash.com/photo-1470252649378-9c29740c9fa8).
 
 ## Try the interaction
+
+Prompt groups have neutral headers with a generation count, collapse arrow, **Prompt changes**,
+and **Select group**. Hover or focus Prompt changes to compare with the immediately older group;
+click to keep the preview open. The first group has no earlier comparison. Groups follow the exact
+positive prompt and the gallery's chronological order, so A → B → A remains three groups. Changing
+resolution, seed, or model alone does not start another group. Grouping applies within Home or the
+current collection; Favorites keeps its existing layout.
+
+Collapse keeps the header and selection available. **Select group** resolves the complete group,
+including unloaded cards, before using the toolbar below. Individual deselection produces a mixed
+group checkbox. Loading more, collapsing, and ordinary gallery refreshes preserve selection;
+new arrivals remain unselected. A large collapsed group can be skipped during gallery pagination;
+expand it and use **Load more in group** to retrieve its remaining cards.
 
 1. Hover an image or folder and click the checkbox in its lower-right toolkit. It appears
    with the existing tools after the hover delay (or keyboard focus). Touch screens keep the
@@ -49,8 +62,9 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
    appear once. Both Favorites and Download keep the selection so you can use another action next.
 
 Blue checks and outlines identify selected cards; existing gold favorite indicators remain
-distinct. Selection is limited to the currently loaded cards, rather than implicitly including
-unloaded history. The API accepts up to 500 explicit IDs per request. Ordinary card controls for
+distinct. **Select loaded** applies to loaded cards, while **Select group** includes unloaded members.
+The API accepts up to 500 explicit IDs per request; oversized groups show a limit message without
+selecting a partial group. Ordinary card controls for
 details, download, favorite, recall, preview preference and rename remain available outside
 selection mode; individual card Move/Delete controls have been replaced by selection.
 
@@ -75,3 +89,12 @@ ownership, overlapping selections, independent copied files and recall, rollback
 recursive deletion, explicit favorites, ZIP contents and temporary-file cleanup. Browser coverage
 includes keyboard selection, incoming cards, failed operations, bulk favorites and downloads,
 shared destination controls and toolbar/modal bounds at 320–1440px with generation activity visible.
+
+Prompt grouping has additional coverage in `backend/tests/integration/test_prompt_groups.py` and
+`frontend/e2e/gallery-groups.spec.mjs`, including page boundaries, reused prompts, complete membership,
+owner isolation, group selection, compact diffs, collapse, and responsive sizing. The fingerprint
+migration backfills existing generations without putting full prompts in gallery summaries.
+
+For a native preview, configure `CIF_DATA_DIR`, `CIF_DATABASE_PATH`, `CIF_FRONTEND_DIST`,
+`CIF_PREVIEW_ASSETS`, `CIF_PREVIEW_HOST=127.0.0.1`, and `CIF_PREVIEW_PORT`, then run
+`PYTHONPATH=backend python -m tests.gallery_preview` after building the frontend.
