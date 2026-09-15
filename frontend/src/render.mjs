@@ -1762,6 +1762,7 @@ export function photoViewerMarkup(
   navigation = {},
   requestedViewMode = "fill",
   requestedPlaybackMode = "hold",
+  { activity = "", generateDisabled = false, generateLabel = "Generate" } = {},
 ) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
@@ -1780,6 +1781,10 @@ export function photoViewerMarkup(
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
+    <div class="photo-viewer-generation-dock">
+      <button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate"${generateDisabled ? " disabled" : ""}>${escapeHtml(generateLabel)}</button>
+      <div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true">${activity}</div>
+    </div>
     <div class="photo-viewer-toolbar">
       ${checkpointLabel}
       ${downloadButtonMarkup(artifact, "photo-viewer-download photo-viewer-control")}

@@ -3376,18 +3376,27 @@ function syncGenerationSubmissionState() {
     state.activeSource ||
     state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
   const generateButton = panel.querySelector("#generate-button");
+  const submissionDisabled = generationSubmissionDisabled(
+    state,
+    selected,
+    contract,
+    errors,
+  );
+  const generateLabel = state.submitting
+    ? state.selectedGenerationTargetCount > 1
+      ? `Queueing ${state.selectedGenerationTargetCount}…`
+      : "Queueing…"
+    : "Generate";
   if (generateButton) {
-    generateButton.disabled = generationSubmissionDisabled(
-      state,
-      selected,
-      contract,
-      errors,
-    );
-    generateButton.textContent = state.submitting
-      ? state.selectedGenerationTargetCount > 1
-        ? `Queueing ${state.selectedGenerationTargetCount}…`
-        : "Queueing…"
-      : "Generate";
+    generateButton.disabled = submissionDisabled;
+    generateButton.textContent = generateLabel;
+  }
+  const viewerGenerateButton = document.querySelector(
+    "#photo-viewer[open] #photo-generate-button",
+  );
+  if (viewerGenerateButton) {
+    viewerGenerateButton.disabled = submissionDisabled;
+    viewerGenerateButton.textContent = generateLabel;
   }
   const sourcePicker = panel.querySelector("#workflow-source");
   if (sourcePicker) {
@@ -5092,6 +5101,26 @@ function photoViewerNavigation(id) {
   };
 }
 
+function photoViewerGenerationDock() {
+  const contract = sourceInterface(state.activeSource);
+  const errors = {
+    ...clientValidate(contract, state.parameters),
+    ...withoutNulls(state.serverFieldErrors),
+  };
+  const selected =
+    state.activeSource ||
+    state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+  return {
+    activity: generationActivityMarkup(generationActivitySnapshot()),
+    generateDisabled: generationSubmissionDisabled(state, selected, contract, errors),
+    generateLabel: state.submitting
+      ? Number(state.selectedGenerationTargetCount) > 1
+        ? `Queueing ${state.selectedGenerationTargetCount}…`
+        : "Queueing…"
+      : "Generate",
+  };
+}
+
 function renderPhotoViewer() {
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog || !state.photoViewerGenerationId) return;
@@ -5106,12 +5135,16 @@ function renderPhotoViewer() {
   }
   const host = dialog.querySelector(".photo-viewer-host");
   if (!host) return;
+  const dock = photoViewerGenerationDock();
   host.innerHTML = photoViewerMarkup(
     generation,
     photoViewerNavigation(generation.id),
     state.photoViewerMode,
     state.photoViewerPlaybackMode,
+    dock,
   );
+  const activityHost = host.querySelector(".photo-viewer-activity-host");
+  if (activityHost) activityHost.dataset.markup = dock.activity;
   preparePhotoViewerImage();
   updatePhotoViewerFullscreenControl();
   updatePhotoViewerNextIn();
@@ -5515,21 +5548,31 @@ function beginGenerationActivitySubmission(count) {
   };
 }
 
-function renderGenerationActivity() {
-  const host = document.querySelector("#generation-activity-host");
-  if (!host) return;
-  const markup = generationActivityMarkup({
+function generationActivitySnapshot() {
+  return {
     ...state,
     promptAssistantComposing: promptCompositionRequests > 0,
     autoGeneratePinned,
     autoGeneratePinnedCollectionId,
-  });
-  // Preserve focus, hover and animation between unchanged snapshots.
-  if (host.dataset.markup !== markup) {
-    const focused = host.contains(document.activeElement);
-    host.innerHTML = markup;
-    host.dataset.markup = markup;
-    if (focused) host.querySelector("[tabindex]")?.focus({ preventScroll: true });
+  };
+}
+
+function renderGenerationActivity() {
+  const markup = generationActivityMarkup(generationActivitySnapshot());
+  const host = document.querySelector("#generation-activity-host");
+  if (host) {
+    // Preserve focus, hover and animation between unchanged snapshots.
+    if (host.dataset.markup !== markup) {
+      const focused = host.contains(document.activeElement);
+      host.innerHTML = markup;
+      host.dataset.markup = markup;
+      if (focused) host.querySelector("[tabindex]")?.focus({ preventScroll: true });
+    }
+  }
+  const viewerHost = document.querySelector("#photo-viewer[open] .photo-viewer-activity-host");
+  if (viewerHost && viewerHost.dataset.markup !== markup) {
+    viewerHost.innerHTML = markup;
+    viewerHost.dataset.markup = markup;
   }
 }
 

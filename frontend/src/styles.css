@@ -3005,6 +3005,59 @@ dialog::backdrop {
   right: auto;
 }
 
+.photo-viewer-generation-dock {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.photo-viewer-generation-dock > .photo-viewer-control {
+  position: relative;
+  top: auto;
+  left: auto;
+}
+
+.photo-viewer-generate {
+  height: 42px;
+  padding: 0 15px;
+  border-color: #4b8ee8;
+  background: #347fdc;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.photo-viewer-generate:hover:not(:disabled) {
+  border-color: #6ea8f2;
+  background: var(--accent);
+}
+
+.photo-viewer-generate:active:not(:disabled) {
+  border-color: #4b8ee8;
+  background: var(--accent-pressed);
+}
+
+.photo-viewer-activity-host:empty {
+  display: none;
+}
+
+.photo-viewer-activity-host {
+  position: relative;
+  pointer-events: auto;
+}
+
+.photo-viewer-activity-host .generation-activity {
+  border-color: rgb(255 255 255 / 18%);
+  background: rgb(7 12 18 / 78%);
+  box-shadow: 0 3px 14px rgb(0 0 0 / 34%);
+  backdrop-filter: blur(9px);
+}
+
 .photo-viewer-checkpoint {
   display: flex;
   align-items: center;
@@ -4617,6 +4670,11 @@ tr:last-child td {
     right: 66px;
   }
 
+  .photo-viewer-generation-dock {
+    top: 12px;
+    left: 12px;
+  }
+
   .photo-viewer-toolbar {
     top: 12px;
     right: 194px;
@@ -4718,6 +4776,12 @@ tr:last-child td {
   .photo-viewer-slideshow {
     top: 54px;
     right: 0;
+  }
+
+  /* Keep the dock on the first row, clear of the Full screen button: the
+     mode-colored ring (or spinner) carries the state without the label. */
+  .photo-viewer-activity-host .activity-label {
+    display: none;
   }
 }
 

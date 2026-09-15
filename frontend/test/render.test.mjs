@@ -1731,6 +1731,46 @@ test("photo viewer exposes explicit sizing and playback state, omits unavailable
   );
 });
 
+test("photo viewer generation dock exposes the generate control and the top-bar activity slot", () => {
+  const generation = {
+    id: "g-dock",
+    workflow_display_name: "Dock source",
+    status: "succeeded",
+    display_artifact: { kind: "image", content_url: "/dock.png" },
+  };
+  const activity =
+    '<div class="generation-activity activity-progress" role="progressbar" aria-valuenow="42" aria-valuemin="0" aria-valuemax="100"><span class="activity-label">42%</span></div>';
+  const html = photoViewerMarkup(generation, {}, "fill", "hold", {
+    activity,
+    generateDisabled: false,
+    generateLabel: "Generate",
+  });
+  assert.match(html, /<div class="photo-viewer-generation-dock">/);
+  assert.match(
+    html,
+    /<button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate">Generate<\/button>/,
+  );
+  assert.match(
+    html,
+    /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><div class="generation-activity activity-progress" role="progressbar" aria-valuenow="42"/,
+  );
+  assert.ok(html.indexOf("photo-viewer-generation-dock") < html.indexOf("photo-viewer-toolbar"));
+
+  const queued = photoViewerMarkup(
+    generation,
+    {},
+    "fill",
+    "hold",
+    { generateDisabled: true, generateLabel: "Queueing 3…" },
+  );
+  assert.match(queued, /data-action="generate" disabled>Queueing 3…<\/button>/);
+  assert.match(queued, /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><\/div>/);
+
+  const defaulted = photoViewerMarkup(generation, {});
+  assert.match(defaulted, /data-action="generate">Generate<\/button>/);
+  assert.match(defaulted, /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><\/div>/);
+});
+
 test("historical native-only image batches use complete artifact count on the gallery card", () => {
   const html = galleryCardMarkup({
     id: "g-unmapped-batch",
