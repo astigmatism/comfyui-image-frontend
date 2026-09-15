@@ -1310,7 +1310,7 @@ export function collectionCountMarkup(collection) {
   return `<span class="collection-count${remaining ? " is-generating" : ""}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><span>${count}</span>${remaining ? `<span class="collection-remaining"><span class="activity-spinner" aria-hidden="true"></span>${remaining} remaining</span>` : ""}</span>`;
 }
 
-export function generationActivityMarkup(state, now = Date.now()) {
+function generationActivityInfo(state, now) {
   const run = state.generationSubmissionProgress || state.generationActivity?.run;
   const remaining = state.generationActivity?.remaining_count || 0;
   let mode = "progress";
@@ -1332,7 +1332,7 @@ export function generationActivityMarkup(state, now = Date.now()) {
     }
   } else if (run?.total_count > 0) {
     const completedAt = Date.parse(run.completed_at || "");
-    if (!run.remaining_count && Number.isFinite(completedAt) && now - completedAt > 5000) return "";
+    if (!run.remaining_count && Number.isFinite(completedAt) && now - completedAt > 5000) return null;
     percent = Math.min(run.remaining_count > 0 ? 99 : 100, Math.floor(100 * run.resolved_count / run.total_count));
     label = `${percent}%`;
     mode = run.failed_count ? "error" : "progress";
@@ -1341,9 +1341,22 @@ export function generationActivityMarkup(state, now = Date.now()) {
     mode = "paused";
     label = "Progress unavailable";
     description = "Generation activity is temporarily unavailable. Reconnecting…";
-  } else return "";
+  } else return null;
   if (state.generationActivityUnavailable) description += " Updates temporarily unavailable; showing the last known progress.";
-  const determinate = ["progress", "error"].includes(mode);
+  return { mode, label, description, percent, determinate: ["progress", "error"].includes(mode) };
+}
+
+export function generationActivityTitle(state, now = Date.now(), base = "ImageGen V2") {
+  const info = generationActivityInfo(state, now);
+  if (!info) return base;
+  const marker = info.determinate && info.percent >= 100 ? "🟢" : "🔵";
+  return `${marker} ${info.label} · ${base}`;
+}
+
+export function generationActivityMarkup(state, now = Date.now()) {
+  const info = generationActivityInfo(state, now);
+  if (!info) return "";
+  const { mode, label, description, percent, determinate } = info;
   const ring = determinate
     ? `<svg class="activity-ring" viewBox="0 0 24 24" aria-hidden="true"><circle class="activity-ring-track" cx="12" cy="12" r="9" /><circle class="activity-ring-value" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="${percent} 100" /></svg>`
     : `<span class="activity-spinner" aria-hidden="true"></span>`;

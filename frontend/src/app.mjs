@@ -50,6 +50,7 @@ import {
   collectionTileMarkup,
   collectionCountMarkup,
   generationActivityMarkup,
+  generationActivityTitle,
   detailMarkup,
   favoritesGalleryMarkup,
   galleryCardMarkup,
@@ -5574,6 +5575,7 @@ function renderGenerationActivity() {
     viewerHost.innerHTML = markup;
     viewerHost.dataset.markup = markup;
   }
+  document.title = generationActivityTitle(generationActivitySnapshot(), Date.now());
 }
 
 function applyCollectionActivity({ counts = true } = {}) {

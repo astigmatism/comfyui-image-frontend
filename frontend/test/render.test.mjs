@@ -18,6 +18,7 @@ import {
   generationPanelMarkup,
   generationProgressMarkup,
   generationActivityMarkup,
+  generationActivityTitle,
   collectionCountMarkup,
   shellMarkup,
   passwordChangeMarkup,
@@ -2486,6 +2487,30 @@ test("auto activity replaces percentages and distinguishes preparing, retrying a
   assert.match(generationActivityMarkup({ ...state, autoGenerate: false, autoGenerateStatus: "paused" }), /Auto paused/);
   assert.match(generationActivityMarkup({ ...state, autoGenerate: false }), /25%/);
   assert.match(generationActivityMarkup({ autoGenerate: true }), /Auto waiting/);
+});
+
+test("document title mirrors the activity indicator with blue and green markers", () => {
+  const run = { total_count: 10, resolved_count: 6, remaining_count: 4,
+    succeeded_count: 5, failed_count: 0, cancelled_count: 1 };
+  assert.equal(generationActivityTitle({}), "ImageGen V2");
+  assert.equal(
+    generationActivityTitle({ generationActivity: { run, remaining_count: 4 } }),
+    "🔵 60% · ImageGen V2",
+  );
+  const completed = { generationActivity: { run: { ...run, resolved_count: 10, remaining_count: 0 },
+    remaining_count: 0 } };
+  assert.equal(generationActivityTitle(completed), "🟢 100% · ImageGen V2");
+  assert.equal(generationActivityTitle({ generationActivity: { run: { ...run, completed_at: "2026-09-11T12:00:00Z",
+      resolved_count: 10, remaining_count: 0 } } }, Date.parse("2026-09-11T12:00:06Z")),
+    "ImageGen V2",
+  );
+  assert.equal(generationActivityTitle({ autoGenerate: true, generationActivity: { remaining_count: 3 } }),
+    "🔵 Auto active · ImageGen V2");
+  assert.equal(generationActivityTitle({ autoGenerate: false, autoGenerateStatus: "paused" }),
+    "🔵 Auto paused · ImageGen V2");
+  assert.equal(generationActivityTitle({ generationActivityUnavailable: true }),
+    "🔵 Progress unavailable · ImageGen V2");
+  assert.equal(generationActivityTitle({}, Date.now(), "Custom title"), "Custom title");
 });
 
 test("auto activity tooltip names the pinned target collection", () => {
