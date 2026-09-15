@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from app.main import create_app
@@ -110,6 +110,62 @@ def test_activity_counts_nested_and_unfiled_jobs_without_loading_gallery_and_is_
     }
     restore_cookie(client, cookie)
     assert client.get("/api/generation-activity").json()["remaining_count"] == 26
+
+
+def test_run_reports_eta_derived_completed_fraction(app_client):
+    client = app_client
+    provision_user(client)
+    payload = generation_payload(client, "fraction")
+    batch = _post(client, "/api/generations/batch", {"items": [payload] * 3})
+    ids = [item["generation"]["id"] for item in batch["items"]]
+    _finish(client, ids[0])
+
+    # No member carries an ETA yet, so the fraction is unavailable.
+    run = client.get("/api/generation-activity").json()["run"]
+    assert run["completed_fraction"] is None
+
+    now = datetime.now(UTC)
+    with client.app.state.container.db.session_factory() as session:
+        running = session.get(Generation, ids[1])
+        running.status = GenerationStatus.RUNNING
+        running.started_at = now - timedelta(seconds=30)
+        running.progress_json = {
+            "kind": "node",
+            "label": "KSampler",
+            "updated_at": now.isoformat(),
+            "eta": {
+                "remaining_seconds": 30,
+                "completion_at": (now + timedelta(seconds=30)).isoformat(),
+                "lower_seconds": 20,
+                "upper_seconds": 45,
+                "confidence": "medium",
+                "basis": "historical_total",
+                "updated_at": now.isoformat(),
+            },
+        }
+        session.commit()
+
+    run = client.get("/api/generation-activity").json()["run"]
+    # resolved 1/3 plus the in-flight item halfway (30s elapsed of 60s total).
+    assert run["completed_fraction"] == pytest.approx(0.5, abs=1 / 30)
+
+    # A stale ETA written before the attempt must not skew the fraction.
+    with client.app.state.container.db.session_factory() as session:
+        running = session.get(Generation, ids[1])
+        eta = {
+            **running.progress_json["eta"],
+            "updated_at": (now - timedelta(seconds=120)).isoformat(),
+        }
+        running.progress_json = {**running.progress_json, "eta": eta}
+        session.commit()
+    run = client.get("/api/generation-activity").json()["run"]
+    assert run["completed_fraction"] is None
+
+    _finish(client, ids[1])
+    _finish(client, ids[2])
+    run = client.get("/api/generation-activity").json()["run"]
+    assert run["completed_fraction"] is None
+    assert run["resolved_count"] == 3
 
 
 def test_partial_submission_errors_resolve_planned_slots_without_losing_valid_jobs(app_client):

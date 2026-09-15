@@ -1334,7 +1334,11 @@ function generationActivityInfo(state, now) {
   } else if (run?.total_count > 0) {
     const completedAt = Date.parse(run.completed_at || "");
     if (!run.remaining_count && Number.isFinite(completedAt) && now - completedAt > 5000) return null;
-    percent = Math.min(run.remaining_count > 0 ? 99 : 100, Math.floor(100 * run.resolved_count / run.total_count));
+    // Prefer the ETA-derived continuous fraction; fall back to per-item counts.
+    const fraction = run.completed_fraction;
+    percent = typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
+      ? Math.min(run.remaining_count > 0 ? 99 : 100, Math.round(100 * fraction))
+      : Math.min(run.remaining_count > 0 ? 99 : 100, Math.floor(100 * run.resolved_count / run.total_count));
     label = `${percent}%`;
     mode = run.failed_count ? "error" : "progress";
     description = `${run.resolved_count} of ${run.total_count} resolved; ${run.remaining_count} remaining. ${run.succeeded_count || 0} succeeded, ${run.failed_count || 0} failed, ${run.cancelled_count || 0} cancelled.`;

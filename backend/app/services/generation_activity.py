@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert
@@ -75,6 +77,68 @@ def retain_deleted_outcome(session: Session, generation: Generation) -> None:
     run.updated_at = datetime.now(UTC)
 
 
+def _inflight_eta_fractions(session: Session, run_id: str, now: datetime) -> tuple[float, bool]:
+    """Sum the ETA-derived completion fraction of each active run member.
+
+    Returns ``(fractional_sum, any_member_had_eta)``. A member with a persisted
+    ETA contributes ``elapsed / (elapsed + remaining)`` clamped to [0, 1]; queued,
+    dispatching and cancel-requested items carry no ETA and contribute 0.
+    """
+    fractional_sum = 0.0
+    has_eta = False
+    for started_at, progress_json in session.execute(
+        select(Generation.started_at, Generation.progress_json)
+        .join(GenerationRunMember, GenerationRunMember.generation_id == Generation.id)
+        .where(
+            GenerationRunMember.run_id == run_id,
+            Generation.status.in_(ACTIVE_STATUSES),
+        )
+    ):
+        fraction = _inflight_eta_fraction(started_at, progress_json, now)
+        if fraction is None:
+            continue
+        has_eta = True
+        fractional_sum += fraction
+    return fractional_sum, has_eta
+
+
+def _inflight_eta_fraction(
+    started_at: datetime | None,
+    progress_json: Mapping[str, Any] | None,
+    now: datetime,
+) -> float | None:
+    if started_at is None or not isinstance(progress_json, Mapping):
+        return None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    eta = progress_json.get("eta")
+    if not isinstance(eta, Mapping):
+        return None
+    remaining = eta.get("remaining_seconds")
+    if (
+        isinstance(remaining, bool)
+        or not isinstance(remaining, (int, float))
+        or not (0 < remaining < float("inf"))
+    ):
+        return None
+    # A stored ETA belongs to the current attempt only when it was written after
+    # the generation started; the estimator rewrites it on every attempt.
+    updated_raw = eta.get("updated_at")
+    if isinstance(updated_raw, str):
+        try:
+            updated = datetime.fromisoformat(updated_raw)
+        except ValueError:
+            return None
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC)
+        if updated < started_at:
+            return None
+    elapsed = (now - started_at).total_seconds()
+    if elapsed < 0:
+        elapsed = 0.0
+    return min(1.0, elapsed / (elapsed + remaining))
+
+
 def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
     run = current_run(session, owner_id)
     progress = None
@@ -103,6 +167,13 @@ def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
             [run.updated_at.replace(tzinfo=UTC)]
             + [timestamp.replace(tzinfo=UTC) for _, _, timestamp in rows if timestamp]
         )
+        completed_fraction = None
+        if remaining > 0 and run.total_count > 0:
+            fractional_sum, has_eta = _inflight_eta_fractions(session, run.id, datetime.now(UTC))
+            if has_eta:
+                completed_fraction = round(
+                    min(1.0, (resolved + fractional_sum) / run.total_count), 4
+                )
         progress = GenerationRunProgress(
             id=run.id,
             total_count=run.total_count,
@@ -112,6 +183,7 @@ def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
             cancelled_count=cancelled,
             failed_count=resolved - succeeded - cancelled,
             completed_at=completed if remaining == 0 else None,
+            completed_fraction=completed_fraction,
         )
 
     parents: dict[str, str | None] = {

@@ -2477,6 +2477,31 @@ test("global activity counts resolved jobs, reports outcomes, and expires comple
   assert.equal(generationActivityMarkup(completed, Date.parse("2026-09-11T12:00:06Z")), "");
 });
 
+test("global activity prefers the ETA-derived completed fraction over per-item counts", () => {
+  // 1 of 3 resolved, the in-flight item 50% done per its ETA: 50% overall.
+  const run = { total_count: 3, resolved_count: 1, remaining_count: 2,
+    succeeded_count: 1, failed_count: 0, cancelled_count: 0, completed_fraction: 0.5 };
+  const markup = generationActivityMarkup({ generationActivity: { run, remaining_count: 2 } });
+  assert.match(markup, /aria-valuenow="50"/);
+  assert.match(markup, /50%/);
+  // The fraction is clamped to 99 while anything remains.
+  const almost = { generationActivity: { run: { ...run, completed_fraction: 1 }, remaining_count: 2 } };
+  assert.match(generationActivityMarkup(almost), /aria-valuenow="99"/);
+  // A fraction of exactly 1 with nothing remaining reads 100.
+  assert.match(
+    generationActivityMarkup({ generationActivity: {
+      run: { ...run, resolved_count: 3, remaining_count: 0, completed_fraction: 1 },
+      remaining_count: 0,
+    } }),
+    /aria-valuenow="100"/,
+  );
+  // Invalid fractions fall back to the per-item count math.
+  for (const value of [null, "half", -0.2, 1.7]) {
+    const fallback = { generationActivity: { run: { ...run, completed_fraction: value }, remaining_count: 2 } };
+    assert.match(generationActivityMarkup(fallback), /aria-valuenow="33"/);
+  }
+});
+
 test("auto activity replaces percentages and distinguishes preparing, retrying and paused states", () => {
   const state = { autoGenerate: true, generationActivity: { remaining_count: 3,
     run: { total_count: 4, resolved_count: 1, remaining_count: 3 } } };
@@ -2496,6 +2521,13 @@ test("document title mirrors the activity indicator with blue and green markers"
   assert.equal(
     generationActivityTitle({ generationActivity: { run, remaining_count: 4 } }),
     "🔵 60% · ImageGen V2",
+  );
+  assert.equal(
+    generationActivityTitle({ generationActivity: {
+      run: { ...run, total_count: 3, resolved_count: 1, remaining_count: 2, completed_fraction: 0.45 },
+      remaining_count: 2,
+    } }),
+    "🔵 45% · ImageGen V2",
   );
   const completed = { generationActivity: { run: { ...run, resolved_count: 10, remaining_count: 0 },
     remaining_count: 0 } };

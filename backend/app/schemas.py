@@ -461,6 +461,8 @@ class GenerationRunProgress(APIModel):
     failed_count: int
     cancelled_count: int
     completed_at: datetime | None = None
+    # ETA-derived continuous progress in [0, 1]; None when no run member carries an ETA.
+    completed_fraction: float | None = Field(default=None, ge=0, le=1)
 
 
 class GenerationActivity(APIModel):
