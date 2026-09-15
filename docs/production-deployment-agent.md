@@ -125,6 +125,42 @@ Work as the checkout owner with access to the intended Docker daemon. Do not use
    from update regressions. Check for an active update process or Portal job;
    do not launch concurrent updaters or force-unlock an active job.
 
+Compose-looking labels alone do not prove Compose created a container. A built
+image can contain `com.docker.compose.*` labels, which a subsequent `docker run`
+inherits. Compare the image's labels with the container's working-directory,
+configuration-file, and config-hash labels, actual mounts, and the selected
+project's `compose ps --all` results. When investigating an unexpected creation,
+correlate its container ID and timestamp with your own commands and Docker events
+before attributing it to another updater. Repeated starts of the same container
+can be its restart policy, rather than another creation.
+
+### Distinguish host paths from the agent container's paths
+
+Docker resolves bind sources on the **daemon host**, not in the CLI container.
+For example, when a Linux host's `/` is mounted into an agent at `/host`, the
+agent's `/host/home/astigmatism/comfyui-image-frontend` corresponds to the host's
+`/home/astigmatism/comfyui-image-frontend`. Passing the former as a bind source
+asks Docker to use a different directory on the host. Short-form mounts can
+silently create that missing source as an empty directory, including when a
+Caddyfile was expected. This can cause `/data/assets` permission failures or
+file-versus-directory mount errors without any daemon failure.
+
+Use SSH or a documented host-execution helper to run the deployment on the
+verified Docker host as the checkout owner. If a helper enters as root, switch
+to that owner before Git or deployment commands. Alternatively, use a maintenance
+container with the deployment root mounted at its identical absolute host path.
+Do not run Compose or create Git worktrees through a translated `/host` prefix.
+Check the host identity and `docker info --format
+'Name={{.Name}} Root={{.DockerRootDir}}'` against the actual deployment.
+
+`docker run --rm alpine ...` without explicit mounts inspects that new Alpine
+container, **not the daemon's filesystem or mount namespace**. Its empty `/home`,
+absent `/host`, or overlay root is not evidence that the daemon lost host mounts.
+Inspect the actual host and the intended bind source instead. An authorized
+disposable bind probe should use `--mount type=bind,...,readonly` without source
+auto-creation, so a missing host path fails rather than creating another stub.
+See [Docker's bind-mount documentation](https://docs.docker.com/engine/storage/bind-mounts/).
+
 ### Path A: initialize a single-file checkout deployment
 
 Use Bash for the command examples. After verifying the actual deployment, set
@@ -218,6 +254,55 @@ verification. Preserve file order and project identity. Check for inherited shel
 overrides, especially `CIF_IMAGE_TAG` and TLS variables: shell values take precedence
 over `.env`. Resolve any mismatch with the live deployment before proceeding; do
 not silently change which value is authoritative.
+
+Before any routine Path B update, define and run this gate in that verified
+execution context. It compares resolved bind sources with the existing live
+containers, rather than comparing two Compose configurations that could share
+the same incorrect path prefix. It also checks the expected data and TLS files
+without printing private configuration:
+
+```bash
+verify_live_bind_sources() {
+  python3 - "${compose[@]}" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+compose = sys.argv[1:]
+config = json.loads(subprocess.check_output(compose + ["config", "--format", "json"]))
+for service, definition in config["services"].items():
+    ids = subprocess.check_output(compose + ["ps", "--all", "-q", service], text=True).split()
+    assert len(ids) == 1, f"Expected one live container for {service}; inspect deployment ownership"
+    live = json.loads(subprocess.check_output(["docker", "inspect", ids[0]]))[0]
+    assert live["State"]["Running"], f"{service} is not running; inspect existing failure"
+    mounts = {mount["Destination"]: mount for mount in live["Mounts"]}
+    for candidate in definition.get("volumes", []):
+        if candidate["type"] != "bind":
+            continue
+        target = candidate["target"]
+        actual = mounts.get(target, {})
+        assert actual.get("Type") == "bind", f"{service} {target}: storage topology differs"
+        assert actual["Source"] == candidate["source"], f"{service} {target}: host bind source differs"
+        assert actual["RW"] == (not candidate.get("read_only", False)), f"{service} {target}: access mode differs"
+        source = Path(candidate["source"])
+        assert source.exists(), f"{service} {target}: bind source is missing"
+        if target == "/data":
+            assert (source / "app.db").is_file() and (source / "assets").is_dir(), "Production data is missing"
+        elif target == "/etc/caddy/Caddyfile":
+            assert source.is_file(), "Caddyfile bind source must be a file"
+        elif target == "/etc/caddy/certificates":
+            assert all((source / name).is_file() for name in ("ca.crt", "tls.crt", "tls.key")), "TLS files are missing"
+print("Live bind sources and required data/TLS files verified.")
+PY
+}
+verify_live_bind_sources
+```
+
+A refusal is a deployment discrepancy to investigate, not a reason to substitute
+the example Compose file, advance frozen main, or erase a volume. In particular,
+an emergency named-volume deployment needs the storage recovery below before a
+routine bind-based reconciliation. Repeat the gate immediately before `up`.
 
 ## 2. Review and validate the incoming changes
 
@@ -558,6 +643,7 @@ containers; `--pull never` prevents a pull but cannot undo a tag overwritten by
 another local build. Reconcile only after that check passes:
 
 ```bash
+verify_live_bind_sources
 "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 120
 ```
 
@@ -653,6 +739,21 @@ Do not report success based only on a completed build or a running container.
 
 ## 6. Handle failure without destroying recovery options
 
+- **Translated worktree paths:** back up the Git worktree metadata and each
+  affected `.git` link, then run `git -C "$SOURCE_DIR" worktree repair <actual-host-path>...`
+  on the host as the checkout owner. Verify every retained worktree's original
+  commit and cleanliness and the unchanged frozen-main SHA. Do not prune entries
+  just because paths created through the agent's `/host` view appear missing.
+- **Emergency named-volume deployment:** the live volume is authoritative;
+  the original host `data/` can be stale. For an authorized return to binds, save
+  the actual container definitions and settings, stop the application and edge,
+  and copy the complete stopped volume (including SQLite journal files) into a
+  separate staging directory. Verify file inventories, hashes, numeric ownership,
+  database integrity, and existing TLS material before promoting it. Retain the
+  old host directory, both volumes, and a stopped-state archive. Remove only the
+  stopped bridge containers needed to free their names, then reconcile the
+  original Compose project. If the replacement has accepted writes, preserve its
+  newest data before any rollback; never silently return to the older volume.
 - **Failure before recreation:** the old container may still be serving while the
   checkout or local image tag has advanced. Inspect actual state. Preserve the
   running image, backup, and diagnostics; do not equate the checkout with the live
