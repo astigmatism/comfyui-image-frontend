@@ -16,9 +16,9 @@ when recovery would require an action outside the request, such as replacing dat
 Read the applicable `AGENTS.md` files and these sources before proceeding:
 
 - [README production setup, update, TLS, and backup instructions](../README.md)
-- [Canonical updater](../scripts/update-and-restart.sh) and its
+- [Single-file checkout updater](../scripts/update-and-restart.sh) and its
   [root wrapper](../update_and_restart)
-- The **actual production Compose file**, plus the tracked
+- **Every actual production Compose file in its original order**, plus the tracked
   [Compose example](../compose.example.yml) and [Dockerfile](../Dockerfile)
 - [Database migration policy](database.md) and [testing instructions](testing.md)
 - [TLS certificate script](../scripts/issue-local-cert.sh) when TLS is involved
@@ -28,15 +28,47 @@ Do not assume that example paths, addresses, or service names identify the live
 deployment. If the implementation has changed, resolve the discrepancy before
 running a command whose effect is uncertain.
 
-## Deployment facts and boundaries
+## Choose the deployment path before changing anything
+
+There are two supported deployment paths. Both are canonical for their own
+layout; a routine update must preserve the existing topology.
+
+| Invariant | Path A: single-file checkout updater | Path B: multi-file, commit-pinned worktrees |
+| --- | --- | --- |
+| Entry point | `./update_and_restart` | Explicit command sequence in **Path B** below |
+| Compose inputs | One verified file, typically `compose.example.yml` | `compose.yaml` then `compose.ordered-lora.yaml`, both under the deployment root |
+| Source checkout | Clean `main` advances by fast-forward | `source/main` remains at its existing SHA; fetch updates remote refs only |
+| Build context | The updated checkout | A detached `ordered-lora-<sha>` worktree under the deployment root |
+| App image | Typically mutable `:local` | `CIF_IMAGE_TAG=<deployed-commit-sha>` in the deployment-root `.env` |
+| Private `.env` | Layout supported by the selected file and updater | `<deployment-root>/.env`; none inside `source/` or the release worktree |
+| TLS material | Must resolve to the edge's actual certificate mount | `<deployment-root>/data/certificates`, passed as an absolute path |
+
+**Use Path B for the reported production deployment. Do not run
+`./update_and_restart` there, including through the Service Portal button.** The
+script accepts one `-f`, advances the checked-out branch, does not set
+`CIF_IMAGE_TAG`, and defaults TLS paths relative to its checkout. Pointing it at
+the example file can reconcile over the existing project with the wrong image,
+build context, and mounts. Migrating from B to A is a separate task requiring
+explicit scope; a request to pull and redeploy does not authorize it.
+
+Follow sections 1–3 using the selected path, then the matching subsection of
+section 4, then the shared verification and recovery sections. Do not execute
+commands from both paths.
+
+For Path B, read this runbook from the deployed release worktree (or a verified
+target revision). Frozen `source/main` can predate this document; do not advance
+that branch just to obtain the instructions. After verifying the repository and
+fetching the intended release, `git -C "$SOURCE_DIR" show
+"$TARGET_SHA:docs/production-deployment-agent.md"` can read the target document
+without changing main.
+
+## Shared deployment facts and boundaries
 
 | Item | Repository default / required behavior |
 | --- | --- |
-| Update command | `./update_and_restart`, which delegates to `scripts/update-and-restart.sh` |
-| Source | `main`, tracking `origin/main` |
+| Release source | Reviewed commits from `origin/main`; distinguish the deployed commit from a frozen checkout's HEAD |
 | Expected origin | `https://github.com/astigmatism/comfyui-image-frontend.git` |
-| Compose file | `compose.example.yml` |
-| App service / local image | `comfyui-image-frontend` / `comfyui-image-frontend:local` |
+| App service | `comfyui-image-frontend`; discover its actual image reference |
 | Browser entry point | `cif-tls-edge`; default `https://image-studio.lan:8443` |
 | App health endpoint | `GET /api/health`; internal HTTP port `8000` |
 | Persistent data | `/data`, including SQLite and application-owned files; default volume `comfyui-image-frontend-data` |
@@ -57,7 +89,7 @@ primary instance identity when updating.
 
 An application deployment does not authorize restarting ComfyUI, Ollama, speech
 services, or the Service Portal, or installing nodes, models, or publications.
-The updater reconciles **every service in its Compose project**, not only
+The Path A updater reconciles **every service in its Compose project**, not only
 `CIF_COMPOSE_SERVICE`. Verify the project contains only services in the requested
 scope before using it. A shared project containing external runtimes requires a
 deployment plan that preserves those runtimes.
@@ -81,7 +113,7 @@ Work as the checkout owner with access to the intended Docker daemon. Do not use
    SHA, upstream, and whether tracked or untracked changes exist. Verify origin
    privately against the expected repository; redact credentials if present.
 2. Identify the live app container and its Compose labels for project name,
-   working directory, and configuration files. Match these to the checkout and
+   working directory, and configuration files. Match these to the deployment root and
    Docker context. Do not accidentally create another project alongside it.
 3. Confirm Bash, Git, Docker CLI, Compose v2, OpenSSL, and Docker daemon access.
    OpenSSL is required by certificate issuance even though the updater checks it
@@ -92,6 +124,8 @@ Work as the checkout owner with access to the intended Docker daemon. Do not use
 5. Check current app and edge health. Record existing service failures separately
    from update regressions. Check for an active update process or Portal job;
    do not launch concurrent updaters or force-unlock an active job.
+
+### Path A: initialize a single-file checkout deployment
 
 Use Bash for the command examples. After verifying the actual deployment, set
 the updater overrides **in the process environment** and use the same Compose
@@ -125,8 +159,69 @@ the exact expected URL. Updater controls such as `CIF_COMPOSE_FILE` are shell
 environment variables; placing them only in `.env` does not configure the script.
 The script accepts one Compose file through this override. Do not silently omit
 additional production overrides or substitute the example for a custom stack.
+Use Path B when the deployment has the worktree layout below.
+
+### Path B: initialize the deployment-root context
+
+The reported layout is:
+
+```text
+<deployment-root>/
+  .env                         # private configuration, including CIF_IMAGE_TAG
+  compose.yaml                 # existing production base definition
+  compose.ordered-lora.yaml    # existing override selecting the release context
+  source/                      # main deliberately frozen at its current SHA
+  ordered-lora-<previous-sha>/  # retained previous detached worktree
+  ordered-lora-<target-sha>/    # new detached worktree
+  data/certificates/           # existing root CA, leaf, and private keys
+```
+
+These production Compose files are host-maintained and are not supplied by this
+repository. Inspect their existing contents; do not create replacements from the
+example. Confirm the app's image uses `${CIF_IMAGE_TAG}` and its private `env_file`
+resolves to the deployment-root `.env`. `--env-file` controls interpolation; it
+does not inject application settings unless the service definition also does so.
+
+Run in one persistent Bash session on the host as the deployment owner. Set
+`DEPLOY_ROOT` to its verified absolute host path and `DEPLOY_PROJECT` to the live
+Compose project label before this block. For a one-shot maintenance container,
+mount the entire root at **the identical absolute host path**, with the same
+Docker context/socket and numeric owner identity. A mount at `/workspace` is not
+equivalent: worktree links and Docker bind sources must resolve on the host.
+The standard Portal runner includes Bash/Git/Docker/OpenSSL but not Python; the
+editing and comparison examples below also require Python 3 in the execution
+environment. Do not switch to the incompatible Portal update script as a shortcut.
+
+```bash
+set -Eeuo pipefail
+: "${DEPLOY_ROOT:?Set the verified absolute deployment-root path}"
+: "${DEPLOY_PROJECT:?Set the existing Compose project name}"
+DEPLOY_ROOT=$(cd "$DEPLOY_ROOT" && pwd -P)
+SOURCE_DIR="$DEPLOY_ROOT/source"
+export CIF_COMPOSE_SERVICE=comfyui-image-frontend
+export DEPLOY_CERT_DIR="$DEPLOY_ROOT/data/certificates"
+cd "$DEPLOY_ROOT"
+compose=(docker compose --project-directory "$DEPLOY_ROOT"
+  --env-file "$DEPLOY_ROOT/.env" -p "$DEPLOY_PROJECT"
+  -f "$DEPLOY_ROOT/compose.yaml"
+  -f "$DEPLOY_ROOT/compose.ordered-lora.yaml")
+test "$(git -C "$SOURCE_DIR" branch --show-current)" = main
+test -z "$(git -C "$SOURCE_DIR" status --porcelain)"
+FROZEN_MAIN_SHA=$(git -C "$SOURCE_DIR" rev-parse HEAD)
+"${compose[@]}" config --quiet
+"${compose[@]}" config --services
+"${compose[@]}" ps --all
+```
+
+Use this exact `compose` array for backups, build, reconciliation, logs, and
+verification. Preserve file order and project identity. Check for inherited shell
+overrides, especially `CIF_IMAGE_TAG` and TLS variables: shell values take precedence
+over `.env`. Resolve any mismatch with the live deployment before proceeding; do
+not silently change which value is authoritative.
 
 ## 2. Review and validate the incoming changes
+
+### Path A: review the branch update
 
 Proceed only with a clean checkout on the verified branch and upstream. If local
 changes, a detached HEAD, an unexpected source, or divergent history prevent the
@@ -143,6 +238,33 @@ git diff --stat "HEAD..origin/$CIF_UPDATE_EXPECTED_BRANCH"
 git diff "HEAD..origin/$CIF_UPDATE_EXPECTED_BRANCH" -- \
   Dockerfile compose.example.yml deployment scripts backend/alembic backend/app/config.py
 ```
+
+### Path B: select a release without advancing main
+
+Identify `DEPLOYED_SHA` from the **currently deployed worktree and image record**,
+not `source/HEAD`. Verify the current tag, image ID, and build context agree with
+that record. Set it to the full deployed commit SHA. Then fetch and select once:
+
+```bash
+: "${DEPLOYED_SHA:?Set the verified full SHA of the running release}"
+git -C "$SOURCE_DIR" fetch origin main
+TARGET_SHA=$(git -C "$SOURCE_DIR" rev-parse --verify 'origin/main^{commit}')
+git -C "$SOURCE_DIR" merge-base --is-ancestor "$DEPLOYED_SHA" "$TARGET_SHA"
+git -C "$SOURCE_DIR" log --oneline "$DEPLOYED_SHA..$TARGET_SHA"
+git -C "$SOURCE_DIR" diff --stat "$DEPLOYED_SHA..$TARGET_SHA"
+git -C "$SOURCE_DIR" diff "$DEPLOYED_SHA..$TARGET_SHA" -- \
+  Dockerfile deployment scripts backend/alembic backend/app/config.py
+test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$FROZEN_MAIN_SHA"
+```
+
+For an explicitly requested commit, resolve that ref to a full SHA instead and
+verify its provenance and release scope. Never run `pull`, `merge`, `checkout`, or
+`reset` on `source/main` to deploy it. A clean detached release worktree is expected
+in Path B and is not an error. Review from the deployed SHA so a deliberately old
+main does not obscure the actual release diff. If the target is already deployed,
+verify the existing image and health; do not overwrite its tag to manufacture an update.
+
+### Validation for either path
 
 Treat a nonzero check as a failure to resolve, not a reason to run the next step.
 Review changed updater instructions, migrations, dependencies, configuration
@@ -167,28 +289,48 @@ and link review are sufficient.
 If asked to implement a change as well as deploy it, develop and validate it in a
 separate checkout. Follow the authorized review/publication process to put it on
 the deployment branch first. Keep the production checkout clean and use the same
-updater below; do not edit a running container or build an uncommitted hotfix there.
+deployment path below; do not edit a running container or build an uncommitted hotfix there.
 
-The updater fetches again and deploys the then-current branch tip. It has no
+The Path A updater fetches again and deploys the then-current branch tip. It has no
 commit-pinning option. Record the reviewed SHA and check the actual SHA afterward;
 if the branch advances, review and validate the additional commits before claiming
 completion. If the task requires an exact SHA, resolve that requirement before
 running the updater rather than claiming it will pin the release.
+Path B deploys the recorded `TARGET_SHA` without resolving the branch again.
 
 ## 3. Prepare a recoverable checkpoint
 
+For Path B, first exclude other maintenance jobs and hold a deployment-root lock
+through backup, edits, and verification in the same Bash session:
+
+```bash
+# Path B only, for an authorized update (not a dry run).
+DEPLOY_LOCK="$DEPLOY_ROOT/.deployment-update.lock"
+mkdir "$DEPLOY_LOCK" || { printf '%s\n' 'Another deployment may be active; inspect it.' >&2; exit 1; }
+trap 'rmdir "$DEPLOY_LOCK"' EXIT
+```
+
+This serializes agents following Path B; it does not coordinate with the Path A
+script or other tools. Ensure no Portal/other update is active before acquiring
+it. After a lost session, inspect the prior job before removing its lock.
+
 Before recreation or migrations:
 
-1. Record the current Git SHA, app container ID, **running image ID**, edge image
-   ID, Compose identity, and actual storage mount sources. The working-tree SHA
+1. Record the deployed Git SHA (and frozen-main SHA for Path B), app container ID,
+   **running image ID**, edge image ID, Compose identity, and actual storage mount
+   sources. The working-tree SHA
    alone does not prove which code was built into an existing container.
-2. Give the running app image a unique local rollback tag before a build can
-   replace `:local`. Use `docker inspect --format '{{.Image}}' <app-container-id>`
+2. Retain the running app image's existing commit tag in Path B; in Path A, give
+   it a unique local rollback tag before a build can replace `:local`.
+   Use `docker inspect --format '{{.Image}}' <app-container-id>`
    to obtain the image ID, then `docker image tag <image-id> <unique-rollback-tag>`.
    Retain the deployment configuration needed to run it, including TLS config.
 3. Create a timestamped, access-restricted backup directory outside the checkout.
    Back up private environment/configuration files and the actual TLS certificate
    directory, including the existing root CA and keys. Do not display their contents.
+   In Path B, include both deployment-root Compose files and `.env`, and retain
+   the previous worktree. Use the two-file `compose` array even for `stop`/`start`;
+   do not copy the README's single-file invocation into this layout.
 4. Take a consistent backup of SQLite **and all application-owned files together**.
    Follow the stopped-app archive approach in the README's **Back up and restore**
    section, substituting the verified volume or bind mount and the external backup
@@ -199,6 +341,8 @@ Before recreation or migrations:
    healthy again before proceeding. Do not stop the external ComfyUI runtimes or
    cancel their work. Avoid interrupting active user work when timing permits;
    account for jobs that may need reconciliation after restart.
+   Preserve the Path B lock cleanup when adding a backup cleanup handler; do not
+   replace its trap and leave an unexplained lock behind.
 6. Verify that the archive is nonempty and readable, record a checksum, and record
    the backup path and time. Do not continue with an incomplete required backup.
 
@@ -207,7 +351,9 @@ recreation. The app resumes while the replacement builds. A restore would lose
 changes made after the backup; report that recovery point accurately. A tag alone
 is not a data backup, and an archive listing alone is not a tested restore.
 
-## 4. Run the canonical deployment
+## 4. Deploy using the selected path
+
+### Path A: run the single-file checkout updater
 
 Recheck the clean tree, deployment identity, and absence of another updater. Run:
 
@@ -233,20 +379,223 @@ restrict the build or project reconciliation. `CIF_UPDATE_START_TIMEOUT` default
 to 120 seconds. The obsolete `CIF_UPDATE_STOP_TIMEOUT` does not control recreation;
 the example uses a 30-second Compose stop grace period.
 
-The Service Portal invokes the same script. Use one update path for a deployment.
+The example Service Portal control invokes the same Path A script. Use one update
+path for a deployment; that control is not compatible with Path B.
 If its maintenance runner is in scope and `deployment/runner/Dockerfile` changed,
 rebuild the configured runner image on the host before the next Portal update;
 the Portal does not build it automatically. This does not require restarting the
 Portal or external generation services.
 
+### Path B: deploy a detached worktree with both Compose files
+
+Run the following steps after the shared review and backup. Keep the initialized
+two-file `compose` array, lock, and captured SHAs in the same Bash session. Use
+`DEPLOY_BACKUP_DIR` for the verified, access-restricted backup directory from
+section 3. Record `DEPLOY_TLS_HOSTNAME` from the live edge configuration. The
+examples use a full commit SHA for both the new directory and image tag to avoid
+ambiguous short hashes; retained older releases may use shorter tags.
+
+#### B1. Preserve configuration and create the release worktree
+
+```bash
+: "${DEPLOY_BACKUP_DIR:?Set the completed backup directory outside the checkout}"
+: "${DEPLOY_TLS_HOSTNAME:?Set the existing TLS hostname}"
+test -d "$DEPLOY_BACKUP_DIR"
+umask 077
+cp -p "$DEPLOY_ROOT/.env" "$DEPLOY_BACKUP_DIR/deployment.env"
+cp -p "$DEPLOY_ROOT/compose.yaml" "$DEPLOY_BACKUP_DIR/compose.yaml"
+cp -p "$DEPLOY_ROOT/compose.ordered-lora.yaml" "$DEPLOY_BACKUP_DIR/compose.ordered-lora.yaml"
+"${compose[@]}" config --format json > "$DEPLOY_BACKUP_DIR/compose.before.json"
+OLD_EDGE_ID=$("${compose[@]}" ps -q cif-tls-edge)
+test -n "$OLD_EDGE_ID"
+
+WORKTREE_DIR="$DEPLOY_ROOT/ordered-lora-$TARGET_SHA"
+test ! -e "$WORKTREE_DIR"
+git -C "$SOURCE_DIR" worktree add --detach "$WORKTREE_DIR" "$TARGET_SHA"
+test "$(git -C "$WORKTREE_DIR" rev-parse HEAD)" = "$TARGET_SHA"
+test -z "$(git -C "$WORKTREE_DIR" branch --show-current)"
+test -z "$(git -C "$WORKTREE_DIR" status --porcelain)"
+test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$FROZEN_MAIN_SHA"
+```
+
+If that worktree already exists, inspect it and reuse it only after verifying its
+exact SHA, detached state, and clean tree; do not delete it or force-add over it.
+Read the target revision's deployment instructions and complete any outstanding
+validation before editing deployment configuration. Do not put `.env` or `data/`
+in the worktree, and do not replace the production base Compose file with the
+worktree's `compose.example.yml`.
+
+#### B2. Change only the image tag and app build context
+
+The intended edits are `CIF_IMAGE_TAG=<TARGET_SHA>` in the deployment-root `.env`
+and `services.comfyui-image-frontend.build.context: ./ordered-lora-<TARGET_SHA>`
+in the existing override. Preserve every other setting. The following targeted
+editor supports the reported plain `context: ./ordered-lora-<hex-sha>` layout and
+an existing SHA-valued `CIF_IMAGE_TAG` assignment (optionally quoted). It refuses
+missing/duplicate keys, symlinks, or other layouts before writing. If it refuses,
+inspect the actual structure and make these two field edits with a suitable
+editor; never replace the entire override with a minimal example.
+
+```bash
+python3 - "$DEPLOY_ROOT" "$TARGET_SHA" <<'PY'
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+
+root, sha = Path(sys.argv[1]), sys.argv[2]
+assert re.fullmatch(r"[0-9a-f]{40}", sha), "Expected a full commit SHA"
+edits = [
+    (root / ".env",
+     rb"(?m)^([ \t]*CIF_IMAGE_TAG[ \t]*=[ \t]*)(?:[0-9a-f]{7,40}|\"[0-9a-f]{7,40}\"|'[0-9a-f]{7,40}')([ \t]*(?:#[^\r\n]*)?\r?)$",
+     sha.encode()),
+    (root / "compose.ordered-lora.yaml",
+     rb"(?m)^([ \t]+context:[ \t]*)\./ordered-lora-[0-9a-f]{7,40}([ \t]*(?:#[^\r\n]*)?\r?)$",
+     f"./ordered-lora-{sha}".encode()),
+]
+prepared = []
+for path, pattern, value in edits:
+    assert path.is_file() and not path.is_symlink(), "Expected regular deployment files"
+    content = path.read_bytes()
+    key = rb"(?m)^[ \t]*(?:export[ \t]+)?CIF_IMAGE_TAG[ \t]*=" if path.name == ".env" else rb"(?m)^[ \t]*context:"
+    assert len(re.findall(key, content)) == 1, "Expected exactly one target key"
+    updated, count = re.subn(pattern, lambda m: m[1] + value + m[2], content)
+    assert count == 1, "Layout differs; inspect before editing"
+    prepared.append((path, updated))
+for path, content in prepared:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), stat.S_IMODE(path.stat().st_mode))
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+print("Updated the deployment image tag and release build context.")
+PY
+"${compose[@]}" config --quiet
+"${compose[@]}" config --format json > "$DEPLOY_BACKUP_DIR/compose.candidate.json"
+```
+
+Each file replacement is atomic, but the pair is not a transaction. If editing
+or validation fails, the running app is still intact; restore both files from
+the saved pair before attempting a restart. Do not print the expanded JSON files;
+they contain resolved private settings. Compare them without displaying values:
+
+```bash
+TARGET_IMAGE=$(python3 - "$DEPLOY_BACKUP_DIR" "$WORKTREE_DIR" "$TARGET_SHA" "$CIF_COMPOSE_SERVICE" <<'PY'
+import copy
+import json
+from pathlib import Path
+import sys
+
+backup, worktree, sha, service = sys.argv[1:]
+before = json.loads((Path(backup) / "compose.before.json").read_text())
+after = json.loads((Path(backup) / "compose.candidate.json").read_text())
+old_app = before["services"][service]
+new_app = after["services"][service]
+assert Path(new_app["build"]["context"]).resolve() == Path(worktree).resolve(), "Wrong build context"
+old_image, new_image = old_app["image"], new_app["image"]
+assert "@" not in old_image and ":" in old_image.rsplit("/", 1)[-1], "Expected a tagged image"
+assert new_image == old_image.rsplit(":", 1)[0] + ":" + sha, "Wrong image repository or tag"
+expected = copy.deepcopy(before)
+expected_app = expected["services"][service]
+expected_app["image"] = new_image
+expected_app["build"]["context"] = new_app["build"]["context"]
+# env_file may also pass the interpolation setting into the app environment.
+if "CIF_IMAGE_TAG" in expected_app.get("environment", {}):
+    expected_app["environment"]["CIF_IMAGE_TAG"] = sha
+assert expected == after, "Unexpected configuration change; inspect privately before deploying"
+print(new_image)
+PY
+)
+```
+
+This gate requires the image repository, project, mounts, network bindings, private
+settings, and all other services (including the edge) to stay the same. If it
+fails, resolve the exact difference; do not weaken the comparison just to proceed.
+
+#### B3. Build while the current app stays up
+
+```bash
+if docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
+  printf '%s\n' 'Target tag already exists; verify its recorded provenance before reuse.' >&2
+  exit 1
+fi
+"${compose[@]}" build "$CIF_COMPOSE_SERVICE"
+TARGET_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")
+test "$(git -C "$WORKTREE_DIR" rev-parse HEAD)" = "$TARGET_SHA"
+test -z "$(git -C "$WORKTREE_DIR" status --porcelain)"
+test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$FROZEN_MAIN_SHA"
+```
+
+Never overwrite a retained commit tag. For a retry with an already-built target,
+verify the recorded SHA/context/image ID and skip the build when they agree;
+otherwise investigate before reuse. Preserve the previous image and worktree.
+Record the target SHA, tag, context, and built image ID together as deployment
+evidence; the Dockerfile does not itself embed a Git revision label.
+
+#### B4. Verify TLS at the deployment root and reconcile
+
+Confirm the existing root CA is readable and valid before invoking issuance.
+Pass the **absolute deployment-root certificate directory** to the script from
+the target worktree; never allow its checkout-relative default in this layout:
+
+```bash
+test -r "$DEPLOY_CERT_DIR/ca.crt"
+test -r "$DEPLOY_CERT_DIR/ca.key"
+openssl verify -CAfile "$DEPLOY_CERT_DIR/ca.crt" "$DEPLOY_CERT_DIR/ca.crt"
+CIF_TLS_HOSTNAME="$DEPLOY_TLS_HOSTNAME" CIF_TLS_CERT_DIR="$DEPLOY_CERT_DIR" \
+  "$WORKTREE_DIR/scripts/issue-local-cert.sh"
+"${compose[@]}" config --quiet
+```
+
+Before `up`, verify unchanged services' local image IDs still match their running
+containers; `--pull never` prevents a pull but cannot undo a tag overwritten by
+another local build. Reconcile only after that check passes:
+
+```bash
+"${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 120
+```
+
+The expected reconciliation recreates only the app. If a leaf was renewed,
+verify the certificate actually served by the edge; Caddy may
+need a controlled reload using its existing configuration to adopt renewed files.
+Keep its root CA, mount, hostname, and container identity. A requested edge/config
+change needs its own reviewed scope instead of bypassing the B2 comparison.
+
+Capture the exit status. If reconciliation fails, inspect logs and current state;
+make at most one retry of the same bounded `up` command after a routine fix. This
+manual path does not inherit the updater's automatic recovery or final runtime
+check. Run the shared checks in section 5, including explicit runtime configuration.
+
+```bash
+APP_ID=$("${compose[@]}" ps -q "$CIF_COMPOSE_SERVICE")
+test -n "$APP_ID"
+test "$(docker inspect --format '{{.Image}}' "$APP_ID")" = "$TARGET_IMAGE_ID"
+test "$("${compose[@]}" ps -q cif-tls-edge)" = "$OLD_EDGE_ID"
+test "$(git -C "$SOURCE_DIR" branch --show-current)" = main
+test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$FROZEN_MAIN_SHA"
+test -z "$(git -C "$SOURCE_DIR" status --porcelain)"
+```
+
+These are additional deployment invariants, not substitutes for app health or
+trusted HTTPS verification. Retain backups, both releases, and deployment records;
+worktree/image cleanup is a separate operation.
+
 ## 5. Verify the deployed result
 
 Do not report success based only on a completed build or a running container.
 
-1. Record the updater exit code and new full Git SHA. Compare with the reviewed
-   target. Confirm the checkout is clean, the live containers still belong to the
-   original Compose project, their mounts are preserved, and the running app
-   image ID matches the newly built service image. An unchanged image ID is valid
+1. Record the updater (Path A) or Compose (Path B) exit code and deployed full Git
+   SHA. For Path B, record `TARGET_SHA` separately from unchanged `FROZEN_MAIN_SHA`.
+   Compare with the reviewed target. Confirm the release checkout is clean, the
+   live containers still belong to the original Compose project, their mounts are
+   preserved, and the running app image ID matches the newly built service image.
+   An unchanged image ID is valid
    for an update that did not affect image inputs.
 2. Check app and edge health and inspect recent logs for migrations, startup
    errors, crash loops, and reconciliation problems. Redact sensitive diagnostics:
@@ -308,10 +657,17 @@ Do not report success based only on a completed build or a running container.
   checkout or local image tag has advanced. Inspect actual state. Preserve the
   running image, backup, and diagnostics; do not equate the checkout with the live
   release or reset it automatically.
-- **Failed reconciliation:** the updater makes one additional `up --no-build`
+- **Failed reconciliation:** the Path A updater makes one additional `up --no-build`
   attempt using the replacement image it just built. This is a retry, **not an
   automatic rollback to the previous image or database**. Check service health
   even if the command returns nonzero; do not loop indefinitely.
+- **Path B configuration changed but deployment failed:** saved `.env` and override
+  now determine what a future `up` would launch, even when the old app is still
+  serving. If no recreation/migration occurred, restore that saved pair, validate
+  it using the same two-file array, and verify it matches the still-running release.
+  Do not run `up` just to restore the files. After any recreation or migration,
+  inspect schema compatibility before returning to the old image. Retain the failed
+  worktree/image for diagnosis; never advance frozen main as a recovery technique.
 - **Lock refusal:** inspect the actual job/process. Use `CIF_UPDATE_FORCE_UNLOCK=1`
   only after proving no updater is active; elapsed time or a different container
   name alone is not proof. Do not delete a live job's lock.
@@ -337,7 +693,8 @@ failed or unverified deployment successful.
 Return a concise report containing:
 
 - Outcome: deployed and verified, deployed with verification gaps, or blocked/failed.
-- Production checkout and Compose project; previous and deployed Git SHAs; running
+- Selected deployment path, deployment root, ordered Compose files, and project;
+  previous and deployed Git SHAs (plus unchanged frozen-main SHA for Path B); running
   app image ID and frontend asset version where checked.
 - A short summary of the changes and any migrations/configuration adjustments.
 - Backup location, recovery point, and retained previous-image tag.

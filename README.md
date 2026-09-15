@@ -103,13 +103,19 @@ For an AI agent operating on the production host, follow
 [`docs/production-deployment-agent.md`](docs/production-deployment-agent.md) for
 preflight checks, backups, deployment, verification, and failure recovery.
 
-From a clean checkout with an upstream branch:
+The guide provides two supported paths: the single-file checkout updater below,
+and an explicit multi-file deployment using detached worktrees and commit-tagged
+images. Use the latter for a deployment-root `compose.yaml` +
+`compose.ordered-lora.yaml` stack with frozen `source/main`. The updater cannot
+preserve that topology; do not run it there or substitute the example Compose file.
+
+For the single-file checkout layout, from a clean checkout with an upstream branch:
 
 ```sh
 ./update_and_restart
 ```
 
-`./update_and_restart` is a thin wrapper around the canonical entry point, `scripts/update-and-restart.sh` (also the script the Service Portal control invokes; see below). From a clean checkout on the expected branch the script:
+`./update_and_restart` is a thin wrapper around the single-file checkout entry point, `scripts/update-and-restart.sh` (also the script the example Service Portal control invokes; see below). From a clean checkout on the expected branch the script:
 
 1. verifies its toolchain (Git, Docker CLI, Compose v2), Docker daemon access, and the validity of the current Compose configuration;
 2. acquires an atomic per-checkout lock (removed again on every exit; a dead holder or a lock recorded by a different maintenance container is treated as stale, and `CIF_UPDATE_FORCE_UNLOCK=1` is the operator escape hatch);
@@ -137,7 +143,15 @@ Override defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, `CIF_UPDATE_ST
 2. In the deployment's `.env`, set `HOST_UID` and `HOST_GID` to the numeric owner of the checkout (`id -u; id -g`) and keep `PROJECT_RUNNER_IMAGE` pointing at the image you built (defaults documented in `.env.example`).
 3. Recreate the service so Docker records the new labels: `docker compose -f compose.example.yml up -d --force-recreate comfyui-image-frontend`.
 
-If you deploy from a custom Compose file, copy the four labels verbatim from `compose.example.yml`; the portal suppresses the control when more than one service opts in with different effective settings. The remote is public, so no Git credentials are required; if that ever changes, provision noninteractive least-privilege credentials inside the runner image or the host checkout without committing them to source or exposing them to the browser.
+For a custom **single-file checkout** deployment compatible with the updater,
+copy the four labels from `compose.example.yml` and configure the verified update
+environment. Do not enable this script for the multi-file/worktree path: it cannot
+preserve frozen main, commit-tag selection, and deployment-root TLS paths. The
+portal suppresses the control when more than one service opts in with different
+effective settings. The remote is public, so no Git credentials are required; if
+that ever changes, provision noninteractive least-privilege credentials inside the
+runner image or the host checkout without committing them to source or exposing
+them to the browser.
 
 Application code, built browser assets, and the non-secret runtime defaults live in the frontend image. The Dockerfile records those defaults as image environment values so they do not depend on the launcher's working directory; process environment values supplied by Compose, `docker run --env-file`, or another launcher take precedence. Enabling or changing the instance list therefore requires rebuilding and recreating/restarting only `comfyui-image-frontend`. Never restart or recreate either ComfyUI container for this application update.
 
