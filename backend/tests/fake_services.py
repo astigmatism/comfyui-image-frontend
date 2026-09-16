@@ -102,6 +102,7 @@ class FakeServiceState:
     ollama_generate_responses: list[dict[str, Any]] = field(default_factory=list)
     ollama_generate_failure_status: int | None = None
     ollama_generate_failures_remaining: int = 0
+    ollama_thinking_overflows: bool = False
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -154,6 +155,7 @@ class FakeServiceState:
         self.ollama_generate_responses.clear()
         self.ollama_generate_failure_status = None
         self.ollama_generate_failures_remaining = 0
+        self.ollama_thinking_overflows = False
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -773,6 +775,22 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             )
         if state.ollama_generate_responses:
             return copy.deepcopy(state.ollama_generate_responses.pop(0))
+        if state.ollama_thinking_overflows and payload.get("think") is not False:
+            # Thinking responses outgrow every token allowance; the
+            # no-thinking pass still completes within the base allowance.
+            effective_model = state.ollama_effective_model or payload.get("model")
+            if not effective_model and state.models:
+                effective_model = state.models[0]
+            return {
+                "model": str(effective_model or ""),
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "thinking": "Partial reasoning that outgrows the token allowance.",
+                },
+                "done": True,
+                "done_reason": "length",
+            }
         instruction = str(payload["messages"][0]["content"])
         current = ""
         if "Current prompt:\n" in instruction:

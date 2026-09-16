@@ -12,6 +12,7 @@ from app.errors import AppError
 from app.main import JsonFormatter
 from app.services.ollama import (
     OUTPUT_TOKEN_BUDGETS,
+    THINKING_EFFORT,
     OllamaAdapter,
     _create_excluded_prompts,
     _extract_prompt,
@@ -459,6 +460,17 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
             return httpx.Response(200, json={"models": [{"name": "active-model"}]})
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
+            if payloads[-1]["think"] is False:
+                # The no-thinking fallback still fits the shared allowance.
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "thinking-model",
+                        "response": json.dumps({"prompt": "a warmer detailed portrait"}),
+                        "done": True,
+                        "done_reason": "stop",
+                    },
+                )
             return httpx.Response(
                 200,
                 json={
@@ -475,11 +487,8 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
     async def scenario() -> None:
         adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
         try:
-            with (
-                caplog.at_level(logging.INFO, logger="app.services.ollama"),
-                pytest.raises(AppError) as raised,
-            ):
-                await adapter.compose(
+            with caplog.at_level(logging.INFO, logger="app.services.ollama"):
+                result = await adapter.compose(
                     mode="refine",
                     prompt="private original prompt",
                     direction="private creative direction",
@@ -487,15 +496,22 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
         finally:
             await adapter.close()
 
-        error = raised.value
-        assert error.code == "ollama_output_budget_exhausted"
-        assert error.status_code == 503
-        assert error.details["validation_stage"] == "output_budget_exhausted"
-        assert error.details["done_reason"] == "length"
-        assert error.details["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS)
-        assert error.details["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS)
-        assert len(error.details["output_budget_attempt_diagnostics"]) == len(OUTPUT_TOKEN_BUDGETS)
-        serialized = json.dumps(error.details)
+        assert result.prompt == "a warmer detailed portrait"
+        assert result.raw_response["used_no_thinking_fallback"] is True
+        assert result.raw_response["validation_stage"] == "complete"
+        assert result.raw_response["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS) + 1
+        assert result.raw_response["output_budgets"] == [
+            *OUTPUT_TOKEN_BUDGETS,
+            OUTPUT_TOKEN_BUDGETS[0],
+        ]
+        assert result.raw_response["selected_output_budget_attempt"] == (
+            len(OUTPUT_TOKEN_BUDGETS) + 1
+        )
+        assert result.raw_response["selected_output_budget"] == OUTPUT_TOKEN_BUDGETS[0]
+        fallback_diagnostic = result.raw_response["output_budget_attempt_diagnostics"][-1]
+        assert fallback_diagnostic["validation_stage"] == "no_thinking_fallback"
+        assert fallback_diagnostic["used_no_thinking_fallback"] is True
+        serialized = json.dumps(result.raw_response)
         assert private_reasoning not in serialized
         assert "private original prompt" not in serialized
         assert "private creative direction" not in serialized
@@ -505,13 +521,404 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
             if record.getMessage() == "ollama_output_budget_retry"
         ]
         assert len(retry_records) == len(OUTPUT_TOKEN_BUDGETS) - 1
-        serialized_logs = json.dumps(retry_records, default=str)
+        fallback_records = [
+            record.__dict__
+            for record in caplog.records
+            if record.getMessage() == "ollama_output_budget_no_thinking_fallback"
+        ]
+        assert len(fallback_records) == 1
+        fallback_record = fallback_records[0]
+        assert fallback_record["service"] == "ollama"
+        assert fallback_record["operation"] == "generate"
+        assert fallback_record["assistant_mode"] == "refine"
+        assert fallback_record["thinking_enabled"] is True
+        assert fallback_record["fallback_thinking_enabled"] is False
+        assert fallback_record["candidate_attempt"] == 1
+        assert fallback_record["output_budget"] == OUTPUT_TOKEN_BUDGETS[0]
+        assert fallback_record["done_reason"] == "length"
+        serialized_logs = json.dumps([*retry_records, *fallback_records], default=str)
         assert private_reasoning not in serialized_logs
         assert "private original prompt" not in serialized_logs
         assert "private creative direction" not in serialized_logs
 
     asyncio.run(scenario())
-    assert [payload["options"]["num_predict"] for payload in payloads] == list(OUTPUT_TOKEN_BUDGETS)
+    assert [payload["options"]["num_predict"] for payload in payloads] == [
+        *OUTPUT_TOKEN_BUDGETS,
+        OUTPUT_TOKEN_BUDGETS[0],
+    ]
+    assert [payload["think"] for payload in payloads] == [THINKING_EFFORT] * len(
+        OUTPUT_TOKEN_BUDGETS
+    ) + [False]
+    # The fallback reuses the candidate's seed and temperature.
+    assert payloads[-1]["options"]["seed"] == payloads[0]["options"]["seed"]
+    assert payloads[-1]["options"]["temperature"] == payloads[0]["options"]["temperature"]
+
+
+def test_thinking_overflow_falls_back_to_no_thinking_on_first_candidate(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    fallback_prompt = "a fox beneath moonlit pines, snow drifting in cold blue night"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/chat":
+            payloads.append(json.loads(request.content))
+            if payloads[-1]["think"] is False:
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "thinking-model",
+                        "response": json.dumps({"prompt": fallback_prompt}),
+                        "done": True,
+                        "done_reason": "stop",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "thinking": "reasoning that outgrows every allowance",
+                    "done": True,
+                    "done_reason": "length",
+                    "eval_count": payloads[-1]["options"]["num_predict"],
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 90210,
+        )
+        try:
+            result = await adapter.compose(
+                mode="create",
+                prompt="old prompt",
+                direction="a fox beneath moonlit pines",
+                think=True,
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == fallback_prompt
+        assert result.raw_response["used_no_thinking_fallback"] is True
+        assert result.raw_response["validation_stage"] == "complete"
+        assert "attempts" not in result.raw_response
+        assert result.raw_response["selected_output_budget_attempt"] == (
+            len(OUTPUT_TOKEN_BUDGETS) + 1
+        )
+
+    asyncio.run(scenario())
+
+    # Three thinking escalations plus one no-thinking attempt, all on candidate 1.
+    assert len(payloads) == len(OUTPUT_TOKEN_BUDGETS) + 1
+    assert [payload["options"]["num_predict"] for payload in payloads] == [
+        *OUTPUT_TOKEN_BUDGETS,
+        OUTPUT_TOKEN_BUDGETS[0],
+    ]
+    assert [payload["think"] for payload in payloads] == [THINKING_EFFORT] * len(
+        OUTPUT_TOKEN_BUDGETS
+    ) + [False]
+    # No candidate was skipped: every attempt kept candidate 1's seed,
+    # temperature, and instruction.
+    assert all(payload["options"]["seed"] == 90210 for payload in payloads)
+    assert all(payload["options"]["temperature"] == 0.5 for payload in payloads)
+    assert all(
+        payload["messages"][0]["content"] == payloads[0]["messages"][0]["content"]
+        for payload in payloads
+    )
+
+
+def test_budget_exhaustion_advances_candidates_before_raising(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    payloads: list[dict[str, object]] = []
+    private_reasoning = "private reasoning must not be retained"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/chat":
+            payloads.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "thinking": private_reasoning,
+                    "done": True,
+                    "done_reason": "length",
+                    "eval_count": payloads[-1]["options"]["num_predict"],
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 700,
+        )
+        try:
+            with (
+                caplog.at_level(logging.INFO, logger="app.services.ollama"),
+                pytest.raises(AppError) as raised,
+            ):
+                await adapter.compose(
+                    mode="refine",
+                    prompt="a portrait",
+                    direction="warm light",
+                )
+        finally:
+            await adapter.close()
+
+        error = raised.value
+        assert error.code == "ollama_output_budget_exhausted"
+        assert error.status_code == 503
+        assert error.details["validation_stage"] == "output_budget_exhausted"
+        assert error.details["done_reason"] == "length"
+        assert error.details["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS) + 1
+        assert error.details["output_budgets"] == [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
+        assert error.details["attempted_no_thinking_fallback"] is True
+        assert len(error.details["output_budget_attempt_diagnostics"]) == (
+            len(OUTPUT_TOKEN_BUDGETS) + 1
+        )
+        candidates = error.details["candidate_budget_diagnostics"]
+        assert [item["candidate_attempt"] for item in candidates] == [1, 2, 3]
+        assert all(item["attempted_no_thinking_fallback"] is True for item in candidates)
+        assert all(
+            len(item["output_budget_attempt_diagnostics"]) == len(OUTPUT_TOKEN_BUDGETS) + 1
+            for item in candidates
+        )
+        serialized = json.dumps(error.details)
+        assert private_reasoning not in serialized
+        fallback_records = [
+            record
+            for record in caplog.records
+            if record.getMessage() == "ollama_output_budget_no_thinking_fallback"
+        ]
+        assert [record.candidate_attempt for record in fallback_records] == [1, 2, 3]
+
+    asyncio.run(scenario())
+
+    # Every candidate exhausted its thinking schedule and its no-thinking
+    # fallback before the terminal error fired.
+    assert len(payloads) == 3 * (len(OUTPUT_TOKEN_BUDGETS) + 1)
+    assert [payload["options"]["num_predict"] for payload in payloads] == [
+        *OUTPUT_TOKEN_BUDGETS,
+        OUTPUT_TOKEN_BUDGETS[0],
+    ] * 3
+    assert [payload["options"]["seed"] for payload in payloads] == (
+        [700] * 4 + [701] * 4 + [702] * 4
+    )
+    assert [payload["options"]["temperature"] for payload in payloads] == (
+        [0.1] * 4 + [0.3] * 4 + [0.5] * 4
+    )
+
+
+def test_no_thinking_fallback_prompt_still_passes_distinctness_validation(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    direction = "a red fox"
+    expansion = "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/chat":
+            payloads.append(json.loads(request.content))
+            if payloads[-1]["think"] is False:
+                # Candidate 1's fallback echoes the direction; candidate 2's
+                # fallback expands it.
+                candidate = direction if payloads[-1]["options"]["seed"] == 700 else expansion
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "thinking-model",
+                        "response": json.dumps({"prompt": candidate}),
+                        "done": True,
+                        "done_reason": "stop",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "thinking": "reasoning that outgrows every allowance",
+                    "done": True,
+                    "done_reason": "length",
+                    "eval_count": payloads[-1]["options"]["num_predict"],
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 700,
+        )
+        try:
+            result = await adapter.compose(
+                mode="create",
+                prompt="an existing prompt",
+                direction=direction,
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == expansion
+        assert result.raw_response["selected_attempt"] == 2
+        rejected = result.raw_response["attempts"][0]
+        assert rejected["validation_stage"] == "creation_comparison"
+        assert rejected["used_no_thinking_fallback"] is True
+        accepted = result.raw_response["attempts"][1]
+        assert accepted["validation_stage"] == "complete"
+        assert accepted["used_no_thinking_fallback"] is True
+
+    asyncio.run(scenario())
+
+    assert len(payloads) == 2 * (len(OUTPUT_TOKEN_BUDGETS) + 1)
+    assert [payload["options"]["seed"] for payload in payloads] == [
+        700,
+    ] * 4 + [701] * 4
+    assert [payload["think"] for payload in payloads] == (
+        [THINKING_EFFORT] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+    ) * 2
+
+
+def test_no_thinking_fallback_unchanged_refine_advances_to_next_candidate(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/chat":
+            payloads.append(json.loads(request.content))
+            if payloads[-1]["think"] is False:
+                # Candidate 1's fallback is a case-insensitive unchanged repeat;
+                # candidate 2's fallback actually refines the prompt.
+                candidate = (
+                    "A PORTRAIT"
+                    if payloads[-1]["options"]["seed"] == 500
+                    else "a portrait in warm window light"
+                )
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "active-model",
+                        "response": json.dumps({"prompt": candidate}),
+                        "done": True,
+                        "done_reason": "stop",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "model": "active-model",
+                    "response": "",
+                    "thinking": "reasoning that outgrows every allowance",
+                    "done": True,
+                    "done_reason": "length",
+                    "eval_count": payloads[-1]["options"]["num_predict"],
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 500,
+        )
+        try:
+            result = await adapter.compose(
+                mode="refine",
+                prompt="a portrait",
+                direction="use warm window light",
+            )
+        finally:
+            await adapter.close()
+
+        assert result.prompt == "a portrait in warm window light"
+        assert result.raw_response["selected_attempt"] == 2
+        rejected = result.raw_response["attempts"][0]
+        assert rejected["validation_stage"] == "refinement_comparison"
+        assert rejected["used_no_thinking_fallback"] is True
+
+    asyncio.run(scenario())
+
+    assert len(payloads) == 2 * (len(OUTPUT_TOKEN_BUDGETS) + 1)
+    assert [payload["options"]["seed"] for payload in payloads] == [
+        500,
+    ] * 4 + [501] * 4
+    assert [payload["think"] for payload in payloads] == (
+        [THINKING_EFFORT] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+    ) * 2
+
+
+def test_disabled_thinking_exhaustion_advances_candidates_without_fallback(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/chat":
+            payloads.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "thinking-model",
+                    "response": "",
+                    "done": True,
+                    "done_reason": "length",
+                    "eval_count": payloads[-1]["options"]["num_predict"],
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 400,
+        )
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="refine",
+                    prompt="a portrait",
+                    direction="warm light",
+                    think=False,
+                )
+        finally:
+            await adapter.close()
+
+        error = raised.value
+        assert error.code == "ollama_output_budget_exhausted"
+        assert error.status_code == 503
+        assert error.details["attempted_no_thinking_fallback"] is False
+        assert error.details["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS)
+        assert error.details["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS)
+        assert len(error.details["candidate_budget_diagnostics"]) == 3
+
+    asyncio.run(scenario())
+
+    assert len(payloads) == 3 * len(OUTPUT_TOKEN_BUDGETS)
+    assert [payload["think"] for payload in payloads] == [False] * len(payloads)
+    assert [payload["options"]["seed"] for payload in payloads] == (
+        [400] * 3 + [401] * 3 + [402] * 3
+    )
 
 
 @pytest.mark.parametrize(

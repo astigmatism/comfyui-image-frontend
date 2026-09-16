@@ -679,6 +679,8 @@ def test_prompt_assistant_persists_safe_bounded_output_budget_exhaustion(
     provision_user(app_client, username="length.exhausted")
     _cache_ollama_health(app_client, available=True)
     private_partial_reasoning = "never persist this private partial reasoning"
+    # Every candidate exhausts its thinking schedule and its single
+    # no-thinking fallback: three candidates x (3 thinking + 1 fallback).
     fake_state.ollama_generate_responses = [
         {
             "model": "router-thinking-model",
@@ -688,7 +690,8 @@ def test_prompt_assistant_persists_safe_bounded_output_budget_exhaustion(
             "done_reason": "length",
             "eval_count": budget,
         }
-        for budget in OUTPUT_TOKEN_BUDGETS
+        for _ in range(len(OUTPUT_TOKEN_BUDGETS) + 1)
+        for budget in [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
     ]
 
     response = app_client.post(
@@ -707,11 +710,24 @@ def test_prompt_assistant_persists_safe_bounded_output_budget_exhaustion(
     assert error["code"] == "ollama_output_budget_exhausted"
     assert error["details"]["validation_stage"] == "output_budget_exhausted"
     assert error["details"]["done_reason"] == "length"
-    assert error["details"]["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS)
-    assert error["details"]["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS)
-    assert [call["options"]["num_predict"] for call in fake_state.ollama_calls] == list(
-        OUTPUT_TOKEN_BUDGETS
+    assert error["details"]["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS) + 1
+    assert error["details"]["output_budgets"] == [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
+    assert error["details"]["attempted_no_thinking_fallback"] is True
+    assert len(error["details"]["output_budget_attempt_diagnostics"]) == (
+        len(OUTPUT_TOKEN_BUDGETS) + 1
     )
+    assert error["details"]["output_budget_attempt_diagnostics"][-1]["validation_stage"] == (
+        "no_thinking_fallback"
+    )
+    candidates = error["details"]["candidate_budget_diagnostics"]
+    assert [item["candidate_attempt"] for item in candidates] == [1, 2, 3]
+    assert all(item["attempted_no_thinking_fallback"] is True for item in candidates)
+    assert [call["options"]["num_predict"] for call in fake_state.ollama_calls] == (
+        [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
+    ) * 3
+    assert [call["think"] for call in fake_state.ollama_calls] == (
+        ["xhigh"] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+    ) * 3
 
     container = app_client.app.state.container
     from app.models import PromptAssistantRun
@@ -732,6 +748,65 @@ def test_prompt_assistant_persists_safe_bounded_output_budget_exhaustion(
         assert private_partial_reasoning not in serialized
         assert "private portrait prompt" not in serialized
         assert "private dramatic light direction" not in serialized
+
+
+def test_prompt_assistant_completes_via_no_thinking_fallback_after_thinking_overflow(
+    app_client: TestClient, fake_state
+) -> None:
+    provision_user(app_client, username="no.thinking.fallback")
+    _cache_ollama_health(app_client, available=True)
+    app_client.app.state.container.ollama.seed_resolver = lambda minimum, maximum: 950
+    fake_state.ollama_thinking_overflows = True
+
+    response = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "a portrait",
+            "creative_direction": "warm window light",
+            "think": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["prompt"] == "a portrait, warm window light"
+    assert [call["think"] for call in fake_state.ollama_calls] == (
+        ["xhigh"] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+    )
+    assert [call["options"]["num_predict"] for call in fake_state.ollama_calls] == (
+        [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
+    )
+    # The fallback reuses candidate 1's seed and temperature.
+    assert all(call["options"]["seed"] == 950 for call in fake_state.ollama_calls)
+    assert all(call["options"]["temperature"] == 0.1 for call in fake_state.ollama_calls)
+
+    container = app_client.app.state.container
+    from app.models import PromptAssistantRun
+
+    with container.db.session_factory() as session:
+        run = session.get(PromptAssistantRun, body["composition_id"])
+        assert run is not None
+        assert run.thinking_enabled is True
+        assert run.ollama_output == "a portrait, warm window light"
+        diagnostics = run.raw_response_json
+        assert diagnostics["used_no_thinking_fallback"] is True
+        assert diagnostics["validation_stage"] == "complete"
+        assert diagnostics["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS) + 1
+        assert diagnostics["output_budgets"] == [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
+        assert "Partial reasoning that outgrows the token allowance" not in json.dumps(diagnostics)
+
+    payload = generation_payload(app_client, body["prompt"], seed=321)
+    payload["prompt_assistant_run_id"] = body["composition_id"]
+    accepted = app_client.post(
+        "/api/generations",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json=payload,
+    )
+    assert accepted.status_code == 201, accepted.text
+    # Generate submits the visible prompt; it does not invoke Ollama again.
+    assert len(fake_state.ollama_calls) == len(OUTPUT_TOKEN_BUDGETS) + 1
 
 
 def test_create_prompt_assistant_retries_an_unchanged_current_prompt(

@@ -49,6 +49,26 @@ class GenerateResult:
     status: int
 
 
+@dataclass(frozen=True)
+class _CandidateCompose:
+    """One candidate that produced a usable structured prompt.
+
+    ``budget_diagnostics`` holds the metadata-only diagnostics of the attempts
+    before the selected one (the thinking escalation levels that overflowed);
+    the selected attempt is described by ``selected_budget_attempt`` and
+    ``selected_budget`` so callers can reconstruct the exact allowance history.
+    """
+
+    final: str
+    selected_field: str | None
+    data: dict[str, Any]
+    status: int
+    budget_diagnostics: tuple[dict[str, Any], ...]
+    selected_budget_attempt: int
+    selected_budget: int
+    used_no_thinking_fallback: bool
+
+
 class OllamaAdapter:
     def __init__(
         self,
@@ -147,6 +167,7 @@ class OllamaAdapter:
             )
         started = time.monotonic()
         response_diagnostics: list[dict[str, Any]] = []
+        candidate_budget_failures: list[dict[str, Any]] = []
         excluded = (
             _create_excluded_prompts(prompt, direction, excluded_prompts)
             if mode == "create"
@@ -168,117 +189,38 @@ class OllamaAdapter:
             instruction = _instruction(
                 mode=mode, prompt=prompt, direction=direction, instructions=instructions
             )
-            output_budget_diagnostics: list[dict[str, Any]] = []
-            final = ""
-            selected_field: str | None = None
-            data: dict[str, Any] = {}
-            received_status: int | None = None
-            selected_output_budget_attempt = 0
-            for output_budget_attempt, output_budget in enumerate(OUTPUT_TOKEN_BUDGETS, start=1):
-                payload = _generate_payload(
-                    mode=mode,
-                    instruction=instruction,
-                    think=think,
-                    attempt=attempt,
-                    seed=candidate_seed + attempt,
-                    output_budget=output_budget,
-                )
-                if self.settings.ollama_model:
-                    payload["model"] = self.settings.ollama_model
-                received = await self._generate(payload, mode=mode, think=think)
-                received_status = received.status
-                if not isinstance(received.data, dict):
-                    diagnostics = _with_output_budget_diagnostics(
-                        _response_diagnostics(
-                            {},
-                            status=received.status,
-                            validation_stage="response_envelope",
-                        ),
-                        attempts=output_budget_attempt,
-                        allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
-                    )
-                    raise AppError(
-                        "ollama_invalid_response",
-                        "Prompt Assistant returned an invalid response envelope.",
-                        details=diagnostics,
-                    )
-                data = received.data
-                final, selected_field = _response_prompt_with_source(data)
-                if final:
-                    selected_output_budget_attempt = output_budget_attempt
-                    break
-                diagnostics = _response_diagnostics(
-                    data,
-                    status=received.status,
-                    validation_stage="structured_prompt",
-                )
-                diagnostics["output_budget"] = output_budget
-                diagnostics["output_budget_attempt"] = output_budget_attempt
-                output_budget_diagnostics.append(diagnostics)
-                if diagnostics["done_reason"] == "length":
-                    if output_budget_attempt < len(OUTPUT_TOKEN_BUDGETS):
-                        logger.info(
-                            "ollama_output_budget_retry",
-                            extra={
-                                "service": "ollama",
-                                "operation": "generate",
-                                "assistant_mode": mode,
-                                "thinking_enabled": think,
-                                "candidate_attempt": attempt + 1,
-                                "output_budget_attempt": output_budget_attempt,
-                                "output_budget": output_budget,
-                                "next_output_budget": OUTPUT_TOKEN_BUDGETS[output_budget_attempt],
-                                "done_reason": "length",
-                            },
-                        )
-                        continue
-                    exhausted = _with_output_budget_diagnostics(
-                        {
-                            **diagnostics,
-                            "validation_stage": "output_budget_exhausted",
-                        },
-                        attempts=output_budget_attempt,
-                        allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
-                        attempt_diagnostics=output_budget_diagnostics,
-                    )
-                    raise AppError(
-                        "ollama_output_budget_exhausted",
-                        "Prompt Assistant exhausted its output-token budget before completing "
-                        "a structured prompt after bounded retries.",
-                        status_code=503,
-                        details=exhausted,
-                    )
-                has_output_text = any(
-                    isinstance(data.get(field), str) and bool(data[field].strip())
-                    for field in ("response", "thinking")
-                )
-                invalid = _with_output_budget_diagnostics(
-                    diagnostics,
-                    attempts=output_budget_attempt,
-                    allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
-                )
-                raise AppError(
-                    "ollama_invalid_response",
-                    (
-                        "Prompt Assistant returned malformed structured prompt output."
-                        if has_output_text
-                        else "Prompt Assistant returned no usable prompt."
-                    ),
-                    details=invalid,
-                )
-            if not final or received_status is None:
-                raise RuntimeError("Ollama output-budget retry loop exited unexpectedly")
+            candidate, budget_failure = await self._compose_candidate(
+                mode=mode,
+                instruction=instruction,
+                think=think,
+                attempt=attempt,
+                seed=candidate_seed + attempt,
+            )
+            if candidate is None:
+                # The candidate produced no usable structured prompt after its
+                # bounded escalation (and, with thinking enabled, its no-thinking
+                # fallback). Budget exhaustion is recoverable: advance to the
+                # next candidate instead of terminating the composition.
+                if budget_failure is None:
+                    raise RuntimeError("Ollama candidate failure returned no budget diagnostics")
+                candidate_budget_failures.append(budget_failure)
+                continue
+            final, selected_field, data, received_status = (
+                candidate.final,
+                candidate.selected_field,
+                candidate.data,
+                candidate.status,
+            )
             effective_model = data.get("model")
             if not isinstance(effective_model, str) or not effective_model.strip():
-                diagnostics = _with_output_budget_diagnostics(
+                diagnostics = self._with_candidate_budget_diagnostics(
                     _response_diagnostics(
                         data,
                         status=received_status,
                         validation_stage="model_metadata",
                         selected_field=selected_field,
                     ),
-                    attempts=selected_output_budget_attempt,
-                    allowances=OUTPUT_TOKEN_BUDGETS[:selected_output_budget_attempt],
+                    candidate,
                 )
                 raise AppError(
                     "ollama_invalid_response",
@@ -287,9 +229,27 @@ class OllamaAdapter:
                     details=diagnostics,
                 )
             warnings = []
-            if think and not _has_thinking_output(data):
+            if think and not candidate.used_no_thinking_fallback and not _has_thinking_output(data):
                 warnings.append("thinking_output_missing")
-            diagnostics = _with_output_budget_diagnostics(
+            selected_stage = (
+                "no_thinking_fallback"
+                if candidate.used_no_thinking_fallback
+                else "prompt_validation"
+            )
+            selected_diagnostic = {
+                **_response_diagnostics(
+                    data,
+                    status=received_status,
+                    validation_stage=selected_stage,
+                    selected_field=selected_field,
+                    warnings=warnings,
+                ),
+                "output_budget": candidate.selected_budget,
+                "output_budget_attempt": candidate.selected_budget_attempt,
+            }
+            if candidate.used_no_thinking_fallback:
+                selected_diagnostic["used_no_thinking_fallback"] = True
+            diagnostics = self._with_candidate_budget_diagnostics(
                 _response_diagnostics(
                     data,
                     status=received_status,
@@ -297,30 +257,16 @@ class OllamaAdapter:
                     selected_field=selected_field,
                     warnings=warnings,
                 ),
-                attempts=selected_output_budget_attempt,
-                allowances=OUTPUT_TOKEN_BUDGETS[:selected_output_budget_attempt],
-                selected_attempt=selected_output_budget_attempt,
+                candidate,
+                selected_attempt=candidate.selected_budget_attempt,
                 attempt_diagnostics=(
-                    [
-                        *output_budget_diagnostics,
-                        {
-                            **_response_diagnostics(
-                                data,
-                                status=received_status,
-                                validation_stage="prompt_validation",
-                                selected_field=selected_field,
-                                warnings=warnings,
-                            ),
-                            "output_budget": OUTPUT_TOKEN_BUDGETS[
-                                selected_output_budget_attempt - 1
-                            ],
-                            "output_budget_attempt": selected_output_budget_attempt,
-                        },
-                    ]
-                    if output_budget_diagnostics
+                    [*candidate.budget_diagnostics, selected_diagnostic]
+                    if candidate.budget_diagnostics
                     else None
                 ),
             )
+            if candidate.used_no_thinking_fallback:
+                diagnostics["used_no_thinking_fallback"] = True
             if warnings:
                 logger.warning(
                     "ollama_thinking_output_missing",
@@ -385,6 +331,30 @@ class OllamaAdapter:
                 reason="excluded_prompt",
             )
             excluded.setdefault(normalized_final, final.strip())
+        if len(candidate_budget_failures) == maximum_attempts:
+            # Every candidate overflowed its thinking schedule (with thinking
+            # enabled, each also failed its no-thinking fallback). Only a
+            # genuinely broken router/model reaches this point, so the terminal
+            # budget error is finally appropriate.
+            last_failure = candidate_budget_failures[-1]
+            exhausted = {
+                **last_failure["output_budget_attempt_diagnostics"][-1],
+                "validation_stage": "output_budget_exhausted",
+                "output_budget_attempts": last_failure["output_budget_attempts"],
+                "output_budgets": last_failure["output_budgets"],
+                "attempted_no_thinking_fallback": last_failure["attempted_no_thinking_fallback"],
+                "output_budget_attempt_diagnostics": (
+                    last_failure["output_budget_attempt_diagnostics"]
+                ),
+                "candidate_budget_diagnostics": candidate_budget_failures,
+            }
+            raise AppError(
+                "ollama_output_budget_exhausted",
+                "Prompt Assistant exhausted its output-token budget before completing "
+                "a structured prompt after bounded retries.",
+                status_code=503,
+                details=exhausted,
+            )
         if mode == "refine":
             raise AppError(
                 "prompt_refinement_unchanged",
@@ -416,6 +386,187 @@ class OllamaAdapter:
                 **(response_diagnostics[-1] if response_diagnostics else {}),
                 "validation_stage": "create_distinctness",
                 "attempt_diagnostics": response_diagnostics,
+            },
+        )
+
+    @staticmethod
+    def _with_candidate_budget_diagnostics(
+        diagnostics: dict[str, Any],
+        candidate: _CandidateCompose,
+        *,
+        selected_attempt: int | None = None,
+        attempt_diagnostics: Sequence[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        # The candidate's actual allowance history, including the reset to the
+        # base allowance when the no-thinking fallback produced the prompt.
+        return _with_output_budget_diagnostics(
+            diagnostics,
+            attempts=len(candidate.budget_diagnostics) + 1,
+            allowances=[entry["output_budget"] for entry in candidate.budget_diagnostics]
+            + [candidate.selected_budget],
+            selected_attempt=selected_attempt,
+            attempt_diagnostics=attempt_diagnostics,
+        )
+
+    async def _compose_candidate(
+        self,
+        *,
+        mode: str,
+        instruction: str,
+        think: bool,
+        attempt: int,
+        seed: int,
+    ) -> tuple[_CandidateCompose | None, dict[str, Any] | None]:
+        """Run one candidate's bounded output-budget escalation.
+
+        The user's thinking effort is preserved across the ``OUTPUT_TOKEN_BUDGETS``
+        schedule. Thinking length is unbounded, so a thinking trace can always
+        outgrow any fixed allowance; when thinking is enabled and every level
+        ends in a schema-incomplete ``done_reason: "length"``, one extra attempt
+        runs with thinking disabled at the base allowance, because the
+        deliverable is the short structured prompt (the reasoning trace is not
+        submitted to ComfyUI) and a composition without a trace fits far below
+        the shared allowance. Returns ``(candidate, None)`` when a usable
+        structured prompt was produced, otherwise ``(None,
+        candidate_budget_diagnostics)`` so the caller can advance to the next
+        candidate instead of terminating the composition.
+        """
+        plan: list[tuple[bool, int, str]] = [
+            (think, budget, "structured_prompt") for budget in OUTPUT_TOKEN_BUDGETS
+        ]
+        if think:
+            plan.append((False, OUTPUT_TOKEN_BUDGETS[0], "no_thinking_fallback"))
+        budget_diagnostics: list[dict[str, Any]] = []
+        attempted_no_thinking_fallback = False
+
+        def _failure_diagnostics() -> dict[str, Any]:
+            return {
+                "candidate_attempt": attempt + 1,
+                "attempted_no_thinking_fallback": attempted_no_thinking_fallback,
+                "output_budget_attempts": len(budget_diagnostics),
+                "output_budgets": [entry["output_budget"] for entry in budget_diagnostics],
+                "output_budget_attempt_diagnostics": list(budget_diagnostics),
+            }
+
+        for plan_index, (request_think, output_budget, stage) in enumerate(plan):
+            if stage == "no_thinking_fallback":
+                attempted_no_thinking_fallback = True
+            output_budget_attempt = plan_index + 1
+            payload = _generate_payload(
+                mode=mode,
+                instruction=instruction,
+                think=request_think,
+                attempt=attempt,
+                seed=seed,
+                output_budget=output_budget,
+            )
+            if self.settings.ollama_model:
+                payload["model"] = self.settings.ollama_model
+            received = await self._generate(payload, mode=mode, think=request_think)
+            if not isinstance(received.data, dict):
+                diagnostics = _with_output_budget_diagnostics(
+                    _response_diagnostics(
+                        {},
+                        status=received.status,
+                        validation_stage="response_envelope",
+                    ),
+                    attempts=output_budget_attempt,
+                    allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
+                )
+                raise AppError(
+                    "ollama_invalid_response",
+                    "Prompt Assistant returned an invalid response envelope.",
+                    details=diagnostics,
+                )
+            data = received.data
+            final, selected_field = _response_prompt_with_source(data)
+            if final:
+                return (
+                    _CandidateCompose(
+                        final=final,
+                        selected_field=selected_field,
+                        data=data,
+                        status=received.status,
+                        budget_diagnostics=tuple(budget_diagnostics),
+                        selected_budget_attempt=output_budget_attempt,
+                        selected_budget=output_budget,
+                        used_no_thinking_fallback=stage == "no_thinking_fallback",
+                    ),
+                    None,
+                )
+            diagnostics = _response_diagnostics(
+                data,
+                status=received.status,
+                validation_stage=stage,
+            )
+            diagnostics["output_budget"] = output_budget
+            diagnostics["output_budget_attempt"] = output_budget_attempt
+            budget_diagnostics.append(diagnostics)
+            if stage == "no_thinking_fallback":
+                # The single no-thinking attempt produced no usable prompt
+                # (overflowed the base allowance or returned malformed output).
+                # Thinking overflow plus a failed fallback exhausts the
+                # candidate; the caller advances to the next candidate.
+                return None, _failure_diagnostics()
+            if diagnostics["done_reason"] == "length":
+                if plan_index + 1 < len(plan):
+                    if plan[plan_index + 1][2] == "no_thinking_fallback":
+                        self._log_no_thinking_fallback(mode=mode, attempt=attempt)
+                    else:
+                        logger.info(
+                            "ollama_output_budget_retry",
+                            extra={
+                                "service": "ollama",
+                                "operation": "generate",
+                                "assistant_mode": mode,
+                                "thinking_enabled": think,
+                                "candidate_attempt": attempt + 1,
+                                "output_budget_attempt": output_budget_attempt,
+                                "output_budget": output_budget,
+                                "next_output_budget": plan[plan_index + 1][1],
+                                "done_reason": "length",
+                            },
+                        )
+                    continue
+                # Thinking is disabled for this candidate, so the schedule was
+                # the only recovery path; the candidate is exhausted.
+                return None, _failure_diagnostics()
+            has_output_text = any(
+                isinstance(data.get(field), str) and bool(data[field].strip())
+                for field in ("response", "thinking")
+            )
+            invalid = _with_output_budget_diagnostics(
+                diagnostics,
+                attempts=output_budget_attempt,
+                allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
+            )
+            raise AppError(
+                "ollama_invalid_response",
+                (
+                    "Prompt Assistant returned malformed structured prompt output."
+                    if has_output_text
+                    else "Prompt Assistant returned no usable prompt."
+                ),
+                details=invalid,
+            )
+        raise RuntimeError("Ollama output-budget retry loop exited unexpectedly")
+
+    @staticmethod
+    def _log_no_thinking_fallback(*, mode: str, attempt: int) -> None:
+        # Metadata only: which candidate drops thinking and at which allowance.
+        # No prompt, Creative Direction, or reasoning text is ever logged.
+        logger.info(
+            "ollama_output_budget_no_thinking_fallback",
+            extra={
+                "service": "ollama",
+                "operation": "generate",
+                "assistant_mode": mode,
+                "thinking_enabled": True,
+                "fallback_thinking_enabled": False,
+                "candidate_attempt": attempt + 1,
+                "output_budget_attempt": len(OUTPUT_TOKEN_BUDGETS) + 1,
+                "output_budget": OUTPUT_TOKEN_BUDGETS[0],
+                "done_reason": "length",
             },
         )
 

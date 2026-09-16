@@ -87,6 +87,12 @@ class JsonFormatter(logging.Formatter):
             "failure_kind",
             "retryable",
             "upstream_status",
+            "output_budget",
+            "output_budget_attempt",
+            "next_output_budget",
+            "done_reason",
+            "used_no_thinking_fallback",
+            "fallback_thinking_enabled",
         ):
             value = getattr(record, key, None)
             if value is not None:
