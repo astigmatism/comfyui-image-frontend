@@ -42,11 +42,31 @@ def inspect(container):
     return json.loads(output("docker", "inspect", container))[0]
 
 
-def preflight(root, project):
-    require(
-        not Path("/.dockerenv").exists() and not Path("/run/.containerenv").exists(),
-        "Run on the native Docker host through SSH, not inside the agent container",
-    )
+def execution_context(root, maintenance_container=None):
+    if maintenance_container:
+        own = inspect(maintenance_container)
+        mounts = {m["Destination"]: m for m in own["Mounts"]}
+        require(
+            own["Config"]["Hostname"] == socket.gethostname()
+            and own["Config"]["User"] == f"{os.getuid()}:{os.getgid()}"
+            and not own["HostConfig"]["Privileged"],
+            "Unexpected maintenance container identity",
+        )
+        for path in (str(root), "/var/run/docker.sock"):
+            mount = mounts.get(path, {})
+            require(
+                mount.get("Type") == "bind" and mount.get("Source") == path and mount.get("RW"),
+                "Maintenance mounts must use identical native host paths",
+            )
+    else:
+        require(
+            not Path("/.dockerenv").exists() and not Path("/run/.containerenv").exists(),
+            "Run on the native Docker host through SSH, not inside the agent container",
+        )
+
+
+def preflight(root, project, maintenance_container=None):
+    execution_context(root, maintenance_container)
     require(
         root.is_absolute() and root.resolve() == root and not str(root).startswith("/host/"),
         "Use the canonical native host deployment path",
@@ -64,10 +84,11 @@ def preflight(root, project):
         context["Endpoints"]["docker"]["Host"] == "unix:///var/run/docker.sock",
         "Expected the native host Docker socket",
     )
-    require(
-        output("docker", "info", "--format", "{{.Name}}").strip() == socket.gethostname(),
-        "Docker daemon and execution host differ",
-    )
+    if not maintenance_container:
+        require(
+            output("docker", "info", "--format", "{{.Name}}").strip() == socket.gethostname(),
+            "Docker daemon and execution host differ",
+        )
     files = [root / "compose.yaml", root / "compose.ordered-lora.yaml"]
     compose = [
         "docker",

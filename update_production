@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Install this tracked bootstrap at <deployment-root>/update_production.
+# It works through either the native host path or the agent's /host view.
+set -Eeuo pipefail
+export GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat
+deploy_view=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+source_view="$deploy_view/source"
+test "$(git -C "$source_view" remote get-url origin)" = https://github.com/astigmatism/comfyui-image-frontend.git
+git -C "$source_view" fetch origin main
+target_sha=$(git -C "$source_view" rev-parse --verify 'origin/main^{commit}')
+launch_file=$(mktemp /tmp/cif-launch.XXXXXXXX.py)
+trap 'rm -f "$launch_file"' EXIT
+git -C "$source_view" show "$target_sha:scripts/launch-production-update.py" > "$launch_file"
+python3 "$launch_file" --source-view "$source_view" --sha "$target_sha" "$@"
