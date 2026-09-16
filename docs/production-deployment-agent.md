@@ -1,5 +1,40 @@
 # Production update and deployment instructions for AI agents
 
+## Start here: the Samus production deployment
+
+For the installation at `192.168.1.5` (Samus), reached through `192.168.1.21`:
+
+1. Start a **native-host SSH session** as `astigmatism` on `.5`. The agent's
+   `/host/home/...` view is not a valid Docker host path. Set
+   `DEPLOY_ROOT=/home/astigmatism/comfyui-image-frontend` and
+   `DEPLOY_PROJECT=comfyui-image-frontend`. Verify these facts against the live
+   containers before changing anything.
+2. Fetch `origin/main` in `source`, record its full SHA once, and read this file
+   from that SHA: `git -C "$DEPLOY_ROOT/source" show
+   "$TARGET_SHA:docs/production-deployment-agent.md"`. An old chat, an unmerged
+   pull request, and frozen `source/main` are not the current instructions.
+3. Use **Path B only**, in order: identify the live app/data → review the target →
+   acquire the lock → prepare the release and configuration checkpoint → run the
+   bounded backup helper → edit only image/context → build with the app running →
+   recheck live mounts → reconcile → verify. Fetching is how this layout obtains
+   changes; do not `git pull` or advance frozen `source/main`.
+4. The authoritative data is the storage mounted at `/data` in the **current app
+   container**. As of the September 15 recovery this is the host `data/` bind.
+   Retained `cif-prod-data` and `cif-edge-cfg` volumes are historical recovery
+   copies, not the source for a routine backup or restart. Inspect, do not infer
+   freshness from their names or an earlier conversation.
+5. If the old app is stopped before any recreation/migration, restore that exact
+   container with `docker start <recorded-app-id>` immediately after excluding an
+   active backup. Investigate with service restored. Never leave it stopped while
+   comparing databases, installing dependencies, building, or waiting for advice.
+
+A routine update includes a consistent recovery checkpoint before startup can
+apply migrations. It does **not** include restoring old data, moving storage,
+rebuilding runtimes, running a broad test suite on production, or investigating
+unrelated infrastructure. Use the provided backup helper instead of improvising
+separate stop/tar/start commands. A real scope discrepancy blocks the update;
+it must not turn into an unbounded outage.
+
 ## Your role and scope
 
 You are operating on the production host for **ComfyUI Image Front-End**. Use this
@@ -125,6 +160,42 @@ Work as the checkout owner with access to the intended Docker daemon. Do not use
    from update regressions. Check for an active update process or Portal job;
    do not launch concurrent updaters or force-unlock an active job.
 
+Compose-looking labels alone do not prove Compose created a container. A built
+image can contain `com.docker.compose.*` labels, which a subsequent `docker run`
+inherits. Compare the image's labels with the container's working-directory,
+configuration-file, and config-hash labels, actual mounts, and the selected
+project's `compose ps --all` results. When investigating an unexpected creation,
+correlate its container ID and timestamp with your own commands and Docker events
+before attributing it to another updater. Repeated starts of the same container
+can be its restart policy, rather than another creation.
+
+### Distinguish host paths from the agent container's paths
+
+Docker resolves bind sources on the **daemon host**, not in the CLI container.
+For example, when a Linux host's `/` is mounted into an agent at `/host`, the
+agent's `/host/home/astigmatism/comfyui-image-frontend` corresponds to the host's
+`/home/astigmatism/comfyui-image-frontend`. Passing the former as a bind source
+asks Docker to use a different directory on the host. Short-form mounts can
+silently create that missing source as an empty directory, including when a
+Caddyfile was expected. This can cause `/data/assets` permission failures or
+file-versus-directory mount errors without any daemon failure.
+
+Use SSH or a documented host-execution helper to run the deployment on the
+verified Docker host as the checkout owner. If a helper enters as root, switch
+to that owner before Git or deployment commands. Alternatively, use a maintenance
+container with the deployment root mounted at its identical absolute host path.
+Do not run Compose or create Git worktrees through a translated `/host` prefix.
+Check the host identity and `docker info --format
+'Name={{.Name}} Root={{.DockerRootDir}}'` against the actual deployment.
+
+`docker run --rm alpine ...` without explicit mounts inspects that new Alpine
+container, **not the daemon's filesystem or mount namespace**. Its empty `/home`,
+absent `/host`, or overlay root is not evidence that the daemon lost host mounts.
+Inspect the actual host and the intended bind source instead. An authorized
+disposable bind probe should use `--mount type=bind,...,readonly` without source
+auto-creation, so a missing host path fails rather than creating another stub.
+See [Docker's bind-mount documentation](https://docs.docker.com/engine/storage/bind-mounts/).
+
 ### Path A: initialize a single-file checkout deployment
 
 Use Bash for the command examples. After verifying the actual deployment, set
@@ -219,6 +290,55 @@ overrides, especially `CIF_IMAGE_TAG` and TLS variables: shell values take prece
 over `.env`. Resolve any mismatch with the live deployment before proceeding; do
 not silently change which value is authoritative.
 
+Before any routine Path B update, define and run this gate in that verified
+execution context. It compares resolved bind sources with the existing live
+containers, rather than comparing two Compose configurations that could share
+the same incorrect path prefix. It also checks the expected data and TLS files
+without printing private configuration:
+
+```bash
+verify_live_bind_sources() {
+  python3 - "${compose[@]}" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+compose = sys.argv[1:]
+config = json.loads(subprocess.check_output(compose + ["config", "--format", "json"]))
+for service, definition in config["services"].items():
+    ids = subprocess.check_output(compose + ["ps", "--all", "-q", service], text=True).split()
+    assert len(ids) == 1, f"Expected one live container for {service}; inspect deployment ownership"
+    live = json.loads(subprocess.check_output(["docker", "inspect", ids[0]]))[0]
+    assert live["State"]["Running"], f"{service} is not running; inspect existing failure"
+    mounts = {mount["Destination"]: mount for mount in live["Mounts"]}
+    for candidate in definition.get("volumes", []):
+        if candidate["type"] != "bind":
+            continue
+        target = candidate["target"]
+        actual = mounts.get(target, {})
+        assert actual.get("Type") == "bind", f"{service} {target}: storage topology differs"
+        assert actual["Source"] == candidate["source"], f"{service} {target}: host bind source differs"
+        assert actual["RW"] == (not candidate.get("read_only", False)), f"{service} {target}: access mode differs"
+        source = Path(candidate["source"])
+        assert source.exists(), f"{service} {target}: bind source is missing"
+        if target == "/data":
+            assert (source / "app.db").is_file() and (source / "assets").is_dir(), "Production data is missing"
+        elif target == "/etc/caddy/Caddyfile":
+            assert source.is_file(), "Caddyfile bind source must be a file"
+        elif target == "/etc/caddy/certificates":
+            assert all((source / name).is_file() for name in ("ca.crt", "tls.crt", "tls.key")), "TLS files are missing"
+print("Live bind sources and required data/TLS files verified.")
+PY
+}
+verify_live_bind_sources
+```
+
+A refusal is a deployment discrepancy to investigate, not a reason to substitute
+the example Compose file, advance frozen main, or erase a volume. In particular,
+an emergency named-volume deployment needs the storage recovery below before a
+routine bind-based reconciliation. Repeat the gate immediately before `up`.
+
 ## 2. Review and validate the incoming changes
 
 ### Path A: review the branch update
@@ -312,7 +432,23 @@ trap 'rmdir "$DEPLOY_LOCK"' EXIT
 
 This serializes agents following Path B; it does not coordinate with the Path A
 script or other tools. Ensure no Portal/other update is active before acquiring
-it. After a lost session, inspect the prior job before removing its lock.
+it. After a lost session, inspect the prior job before removing its lock. Check
+for a running `backup-production-bind.py` process and its `backup-status.json`;
+the detached backup can outlive the agent's shell. Do not run another update while
+that process is active. A stale lock by itself is not an active deployment.
+
+For Path B, now perform **B1 below** to prepare the target worktree and restricted
+configuration checkpoint, then return here for the data backup. This preparation
+does not stop the app or edit its live configuration. Set `DEPLOY_BACKUP_DIR` to
+a new directory under `$DEPLOY_ROOT/.deployment-backups`, created with mode 700.
+
+```bash
+# Path B only; keep these variables in the same native-host Bash session.
+umask 077
+DEPLOY_BACKUP_DIR="$DEPLOY_ROOT/.deployment-backups/pre-$DEPLOYED_SHA-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$DEPLOY_ROOT/.deployment-backups"
+mkdir -m 700 "$DEPLOY_BACKUP_DIR"
+```
 
 Before recreation or migrations:
 
@@ -329,12 +465,14 @@ Before recreation or migrations:
    Back up private environment/configuration files and the actual TLS certificate
    directory, including the existing root CA and keys. Do not display their contents.
    In Path B, include both deployment-root Compose files and `.env`, and retain
-   the previous worktree. Use the two-file `compose` array even for `stop`/`start`;
-   do not copy the README's single-file invocation into this layout.
+   the previous worktree. The Path B helper operates on the exact container ID
+   discovered through the two-file Compose array. Do not copy the README's
+   single-file invocation into this layout.
 4. Take a consistent backup of SQLite **and all application-owned files together**.
-   Follow the stopped-app archive approach in the README's **Back up and restore**
-   section, substituting the verified volume or bind mount and the external backup
-   directory. Include any separately mounted database, assets, or uploads. Never
+   In Path B use the helper below. In Path A follow the stopped-app archive approach
+   in the README's **Back up and restore** section, substituting the verified
+   storage and external backup directory. Include any separately mounted database,
+   assets, or uploads. Never
    archive a live SQLite database and media as though they were an atomic snapshot.
 5. Stop only the frontend for that backup and ensure it is started again even if
    archiving fails, using a trap or equivalent cleanup. Verify that it becomes
@@ -350,6 +488,51 @@ The backup stop introduces a brief interruption in addition to container
 recreation. The app resumes while the replacement builds. A restore would lose
 changes made after the backup; report that recovery point accurately. A tag alone
 is not a data backup, and an archive listing alone is not a tested restore.
+
+### Path B: run the bounded backup as one host process
+
+Use the helper from the verified target worktree. It refuses translated host
+paths, remote daemons, mismatched Compose identity/images/mounts, named volumes,
+and unhealthy services **before stopping anything**. It archives the actual
+`data/` bind, including SQLite sidecars and certificates. Its `finally` handler
+restarts the same app after success, an archive failure, timeout, or handled
+SIGINT/SIGTERM. `nohup` keeps this recovery running when the agent disconnects.
+SIGKILL, a host failure, or an unavailable Docker daemon still requires operator
+recovery; do not claim that a shell trap can cover those cases.
+
+```bash
+python3 "$WORKTREE_DIR/scripts/backup-production-bind.py" \
+  --deploy-root "$DEPLOY_ROOT" --project "$DEPLOY_PROJECT" --check-only
+nohup python3 "$WORKTREE_DIR/scripts/backup-production-bind.py" \
+  --deploy-root "$DEPLOY_ROOT" --project "$DEPLOY_PROJECT" \
+  --output "$DEPLOY_BACKUP_DIR" \
+  > "$DEPLOY_BACKUP_DIR/backup.log" 2>&1 < /dev/null &
+BACKUP_PID=$!
+if wait "$BACKUP_PID"; then
+  cat "$DEPLOY_BACKUP_DIR/backup-status.json"
+else
+  cat "$DEPLOY_BACKUP_DIR/backup-status.json"
+  printf '%s\n' 'Backup failed; verify the original app is healthy. Do not deploy.' >&2
+  exit 1
+fi
+```
+
+The archive has a 180-second limit; restart health has a 120-second limit. It
+restarts before reading/hashing the archive or checking SQLite integrity on a
+disposable extracted copy. Require `phase=complete` and `exit_code=0`, and retain
+`data.tar`, `data.tar.sha256`, the status file, and configuration checkpoint.
+Failure retains a `.partial` archive; it is not an approved recovery checkpoint.
+Do not increase limits repeatedly or rerun the backup while its process exists.
+If a large dataset needs a different bound, establish it while the app is healthy.
+
+If a tool times out, inspect the **existing** process and status file. A tool
+timeout does not mean its command failed. Terminal text searches can match echoed
+commands, and `^`/`$` may refer to the whole transcript instead of individual lines.
+Neither a matched sentinel nor absence of a match proves completion. Use process
+exit status and the helper's receipt. Do not put shell operators such as `>` in a
+string variable and execute `$COMMAND`; pass arguments directly, with redirection
+outside the command. Keep builds and all investigations outside the stopped-app
+interval. For this installation a backup is normally seconds, not tens of minutes.
 
 ## 4. Deploy using the selected path
 
@@ -388,7 +571,7 @@ Portal or external generation services.
 
 ### Path B: deploy a detached worktree with both Compose files
 
-Run the following steps after the shared review and backup. Keep the initialized
+Perform B1 during section 3, then B2–B4 after the backup succeeds. Keep the initialized
 two-file `compose` array, lock, and captured SHAs in the same Bash session. Use
 `DEPLOY_BACKUP_DIR` for the verified, access-restricted backup directory from
 section 3. Record `DEPLOY_TLS_HOSTNAME` from the live edge configuration. The
@@ -398,7 +581,7 @@ ambiguous short hashes; retained older releases may use shorter tags.
 #### B1. Preserve configuration and create the release worktree
 
 ```bash
-: "${DEPLOY_BACKUP_DIR:?Set the completed backup directory outside the checkout}"
+: "${DEPLOY_BACKUP_DIR:?Set a new restricted backup directory outside the checkout}"
 : "${DEPLOY_TLS_HOSTNAME:?Set the existing TLS hostname}"
 test -d "$DEPLOY_BACKUP_DIR"
 umask 077
@@ -410,8 +593,9 @@ OLD_EDGE_ID=$("${compose[@]}" ps -q cif-tls-edge)
 test -n "$OLD_EDGE_ID"
 
 WORKTREE_DIR="$DEPLOY_ROOT/ordered-lora-$TARGET_SHA"
-test ! -e "$WORKTREE_DIR"
-git -C "$SOURCE_DIR" worktree add --detach "$WORKTREE_DIR" "$TARGET_SHA"
+if test ! -e "$WORKTREE_DIR"; then
+  git -C "$SOURCE_DIR" worktree add --detach "$WORKTREE_DIR" "$TARGET_SHA"
+fi
 test "$(git -C "$WORKTREE_DIR" rev-parse HEAD)" = "$TARGET_SHA"
 test -z "$(git -C "$WORKTREE_DIR" branch --show-current)"
 test -z "$(git -C "$WORKTREE_DIR" status --porcelain)"
@@ -424,6 +608,7 @@ Read the target revision's deployment instructions and complete any outstanding
 validation before editing deployment configuration. Do not put `.env` or `data/`
 in the worktree, and do not replace the production base Compose file with the
 worktree's `compose.example.yml`.
+Return to section 3 and complete the backup before B2.
 
 #### B2. Change only the image tag and app build context
 
@@ -537,6 +722,8 @@ verify the recorded SHA/context/image ID and skip the build when they agree;
 otherwise investigate before reuse. Preserve the previous image and worktree.
 Record the target SHA, tag, context, and built image ID together as deployment
 evidence; the Dockerfile does not itself embed a Git revision label.
+`build --pull` is a Boolean option; do not write `build --pull never` (Compose can
+interpret `never` as a service). `--pull never` belongs on the `up` command below.
 
 #### B4. Verify TLS at the deployment root and reconcile
 
@@ -558,6 +745,7 @@ containers; `--pull never` prevents a pull but cannot undo a tag overwritten by
 another local build. Reconcile only after that check passes:
 
 ```bash
+verify_live_bind_sources
 "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 120
 ```
 
@@ -613,11 +801,18 @@ Do not report success based only on a completed build or a running container.
        assert response.status == 200
    assert health["status"] == "ok" and health["database"] is True
    assert health["worker"]["ready"] is True
+   assert health["worker"]["state"] == "running"
+   assert health["worker"]["dispatcher_running"] is True
+   assert health["worker"]["heartbeat_fresh"] is True
    settings = get_settings()
    assert settings.comfyui_instance_configuration_mode == "explicit"
    print("Application, database, worker, and runtime configuration checks passed.")
    PY
    ```
+
+   The worker can briefly report `recovering` after startup. Wait for it to become
+   `running` within the bounded verification period; do not equate `ready=true`
+   alone with completion of recovery.
 
    Substitute the actual edge service and listener if the deployment differs.
    `/api/health` covers the database and local worker; it does not prove that every
@@ -653,6 +848,21 @@ Do not report success based only on a completed build or a running container.
 
 ## 6. Handle failure without destroying recovery options
 
+- **Translated worktree paths:** back up the Git worktree metadata and each
+  affected `.git` link, then run `git -C "$SOURCE_DIR" worktree repair <actual-host-path>...`
+  on the host as the checkout owner. Verify every retained worktree's original
+  commit and cleanliness and the unchanged frozen-main SHA. Do not prune entries
+  just because paths created through the agent's `/host` view appear missing.
+- **Emergency named-volume deployment:** the live volume is authoritative;
+  the original host `data/` can be stale. For an authorized return to binds, save
+  the actual container definitions and settings, stop the application and edge,
+  and copy the complete stopped volume (including SQLite journal files) into a
+  separate staging directory. Verify file inventories, hashes, numeric ownership,
+  database integrity, and existing TLS material before promoting it. Retain the
+  old host directory, both volumes, and a stopped-state archive. Remove only the
+  stopped bridge containers needed to free their names, then reconcile the
+  original Compose project. If the replacement has accepted writes, preserve its
+  newest data before any rollback; never silently return to the older volume.
 - **Failure before recreation:** the old container may still be serving while the
   checkout or local image tag has advanced. Inspect actual state. Preserve the
   running image, backup, and diagnostics; do not equate the checkout with the live
