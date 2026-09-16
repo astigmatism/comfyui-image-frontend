@@ -1435,6 +1435,67 @@ test("generation source controls omit legacy color and comparison presentation",
   );
 });
 
+test("generation quantity stepper renders beside the generate button and tracks the value", () => {
+  const baseState = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: { prompt: "a tree with chickens" },
+    fieldErrors: {},
+    formError: null,
+    selectedGenerationTargetCount: 1,
+  };
+  const render = (quantity) =>
+    generationPanelMarkup(
+      quantity === undefined ? baseState : { ...baseState, generationQuantity: quantity },
+      publishedSource,
+      publishedInterface,
+    );
+  const arrow = (html, action) =>
+    html.match(new RegExp(`<button type="button" class="quantity-arrow" data-action="${action}"[^>]*>[^<]*</button>`))?.[0] || "";
+
+  const atOne = render(1);
+  assert.match(atOne, /class="generate-row"/);
+  assert.match(
+    atOne,
+    /<button id="generate-button" class="button primary" data-action="generate"\s*>Generate<\/button>/,
+  );
+  assert.ok(atOne.indexOf('id="generate-button"') < atOne.indexOf('id="generation-quantity"'));
+  assert.match(
+    atOne,
+    /id="generation-quantity" class="quantity-value" type="text" inputmode="numeric" autocomplete="off" value="1" aria-label="Generation quantity"/,
+  );
+  assert.doesNotMatch(arrow(atOne, "increment-generation-quantity"), /disabled/);
+  assert.match(arrow(atOne, "decrement-generation-quantity"), /disabled/);
+
+  const atFive = render(5);
+  assert.match(atFive, /value="5"/);
+  assert.doesNotMatch(arrow(atFive, "increment-generation-quantity"), /disabled/);
+  assert.doesNotMatch(arrow(atFive, "decrement-generation-quantity"), /disabled/);
+
+  const atMax = render(16);
+  assert.match(atMax, /value="16"/);
+  assert.match(arrow(atMax, "increment-generation-quantity"), /disabled/);
+  assert.doesNotMatch(arrow(atMax, "decrement-generation-quantity"), /disabled/);
+
+  // Fixture states without the field fall back to the minimum.
+  const missing = render(undefined);
+  assert.match(missing, /value="1"/);
+  assert.match(arrow(missing, "decrement-generation-quantity"), /disabled/);
+
+  const submitting = generationPanelMarkup(
+    { ...baseState, generationQuantity: 3, submitting: true, selectedGenerationTargetCount: 3 },
+    publishedSource,
+    publishedInterface,
+  );
+  assert.match(submitting, /id="generation-quantity"[^>]*disabled/);
+  assert.match(arrow(submitting, "increment-generation-quantity"), /disabled/);
+  assert.match(arrow(submitting, "decrement-generation-quantity"), /disabled/);
+});
+
 test("gallery overlays show only checkpoint metadata and keep details accessible without a checkpoint", () => {
   const base = {
     id: "g1",
@@ -1957,6 +2018,8 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf("data-resolution-pair-block"));
   assert.ok(html.indexOf('data-control-block="width"') < html.indexOf('data-control-block="height"'));
   assert.match(html, /data-control-id="seed"[^>]*type="text"[^>]*inputmode="numeric"/);
+  assert.match(html, /<input type="checkbox"[^>]*data-seed-mode="seed"[^>]*checked/);
+  assert.match(html, /data-control-id="seed"[^>]*disabled/);
   assert.doesNotMatch(html, /Use random or enter an exact seed\.|role="tooltip"|help-text/);
   assert.match(html, /data-control-id="enable_seedvr2_upscale"[^>]*type="checkbox"/);
   assert.match(
@@ -2052,8 +2115,11 @@ test("fixed-mode seed renders no random choice and exposes its exact default", (
     { seed: { mode: "fixed", value: "1125899906842624" } },
     { inputs: [control] },
   );
-  assert.match(html, /aria-label="Seed mode"><option value="fixed" selected>Fixed<\/option>/);
-  assert.doesNotMatch(html, /option value="random"/);
+  const modeSwitch = html.match(/<input type="checkbox"[^>]*data-seed-mode="seed"[^>]*\/>/)?.[0] || "";
+  assert.match(modeSwitch, /\sdisabled(?:\s|\/>)/);
+  assert.doesNotMatch(modeSwitch, /checked/);
+  assert.doesNotMatch(html, /<em>Random<\/em>/);
+  assert.match(html, /<em>Fixed<\/em>/);
   assert.match(html, /<input[^>]*value="1125899906842624"[^>]*aria-label="Seed value"/);
 });
 
@@ -2097,8 +2163,9 @@ test("seed mode availability is independent of public input id text", () => {
     { disabled_seed: { mode: "random", value: "0" } },
     { inputs: [control] },
   );
-  const mode = html.match(/<select data-seed-mode="disabled_seed"[^>]*>/)?.[0] || "";
-  assert.doesNotMatch(mode, /\sdisabled(?:\s|>)/);
+  const mode = html.match(/<input type="checkbox"[^>]*data-seed-mode="disabled_seed"[^>]*\/>/)?.[0] || "";
+  assert.doesNotMatch(mode, /\sdisabled(?:\s|\/>)/);
+  assert.match(mode, /checked/);
 });
 
 test("advanced controls open when they contain a field error", () => {

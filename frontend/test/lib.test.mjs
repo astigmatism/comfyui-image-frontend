@@ -5,9 +5,12 @@ import {
   createCoalescedTaskQueue,
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
+  MAX_GENERATION_QUANTITY,
+  MIN_GENERATION_QUANTITY,
   applyChoiceStrengthDefaults,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
+  clampGenerationQuantity,
   clientValidate,
   choiceStrengthCompanion,
   collectionAncestors,
@@ -1186,4 +1189,20 @@ test("event refresh queue bounds concurrency, coalesces running keys and clears 
   queue.clear();
   await settle();
   assert.equal(calls.some(([key]) => key === "e"), false);
+});
+
+test("generation quantity clamps into the supported range", () => {
+  assert.equal(MIN_GENERATION_QUANTITY, 1);
+  assert.equal(MAX_GENERATION_QUANTITY, 16);
+  assert.equal(clampGenerationQuantity("3"), 3);
+  assert.equal(clampGenerationQuantity(0), 1);
+  assert.equal(clampGenerationQuantity(-4), 1);
+  assert.equal(clampGenerationQuantity(17), 16);
+  assert.equal(clampGenerationQuantity("999"), 16);
+  assert.equal(clampGenerationQuantity(""), 1);
+  assert.equal(clampGenerationQuantity(null), 1);
+  assert.equal(clampGenerationQuantity(undefined), 1);
+  assert.equal(clampGenerationQuantity("1abc"), 1);
+  assert.equal(clampGenerationQuantity("007"), 7);
+  assert.equal(clampGenerationQuantity("16"), 16);
 });

@@ -588,6 +588,17 @@ export function directionSignalNextStatus({ status, appliedValue, currentValue }
   return "idle";
 }
 
+export const MIN_GENERATION_QUANTITY = 1;
+export const MAX_GENERATION_QUANTITY = 16;
+// The batch endpoint's per-request item cap (backend GenerationBatchCreate).
+export const MAX_BATCH_GENERATION_ITEMS = 256;
+
+export function clampGenerationQuantity(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return MIN_GENERATION_QUANTITY;
+  return Math.min(MAX_GENERATION_QUANTITY, Math.max(MIN_GENERATION_QUANTITY, parsed));
+}
+
 export const AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS = 3;
 export const AUTO_GENERATE_COMPOSITION_RETRY_BASE_MS = 1_000;
 export const AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS = 5_000;

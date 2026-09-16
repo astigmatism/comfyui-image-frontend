@@ -7,9 +7,13 @@ import { bindGallerySelection } from "./gallery-selection.mjs";
 import {
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   CHECKPOINT_TIER_DEFINITIONS,
+  MAX_BATCH_GENERATION_ITEMS,
+  MAX_GENERATION_QUANTITY,
+  MIN_GENERATION_QUANTITY,
   applyChoiceStrengthDefaults,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
+  clampGenerationQuantity,
   clientValidate,
   choiceOptions,
   choiceStrengthCompanion,
@@ -100,6 +104,7 @@ const state = {
   checkpointTiers: {},
   modelSelectionsBySourceRevision: new Map(),
   selectedGenerationTargetCount: 0,
+  generationQuantity: MIN_GENERATION_QUANTITY,
   controlSectionOpen: {},
   parameters: {},
   explicitParameterIds: new Set(),
@@ -463,6 +468,8 @@ async function handleClick(event) {
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "reset-prompt-instructions") resetPromptInstructions(target);
     else if (action === "retry-auto-generate") retryAutoGenerate();
+    else if (action === "increment-generation-quantity") applyGenerationQuantity(state.generationQuantity + 1);
+    else if (action === "decrement-generation-quantity") applyGenerationQuantity(state.generationQuantity - 1);
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
     else if (action === "toggle-collection-favorite") await toggleCollectionFavorite(target.dataset.collectionId, target);
@@ -526,6 +533,10 @@ async function handleClick(event) {
     updatePhotoViewerNextIn();
     return;
   }
+  if (element.id === "generation-quantity") {
+    applyGenerationQuantity(element.value);
+    return;
+  }
   if (element.id === "auto-generate-creative-direction") {
     state.autoGenerateCreativeDirection = element.checked;
     preparedAutoGenerateAssistantFingerprint = null;
@@ -576,7 +587,7 @@ async function handleClick(event) {
     const input = interfaceInputs(state.activeSource?.interface).find((item) => item.id === id);
     if (!input) return;
     const current = seedFormValue(input, state.parameters[id]);
-    state.parameters[id] = { mode: element.value === "random" ? "random" : "fixed", value: current.value };
+    state.parameters[id] = { mode: element.checked ? "random" : "fixed", value: current.value };
     state.explicitParameterIds.add(id);
     state.serverFieldErrors[id] = null;
     persistActiveParameterState();
@@ -968,6 +979,11 @@ function handleInput(event) {
   }
   if (element.id === "gallery-scale") {
     updateGalleryScale(element.value, false);
+    return;
+  }
+  if (element.id === "generation-quantity") {
+    const filtered = element.value.replace(/[^0-9]/g, "").slice(0, 3);
+    if (filtered !== element.value) element.value = filtered;
     return;
   }
   if (element.id === "creative-direction") {
@@ -2113,6 +2129,7 @@ async function enterApplication() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.autoGenerateCreativeDirection = false;
+  state.generationQuantity = loadGenerationQuantity();
   clearAutoGeneratePin();
   resetAutoGenerateRetryState();
   state.favorites = { items: [], nextCursor: null };
@@ -2827,6 +2844,12 @@ function plannedGenerationTargetCount() {
   return source ? modelParameterVariantsForSource(source).length : 0;
 }
 
+// One click of Generate queues the selected quantity for every model
+// variant (checkpoint) the active source has selected.
+function plannedGenerationTotal() {
+  return plannedGenerationTargetCount() * state.generationQuantity;
+}
+
 function sourceContextIsCurrent(key, revision) {
   return Boolean(
     key &&
@@ -3036,7 +3059,7 @@ function applyPreset(presetId) {
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
-  state.selectedGenerationTargetCount = plannedGenerationTargetCount();
+  state.selectedGenerationTargetCount = plannedGenerationTotal();
   const panelView = capturePanelView(panel);
   const contract = sourceInterface(state.activeSource);
   const clientErrors = clientValidate(contract, state.parameters);
@@ -3183,6 +3206,44 @@ function persistPromptInstructions() {
   } catch {
     // Editing remains available when browser storage is disabled.
   }
+}
+
+function generationQuantityStorageKey() {
+  return `cif.generation-quantity.${state.session?.user?.id || "anonymous"}`;
+}
+
+function loadGenerationQuantity() {
+  try {
+    return clampGenerationQuantity(localStorage.getItem(generationQuantityStorageKey()));
+  } catch {
+    return MIN_GENERATION_QUANTITY;
+  }
+}
+
+function persistGenerationQuantity() {
+  try {
+    localStorage.setItem(generationQuantityStorageKey(), String(state.generationQuantity));
+  } catch {
+    // The quantity still applies for this session when storage is disabled.
+  }
+}
+
+function applyGenerationQuantity(next) {
+  state.generationQuantity = clampGenerationQuantity(next);
+  persistGenerationQuantity();
+  syncGenerationQuantityControl();
+}
+
+function syncGenerationQuantityControl() {
+  const panel = document.querySelector("#generation-panel");
+  if (!panel) return;
+  const input = panel.querySelector("#generation-quantity");
+  if (input && document.activeElement !== input) input.value = String(state.generationQuantity);
+  const increment = panel.querySelector('[data-action="increment-generation-quantity"]');
+  if (increment) increment.disabled = Boolean(state.submitting) || state.generationQuantity >= MAX_GENERATION_QUANTITY;
+  const decrement = panel.querySelector('[data-action="decrement-generation-quantity"]');
+  if (decrement) decrement.disabled = Boolean(state.submitting) || state.generationQuantity <= MIN_GENERATION_QUANTITY;
+  if (input) input.disabled = Boolean(state.submitting);
 }
 
 function promptEditorMode(dialog) {
@@ -3358,7 +3419,7 @@ function syncGenerationSubmissionState() {
     ...withoutNulls(state.serverFieldErrors),
   };
   state.fieldErrors = errors;
-  state.selectedGenerationTargetCount = plannedGenerationTargetCount();
+  state.selectedGenerationTargetCount = plannedGenerationTotal();
   for (const control of interfaceInputs(contract)) {
     const block = panel.querySelector(
       `[data-control-block="${CSS.escape(control.id)}"]`,
@@ -3416,6 +3477,7 @@ function syncGenerationSubmissionState() {
     sourcePicker.disabled =
       !state.sources.length || (state.submitting && !state.autoGenerate);
   }
+  syncGenerationQuantityControl();
 }
 
 function currentAutoGenerateRetryContext() {
@@ -3670,7 +3732,14 @@ async function generate({ automatic = false } = {}) {
     syncPromptAssistantDraftFromPanel();
     if (autoGenerationNeedsPromptAssistant()) return false;
   }
-  if (plannedGenerationTargetCount() > 1) {
+  const plannedTotal = plannedGenerationTotal();
+  if (plannedTotal > MAX_BATCH_GENERATION_ITEMS) {
+    state.formError = `Too many planned generations: ${plannedTotal} selected checkpoints × quantity ${state.generationQuantity} exceeds the ${MAX_BATCH_GENERATION_ITEMS}-item batch limit. Lower the quantity or select fewer checkpoints.`;
+    syncGenerationSubmissionState();
+    toast(state.formError, "error");
+    return false;
+  }
+  if (plannedTotal > 1) {
     return generateSelectedCheckpoints({ automatic });
   }
   return generateSingleSource({ automatic });
@@ -3706,7 +3775,7 @@ async function generateSingleSource({ automatic = false } = {}) {
     focusFirstInvalid();
     return false;
   }
-  beginGenerationActivitySubmission(plannedGenerationTargetCount());
+  beginGenerationActivitySubmission(plannedGenerationTotal());
   state.submitting = true;
   state.formError = null;
   state.serverFieldErrors = {};
@@ -3823,7 +3892,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
     return false;
   }
 
-  beginGenerationActivitySubmission(plannedGenerationTargetCount());
+  beginGenerationActivitySubmission(plannedGenerationTotal());
   state.submitting = true;
   state.formError = null;
   state.serverFieldErrors = {};
@@ -3831,6 +3900,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
   setPromptDirectionSignal("idle");
   let focusErrors = false;
   try {
+    const quantity = state.generationQuantity;
     const modelVariants = orderedModelParameterVariants(
       requestSource,
       contract,
@@ -3851,24 +3921,34 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
       }),
     });
     const inputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
-    for (const [parameterId, value] of Object.entries(validation.resolved_seeds || {})) {
-      if (inputs.get(parameterId)?.type === "seed") {
-        sharedParameters[parameterId] = String(value);
+    // A single planned item keeps the server-resolved seed aligned across the
+    // selected checkpoints; a quantity over one lets each item resolve its own
+    // seed so random-seed repeats are not duplicates.
+    if (quantity === MIN_GENERATION_QUANTITY) {
+      for (const [parameterId, value] of Object.entries(validation.resolved_seeds || {})) {
+        if (inputs.get(parameterId)?.type === "seed") {
+          sharedParameters[parameterId] = String(value);
+        }
       }
     }
 
-    const queueTargets = modelVariants.map((modelParameters, index) => {
-      const payload = {
-        source_key: requestSourceKey,
-        comfyui_instance_id: requestComfyuiInstanceId,
-        collection_id: requestCollectionId,
-        revision: structuredClone(requestRevision),
-        parameters: { ...sharedParameters, ...modelParameters },
-      };
-      const usesPromptAssistant = Boolean(requestCompositionId && index === 0);
-      if (usesPromptAssistant) payload.prompt_assistant_run_id = requestCompositionId;
-      return { payload, usesPromptAssistant };
-    });
+    let firstTarget = true;
+    const queueTargets = [];
+    for (const modelParameters of modelVariants) {
+      for (let repeat = 0; repeat < quantity; repeat += 1) {
+        const payload = {
+          source_key: requestSourceKey,
+          comfyui_instance_id: requestComfyuiInstanceId,
+          collection_id: requestCollectionId,
+          revision: structuredClone(requestRevision),
+          parameters: { ...sharedParameters, ...modelParameters },
+        };
+        const usesPromptAssistant = Boolean(requestCompositionId && firstTarget);
+        firstTarget = false;
+        if (usesPromptAssistant) payload.prompt_assistant_run_id = requestCompositionId;
+        queueTargets.push({ payload, usesPromptAssistant });
+      }
+    }
     const batch = await api("/api/generations/batch", {
       method: "POST",
       body: JSON.stringify({ items: queueTargets.map(({ payload }) => payload) }),
@@ -3923,7 +4003,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
         .join(" ");
       const omitted =
         failures.length > 3 ? ` ${failures.length - 3} more failed.` : "";
-      state.formError = `Queued ${queued.length} of ${modelVariants.length} planned generations. ${failureSummary}${omitted}`;
+      state.formError = `Queued ${queued.length} of ${queueTargets.length} planned generations. ${failureSummary}${omitted}`;
       state.serverFieldErrors = normalizeParameterErrors(failures[0]?.fields);
       focusErrors = Object.keys(state.serverFieldErrors).length > 0;
       toast(state.formError, "error");
@@ -3964,7 +4044,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
     return (
       queued.length > 0 &&
       failures.length === 0 &&
-      queued.length === modelVariants.length
+      queued.length === queueTargets.length
     );
   } catch (error) {
     if (

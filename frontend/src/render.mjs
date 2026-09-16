@@ -2,6 +2,8 @@ import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
+  MAX_GENERATION_QUANTITY,
+  MIN_GENERATION_QUANTITY,
   controlPresentation,
   collectionAncestors,
   collectionDepth,
@@ -160,7 +162,16 @@ export function generationPanelMarkup(state, profile, contract) {
     <div class="panel-layout">
       <div class="panel-fixed">
         <div class="generation-actions">
-          <button id="generate-button" class="button primary full" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (selectedTargetCount > 1 ? `Queueing ${selectedTargetCount}…` : "Queueing…") : "Generate"}</button>
+          <div class="generate-row">
+            <button id="generate-button" class="button primary" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (selectedTargetCount > 1 ? `Queueing ${selectedTargetCount}…` : "Queueing…") : "Generate"}</button>
+            <div class="generation-quantity" role="group" aria-label="Generation quantity">
+              <input id="generation-quantity" class="quantity-value" type="text" inputmode="numeric" autocomplete="off" value="${state.generationQuantity ?? MIN_GENERATION_QUANTITY}" aria-label="Generation quantity" aria-live="polite" ${state.submitting ? "disabled" : ""} />
+              <div class="quantity-spinner">
+                <button type="button" class="quantity-arrow" data-action="increment-generation-quantity" aria-label="Increase generation quantity" ${state.submitting || (state.generationQuantity ?? MIN_GENERATION_QUANTITY) >= MAX_GENERATION_QUANTITY ? "disabled" : ""}>▲</button>
+                <button type="button" class="quantity-arrow" data-action="decrement-generation-quantity" aria-label="Decrease generation quantity" ${state.submitting || (state.generationQuantity ?? MIN_GENERATION_QUANTITY) <= MIN_GENERATION_QUANTITY ? "disabled" : ""}>▼</button>
+              </div>
+            </div>
+          </div>
           <div class="auto-generation-options">
             <label class="switch auto-generation-switch" for="auto-generate">
               <input id="auto-generate" type="checkbox" role="switch" ${state.autoGenerate ? "checked" : ""} />
@@ -1007,11 +1018,13 @@ function controlConstraint(control, name) {
 function seedMarkup(control, value, common, disabled) {
   const seed = seedFormValue(control, value);
   const random = seed.mode === "random";
-  const modeOptions = seedAllowsRandom(control)
-    ? `<option value="random" ${random ? "selected" : ""}>Random</option><option value="fixed" ${!random ? "selected" : ""}>Fixed</option>`
-    : '<option value="fixed" selected>Fixed</option>';
+  const switchDisabled = disabled || !seedAllowsRandom(control);
   return `<div class="seed-control">
-    <select data-seed-mode="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} aria-label="${escapeHtml(control.label)} mode">${modeOptions}</select>
+    <label class="switch">
+      <input type="checkbox" data-seed-mode="${escapeHtml(control.id)}" aria-label="Random seed" ${random ? "checked" : ""} ${switchDisabled ? "disabled" : ""} />
+      <span aria-hidden="true"></span>
+      <em>${random ? "Random" : "Fixed"}</em>
+    </label>
     <input ${common} type="text" inputmode="numeric" pattern="-?[0-9]*" value="${random ? "" : escapeHtml(seed.value)}" ${random ? "disabled" : ""} data-minimum="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" data-maximum="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" aria-label="${escapeHtml(control.label)} value" />
   </div>`;
 }

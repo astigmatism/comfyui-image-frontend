@@ -418,6 +418,77 @@ code {
   gap: 9px;
 }
 
+.generate-row {
+  display: flex;
+  gap: 8px;
+}
+
+.generate-row #generate-button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.generation-quantity {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 60px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.quantity-value {
+  width: 36px;
+  min-height: var(--control-height);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: center;
+  font-weight: 650;
+  font-size: 0.95rem;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.quantity-value::-webkit-outer-spin-button,
+.quantity-value::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.quantity-spinner {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  border-left: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.quantity-arrow {
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.55rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  transition:
+    background var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.quantity-arrow:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.quantity-arrow:active:not(:disabled) {
+  background: var(--surface-blue);
+}
+
 .field.compact.comfyui-instance-field {
   grid-template-columns: max-content minmax(0, 1fr) 1.4rem;
   align-items: center;
@@ -1809,7 +1880,6 @@ code {
 .field input,
 .field textarea,
 .field select,
-.seed-control select,
 .seed-control input,
 .resolution-control input {
   width: 100%;
@@ -1823,7 +1893,6 @@ code {
 
 .field input,
 .field select,
-.seed-control select,
 .seed-control input,
 .resolution-control input {
   padding: 0 10px;
@@ -1840,7 +1909,6 @@ code {
 .field textarea:hover:not(:disabled),
 .field select:hover:not(:disabled),
 .seed-control input:hover:not(:disabled),
-.seed-control select:hover:not(:disabled),
 .resolution-control input:hover:not(:disabled) {
   border-color: var(--border-strong);
 }
@@ -2145,7 +2213,8 @@ code {
 }
 
 .seed-control {
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
 }
 
 .number-control {

@@ -144,8 +144,10 @@ test("frontend document loads one content-addressed module graph", async ({ page
 test("bootstrap, user administration, generation, progressive card, recall, and scale persistence", async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto("/");
-  await signIn(page, "admin", "E2EAdminTemporary123!");
-  await setForcedPassword(page, "E2EAdminPermanent123!");
+  // Earlier specs in the same run (generation-quantity) may already have
+  // consumed the one-time temporary password; the helper completes the forced
+  // password change itself whenever it is still pending.
+  await signInAdminWithCurrentFixturePassword(page);
 
   await openAccountMenu(page);
   await page.getByRole("menuitem", { name: "Administration" }).click();
@@ -748,19 +750,28 @@ test("runtime selector is a borderless single-line two-instance control", async 
   const actionOrder = await page.locator(".generation-actions").evaluate((element) =>
     Array.from(element.children).map((child) =>
       child.id ||
-      (child.classList.contains("auto-generation-options")
-        ? "auto-generation-options"
-        : child.classList.contains("comfyui-instance-field")
-          ? "comfyui-instance-field"
-          : "unknown"),
+      (child.classList.contains("generate-row")
+        ? "generate-row"
+        : child.classList.contains("auto-generation-options")
+          ? "auto-generation-options"
+          : child.classList.contains("comfyui-instance-field")
+            ? "comfyui-instance-field"
+            : "unknown"),
     ),
   );
   expect(actionOrder).toEqual([
-    "generate-button",
+    "generate-row",
     "auto-generation-options",
     "auto-generate-status",
     "comfyui-instance-field",
   ]);
+  const generateRowOrder = await page.locator(".generate-row").evaluate((element) =>
+    Array.from(element.children).map((child) =>
+      child.id ||
+      (child.classList.contains("generation-quantity") ? "generation-quantity" : "unknown"),
+    ),
+  );
+  expect(generateRowOrder).toEqual(["generate-button", "generation-quantity"]);
   await expect(selector).toHaveValue("default");
   await expect(selector.locator("option")).toHaveText(["Primary", "Secondary"]);
   const status = row.locator("#comfyui-instance-status");
@@ -2288,14 +2299,14 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   });
   expect(JSON.stringify(publishedLora)).not.toMatch(/safetensors|options_json|binding/i);
 
-  const seedMode = page.getByLabel("Seed mode", { exact: true });
+  const seedRandom = page.getByLabel("Random seed", { exact: true });
   const seedValue = page.getByLabel("Seed value", { exact: true });
-  await seedMode.focus();
+  await seedRandom.focus();
   await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
-  await seedMode.blur();
-  await expect(seedMode).toHaveValue("random");
+  await seedRandom.blur();
+  await expect(seedRandom).toBeChecked();
   await expect(seedValue).toBeDisabled();
-  await seedMode.selectOption("fixed");
+  await seedRandom.uncheck();
   await expect(seedSectionStatus).toHaveText("Fixed");
   await expect(seedValue).toBeEnabled();
   await expect(seedValue).toHaveAttribute("data-maximum", "1125899906842624");
