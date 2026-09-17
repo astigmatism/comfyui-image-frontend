@@ -41,7 +41,7 @@ class DeploymentTests(unittest.TestCase):
         self.app = {
             "Id": "old-app",
             "Image": "old-image",
-            "Config": {"Image": "frontend:" + OLD},
+            "Config": {"Image": "frontend:" + OLD, "User": "1000:1000"},
             "State": {"Running": True},
             "Mounts": [{"Destination": "/data", "Source": str(self.root / "data")}],
         }
@@ -64,6 +64,7 @@ class DeploymentTests(unittest.TestCase):
         self.stack.enter_context(
             patch.object(deploy, "verify_service", return_value={"https": "verified"})
         )
+        self.stack.enter_context(patch.object(deploy, "smoke_image", side_effect=self.smoke))
         self.stack.enter_context(
             patch.object(
                 deploy.shutil,
@@ -140,6 +141,12 @@ class DeploymentTests(unittest.TestCase):
         archive.write_bytes(b"archive fixture")
         report("restarted")
 
+    def smoke(self, _image, user, _log):
+        self.assertEqual(user, "1000:1000")
+        self.events.append("image-smoke")
+        if self.fail == "image-smoke":
+            raise RuntimeError("Candidate image failed isolated startup")
+
     def assert_restored(self):
         for name, expected in self.original.items():
             self.assertEqual((self.root / name).read_bytes(), expected)
@@ -147,7 +154,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_success_builds_before_backup_and_publishes_verified_receipt(self):
         deploy.deploy(self.root, NEW)
-        self.assertEqual(self.events, ["worktree", "build", "backup", "up"])
+        self.assertEqual(self.events, ["worktree", "build", "image-smoke", "backup", "up"])
         status = json.loads(
             next((self.root / ".deployment-backups").glob("*/deployment-status.json")).read_text()
         )
@@ -163,6 +170,20 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("backup", self.events)
         self.assertNotIn("up", self.events)
         self.assert_restored()
+
+    def test_image_startup_failure_preserves_live_app_before_backup_or_cutover(self):
+        self.fail = "image-smoke"
+        with self.assertRaisesRegex(RuntimeError, "isolated startup"):
+            deploy.deploy(self.root, NEW)
+        self.assertNotIn("backup", self.events)
+        self.assertNotIn("up", self.events)
+        self.assert_restored()
+        status = json.loads(
+            next((self.root / ".deployment-backups").glob("*/deployment-status.json")).read_text()
+        )
+        self.assertEqual(status["phase"], "failed")
+        self.assertEqual(status["failed_phase"], "image-smoke")
+        self.assertEqual(status["exit_code"], 1)
 
     def test_backup_failure_restores_config_without_cutover(self):
         self.fail = "backup"

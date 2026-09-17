@@ -29,7 +29,9 @@ launcher may build/cache its maintenance tool image, and it fetches remote refs.
 
 It checks the existing project, configuration, images, mounts, certificates and
 Git state; holds the deployment lock; prepares the detached target worktree;
-builds with the old app running; takes a consistent backup with restart cleanup
+builds with the old app running; starts the candidate as the production UID in an
+isolated container with disposable data, no network or production mounts; takes a
+consistent backup with restart cleanup
 on handled failures; reconciles the original two-file Compose project; and checks
 the running image, database, worker, explicit runtime configuration, trusted HTTPS,
 frontend assets and manifest. It preserves frozen `source/main`, production data,
@@ -43,11 +45,16 @@ An already-current release only gets verified; it is not rebuilt or restarted.
 
 ## If it fails
 
-Report the job's actual exit code, failed phase and concise error. Before cutover,
+Report the job's actual exit code, failed phase and concise error. A candidate that
+cannot import its code, migrate a fresh database or serve its assets fails before
+the live app is stopped. Before cutover,
 the command restores its configuration edits and the backup routine restarts the
 old app. After cutover it retains the current data and diagnostic records; it does
 not risk launching old code against a newly migrated database. SIGKILL, host or
 Docker failure can still require operator recovery.
+
+Retain failed images and their receipts. Publish a fix as a new commit and deploy
+its new image tag; do not overwrite an existing commit tag to retry a bad build.
 
 Do not create SSH keys, modify `authorized_keys`, inspect unrelated cron/services,
 benchmark disks, write replacement deploy/verification scripts, run test suites on

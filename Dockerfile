@@ -29,7 +29,9 @@ ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="[{\"id\":\"worker-2\",\"label\":\"Secondar
 COPY backend ./backend
 RUN pip install --no-cache-dir .
 COPY --from=frontend-build /build/frontend/dist ./frontend/dist
-RUN mkdir -p /data && chown -R app:app /data /app
+# Build contexts can come from private-umask checkouts. The deployment may run
+# with an arbitrary non-root UID, so code/assets must remain readable to it.
+RUN chmod -R a+rX /app && mkdir -p /data && chown -R app:app /data /app
 USER app
 EXPOSE 8000
 VOLUME ["/data"]
