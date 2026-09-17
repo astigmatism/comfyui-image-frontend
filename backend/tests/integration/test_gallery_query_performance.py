@@ -11,7 +11,7 @@ from app.models import (
     GenerationStatus,
 )
 from fastapi.testclient import TestClient
-from sqlalchemy import event, select, text
+from sqlalchemy import event, text
 from tests.conftest import change_password, create_user, login
 from tests.helpers import (
     USER_TEMP,
@@ -53,37 +53,6 @@ def _statement_count_for_page(
                 limit=limit,
                 collection_id=collection_id,
                 collection_scoped=collection_scoped,
-            )
-            assert len(page.items) == limit
-    finally:
-        event.remove(engine, "before_cursor_execute", record_statement)
-    return len(statements), statements
-
-
-def _statement_count_for_favorites(
-    client: TestClient, owner_id: str, limit: int
-) -> tuple[int, list[str]]:
-    statements: list[str] = []
-    engine = client.app.state.container.db.engine
-
-    def record_statement(
-        _connection: object,
-        _cursor: object,
-        statement: str,
-        _parameters: object,
-        _context: object,
-        _executemany: bool,
-    ) -> None:
-        statements.append(statement)
-
-    event.listen(engine, "before_cursor_execute", record_statement)
-    try:
-        with client.app.state.container.db.session_factory() as session:
-            page = client.app.state.container.generations.list_favorites(
-                session,
-                owner_id=owner_id,
-                cursor=None,
-                limit=limit,
             )
             assert len(page.items) == limit
     finally:
@@ -139,43 +108,6 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
         )
         assert one_scoped_count == page_scoped_count == 7
 
-        with client.app.state.container.db.session_factory() as session:
-            session.add_all(
-                Favorite(owner_id=str(user["id"]), generation_id=item["id"]) for item in generations
-            )
-            session.commit()
-        one_favorite_count, one_favorite_statements = _statement_count_for_favorites(
-            client, str(user["id"]), 1
-        )
-        favorite_page_count, favorite_page_statements = _statement_count_for_favorites(
-            client, str(user["id"]), 24
-        )
-        assert one_favorite_count == favorite_page_count == 6
-        with client.app.state.container.db.session_factory() as session:
-            collections = [
-                Collection(owner_id=str(user["id"]), name=f"Saved {i}") for i in range(24)
-            ]
-            session.add_all(collections)
-            session.flush()
-            # Pair each collection with a generation timestamp so small and large pages are mixed.
-            favorites = list(session.scalars(select(Favorite).order_by(Favorite.created_at.desc())))
-            session.add_all(
-                CollectionFavorite(
-                    owner_id=str(user["id"]),
-                    collection_id=collection.id,
-                    created_at=favorite.created_at,
-                )
-                for collection, favorite in zip(collections, favorites, strict=True)
-            )
-            session.commit()
-        mixed_small_count, mixed_small_sql = _statement_count_for_favorites(
-            client, str(user["id"]), 2
-        )
-        mixed_large_count, mixed_large_sql = _statement_count_for_favorites(
-            client, str(user["id"]), 48
-        )
-        assert mixed_small_count == mixed_large_count == 9
-        assert any("UNION ALL" in statement for statement in mixed_small_sql)
         assert other["id"] not in {
             item["id"] for item in client.get("/api/generations?limit=60").json()["items"]
         }
@@ -186,10 +118,6 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
                 *page_statements,
                 *scoped_statements,
                 *page_scoped_statements,
-                *one_favorite_statements,
-                *favorite_page_statements,
-                *mixed_small_sql,
-                *mixed_large_sql,
             ]
         ).casefold()
         for detail_only_column in (

@@ -194,9 +194,17 @@ code {
   gap: 6px;
 }
 
-.favorites-launch-button > span:first-child {
+.favorites-launch-button > svg {
+  width: 18px;
+  height: 18px;
   color: #ff81aa;
-  font-size: 1.1rem;
+}
+
+.favorites-launch-button > svg path {
+  fill: transparent;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .new-collection-launch-button {
@@ -4926,6 +4934,14 @@ tr:last-child td {
   border-color: var(--favorite-gold);
   color: var(--favorite-gold-light);
   background: var(--surface-2);
+}
+
+.favorites-launch-button[aria-pressed="true"] > svg {
+  color: inherit;
+}
+
+.favorites-launch-button[aria-pressed="true"] > svg path {
+  fill: currentColor;
 }
 
 .collection-tile:has(.collection-tile-open:focus-visible),

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime, timedelta
 
 from app.main import create_app
-from app.models import CollectionFavorite, Favorite, Generation
+from app.models import Generation
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from tests.conftest import change_password, create_user, csrf, login
 from tests.helpers import (
     ADMIN_PASSWORD,
@@ -229,8 +227,6 @@ def test_favorites_are_idempotent_owner_scoped_and_preserve_generation_history(
         assert duplicate.status_code == 200
         assert duplicate.json()["id"] == favorite["id"]
 
-        page = client.get("/api/favorites").json()
-        assert [item["generation"]["id"] for item in page["items"]] == [generation["id"]]
         gallery_item = next(
             item
             for item in client.get("/api/generations").json()["items"]
@@ -245,7 +241,6 @@ def test_favorites_are_idempotent_owner_scoped_and_preserve_generation_history(
         login(client, "favorite.other", USER_TEMP)
         change_password(client, "OtherPermanent123!")
 
-        assert client.get("/api/favorites").json()["items"] == []
         assert (
             client.put(
                 f"/api/generations/{generation['id']}/favorite",
@@ -267,7 +262,6 @@ def test_favorites_are_idempotent_owner_scoped_and_preserve_generation_history(
             headers={"X-CSRF-Token": csrf(client)},
         )
         assert removed.status_code == 204
-        assert client.get("/api/favorites").json()["items"] == []
         assert client.get(f"/api/generations/{generation['id']}").status_code == 200
         updated = client.get("/api/generations").json()["items"]
         assert (
@@ -275,107 +269,56 @@ def test_favorites_are_idempotent_owner_scoped_and_preserve_generation_history(
         )
 
 
-def test_favorites_cursor_pagination_is_newest_first(settings_factory, fake_state) -> None:
-    settings = settings_factory(enable_background_worker=False)
-    with TestClient(create_app(settings)) as client:
-        provision_user(client, username="favorite.pages")
-        generations = [
-            create_generation(client, f"favorite page {index}", seed=index) for index in range(5)
-        ]
-        for generation in generations:
-            response = client.put(
-                f"/api/generations/{generation['id']}/favorite",
-                headers={"X-CSRF-Token": csrf(client)},
-            )
-            assert response.status_code == 200
-
-        first = client.get("/api/favorites?limit=2").json()
-        second = client.get(
-            "/api/favorites", params={"limit": 2, "cursor": first["next_cursor"]}
-        ).json()
-        third = client.get(
-            "/api/favorites", params={"limit": 2, "cursor": second["next_cursor"]}
-        ).json()
-        actual = [
-            item["generation"]["id"] for page in (first, second, third) for item in page["items"]
-        ]
-        assert actual == [generation["id"] for generation in reversed(generations)]
-        assert third["next_cursor"] is None
-
-
-def test_mixed_favorites_order_cursor_ties_and_refavorite(settings_factory, fake_state) -> None:
+def test_favorites_filter_inputs_are_flagged_on_list_endpoints(
+    settings_factory, fake_state
+) -> None:
     del fake_state
     with TestClient(create_app(settings_factory(enable_background_worker=False))) as client:
-        provision_user(client, username="mixed.favorite.pages")
+        provision_user(client, username="filter.inputs")
         headers = {"X-CSRF-Token": csrf(client)}
-        generations = [create_generation(client, f"mixed image {index}") for index in range(3)]
+        generations = [create_generation(client, f"filter image {index}") for index in range(2)]
         collections = [
-            client.post("/api/collections", headers=headers, json={"name": f"Mixed {index}"}).json()
-            for index in range(3)
+            client.post(
+                "/api/collections", headers=headers, json={"name": f"Filter {index}"}
+            ).json()
+            for index in range(2)
         ]
-        for item in reversed(generations):
-            assert (
-                client.put(f"/api/generations/{item['id']}/favorite", headers=headers).status_code
-                == 200
-            )
-        for item in collections:
-            assert (
-                client.put(f"/api/collections/{item['id']}/favorite", headers=headers).status_code
-                == 200
-            )
-        now = datetime(2026, 9, 11, tzinfo=UTC)
-        expected = []
-        with client.app.state.container.db.session_factory() as session:
-            # Alternate kinds, including ties spanning page boundaries. Generation age differs.
-            for index, (kind, model, item_id) in enumerate(
-                [
-                    ("generation", Favorite, generations[0]["id"]),
-                    ("collection", CollectionFavorite, collections[0]["id"]),
-                    ("generation", Favorite, generations[2]["id"]),
-                    ("collection", CollectionFavorite, collections[1]["id"]),
-                    ("generation", Favorite, generations[1]["id"]),
-                    ("collection", CollectionFavorite, collections[2]["id"]),
-                ]
-            ):
-                column = model.generation_id if model is Favorite else model.collection_id
-                favorite = session.scalar(select(model).where(column == item_id))
-                assert favorite is not None
-                favorite.id = f"00000000-0000-4000-8000-{index:012d}"
-                favorite.created_at = now + timedelta(seconds=index // 3)
-                expected.append((kind, item_id, favorite.id))
-            session.commit()
-        actual = []
-        cursor = None
-        for _ in range(3):
-            params = {"limit": 2}
-            if cursor:
-                params["cursor"] = cursor
-            response = client.get("/api/favorites", params=params)
-            assert response.status_code == 200
-            page = response.json()
-            for item in page["items"]:
-                kind = item["item_type"]
-                assert (item["generation"] is None) != (item["collection"] is None)
-                assert item[kind]["is_favorite"] is True
-                if kind == "generation":
-                    assert item["final_prompt"].startswith("mixed image")
-                actual.append((kind, item[kind]["id"], item["id"]))
-            cursor = page["next_cursor"]
-        assert actual == list(reversed(expected))
-        assert cursor is None
-        assert len({item[2] for item in actual}) == 6
-        for limit in (0, 61):
-            assert client.get("/api/favorites", params={"limit": limit}).status_code == 422
-        assert client.get("/api/favorites", params={"cursor": "invalid"}).status_code == 400
-        endpoint = f"/api/generations/{generations[0]['id']}/favorite"
-        assert client.delete(endpoint, headers=headers).status_code == 204
-        assert client.put(endpoint, headers=headers).status_code == 200
         assert (
-            client.get("/api/favorites").json()["items"][0]["generation"]["id"]
-            == generations[0]["id"]
+            client.put(f"/api/generations/{generations[0]['id']}/favorite", headers=headers)
+            .status_code
+            == 200
         )
+        assert (
+            client.put(f"/api/collections/{collections[0]['id']}/favorite", headers=headers)
+            .status_code
+            == 200
+        )
+
+        listed_generations = {
+            item["id"]: item
+            for item in client.get("/api/generations", params={"collection_id": ""}).json()[
+                "items"
+            ]
+        }
+        assert [
+            listed_generations[item["id"]]["is_favorite"] for item in generations
+        ] == [True, False]
+        listed_collections = {
+            item["id"]: item for item in client.get("/api/collections").json()
+        }
+        assert [
+            listed_collections[item["id"]]["is_favorite"] for item in collections
+        ] == [True, False]
+
         with client.app.state.container.db.session_factory() as session:
-            generation = session.get(Generation, generations[0]["id"])
-            generation.pending_delete = True
+            stored = session.get(Generation, generations[0]["id"])
+            assert stored is not None
+            stored.pending_delete = True
             session.commit()
-        assert len(client.get("/api/favorites").json()["items"]) == 5
+        remaining = [
+            item["id"]
+            for item in client.get("/api/generations", params={"collection_id": ""}).json()[
+                "items"
+            ]
+        ]
+        assert generations[0]["id"] not in remaining

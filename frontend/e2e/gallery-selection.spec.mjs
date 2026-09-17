@@ -11,7 +11,7 @@ async function mountSelection(page) {
     const image = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="%233c6575"/></svg>';
     const state = {
       session: { authenticated: true, user: { username: "selection", role: "user" }, app_title: "ImageGen V2" },
-      galleryScale: 20, currentCollectionId: null, collectionsStatus: "ready", favoritesView: false,
+      galleryScale: 20, currentCollectionId: null, collectionsStatus: "ready", favoritesFilter: false,
       collections: [{ id: "folder", name: "Studies", parent_id: null, generation_count: 3 }, { id: "destination", name: "Archive", parent_id: null, generation_count: 0 }, { id: "child", name: "Winter", parent_id: "folder", generation_count: 1 }],
       generations: Array.from({ length: 4 }, (_, index) => ({ id: `g${index}`, collection_id: null, status: "succeeded", accepted_at: `2026-09-11T12:0${4-index}:00Z`, image_count: index === 1 ? 3 : 1, is_favorite: index === 1, display_artifact: { id: `a${index}`, kind: "image", thumbnail_url: image, content_url: image, width: 512, height: 512 } })),
     };

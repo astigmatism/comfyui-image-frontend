@@ -634,11 +634,6 @@ class FavoriteSummary(APIModel):
         return self
 
 
-class FavoritePage(APIModel):
-    items: list[FavoriteSummary]
-    next_cursor: str | None = None
-
-
 class PromptComposeRequest(APIModel):
     mode: Literal["refine", "create"]
     prompt: str = ""

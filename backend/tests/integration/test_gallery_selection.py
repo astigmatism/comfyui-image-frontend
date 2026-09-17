@@ -68,8 +68,6 @@ def test_bulk_favorites_bookmark_explicit_cards_without_recursing(settings_facto
             assert response.status_code == 200, response.text
             assert response.json()["generation_ids"] == [selected_image["id"]]
             assert response.json()["collection_ids"] == [parent["id"], child["id"]]
-        favorites = client.get("/api/favorites").json()["items"]
-        assert len(favorites) == 3
         assert client.get(f"/api/generations/{selected_image['id']}").json()["is_favorite"]
         assert not client.get(f"/api/generations/{other_image['id']}").json()["is_favorite"]
         collections = {item["id"]: item for item in client.get("/api/collections").json()}

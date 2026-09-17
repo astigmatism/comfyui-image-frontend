@@ -355,10 +355,11 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
     "aria-pressed",
     "true",
   );
-  await page.getByRole("button", { name: "Favorites", exact: true }).click();
-  await expect(page).toHaveURL(/#\/favorites$/);
-  await expect(page.locator("#collection-bar [aria-current=location]")).toHaveText("Favorites");
-  await expect(page.getByRole("button", { name: "Favorites", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const favoritesFilterButton = page.getByRole("button", { name: "Favorites", exact: true });
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "true");
+  await expect(favoritesFilterButton).toHaveAttribute("title", "Showing only favorites");
+  await expect(page).toHaveURL(/#\/$/);
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(1);
   await expect(page.locator("#gallery .gallery-card")).toHaveClass(/is-favorited/);
   const goldRing = await page.locator("#gallery .gallery-card").evaluate((card) => {
@@ -370,22 +371,20 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   expect(goldRing.mask).toContain("exclude");
   expect(goldRing.pointer).toBe("none");
   expect(goldRing.animation).toBe("none");
-  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
+  await expect(favoritesFilterButton).toHaveAttribute("title", "Show only favorites");
+  await expect(page.locator("#gallery .gallery-card")).toHaveCount(1);
   await page.getByRole("button", { name: "New collection" }).click();
   const folderDialog = page.locator("#collection-dialog");
   await folderDialog.getByLabel("Name", { exact: true }).fill("Favorite journey folder");
   await folderDialog.getByRole("button", { name: "Create collection" }).click();
   const folder = page.locator(".collection-tile").filter({ hasText: "Favorite journey folder" });
+  await expect(folder).toBeVisible();
   await clickGalleryControl(folder.getByRole("button", { name: "Add to Favorites", exact: true }));
   await expect(folder).toHaveClass(/is-favorited/);
   await expect(folder.getByRole("button", { name: "Remove from Favorites" })).toHaveAttribute("aria-pressed", "true");
   const folderId = await folder.getAttribute("data-collection-id");
-  await page.getByRole("button", { name: "Favorites", exact: true }).click();
-  await expect(page.locator("#gallery > [data-gallery-card]")).toHaveCount(2);
-  await expect(page.locator("#gallery > [data-gallery-card]").first()).toHaveAttribute("data-gallery-card", "collection");
-  await expect(folder).toHaveClass(/is-favorited/);
-  await page.mouse.move(10, 10);
-  await page.screenshot({ path: test.info().outputPath("favorites-gallery.png") });
   await folder.locator(".collection-tile-open").focus();
   await page.keyboard.press("Tab");
   await page.keyboard.press("Shift+Tab");
@@ -394,17 +393,26 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page).toHaveURL(new RegExp(`#\\/c\\/${folderId}$`));
   await expect(page.getByRole("heading", { name: "This collection is empty" })).toBeVisible();
   await page.goBack();
-  await expect(page).toHaveURL(/#\/favorites$/);
-  await expect(page.locator("#gallery > [data-gallery-card]")).toHaveCount(2);
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(2);
+  await expect(page.locator("#gallery .collection-tile")).toHaveCount(1);
+  await expect(folder).toHaveClass(/is-favorited/);
+  await page.mouse.move(10, 10);
+  await page.screenshot({ path: test.info().outputPath("favorites-filter.png") });
   await page.reload();
-  await expect(page.locator("#gallery > [data-gallery-card]")).toHaveCount(2);
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(2);
+  await favoritesFilterButton.click();
+  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(2);
   await clickGalleryControl(folder.getByRole("button", { name: "Remove from Favorites" }));
   await expect(folder).toHaveCount(0);
-  await expect(page.locator("#gallery > [data-gallery-card]")).toHaveCount(1);
+  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(1);
   await page.locator("#gallery .card-media").click();
   await expect(photoViewer).toHaveAttribute("open", "");
   await photoViewer.locator(".photo-viewer-favorite").click();
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
   await expect(photoViewer.locator(".photo-viewer-favorite")).toHaveAttribute("aria-pressed", "false");
   await photoViewer.locator(".photo-viewer-favorite").click();
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(1);
@@ -426,10 +434,10 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await selectPublishedSource(page, "Krea 2 NSFW V4");
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
 
-  await page.getByRole("button", { name: "Favorites", exact: true }).click();
   await clickGalleryControl(actions.getByRole("button", { name: "Remove from Favorites" }));
-  await expect(page.getByRole("heading", { name: "No favorites yet — tap the heart on any card or folder" })).toBeVisible();
-  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
   await expect(actions.getByRole("button", { name: "Add to Favorites" })).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
   await deleteSelectedCard(page, folder);
@@ -455,63 +463,90 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator("#toast-region")).toContainText("Selection deleted.");
 });
 
-test("Favorites uses the gallery sentinel for mixed cursor pages and ignores stale navigation responses", async ({ page }) => {
+test("Favorites filter follows the view sentinel and ignores stale cursor pages", async ({ page }) => {
   await page.goto("/");
-  await signIn(page, "artist.one", "E2EUserPermanent123!");
-  await expect(page.getByRole("button", { name: "New collection" })).toBeEnabled();
-  const items = Array.from({ length: 42 }, (_, index) => index % 2
-    ? { id: `f-${index}`, item_type: "generation", generation: {
-        id: `g-${index}`, status: "succeeded", workflow_display_name: `Saved image ${index}`,
-        accepted_at: "2026-09-01T00:00:00Z", is_favorite: true, recall_available: true,
-      }, collection: null }
-    : { id: `f-${index}`, item_type: "collection", generation: null, collection: {
-        id: `c-${index}`, name: `Saved folder ${index}`, parent_id: null, generation_count: 0,
-        previews: [], is_favorite: true,
-      } });
+  const items = Array.from({ length: 42 }, (_, index) => ({
+    id: `g-${index}`, status: "succeeded", workflow_display_name: `Saved image ${index}`,
+    accepted_at: new Date(Date.UTC(2026, 8, 10) - index * 3_600_000).toISOString(),
+    is_favorite: index % 2 === 0, recall_available: true, collection_id: null,
+  }));
   let holdNextPage = false;
   let releaseNextPage;
   let requestedNextPage;
-  await page.route("**/api/favorites?*", async (route) => {
-    const cursor = new URL(route.request().url()).searchParams.get("cursor");
+  await page.route("**/api/generations?limit=24*", async (route) => {
+    const url = new URL(route.request().url());
+    const cursor = url.searchParams.get("cursor");
+    // Collection-scoped pages (the empty folder) are really empty in this test.
+    if (url.searchParams.get("collection_id")) {
+      await route.fulfill({ json: { items: [], next_cursor: null } });
+      return;
+    }
     if (cursor && holdNextPage) {
       requestedNextPage();
       await new Promise((resolve) => { releaseNextPage = resolve; });
     }
-    await route.fulfill({ json: { items: cursor ? items.slice(40) : items.slice(0, 40), next_cursor: cursor ? null : "mixed-next" } });
+    await route.fulfill({ json: { items: cursor ? items.slice(40) : items.slice(0, 40), next_cursor: cursor ? null : "filter-next" } });
   });
-  await page.getByRole("button", { name: "Favorites", exact: true }).click();
-  const cards = page.locator("#gallery > [data-gallery-card]");
+  await signIn(page, "artist.one", "E2EUserPermanent123!");
+  const cards = page.locator("#gallery .gallery-card");
   await expect(cards).toHaveCount(40);
+  const favoritesFilterButton = page.getByRole("button", { name: "Favorites", exact: true });
+
+  // The folder is created while the filter is off so its tile is reachable.
+  await page.getByRole("button", { name: "New collection" }).click();
+  const dialog = page.locator("#collection-dialog");
+  await dialog.getByLabel("Name", { exact: true }).fill("Stale page folder");
+  await dialog.getByRole("button", { name: "Create collection" }).click();
+  const folder = page.locator(".collection-tile").filter({ hasText: "Stale page folder" });
+  await expect(folder).toBeVisible();
+  const folderId = await folder.getAttribute("data-collection-id");
+
+  // The filter hides non-favorites and the sentinel keeps loading the view.
+  await favoritesFilterButton.click();
+  await expect(cards).toHaveCount(20);
+  await expect(cards.first()).toHaveAttribute("data-generation-id", "g-0");
+  await expect(folder).toHaveCount(0);
   await page.locator("#gallery-scale").fill("100");
   await expect(page.locator("#gallery")).toHaveClass(/gallery-full/);
   await page.locator("#gallery-sentinel").scrollIntoViewIfNeeded();
-  await expect(cards).toHaveCount(42);
-  await expect(cards.nth(40)).toHaveAttribute("data-collection-id", "c-40");
-  await expect(cards.nth(41)).toHaveAttribute("data-generation-id", "g-41");
+  await expect(cards).toHaveCount(21);
+  await expect(page.locator('#gallery .gallery-card[data-generation-id="g-40"]')).toHaveCount(1);
+  await expect(page.locator('#gallery .gallery-card[data-generation-id="g-41"]')).toHaveCount(0);
   await expect(page.locator("#gallery-sentinel")).toBeHidden();
 
-  await page.getByRole("link", { name: "Home", exact: true }).click();
+  // A cursor page that resolves after leaving the view must be ignored.
+  await page.reload();
+  await favoritesFilterButton.click();
+  await expect(cards).toHaveCount(20);
   holdNextPage = true;
   const nextRequested = new Promise((resolve) => { requestedNextPage = resolve; });
-  await page.getByRole("button", { name: "Favorites", exact: true }).click();
-  await expect(cards).toHaveCount(40);
+  await page.locator("#gallery-scale").fill("100");
   await page.locator("#gallery-sentinel").scrollIntoViewIfNeeded();
   await nextRequested;
-  await page.getByRole("link", { name: "Home", exact: true }).click();
-  const fulfilled = page.waitForResponse((response) => response.url().includes("cursor=mixed-next"));
+  await page.evaluate((id) => { window.location.hash = `#/c/${id}`; }, folderId);
+  const fulfilled = page.waitForResponse((response) => response.url().includes("cursor=filter-next"));
   releaseNextPage();
   await fulfilled;
-  await expect(page.locator("#collection-bar [aria-current=location]")).toHaveText("Home");
-  await expect(page.locator('#gallery [data-generation-id="g-41"]')).toHaveCount(0);
-  await expect(page.locator('#gallery [data-collection-id="c-40"]')).toHaveCount(0);
+  // The held page (which contains a favorite) must not have leaked into the empty folder:
+  // filter on + no favorites shows the favorites empty state, not the collection one.
+  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
+  await page.goBack();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "true");
+  await expect(cards).toHaveCount(20);
+  await expect(page.locator('#gallery .gallery-card[data-generation-id="g-40"]')).toHaveCount(0);
+
+  await favoritesFilterButton.click();
+  await deleteSelectedCard(page, folder);
+  await expect(folder).toHaveCount(0);
 });
 
-test("Auto-generate in Favorites waits for its queued generation without inserting it into the feed", async ({ page }) => {
+test("Auto-generate with the favorites filter on waits for its queued generation without inserting it into the feed", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");
   await expect(page.locator("#workflow-source")).toBeEnabled();
   await page.getByRole("button", { name: "Favorites", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "No favorites yet — tap the heart on any card or folder" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("Favorites background generation");
   const requests = [];
   await page.route("**/api/generations", async (route) => {

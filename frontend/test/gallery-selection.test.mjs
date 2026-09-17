@@ -15,7 +15,7 @@ const generations = [
 
 test("mixed favorite selection processes a folder and its descendants once", () => {
   const plan = selectionPlan(new Set(["collection:parent", "collection:child", "generation:inside", "generation:outside"]), {
-    collections, favoritesView: true, favorites: { items: generations.map((generation) => ({ generation })) },
+    collections, generations,
   });
   assert.deepEqual(plan.collection_ids, ["parent"]);
   assert.deepEqual(plan.generation_ids, ["outside"]);
@@ -27,13 +27,35 @@ test("mixed favorite selection processes a folder and its descendants once", () 
   assert.equal(plan.downloadable, true);
 });
 
-test("favorites remain set and only selections with available content enable downloads", () => {
+test("already-favorited selections disable the bulk favorite tool and downloads need content", () => {
   const state = { collections, generations: [{ ...generations[0], is_favorite: true, image_count: 0 }] };
   const plan = selectionPlan(new Set(["generation:inside"]), state);
   assert.equal(plan.favorites.allFavorited, true);
   assert.equal(plan.downloadable, false);
   assert.equal(selectionPlan(new Set(["collection:other"]), state).downloadable, false);
   assert.equal(selectionPlan(new Set(["collection:parent", "generation:inside"]), state).favorites.allFavorited, false);
+});
+
+test("the favorites filter limits the selection plan to visible favorited generations", () => {
+  const state = {
+    collections,
+    favoritesFilter: true,
+    generations: [
+      { ...generations[0], is_favorite: true, image_count: 1 },
+      { ...generations[1], is_favorite: false },
+    ],
+  };
+  const plan = selectionPlan(new Set(["generation:inside", "generation:outside"]), state);
+  assert.deepEqual(plan.generation_ids, ["inside"]);
+  assert.deepEqual(plan.favorites.generation_ids, ["inside"]);
+  assert.equal(plan.count, 1);
+  assert.equal(plan.downloadable, true);
+  const unfiltered = selectionPlan(new Set(["generation:inside", "generation:outside"]), {
+    ...state,
+    favoritesFilter: false,
+  });
+  assert.deepEqual(unfiltered.generation_ids, ["inside", "outside"]);
+  assert.deepEqual(unfiltered.favorites.generation_ids, ["inside", "outside"]);
 });
 
 test("destination dialog supports both operations and excludes selected subtree", () => {

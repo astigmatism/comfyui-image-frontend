@@ -7,9 +7,9 @@ const keyFor = (card) => `${card.dataset.galleryCard}:${card.dataset.generationI
 
 export function selectionPlan(keys, state) {
   const collections = state.collections || [];
-  const visibleGenerations = state.favoritesView
-    ? (state.favorites?.items || []).flatMap((item) => item.generation ? [item.generation] : [])
-    : state.generations || [];
+  const visibleGenerations = state.favoritesFilter
+    ? (state.generations || []).filter((item) => item.is_favorite)
+    : (state.generations || []);
   const generations = [...new Map([...(state.selectionGenerations || []), ...visibleGenerations].map((item) => [item.id, item])).values()];
   const chosenFolders = collections.filter((item) => keys.has(`collection:${item.id}`));
   const chosenCards = generations.filter((item) => keys.has(`generation:${item.id}`));
@@ -90,7 +90,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
 
   function sync() {
     const state = getState();
-    const currentRoute = state.favoritesView ? "favorites" : state.currentCollectionId || "home";
+    const currentRoute = state.currentCollectionId || "home";
     if (!state.session || route !== currentRoute) {
       selected.clear(); extraGenerations.clear(); groupMembers.clear(); selecting = false; anchor = null; route = currentRoute;
       if (!busy) activeDialog()?.close();
@@ -100,6 +100,18 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     for (const id of extraGenerations.keys()) if (visibleKeys.has(`generation:${id}`)) extraGenerations.delete(id);
     selected = new Set([...selected].filter((key) => visibleKeys.has(key) || extraGenerations.has(key.slice("generation:".length))));
     for (const [id] of extraGenerations) if (!selected.has(`generation:${id}`)) extraGenerations.delete(id);
+    if (state.favoritesFilter) {
+      for (const id of [...extraGenerations.keys()]) {
+        if (!visibleKeys.has(`generation:${id}`)) {
+          extraGenerations.delete(id);
+          selected.delete(`generation:${id}`);
+        }
+      }
+      for (const members of groupMembers.values()) {
+        for (const id of [...members]) if (!visibleKeys.has(`generation:${id}`)) members.delete(id);
+      }
+      for (const [id, members] of [...groupMembers]) if (!members.size) groupMembers.delete(id);
+    }
     if (!selected.size) selecting = false;
     for (const card of visibleCards) {
       const checked = selected.has(keyFor(card));
@@ -286,13 +298,16 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   root.addEventListener("gallery-select-group", (event) => {
     if (busy) return;
     const { id, generations } = event.detail;
-    const ids = generations.map((item) => item.id);
+    const visibleGenerations = getState().favoritesFilter
+      ? generations.filter((item) => item.is_favorite)
+      : generations;
+    const ids = visibleGenerations.map((item) => item.id);
     const all = ids.length && ids.every((item) => selected.has(`generation:${item}`));
     const next = new Set(selected);
     for (const item of ids) { if (all) next.delete(`generation:${item}`); else next.add(`generation:${item}`); }
     if (next.size > 500) { notify("Select at most 500 items at a time. Clear some selections first.", "error"); return; }
     groupMembers.set(id, new Set(ids));
-    for (const item of generations) extraGenerations.set(item.id, item);
+    for (const item of visibleGenerations) extraGenerations.set(item.id, item);
     selected = next; selecting = selected.size > 0;
     sync();
   });

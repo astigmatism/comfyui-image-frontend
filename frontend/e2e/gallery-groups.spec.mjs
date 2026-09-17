@@ -25,7 +25,7 @@ async function mountGroups(page) {
     const { scaleToLayout } = await import(new URL("./lib.mjs", base));
     const state = {
       session: { authenticated: true, user: { username: "groups", role: "user" }, app_title: "ImageGen V2" },
-      galleryScale: 20, currentCollectionId: null, favoritesView: false,
+      galleryScale: 20, currentCollectionId: null, favoritesFilter: false,
       collections: [{ id: "archive", name: "Archive", generation_count: 0, parent_id: null }],
       generations: [3, 2].map((i) => ({ id: `g${i}`, prompt_fingerprint: "A", status: "succeeded", collection_id: null, image_count: 1, accepted_at: `2026-09-15T00:00:0${i}Z`, expected_width: 512, expected_height: 512 })),
     };

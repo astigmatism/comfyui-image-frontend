@@ -49,7 +49,7 @@ export function promptChangesMarkup(change) {
   return `<p class="prompt-diff-note">Compared with the previous prompt group · ${change.edit_count} ${change.edit_count === 1 ? "edit" : "edits"}</p>${snippets}${change.omitted_edits ? `<p class="prompt-diff-note">${change.omitted_edits} more edits. Full prompt in generation details.</p>` : ""}<div class="prompt-diff-legend"><del>Removed</del><ins>Added</ins></div>`;
 }
 
-export function bindGalleryGroups(root, { getState, render, appendMembers, notify }) {
+export function bindGalleryGroups(root, { getState, render, appendMembers, notify, visibleGenerations = () => (getState().generations || []) }) {
   let route = null;
   let routeRevision = 0;
   let signature = null;
@@ -69,7 +69,7 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
   const pending = new Set();
   const stateRoute = () => {
     const state = getState();
-    return `${state.session?.user?.id || state.session?.user?.username || ""}:${state.favoritesView ? "favorites" : state.currentCollectionId || "home"}`;
+    return `${state.session?.user?.id || state.session?.user?.username || ""}:${state.currentCollectionId || "home"}`;
   };
   const url = (id, suffix, extras = {}) => `/api/gallery/prompt-groups/${encodeURIComponent(id)}/${suffix}?${new URLSearchParams({ collection_id: getState().currentCollectionId || "", ...extras })}`;
 
@@ -155,18 +155,18 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
     options();
     if (active && !active.isConnected) closePreview();
     const state = getState();
-    if (state.favoritesView || !state.session?.authenticated) return;
+    if (!state.session?.authenticated) return;
     for (const button of root.querySelectorAll("[data-prompt-group-select], [data-group-more]")) {
       if (pending.has(button.dataset.promptGroupSelect || button.dataset.groupMore)) button.disabled = true;
     }
-    const next = state.generations.map((item) => `${item.id}:${item.prompt_fingerprint}`).join("|");
+    const next = visibleGenerations().map((item) => `${item.id}:${item.prompt_fingerprint}`).join("|");
     if (next === signature) return;
     signature = next;
     controller?.abort();
     controller = new AbortController();
     const signal = controller.signal;
     const requestedRoute = route;
-    const ids = state.generations.map((item) => item.id);
+    const ids = visibleGenerations().map((item) => item.id);
     if (!ids.length) return;
     void (async () => {
       const found = new Map();
@@ -216,7 +216,7 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
     const selection = Boolean(button.dataset.promptGroupSelect);
     button.disabled = true; button.setAttribute("aria-busy", "true");
     try {
-      const group = promptRuns(getState().generations, metadata).find((item) => item.id === id);
+      const group = promptRuns(visibleGenerations(), metadata).find((item) => item.id === id);
       const oldest = group?.items.at(-1);
       const cursor = oldest ? btoa(JSON.stringify({ accepted_at: oldest.accepted_at, id: oldest.id })).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "") : "";
       const page = await api(url(id, "members", selection ? { selection: "true" } : { cursor }));
@@ -255,7 +255,7 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
     options, afterRender,
     invalidate() { signature = null; },
     paginationCursor(cursor) {
-      const last = promptRuns(getState().generations, metadata).at(-1);
+      const last = promptRuns(visibleGenerations(), metadata).at(-1);
       return cursor && last?.info && collapsed.has(last.id) ? last.info.after_cursor : cursor;
     },
   };

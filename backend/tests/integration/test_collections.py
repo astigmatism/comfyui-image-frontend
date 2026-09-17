@@ -371,14 +371,10 @@ def test_collection_favorites_are_idempotent_private_csrf_guarded_and_bookmark_o
         saved = client.put(endpoint, headers=headers)
         assert saved.status_code == 200
         assert saved.json()["is_favorite"] is True
-        first = client.get("/api/favorites").json()["items"]
-        assert len(first) == 1
-        assert first[0]["item_type"] == "collection"
-        assert first[0]["generation"] is None
-        assert first[0]["collection"] == saved.json()
-        assert client.put(endpoint, headers=headers).json() == saved.json()
-        assert client.get("/api/favorites").json()["items"] == first
         listed = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert listed[folder["id"]] == saved.json()
+        assert client.put(endpoint, headers=headers).json() == saved.json()
+        assert client.get("/api/collections").json() == list(listed.values())
         assert listed[folder["id"]]["is_favorite"] is True
         assert listed[child["id"]]["is_favorite"] is False
         assert client.get(f"/api/generations/{generation['id']}").json()["is_favorite"] is False
@@ -393,7 +389,6 @@ def test_collection_favorites_are_idempotent_private_csrf_guarded_and_bookmark_o
         client.cookies.clear()
         login(client, "collection.favorite.other", USER_TEMP)
         change_password(client, "OtherCollectionFavorite123!")
-        assert client.get("/api/favorites").json()["items"] == []
         assert client.get("/api/collections").json() == []
         for method in (client.put, client.delete):
             assert method(endpoint, headers={"X-CSRF-Token": csrf(client)}).status_code == 404
@@ -408,7 +403,6 @@ def test_collection_favorites_are_idempotent_private_csrf_guarded_and_bookmark_o
             assert (
                 client.delete(endpoint, headers={"X-CSRF-Token": csrf(client)}).status_code == 204
             )
-        assert client.get("/api/favorites").json()["items"] == []
         listed = {item["id"]: item for item in client.get("/api/collections").json()}
         assert listed[folder["id"]]["is_favorite"] is False
         assert client.get(f"/api/generations/{generation['id']}").status_code == 200
@@ -434,8 +428,9 @@ def test_collection_and_user_deletion_cascade_favorites(settings_factory, fake_s
             == 200
         )
         assert client.delete(f"/api/collections/{parent['id']}", headers=headers).status_code == 204
-        items = client.get("/api/favorites").json()["items"]
-        assert [item["collection"]["id"] for item in items] == [retained["id"]]
+        listed = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert set(listed) == {retained["id"]}
+        assert listed[retained["id"]]["is_favorite"] is True
         with client.app.state.container.db.session_factory() as session:
             assert session.scalar(select(func.count()).select_from(Favorite)) == 0
             assert session.scalar(select(func.count()).select_from(CollectionFavorite)) == 1

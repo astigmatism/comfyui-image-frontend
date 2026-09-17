@@ -87,11 +87,10 @@ export function shellMarkup(state) {
         <div class="topbar-right">
           <div id="collection-bar-host" class="collection-bar-host">${renderCollectionBar(state.collections, state.currentCollectionId, {
             collectionsStatus: state.collectionsStatus,
-            favoritesView: state.favoritesView,
           })}</div>
           <div id="gallery-selection-toolbar" class="gallery-selection-toolbar" role="group" aria-label="Selection actions" hidden></div>
           <div class="topbar-spacer"></div>
-          <button type="button" class="button low favorites-launch-button" data-action="open-favorites" aria-label="Favorites" aria-pressed="${Boolean(state.favoritesView)}"><span aria-hidden="true">♡</span><span class="favorites-launch-label">Favorites</span></button>
+          <button type="button" class="button low favorites-launch-button" data-action="toggle-favorites-filter" aria-label="Favorites" title="Show only favorites" aria-pressed="${Boolean(state.favoritesFilter)}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /></svg><span class="favorites-launch-label">Favorites</span></button>
           <label class="scale-control">
             <span>Gallery scale</span>
             <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-label="Gallery scale" aria-valuetext="${state.galleryScale}%" />
@@ -1290,6 +1289,7 @@ export function galleryMarkup(
     message = null,
     collections = [],
     currentCollectionId = null,
+    favoritesFilter = false,
     promptGroups = null,
   } = {},
 ) {
@@ -1307,6 +1307,9 @@ export function galleryMarkup(
     return `${tileGrid}<section class="gallery-status gallery-error" role="alert"><h2>Gallery temporarily unavailable</h2><p>${escapeHtml(message || "Retained history could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry gallery</button></section>${cards}`;
   }
   if (!generations.length && !tiles) {
+    if (favoritesFilter) {
+      return `<section class="empty-gallery empty-favorites"><h2>No favorites in this view</h2><p>Tap the heart on any card or folder to add it here, or turn off the favorites filter.</p></section>`;
+    }
     if (currentCollectionId) {
       return `<section class="empty-gallery empty-collection"><h2>This collection is empty</h2><p>Generate images here, or move cards in.</p></section>`;
     }
@@ -1427,14 +1430,13 @@ export function collectionTileMarkup(collection) {
 export function renderCollectionBar(
   collections,
   currentCollectionId,
-  { collectionsStatus = "ready", favoritesView = false } = {},
+  { collectionsStatus = "ready" } = {},
 ) {
   const ancestors = collectionAncestors(collections, currentCollectionId);
   const crumbs = [
-    currentCollectionId || favoritesView
+    currentCollectionId
       ? '<a href="#/" data-action="open-collection" data-collection-id="">Home</a>'
       : '<span aria-current="location">Home</span>',
-    ...(favoritesView ? ['<span aria-current="location">Favorites</span>'] : []),
     ...ancestors.map((collection, index) =>
       index === ancestors.length - 1
         ? `<span aria-current="location">${escapeHtml(collection.name)}</span>`
@@ -1446,7 +1448,7 @@ export function renderCollectionBar(
   return `<nav id="collection-bar" class="collection-bar" aria-label="Collections">
     <div class="collection-crumbs">${crumbs}</div>
     <div class="collection-toolbar-actions">
-      <button type="button" class="button low new-collection-launch-button" data-action="new-collection" ${loading || atDepthCap || favoritesView ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}"><span class="new-collection-plus" aria-hidden="true">+</span><span class="new-collection-label">New collection</span></button>
+      <button type="button" class="button low new-collection-launch-button" data-action="new-collection" ${loading || atDepthCap ? "disabled" : ""} title="${atDepthCap ? "Collections cannot be nested more than 5 levels deep." : "Create a collection here"}"><span class="new-collection-plus" aria-hidden="true">+</span><span class="new-collection-label">New collection</span></button>
     </div>
   </nav>`;
 }
@@ -1850,19 +1852,6 @@ export function favoriteButtonMarkup(generation, extraClasses = "", itemType = "
   return `<button type="button" class="favorite-button${extraClasses ? ` ${extraClasses}` : ""}" data-action="${itemType === "collection" ? "toggle-collection-favorite" : "toggle-favorite"}" data-${itemType}-id="${escapeHtml(generation.id)}" aria-label="${label}" aria-pressed="${active}" title="${label}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /></svg>
   </button>`;
-}
-
-export function favoritesGalleryMarkup(items, { status = "ready", message = null } = {}) {
-  const cards = items.map((item) => item.item_type === "collection"
-    ? collectionTileMarkup(item.collection)
-    : galleryCardMarkup(item.generation)).join("");
-  if (status === "loading") {
-    return `<section class="gallery-status" role="status"><h2>Loading favorites…</h2></section>${cards}`;
-  }
-  if (status === "error") {
-    return `<section class="gallery-status gallery-error" role="alert"><h2>Favorites temporarily unavailable</h2><p>${escapeHtml(message || "Favorites could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry favorites</button></section>${cards}`;
-  }
-  return cards || '<section class="empty-gallery empty-favorites"><h2>No favorites yet — tap the heart on any card or folder</h2></section>';
 }
 
 export function detailMarkup(detail) {
