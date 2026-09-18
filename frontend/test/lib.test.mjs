@@ -5,8 +5,10 @@ import {
   createCoalescedTaskQueue,
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
+  DEFAULT_OPEN_CONTROL_SECTION_KINDS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
+  activeSourceStorageKey,
   applyChoiceStrengthDefaults,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
@@ -18,7 +20,9 @@ import {
   collectionSubtree,
   collectionTreeRows,
   controlPresentation,
+  controlSectionStorageKey,
   createLatestRequestGate,
+  creativeDirectionStorageKey,
   defaultsForContract,
   defaultsForInterface,
   directionSignalNextStatus,
@@ -32,8 +36,13 @@ import {
   normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
   normalizeInputValue,
+  normalizeStoredActiveSource,
+  normalizeStoredControlSections,
+  normalizeStoredCreativeDirectionDraft,
+  normalizeStoredParameterState,
   overwriteWithRecall,
   parametersForRequest,
+  parameterStateStorageKey,
   photoViewerImageLayout,
   loadRecentResolutions,
   recentResolutionKey,
@@ -937,6 +946,101 @@ test("removeRecentResolution drops only the exact WxH pair", () => {
   ]);
   assert.deepEqual(removeRecentResolution([], 1024, 1024), []);
   assert.deepEqual(removeRecentResolution(null, 1024, 1024), []);
+});
+
+test("session storage keys are scoped per user with an anonymous fallback", () => {
+  assert.equal(parameterStateStorageKey("u1"), "cif.parameter-state.u1");
+  assert.equal(activeSourceStorageKey("u2"), "cif.active-source.u2");
+  assert.equal(controlSectionStorageKey("u3"), "cif.control-sections.u3");
+  assert.equal(creativeDirectionStorageKey("u4"), "cif.creative-direction.u4");
+  assert.equal(parameterStateStorageKey(null), "cif.parameter-state.anonymous");
+  assert.equal(parameterStateStorageKey(undefined), "cif.parameter-state.anonymous");
+  assert.equal(activeSourceStorageKey(""), "cif.active-source.anonymous");
+});
+
+test("normalizeStoredParameterState keeps well-formed per-source entries and drops the rest", () => {
+  assert.deepEqual(normalizeStoredParameterState(null), {});
+  assert.deepEqual(normalizeStoredParameterState("not json"), {});
+  assert.deepEqual(normalizeStoredParameterState("[1, 2]"), {});
+  assert.deepEqual(normalizeStoredParameterState('"wf_a"'), {});
+  const stored = {
+    wf_a: {
+      interface: { inputs: [] },
+      revision: { publication_id: "p1" },
+      values: { prompt: "kept" },
+      explicitInputIds: ["prompt", 7, "seed", ""],
+      selectedPreset: "preset-1",
+    },
+    wf_b: { values: null },
+    wf_c: { interface: null, revision: null, values: { seed: { mode: "fixed", value: "42" } } },
+  };
+  assert.deepEqual(normalizeStoredParameterState(JSON.stringify(stored)), {
+    wf_a: {
+      interface: { inputs: [] },
+      revision: { publication_id: "p1" },
+      values: { prompt: "kept" },
+      explicitInputIds: ["prompt", "seed"],
+      selectedPreset: "preset-1",
+    },
+    wf_c: {
+      interface: null,
+      revision: null,
+      values: { seed: { mode: "fixed", value: "42" } },
+      explicitInputIds: [],
+      selectedPreset: null,
+    },
+  });
+});
+
+test("normalizeStoredActiveSource only accepts a JSON-encoded source key", () => {
+  assert.equal(normalizeStoredActiveSource(null), null);
+  assert.equal(normalizeStoredActiveSource(""), null);
+  assert.equal(normalizeStoredActiveSource("not json"), null);
+  assert.equal(normalizeStoredActiveSource('{"weird":true}'), null);
+  assert.equal(normalizeStoredActiveSource('"   "'), null);
+  assert.equal(normalizeStoredActiveSource('"wf_a"'), "wf_a");
+  assert.equal(normalizeStoredActiveSource(JSON.stringify("local::workflows/x.json")), "local::workflows/x.json");
+});
+
+test("normalizeStoredControlSections keeps only boolean section entries", () => {
+  assert.deepEqual(normalizeStoredControlSections(null), {});
+  assert.deepEqual(normalizeStoredControlSections("nope"), {});
+  assert.deepEqual(normalizeStoredControlSections('"wf"'), {});
+  assert.deepEqual(
+    normalizeStoredControlSections(
+      JSON.stringify({ prompt: false, seed: true, "group-loras": "yes", advanced: 1 }),
+    ),
+    { prompt: false, seed: true },
+  );
+});
+
+test("normalizeStoredCreativeDirectionDraft falls back to safe defaults", () => {
+  assert.deepEqual(normalizeStoredCreativeDirectionDraft(null), {
+    creativeDirection: "",
+    mode: "refine",
+    think: true,
+  });
+  assert.deepEqual(normalizeStoredCreativeDirectionDraft("corrupt"), {
+    creativeDirection: "",
+    mode: "refine",
+    think: true,
+  });
+  assert.deepEqual(
+    normalizeStoredCreativeDirectionDraft(
+      JSON.stringify({ creativeDirection: "a portrait", mode: "create", think: false }),
+    ),
+    { creativeDirection: "a portrait", mode: "create", think: false },
+  );
+  assert.deepEqual(
+    normalizeStoredCreativeDirectionDraft(
+      JSON.stringify({ creativeDirection: 9, mode: "weird", think: "yes" }),
+    ),
+    { creativeDirection: "", mode: "refine", think: true },
+  );
+});
+
+test("default open control section kinds are the minimal generation set", () => {
+  assert.deepEqual([...DEFAULT_OPEN_CONTROL_SECTION_KINDS].sort(), ["prompt", "resolution", "seed"]);
 });
 
 test("published inputs put seed first, then sort by tier, order, group, and id", () => {

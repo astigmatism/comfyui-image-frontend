@@ -2,6 +2,7 @@ import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
+  DEFAULT_OPEN_CONTROL_SECTION_KINDS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
   controlPresentation,
@@ -729,13 +730,23 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                   }),
                 )
                 .join("");
+      const sectionHasError = section.controls.some((input) => errors[input.id]);
       return controlSectionMarkup({
         key: section.key,
         title: section.title,
         required: section.controls.some((input) => input.required),
         content,
         status: controlSectionStatus(section, values),
-        open: controlSectionIsOpen(openState, section.key, true),
+        // A minimal set of sections (prompt, seed, resolution) opens by
+        // default; everything else stays collapsed until the user expands
+        // it. A section with a validation error opens so the block is visible.
+        open:
+          sectionHasError ||
+          controlSectionIsOpen(
+            openState,
+            section.key,
+            DEFAULT_OPEN_CONTROL_SECTION_KINDS.has(section.kind),
+          ),
         className: `control-section-${section.kind}`,
         actions:
           section.kind === "prompt"
@@ -782,6 +793,18 @@ function controlSectionIsOpen(openState, key, defaultOpen) {
   return Object.prototype.hasOwnProperty.call(openState || {}, key)
     ? Boolean(openState[key])
     : defaultOpen;
+}
+
+// Section keys whose controls carry validation errors. Sections open while an
+// error is visible; callers record these keys in the open-state map so the
+// section stays open after the error is resolved instead of collapsing.
+export function controlSectionKeysWithErrors(contract, errors = {}) {
+  if (!contract || !Object.keys(errors).length) return [];
+  const keys = new Set();
+  for (const input of interfaceInputs(contract)) {
+    if (errors[input.id]) keys.add(controlSectionDescriptor(input).key);
+  }
+  return [...keys];
 }
 
 function controlSectionStatus(section, values) {

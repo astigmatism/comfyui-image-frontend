@@ -5,6 +5,7 @@ import {
   activeGenerationEta,
   cardActionsMarkup,
   collectionDeleteDialogMarkup,
+  controlSectionKeysWithErrors,
   collectionDialogMarkup,
   collectionTileMarkup,
   controlMarkup,
@@ -232,6 +233,28 @@ test("published image input uses its section title as the only visible label", (
   assert.match(html, /class="control-section-title">Reference Image/);
   assert.match(html, /<legend class="visually-hidden">Reference Image/);
   assert.doesNotMatch(html, /<legend>Reference Image/);
+});
+
+test("controlSectionKeysWithErrors maps errors to their collapsible section keys", () => {
+  const image = { id: "reference_image", type: "image", label: "Reference Image", required: true };
+  const iterations = { id: "iterations", type: "int", label: "Iterations", group: "Basic" };
+  const prompt = { id: "prompt.text", type: "prompt", label: "Prompt", required: true };
+  const lora = { id: "lora", type: "text", label: "LoRA", group: "LoRAs" };
+  const contract = { inputs: [prompt, image, iterations, lora] };
+
+  assert.deepEqual(controlSectionKeysWithErrors(contract, {}), []);
+  assert.deepEqual(controlSectionKeysWithErrors(contract, { reference_image: "Required." }), [
+    "group-reference-image",
+  ]);
+  assert.deepEqual(
+    controlSectionKeysWithErrors(contract, {
+      reference_image: "Required.",
+      "prompt.text": "Required.",
+      lora: "Required.",
+    }),
+    ["prompt", "group-reference-image", "group-loras"],
+  );
+  assert.deepEqual(controlSectionKeysWithErrors(null, { "prompt.text": "Required." }), []);
 });
 
 test("gallery cards expose only the opaque artifact id as drag data metadata", () => {
@@ -650,9 +673,10 @@ test("creative direction renders as its own collapsible section beneath the prom
     promptSectionIndex < assistantSectionIndex &&
       assistantSectionIndex < advancedSectionIndex,
   );
+  assert.doesNotMatch(html, /control-section-creative-direction is-expanded/);
   assert.match(
     html,
-    /<section class="control-section control-section-creative-direction is-expanded" data-control-section="creative-direction">/,
+    /data-control-section="creative-direction"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
   );
   assert.match(html, /<span class="control-section-title">Creative Direction<\/span>/);
   const section = html.slice(assistantSectionIndex, advancedSectionIndex);
@@ -2042,11 +2066,19 @@ test("published source pairs scalar dimensions in the resolution picker and rend
     html,
     /data-control-id="knpv4_1_strength"[^>]*data-number-entry[^>]*type="number"[^>]*step="0.05"/,
   );
-  for (const section of ["prompt", "resolution", "seed", "upscaling"]) {
+  for (const section of ["prompt", "resolution", "seed"]) {
     assert.match(
       html,
       new RegExp(
         `data-control-section="${section}"[\\s\\S]*?data-action="toggle-control-section"[^>]*aria-expanded="true"`,
+      ),
+    );
+  }
+  for (const section of ["creative-direction", "upscaling"]) {
+    assert.match(
+      html,
+      new RegExp(
+        `data-control-section="${section}"[\\s\\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"`,
       ),
     );
   }
@@ -2059,6 +2091,63 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.doesNotMatch(html, /negative.prompt|Negative prompt/i);
   const button = html.match(/<button id="generate-button"[^>]*>/)?.[0] || "";
   assert.doesNotMatch(button, /disabled/);
+});
+
+test("minimal sections open by default; stored open state and validation errors override", () => {
+  const base = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: {
+      prompt: "a tree with chickens",
+      width: 1080,
+      height: 1920,
+      seed: { mode: "random", value: "0" },
+      enable_seedvr2_upscale: false,
+      knpv4_1_strength: 1,
+    },
+    fieldErrors: {},
+    formError: null,
+  };
+  const sectionState = (html, section) =>
+    html.match(
+      new RegExp(
+        `data-control-section="${section}"[\\s\\S]*?data-action="toggle-control-section"[^>]*aria-expanded="(true|false)"`,
+      ),
+    )?.[1];
+
+  const defaults = generationPanelMarkup(base, publishedSource, publishedInterface);
+  assert.equal(sectionState(defaults, "prompt"), "true");
+  assert.equal(sectionState(defaults, "seed"), "true");
+  assert.equal(sectionState(defaults, "resolution"), "true");
+  assert.equal(sectionState(defaults, "creative-direction"), "false");
+  assert.equal(sectionState(defaults, "upscaling"), "false");
+  assert.equal(sectionState(defaults, "advanced"), "false");
+
+  const stored = generationPanelMarkup(
+    {
+      ...base,
+      controlSectionOpen: { prompt: false, "creative-direction": true, upscaling: true },
+    },
+    publishedSource,
+    publishedInterface,
+  );
+  assert.equal(sectionState(stored, "prompt"), "false");
+  assert.equal(sectionState(stored, "seed"), "true");
+  assert.equal(sectionState(stored, "creative-direction"), "true");
+  assert.equal(sectionState(stored, "upscaling"), "true");
+  assert.equal(sectionState(stored, "advanced"), "false");
+
+  const errored = generationPanelMarkup(
+    { ...base, fieldErrors: { enable_seedvr2_upscale: "Enable the upscale step." } },
+    publishedSource,
+    publishedInterface,
+  );
+  assert.equal(sectionState(errored, "upscaling"), "true");
+  assert.equal(sectionState(errored, "advanced"), "false");
 });
 
 test("choice inputs render one finite single-select with public values and labels", () => {

@@ -10,6 +10,7 @@ import {
   MAX_BATCH_GENERATION_ITEMS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
+  activeSourceStorageKey,
   applyChoiceStrengthDefaults,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
@@ -19,8 +20,10 @@ import {
   choiceStrengthCompanion,
   collectionDepth,
   collectionSubtree,
+  controlSectionStorageKey,
   createLatestRequestGate,
   createCoalescedTaskQueue,
+  creativeDirectionStorageKey,
   defaultsForInterface,
   directionSignalNextStatus,
   hasActiveGeneration,
@@ -33,8 +36,13 @@ import {
   normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
   normalizeInputValue,
+  normalizeStoredActiveSource,
+  normalizeStoredControlSections,
+  normalizeStoredCreativeDirectionDraft,
+  normalizeStoredParameterState,
   overwriteWithRecall,
   parametersForRequest,
+  parameterStateStorageKey,
   photoViewerImageLayout,
   positivePromptInput,
   promptInstructionsForMode,
@@ -55,6 +63,7 @@ import {
 import {
   clearGenerationEtaAnchors,
   collectionDeleteDialogMarkup,
+  controlSectionKeysWithErrors,
   collectionDialogMarkup,
   collectionTileMarkup,
   collectionCountMarkup,
@@ -550,6 +559,7 @@ async function handleClick(event) {
     state.promptAssistant.think = element.checked;
     setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
+    persistCreativeDirectionDraft();
     scheduleAutoGenerate();
     return;
   }
@@ -929,6 +939,7 @@ function toggleControlSection(trigger) {
   const open = trigger.getAttribute("aria-expanded") !== "true";
   state.controlSectionOpen[section.dataset.controlSection] = open;
   setControlSectionElementOpen(section, open);
+  persistControlSections();
 }
 
 function setControlSectionElementOpen(section, open) {
@@ -993,6 +1004,7 @@ function handleInput(event) {
     state.promptAssistant.creativeDirection = element.value;
     setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
+    persistCreativeDirectionDraft();
     scheduleAutoGenerate();
     return;
   }
@@ -1003,6 +1015,7 @@ function handleInput(event) {
     syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, element.value);
     setPromptAssistantError(null);
     preparedAutoGenerateAssistantFingerprint = null;
+    persistCreativeDirectionDraft();
     scheduleAutoGenerate();
     return;
   }
@@ -1104,6 +1117,7 @@ function applyPromptEditor() {
   capturePromptInstructions(dialog, promptEditorInstructionOverrides);
   state.promptAssistant.instructionOverrides = structuredClone(promptEditorInstructionOverrides);
   persistPromptInstructions();
+  persistCreativeDirectionDraft();
   preparedAutoGenerateAssistantFingerprint = null;
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
@@ -2243,8 +2257,23 @@ async function enterApplication() {
   resetAutoGenerateRetryState();
   state.checkpointTiers = {};
   checkpointTiersRevision += 1;
+  state.parameterStateBySource = normalizeStoredParameterState(
+    readStoredItem(parameterStateStorageKey(sessionStorageUserId())),
+  );
+  state.activeSourceKey = normalizeStoredActiveSource(
+    readStoredItem(activeSourceStorageKey(sessionStorageUserId())),
+  );
+  state.controlSectionOpen = normalizeStoredControlSections(
+    readStoredItem(controlSectionStorageKey(sessionStorageUserId())),
+  );
+  const creativeDirectionDraft = normalizeStoredCreativeDirectionDraft(
+    readStoredItem(creativeDirectionStorageKey(sessionStorageUserId())),
+  );
   state.promptAssistant = {
     ...state.promptAssistant,
+    creativeDirection: creativeDirectionDraft.creativeDirection,
+    mode: creativeDirectionDraft.mode,
+    think: creativeDirectionDraft.think,
     instructionOverrides: loadPromptInstructions(),
     available: false,
     message: "Checking Prompt Assistant availability…",
@@ -2975,7 +3004,9 @@ function persistActiveParameterState() {
     revision: structuredClone(sourceRevision(state.activeSource)),
     values: structuredClone(state.parameters),
     explicitInputIds: [...state.explicitParameterIds],
+    selectedPreset: state.selectedPreset,
   };
+  persistParameterState();
 }
 
 async function loadSources({ signal, diagnostic = false } = {}) {
@@ -2998,6 +3029,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
     if (signal?.aborted || catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
     pruneModelSelectionsForCurrentSources();
+    pruneStoredParameterState();
     state.sourceCatalogStatus = "ready";
     const selected = state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
     const next = selected || state.sources.find((item) => item.available !== false) || state.sources[0] || null;
@@ -3005,6 +3037,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
       persistActiveParameterState();
       state.sourceLoadToken += 1;
       state.activeSourceKey = null;
+      persistActiveSourceKey();
       state.activeSource = null;
       state.recentResolutions = [];
       state.parameters = {};
@@ -3047,6 +3080,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
   const token = ++state.sourceLoadToken;
   const resolvedSummary = summary || state.sources.find((item) => sourceKey(item) === key) || null;
   state.activeSourceKey = key || null;
+  persistActiveSourceKey();
   state.activeSource = resolvedSummary;
   state.pendingSourceMigration = migration;
   loadRecentResolutionsForActiveSource();
@@ -3095,6 +3129,10 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
     );
     state.parameters = migrated.values;
     state.explicitParameterIds = new Set(migrated.explicitInputIds);
+    const savedPresetId = saved?.selectedPreset || null;
+    if (savedPresetId && (contract.presets || []).some((preset) => preset.id === savedPresetId)) {
+      state.selectedPreset = savedPresetId;
+    }
     const selectionKey = modelSelectionStoreKey(state.activeSource);
     if (selectionKey && !state.modelSelectionsBySourceRevision.has(selectionKey)) {
       setModelSelectionsForSource(
@@ -3148,6 +3186,12 @@ function renderPanel() {
   const contract = sourceInterface(state.activeSource);
   const clientErrors = clientValidate(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
+  for (const key of controlSectionKeysWithErrors(contract, state.fieldErrors)) {
+    if (state.controlSectionOpen[key] !== true) {
+      state.controlSectionOpen[key] = true;
+      persistControlSections();
+    }
+  }
   const selected = state.activeSource || state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
   panel.innerHTML = generationPanelMarkup(state, selected, contract);
   const assistant = panel.querySelector("#prompt-assistant");
@@ -3312,6 +3356,75 @@ function persistGenerationQuantity() {
   }
 }
 
+// Session persistence for the generation controls: every per-source
+// parameter set, the active source, the collapsed sections, and the
+// creative-direction draft. Values are scoped per user so several accounts
+// on one browser keep distinct settings; loaders validate the stored JSON
+// and fall back to defaults when it is missing or corrupt.
+function sessionStorageUserId() {
+  return state.session?.user?.id || "anonymous";
+}
+
+function readStoredItem(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredItem(key, value) {
+  try {
+    if (value === null || value === undefined) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // Settings still apply for this session when browser storage is disabled.
+  }
+}
+
+function persistParameterState() {
+  writeStoredItem(parameterStateStorageKey(sessionStorageUserId()), JSON.stringify(state.parameterStateBySource));
+}
+
+// Published sources can disappear (or be renamed) between visits; drop
+// stored parameter sets for keys the current catalog no longer knows so
+// localStorage does not grow without bound.
+function pruneStoredParameterState() {
+  const knownKeys = new Set(
+    state.sources.map((source) => sourceKey(source)).filter(Boolean),
+  );
+  let changed = false;
+  for (const storedKey of Object.keys(state.parameterStateBySource)) {
+    if (!knownKeys.has(storedKey)) {
+      delete state.parameterStateBySource[storedKey];
+      changed = true;
+    }
+  }
+  if (changed) persistParameterState();
+}
+
+function persistActiveSourceKey() {
+  writeStoredItem(
+    activeSourceStorageKey(sessionStorageUserId()),
+    state.activeSourceKey ? JSON.stringify(state.activeSourceKey) : null,
+  );
+}
+
+function persistControlSections() {
+  writeStoredItem(controlSectionStorageKey(sessionStorageUserId()), JSON.stringify(state.controlSectionOpen));
+}
+
+function persistCreativeDirectionDraft() {
+  writeStoredItem(
+    creativeDirectionStorageKey(sessionStorageUserId()),
+    JSON.stringify({
+      creativeDirection: state.promptAssistant.creativeDirection,
+      mode: state.promptAssistant.mode,
+      think: state.promptAssistant.think,
+    }),
+  );
+}
+
 function applyGenerationQuantity(next) {
   state.generationQuantity = clampGenerationQuantity(next);
   persistGenerationQuantity();
@@ -3416,6 +3529,7 @@ function syncPromptAssistantDraftFromPanel() {
   state.autoGenerateCreativeDirection = nextAutomaticCreativeDirection;
   syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, nextMode);
   persistPromptInstructions();
+  persistCreativeDirectionDraft();
 }
 
 function capturePanelView(panel) {
@@ -5088,6 +5202,7 @@ async function recall(id) {
     state.selectedPreset = null;
     collapseActiveModelSelectionsFromParameters();
     persistActiveParameterState();
+    persistCreativeDirectionDraft();
     renderPanel();
     closePanel(false);
     document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });
@@ -5106,6 +5221,7 @@ async function recall(id) {
   const source = await api(`/api/workflows/${encodeURIComponent(key)}`);
   const contract = sourceInterface(source);
   state.activeSourceKey = key;
+  persistActiveSourceKey();
   state.activeSource = { ...source, interface: contract };
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
@@ -5129,6 +5245,7 @@ async function recall(id) {
   state.selectedPreset = null;
   collapseActiveModelSelectionsFromParameters();
   persistActiveParameterState();
+  persistCreativeDirectionDraft();
   renderPanel();
   closePanel(false);
   document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });

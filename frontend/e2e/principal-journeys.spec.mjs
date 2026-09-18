@@ -58,6 +58,11 @@ async function selectPublishedSource(page, name) {
   await expect(selector).toBeFocused();
 }
 
+async function ensureControlSectionExpanded(page, title) {
+  const trigger = page.getByRole("button", { name: title, exact: true });
+  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+}
+
 async function clickGalleryControl(control) {
   const card = control.locator("xpath=ancestor::*[@data-gallery-card][1]");
   // Collection refreshes can replace a card during preparation; retry preparation
@@ -422,6 +427,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
 
   const cardCountBeforeCompose = await page.locator(".gallery-card").count();
+  await ensureControlSectionExpanded(page, "Creative Direction");
   await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("cinematic blue hour");
   await page.getByRole("button", { name: "Apply Creative Direction" }).click();
   await expect(prompt).toHaveValue(/cinematic blue hour/);
@@ -1175,8 +1181,15 @@ test("folder card toolbar delete confirms and removes the collection", async ({ 
   await expect(dialog).not.toHaveAttribute("open", "");
   await expect(tile).toHaveCount(1);
 
-  await tileDelete.focus();
-  await page.keyboard.press("Enter");
+  // A live gallery re-render can replace the tile between focus and Enter
+  // (the first activation is guarded above; keep this one race-tolerant by
+  // retrying the focus + Enter cycle until the dialog opens).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await tileDelete.focus();
+    await expect(tileDelete).toBeFocused();
+    await page.keyboard.press("Enter");
+    if (await dialog.evaluate((element) => element.open)) break;
+  }
   await expect(dialog).toHaveAttribute("open", "");
   await dialog.getByRole("button", { name: "Delete everything", exact: true }).click();
   await expect(tile).toHaveCount(0);
@@ -1307,6 +1320,7 @@ test("progressive bootstrap renders while optional status is delayed and localiz
 
   releaseServices();
   await expect(page.locator("#assistant-message")).toHaveCount(0);
+  await ensureControlSectionExpanded(page, "Creative Direction");
   await expect(page.getByRole("button", { name: "Apply Creative Direction" })).toBeDisabled();
   await expect(generateButton).toBeEnabled();
   await expect(page.getByRole("heading", { name: "Application unavailable" })).toHaveCount(0);
@@ -1817,6 +1831,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const dialog = page.locator("#prompt-editor-dialog");
@@ -1985,6 +2000,7 @@ test("voice input records and inserts transcripts at the cursor in every prompt 
   await promptMic.click();
   await expect(prompt).toHaveValue("blue transcribed speech sky");
 
+  await ensureControlSectionExpanded(page, "Creative Direction");
   const columnAssistant = page.locator("#prompt-assistant");
   const columnDirection = columnAssistant.getByRole("textbox", {
     name: "Creative Direction",
@@ -2061,6 +2077,7 @@ test("background service polling does not interrupt focused generation controls"
   await prompt.pressSequentially(" while typing", { delay: 20 });
   await expect(prompt).toHaveValue("focus remains here while typing");
 
+  await ensureControlSectionExpanded(page, "Iterations");
   const iterations = page.getByRole("spinbutton", { name: "Iterations", exact: true });
   await iterations.focus();
   const numericPoll = page.waitForResponse(
@@ -2196,7 +2213,6 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   for (const [key, title] of [
     ["resolution", "Resolution"],
     ["seed", "Seed"],
-    ["upscaling", "Upscaling"],
   ]) {
     await expect(
       page.locator(`[data-control-section="${key}"]`).getByRole("button", {
@@ -2205,6 +2221,12 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
       }),
     ).toHaveAttribute("aria-expanded", "true");
   }
+  await expect(
+    page.locator('[data-control-section="upscaling"]').getByRole("button", {
+      name: "Upscaling",
+      exact: true,
+    }),
+  ).toHaveAttribute("aria-expanded", "false");
   await expect(
     page.locator('[data-control-section="advanced"] .control-section-trigger'),
   ).toHaveAttribute("aria-expanded", "false");
@@ -2349,6 +2371,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   const upscale = page.getByLabel("Enable SeedVR2 upscale", { exact: true });
   await expect(upscale).not.toBeChecked();
+  await ensureControlSectionExpanded(page, "Upscaling");
   await upscale.check();
   await expect(upscale).toBeChecked();
   await expect(upscale.locator("xpath=..")).toContainText("On");
@@ -2600,6 +2623,7 @@ test("backend field errors disclose Advanced controls and stale compositions do 
   await page.unroute("**/api/generations");
 
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
   const promptBeforeComposition = await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .inputValue();
@@ -2771,6 +2795,7 @@ test("required image input accepts Browse and a retained gallery image drag", as
   await expect(sourceImage).toBeVisible({ timeout: 30_000 });
 
   await selectPublishedSource(page, "Moody Desire Image Input");
+  await ensureControlSectionExpanded(page, "Reference Image");
   const dropzone = page.locator('[data-image-drop-control="reference_image"]');
   const browseInput = page.locator('input[type="file"][data-image-input="true"]');
   await expect(dropzone).toContainText("Drop an image here");
@@ -2892,6 +2917,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -3060,6 +3086,7 @@ test("Creative Direction shows a gold-while-composing and green-when-applied pro
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -3268,6 +3295,7 @@ test("Prompt Assistant failures remain visible with the pre-processor collapsed"
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const failureMessage = "Prompt Assistant could not produce a changed prompt after retrying.";
   await page.route("**/api/prompt-assistant/compose", async (route) => {
@@ -3322,6 +3350,7 @@ test("auto-generate applies enabled Creative Direction before every generation a
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -3588,6 +3617,7 @@ test("auto-generate retries one recoverable composition without parallel request
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -3681,6 +3711,7 @@ test("turning Auto-generate off cancels a pending Prompt Assistant retry", async
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
   let composeCalls = 0;
@@ -3735,6 +3766,7 @@ test("changing Creative Direction invalidates backoff and composes the fresh fin
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const direction = page.getByRole("textbox", {
     name: "Creative Direction",
@@ -3804,6 +3836,7 @@ test("exhausted automatic composition pauses visibly and explicit retry restores
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const autoGenerate = page.getByRole("switch", { name: "Auto-generate" });
   let composeCalls = 0;
@@ -3875,6 +3908,7 @@ test("auto-generate leaves a populated Creative Direction unused when its contro
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -4010,6 +4044,7 @@ test("a manual Creative Direction composition can prepare the next auto-generate
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -4074,6 +4109,7 @@ test("auto-generate reevaluates controls changed while Creative Direction is com
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
 
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
   const direction = page.getByRole("textbox", {
@@ -4285,6 +4321,7 @@ test("prompt pre-processor starts collapsed, keeps per-mode edits, and sends foc
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
   const panel = page.locator("#prompt-assistant");
   const disclosure = panel.locator(".prompt-preprocessor");
   const instructions = panel.getByRole("textbox", { name: "Prompt pre-processor", exact: true });

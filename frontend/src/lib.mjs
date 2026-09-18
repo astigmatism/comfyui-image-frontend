@@ -1108,6 +1108,98 @@ export function removeRecentResolution(entries, width, height) {
   return (entries || []).filter((entry) => entry.width !== width || entry.height !== height);
 }
 
+// Session persistence. Every stored key is scoped by user id so several
+// accounts sharing one browser keep distinct settings. The normalizers
+// accept whatever localStorage returns (including corrupt payloads) and
+// degrade to safe defaults instead of throwing.
+export function parameterStateStorageKey(userId) {
+  return `cif.parameter-state.${userId || "anonymous"}`;
+}
+
+export function activeSourceStorageKey(userId) {
+  return `cif.active-source.${userId || "anonymous"}`;
+}
+
+export function controlSectionStorageKey(userId) {
+  return `cif.control-sections.${userId || "anonymous"}`;
+}
+
+export function creativeDirectionStorageKey(userId) {
+  return `cif.creative-direction.${userId || "anonymous"}`;
+}
+
+function isStoredObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseStoredJson(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeStoredParameterState(raw) {
+  const parsed = parseStoredJson(raw);
+  if (!isStoredObject(parsed)) return {};
+  const result = {};
+  for (const [sourceKey, entry] of Object.entries(parsed)) {
+    if (!sourceKey || !isStoredObject(entry) || !isStoredObject(entry.values)) continue;
+    const explicitInputIds = Array.isArray(entry.explicitInputIds)
+      ? entry.explicitInputIds.filter((id) => typeof id === "string" && id)
+      : [];
+    result[sourceKey] = {
+      interface: isStoredObject(entry.interface) ? entry.interface : null,
+      revision: isStoredObject(entry.revision) ? entry.revision : null,
+      values: entry.values,
+      explicitInputIds,
+      selectedPreset: typeof entry.selectedPreset === "string" && entry.selectedPreset
+        ? entry.selectedPreset
+        : null,
+    };
+  }
+  return result;
+}
+
+export function normalizeStoredActiveSource(raw) {
+  const parsed = parseStoredJson(raw);
+  if (typeof parsed === "string") {
+    const key = parsed.trim();
+    if (key) return key;
+  }
+  return null;
+}
+
+export function normalizeStoredControlSections(raw) {
+  const parsed = parseStoredJson(raw);
+  if (!isStoredObject(parsed)) return {};
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .filter(([key, value]) => typeof key === "string" && key && typeof value === "boolean")
+      .map(([key, value]) => [key, value]),
+  );
+}
+
+export function normalizeStoredCreativeDirectionDraft(raw) {
+  const parsed = parseStoredJson(raw);
+  if (!isStoredObject(parsed)) {
+    return { creativeDirection: "", mode: "refine", think: true };
+  }
+  return {
+    creativeDirection: typeof parsed.creativeDirection === "string" ? parsed.creativeDirection : "",
+    mode: parsed.mode === "create" ? "create" : "refine",
+    think: parsed.think !== false,
+  };
+}
+
+// Sections the control panel opens without any stored preference: the
+// minimal set a generation needs. Everything else (creative direction,
+// upscaling, LoRAs and other groups, advanced) stays collapsed until the
+// user expands it, and that choice is persisted.
+export const DEFAULT_OPEN_CONTROL_SECTION_KINDS = new Set(["prompt", "seed", "resolution"]);
+
 // Common AI-image-generation resolutions. The set is 180-degree symmetric:
 // every landscape entry also appears as its portrait swap.
 export const RESOLUTION_PRESET_GROUPS = [
