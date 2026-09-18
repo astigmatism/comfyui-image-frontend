@@ -148,6 +148,84 @@ class PortalDockerTests(unittest.TestCase):
             timeout=30,
         )
 
+    def test_full_portal_bootstrap_in_actual_runner(self):
+        # Fake only remote Git content. Run real Bash, Alpine mktemp and Python,
+        # starting from the exact Portal entrypoint as its non-root identity.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            (root / "source").mkdir(mode=0o755)
+            (root / "bin").mkdir(mode=0o755)
+            (root / "source").chmod(0o755)
+            (root / "bin").chmod(0o755)
+            for name in ("update_production", "update_production_portal"):
+                shutil.copy2(ROOT / name, root)
+            (root / "bin/git").write_text(
+                '#!/bin/sh\nset -eu\ntest "$1" = -C\ntest "$2" = /project/source\n'
+                'shift 2\nprintf "git:%s\\n" "$*" >> /tmp/git-calls\n'
+                'case "$*" in\n'
+                '"remote get-url origin") '
+                "echo https://github.com/astigmatism/comfyui-image-frontend.git;;\n"
+                '"fetch origin main") :;;\n'
+                '"rev-parse --verify origin/main^{commit}") echo ' + "a" * 40 + ";;\n"
+                '"show ' + "a" * 40 + ':scripts/launch-production-update.py") '
+                "cat /project/launcher-fixture.py;;\n"
+                "*) exit 99;;\nesac\n"
+            )
+            (root / "bin/git").chmod(0o755)
+            (root / "launcher-fixture.py").write_text(
+                "import json, os, sys\n"
+                'assert sys.argv[1:] == ["--source-view", "/project/source", "--sha", '
+                + repr("a" * 40)
+                + ', "--wait"]\n'
+                "assert os.getuid() == 1000\n"
+                'print(json.dumps({"bootstrap": "executed", "uid": os.getuid()}))\n'
+                'sys.exit(int(os.environ["FIXTURE_EXIT_CODE"]))\n'
+            )
+            (root / "launcher-fixture.py").chmod(0o644)
+            for exit_code in (0, 7):
+                with self.subTest(exit_code=exit_code):
+                    result = subprocess.run(
+                        [
+                            "docker",
+                            "run",
+                            "--rm",
+                            "--user",
+                            "1000:1000",
+                            "--mount",
+                            f"type=bind,source={root},target=/project,readonly",
+                            "--env",
+                            "SERVICE_PORTAL_UPDATE_DELEGATED=1",
+                            "--env",
+                            f"FIXTURE_EXIT_CODE={exit_code}",
+                            "--env",
+                            "PATH=/project/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                            "--entrypoint",
+                            "bash",
+                            self.image,
+                            "-c",
+                            "/project/update_production_portal; code=$?; "
+                            "test -z \"$(find /tmp -maxdepth 1 -name 'cif-launch.*')\" || exit 98; "
+                            'cat /tmp/git-calls; exit "$code"',
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, exit_code, result.stderr)
+                    self.assertIn('"bootstrap": "executed"', result.stdout)
+                    calls = [line for line in result.stdout.splitlines() if line.startswith("git:")]
+                    self.assertEqual(
+                        calls,
+                        [
+                            "git:remote get-url origin",
+                            "git:fetch origin main",
+                            "git:rev-parse --verify origin/main^{commit}",
+                            "git:show " + "a" * 40 + ":scripts/launch-production-update.py",
+                        ],
+                    )
+
     def test_real_container_exit_and_verified_result_determine_portal_status(self):
         cases = [
             ('{"phase":"complete","exit_code":0}', 0, 0),
