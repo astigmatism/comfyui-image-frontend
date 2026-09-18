@@ -1061,6 +1061,53 @@ export function resolutionSummary(width, height) {
   };
 }
 
+export const RECENT_RESOLUTIONS_LIMIT = 5;
+
+export function recentResolutionKey(userId, sourceKey) {
+  return `cif.recent-resolutions.${userId || "anonymous"}.${sourceKey}`;
+}
+
+export function isValidRecentResolution(entry) {
+  const width = Number(entry?.width);
+  const height = Number(entry?.height);
+  return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0;
+}
+
+export function loadRecentResolutions(raw, limit = RECENT_RESOLUTIONS_LIMIT) {
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const entries = [];
+  for (const item of parsed) {
+    if (!isValidRecentResolution(item)) continue;
+    const width = Number(item.width);
+    const height = Number(item.height);
+    if (entries.some((entry) => entry.width === width && entry.height === height)) continue;
+    entries.push({ width, height });
+    if (entries.length >= limit) break;
+  }
+  return entries;
+}
+
+export function recordRecentResolution(entries, value, limit = RECENT_RESOLUTIONS_LIMIT) {
+  const width = Math.round(Number(value?.width));
+  const height = Math.round(Number(value?.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return entries;
+  return [{ width, height }, ...(entries || []).filter((entry) => entry.width !== width || entry.height !== height)].slice(
+    0,
+    limit,
+  );
+}
+
+export function removeRecentResolution(entries, width, height) {
+  return (entries || []).filter((entry) => entry.width !== width || entry.height !== height);
+}
+
 // Common AI-image-generation resolutions. The set is 180-degree symmetric:
 // every landscape entry also appears as its portrait swap.
 export const RESOLUTION_PRESET_GROUPS = [

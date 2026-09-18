@@ -2486,6 +2486,82 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await detailDialog.getByRole("button", { name: "Close", exact: true }).click();
 });
 
+test("recently used resolutions record on commit, restore on click, persist, and scope per source", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  const width = page.getByRole("spinbutton", { name: "Width", exact: true });
+  const height = page.getByRole("spinbutton", { name: "Height", exact: true });
+  const recentRow = page.locator("[data-resolution-recent]");
+  const sectionStatus = page
+    .locator('[data-control-section="resolution"]')
+    .locator('[data-control-section-status="resolution"]');
+  const badgeFor = (pair) =>
+    recentRow.locator(`.resolution-recent-badge[data-resolution-recent-value="${pair}"]`);
+
+  // A fresh context has no recents, so the row is omitted entirely.
+  await expect(recentRow).toHaveCount(0);
+
+  // Committing a width edit records the pair once the edit settles.
+  await width.fill("1024");
+  await expect(recentRow).toBeVisible();
+  await expect(badgeFor("1024x1920")).toBeVisible();
+  await expect(badgeFor("1024x1920")).toHaveClass(/is-current/);
+
+  // A second commit becomes the newest entry.
+  await height.fill("1024");
+  await expect(recentRow.locator(".resolution-recent-badge")).toHaveCount(2);
+  await expect(recentRow.locator(".resolution-recent-apply").first()).toHaveAttribute(
+    "data-resolution-recent-value",
+    "1024x1024",
+  );
+  await expect(badgeFor("1024x1024")).toHaveClass(/is-current/);
+
+  // Applying a badge restores width, height, caption, and section status.
+  await badgeFor("1024x1920")
+    .getByRole("button", { name: "Use recent resolution 1024 by 1920 pixels", exact: true })
+    .click();
+  await expect(width).toHaveValue("1024");
+  await expect(height).toHaveValue("1920");
+  await expect(sectionStatus).toHaveText("1024 × 1920");
+  await expect(page.locator("[data-resolution-summary]")).toHaveText("1024 × 1920 · 1.97 MP · 8:15");
+  await expect(badgeFor("1024x1920")).toHaveClass(/is-current/);
+
+  // The recents list is persisted per user + source and survives a full reload;
+  // source selection itself is session-scoped, so re-select to restore the row.
+  await page.reload();
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await expect(recentRow.locator(".resolution-recent-badge")).toHaveCount(2);
+  await expect(recentRow.locator(".resolution-recent-apply").first()).toHaveAttribute(
+    "data-resolution-recent-value",
+    "1024x1920",
+  );
+
+  // A badge restores the value after a reload too.
+  await badgeFor("1024x1024")
+    .getByRole("button", { name: "Use recent resolution 1024 by 1024 pixels", exact: true })
+    .click();
+  await expect(width).toHaveValue("1024");
+  await expect(height).toHaveValue("1024");
+
+  // Per-badge remove drops only that entry.
+  await badgeFor("1024x1024")
+    .getByRole("button", { name: "Remove 1024 by 1024 from recent resolutions", exact: true })
+    .click();
+  await expect(recentRow.locator(".resolution-recent-badge")).toHaveCount(1);
+  await expect(badgeFor("1024x1920")).toBeVisible();
+
+  // Recents are scoped per source: another source starts empty, switching back restores.
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  await expect(page.locator("[data-resolution-recent]")).toHaveCount(0);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await expect(page.locator("[data-resolution-recent]")).toHaveCount(1);
+});
+
 test("backend field errors disclose Advanced controls and stale compositions do not cross sources", async ({
   page,
 }) => {

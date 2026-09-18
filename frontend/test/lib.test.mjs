@@ -35,7 +35,12 @@ import {
   overwriteWithRecall,
   parametersForRequest,
   photoViewerImageLayout,
+  loadRecentResolutions,
+  recentResolutionKey,
+  recordRecentResolution,
+  RECENT_RESOLUTIONS_LIMIT,
   recalledComfyuiInstanceState,
+  removeRecentResolution,
   reconcileInterfaceValues,
   resolutionConstraints,
   resolutionGridConstraints,
@@ -850,6 +855,88 @@ test("resolution grid mirrors Resolution Master snapping and live details", () =
     aspectRatio: "16:25",
     text: "1024 × 1600 · 1.64 MP · 16:25",
   });
+});
+
+test("recent resolutions storage key is scoped per user and per source", () => {
+  assert.equal(recentResolutionKey("u1", "wf_a"), "cif.recent-resolutions.u1.wf_a");
+  assert.equal(recentResolutionKey("u1", "wf_b"), "cif.recent-resolutions.u1.wf_b");
+  assert.equal(recentResolutionKey(null, "wf_a"), "cif.recent-resolutions.anonymous.wf_a");
+  assert.equal(RECENT_RESOLUTIONS_LIMIT, 5);
+});
+
+test("loadRecentResolutions validates, dedupes, and caps stored entries", () => {
+  assert.deepEqual(loadRecentResolutions(null), []);
+  assert.deepEqual(loadRecentResolutions(""), []);
+  assert.deepEqual(loadRecentResolutions("not json"), []);
+  assert.deepEqual(loadRecentResolutions('{"width":1080,"height":1920}'), []);
+  assert.deepEqual(
+    loadRecentResolutions(
+      JSON.stringify([
+        { width: 1080, height: 1920 },
+        { width: "1080", height: 1920 },
+        { width: 0, height: 512 },
+        { width: 1024, height: 1024 },
+        { width: 1344, height: 768 },
+        { width: 1920, height: 1080 },
+        { width: 1536, height: 1024 },
+        { width: 2048, height: 2048 },
+      ]),
+    ),
+    [
+      { width: 1080, height: 1920 },
+      { width: 1024, height: 1024 },
+      { width: 1344, height: 768 },
+      { width: 1920, height: 1080 },
+      { width: 1536, height: 1024 },
+    ],
+  );
+});
+
+test("recordRecentResolution moves the committed value to the front and dedupes by exact WxH", () => {
+  let entries = [];
+  entries = recordRecentResolution(entries, { width: 1024, height: 1024 });
+  entries = recordRecentResolution(entries, { width: 1344, height: 768 });
+  entries = recordRecentResolution(entries, { width: 1024, height: 1024 });
+  assert.deepEqual(entries, [
+    { width: 1024, height: 1024 },
+    { width: 1344, height: 768 },
+  ]);
+  entries = recordRecentResolution(entries, { width: 1080, height: 1920 });
+  entries = recordRecentResolution(entries, { width: 1920, height: 1080 });
+  entries = recordRecentResolution(entries, { width: 1536, height: 1024 });
+  entries = recordRecentResolution(entries, { width: 2048, height: 2048 });
+  assert.equal(entries.length, RECENT_RESOLUTIONS_LIMIT);
+  assert.deepEqual(entries, [
+    { width: 2048, height: 2048 },
+    { width: 1536, height: 1024 },
+    { width: 1920, height: 1080 },
+    { width: 1080, height: 1920 },
+    { width: 1024, height: 1024 },
+  ]);
+  const unchanged = recordRecentResolution(entries, { width: null, height: 768 });
+  assert.equal(unchanged, entries);
+  const fromNumericStrings = recordRecentResolution(entries, { width: "1080", height: "1920" });
+  assert.deepEqual(fromNumericStrings, [
+    { width: 1080, height: 1920 },
+    { width: 2048, height: 2048 },
+    { width: 1536, height: 1024 },
+    { width: 1920, height: 1080 },
+    { width: 1024, height: 1024 },
+  ]);
+});
+
+test("removeRecentResolution drops only the exact WxH pair", () => {
+  const entries = [
+    { width: 1080, height: 1920 },
+    { width: 1920, height: 1080 },
+    { width: 1024, height: 1024 },
+  ];
+  assert.deepEqual(removeRecentResolution(entries, 1920, 1080), [
+    { width: 1080, height: 1920 },
+    { width: 1024, height: 1024 },
+  ]);
+  assert.deepEqual(removeRecentResolution([], 1024, 1024), []);
+  assert.deepEqual(removeRecentResolution(null, 1024, 1024), []);
 });
 
 test("published inputs put seed first, then sort by tier, order, group, and id", () => {

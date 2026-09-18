@@ -194,7 +194,7 @@ export function generationPanelMarkup(state, profile, contract) {
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
-        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen)}
+        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions)}
         ${
           advanced.length
             ? controlSectionMarkup({
@@ -664,7 +664,7 @@ function controlEmptyStateMarkup(state, source, contract) {
   return '<p class="empty-copy">Choose an available generation source to load its controls.</p>';
 }
 
-function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}) {
+function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = []) {
   const resolutionPair = pairedResolutionInputs(inputs, values, contract);
   const firstResolutionInput = resolutionPair
     ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
@@ -715,7 +715,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                 values,
                 contract,
                 errors,
-                { hideLegend: true },
+                { hideLegend: true, recentResolutions },
               )
             : section.controls
                 .map((input) =>
@@ -725,6 +725,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                       section.kind === "seed" ||
                       input.type === "image" ||
                       input.type === "resolution",
+                    recentResolutions,
                   }),
                 )
                 .join("");
@@ -983,7 +984,9 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
       field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "resolution":
-      input = resolutionMarkup(control, value, disabled, required, error, describedBy, id);
+      input = resolutionMarkup(control, value, disabled, required, error, describedBy, id, {
+        recentResolutions: options.recentResolutions,
+      });
       field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "array":
@@ -1061,12 +1064,43 @@ function imageInputMarkup(control, value, common, id, disabled) {
   </div>`;
 }
 
-function resolutionMarkup(control, value, disabled, required, error, describedBy, id) {
+export function recentResolutionsMarkup(recents, currentValue) {
+  const entries = (Array.isArray(recents) ? recents : []).filter(
+    (entry) =>
+      Number.isFinite(Number(entry?.width)) &&
+      Number.isFinite(Number(entry?.height)) &&
+      Number(entry.width) > 0 &&
+      Number(entry.height) > 0,
+  );
+  if (!entries.length) return "";
+  const badges = entries
+    .map((entry) => {
+      const width = Number(entry.width);
+      const height = Number(entry.height);
+      const ratio = resolutionSummary(width, height).aspectRatio;
+      const isCurrent =
+        Number.isFinite(Number(currentValue?.width)) &&
+        Number(currentValue.width) === width &&
+        Number.isFinite(Number(currentValue?.height)) &&
+        Number(currentValue.height) === height;
+      return `<span class="resolution-recent-badge${isCurrent ? " is-current" : ""}" data-resolution-recent-value="${width}x${height}">
+      <button type="button" class="resolution-recent-apply" data-action="apply-resolution-recent" data-resolution-recent-value="${width}x${height}" aria-label="Use recent resolution ${width} by ${height} pixels">
+        ${width} × ${height}<i class="resolution-recent-ratio">${escapeHtml(ratio)}</i>
+      </button>
+      <button type="button" class="resolution-recent-remove" data-action="remove-resolution-recent" aria-label="Remove ${width} by ${height} from recent resolutions">✕</button>
+    </span>`;
+    })
+    .join("\n    ");
+  return `<div class="resolution-recent" data-resolution-recent>\n    ${badges}\n  </div>`;
+}
+
+function resolutionMarkup(control, value, disabled, required, error, describedBy, id, options = {}) {
   const base = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
   const limits = resolutionConstraints(control);
   const grid = resolutionGridConstraints(control);
   const canvas = resolutionCanvasMarkup({ controlId: control.id, value, grid, disabled });
   return `<div class="resolution-editor">
+    ${recentResolutionsMarkup(options.recentResolutions, value)}
     <div class="resolution-preview">${canvas}</div>
     <div class="resolution-control">
       <label for="${id}-width"><span>Width</span><input id="${id}-width" ${base} data-resolution-part="width" type="number" value="${value?.width ?? ""}" min="${limits.minimumWidth ?? ""}" max="${limits.maximumWidth ?? ""}" step="${limits.widthStep}" /></label>
@@ -1126,6 +1160,7 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
     <fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}>
       <legend${options.hideLegend ? ' class="visually-hidden"' : ""}>Resolution${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</legend>
       <div class="resolution-editor">
+        ${recentResolutionsMarkup(options.recentResolutions, value)}
         <div class="resolution-preview">${canvas}</div>
         <div class="resolution-control">
           ${widthInput}

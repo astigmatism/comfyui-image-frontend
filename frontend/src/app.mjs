@@ -28,6 +28,7 @@ import {
   insertTranscription,
   isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
+  loadRecentResolutions,
   migrateInterfaceState,
   normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
@@ -38,7 +39,10 @@ import {
   positivePromptInput,
   promptInstructionsForMode,
   recalledComfyuiInstanceState,
+  recentResolutionKey,
+  recordRecentResolution,
   reconcileInterfaceValues,
+  removeRecentResolution,
   resolutionPresetForValue,
   resolutionSummary,
   scaleToLayout,
@@ -68,6 +72,7 @@ import {
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
+  recentResolutionsMarkup,
   renderCollectionBar,
   serviceBannerMarkup,
   shellMarkup,
@@ -105,6 +110,7 @@ const state = {
   selectedGenerationTargetCount: 0,
   generationQuantity: MIN_GENERATION_QUANTITY,
   controlSectionOpen: {},
+  recentResolutions: [],
   parameters: {},
   explicitParameterIds: new Set(),
   parameterStateBySource: {},
@@ -182,6 +188,7 @@ const state = {
 const generationRefreshGate = createLatestRequestGate();
 const liveGenerationRefreshQueue = createCoalescedTaskQueue((id, options) => refreshGeneration(id, options));
 let activeResolutionDrag = null;
+let recentResolutionsRecordTimer = null;
 let activePhotoViewerDrag = null;
 let promptEditorReturnFocus = null;
 let promptEditorInstructionOverrides = {};
@@ -449,6 +456,8 @@ async function handleClick(event) {
       document.querySelector(".app-shell")?.classList.toggle("panel-open", state.panelOpen);
       target.setAttribute("aria-expanded", String(state.panelOpen));
     } else if (action === "toggle-control-section") toggleControlSection(target);
+    else if (action === "apply-resolution-recent") applyRecentResolution(target);
+    else if (action === "remove-resolution-recent") removeRecentResolutionEntry(target);
     else if (action === "close-panel") closePanel();
     else if (action === "open-prompt-editor") openPromptEditor(target);
     else if (action === "toggle-speech-recording") await toggleSpeechRecording(target);
@@ -1019,6 +1028,7 @@ function handleInput(event) {
       const value = resolutionValueForGrid(grid);
       updateResolutionUi(grid, value);
       syncResolutionPresetSelect(container, value);
+      queueRecentResolutionRecord(grid);
     }
     if (element.type === "checkbox") {
       const stateLabel = element.closest(".switch")?.querySelector("em");
@@ -1513,6 +1523,7 @@ function handlePointerEnd(event) {
   } catch {
     // The browser may release capture before pointercancel reaches the delegated handler.
   }
+  commitRecentResolutionValue(grid);
   renderPanelWithResolutionFocus(grid, mode);
 }
 
@@ -1599,6 +1610,7 @@ function handleKeyDown(event) {
   if (!handled) return;
   event.preventDefault();
   setResolutionValue(grid, width, height);
+  queueRecentResolutionRecord(grid);
 }
 
 function moveSourcePickerCheckpointFromKeyboard(handle, key) {
@@ -1755,14 +1767,7 @@ function resolutionPosition(value, minimum, maximum) {
   return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
 }
 
-function applyResolutionPreset(select) {
-  const block = select.closest("[data-resolution-pair-block], [data-control-block]");
-  const grid = block?.querySelector("[data-resolution-grid]");
-  if (!block || !grid || select.value === "custom") return;
-  const [widthRaw, heightRaw] = select.value.split("x");
-  const width = Number(widthRaw);
-  const height = Number(heightRaw);
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+function commitResolutionValue(grid, width, height) {
   const widthId = grid.dataset.resolutionWidthId || grid.dataset.controlId;
   const heightId = grid.dataset.resolutionHeightId;
   if (grid.dataset.resolutionWidthId && grid.dataset.resolutionHeightId) {
@@ -1779,10 +1784,120 @@ function applyResolutionPreset(select) {
   }
   state.formError = null;
   updateResolutionUi(grid, resolutionValueForGrid(grid));
-  syncResolutionPresetSelect(block, resolutionValueForGrid(grid));
+  syncResolutionPresetSelect(grid.closest("[data-resolution-pair-block], [data-control-block]"), resolutionValueForGrid(grid));
   persistActiveParameterState();
   syncParameterValidation(widthId);
   if (heightId) syncParameterValidation(heightId);
+}
+
+function applyResolutionPreset(select) {
+  const block = select.closest("[data-resolution-pair-block], [data-control-block]");
+  const grid = block?.querySelector("[data-resolution-grid]");
+  if (!block || !grid || select.value === "custom") return;
+  const [widthRaw, heightRaw] = select.value.split("x");
+  const width = Number(widthRaw);
+  const height = Number(heightRaw);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  commitResolutionValue(grid, width, height);
+  commitRecentResolutionValue(grid);
+  syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
+}
+
+function applyRecentResolution(button) {
+  const block = button.closest("[data-resolution-pair-block], [data-control-block]");
+  const grid = block?.querySelector("[data-resolution-grid]");
+  if (!block || !grid) return;
+  const [widthRaw, heightRaw] = (button.dataset.resolutionRecentValue || "").split("x");
+  const width = Number(widthRaw);
+  const height = Number(heightRaw);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  commitResolutionValue(grid, width, height);
+  commitRecentResolutionValue(grid);
+  syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
+}
+
+function removeRecentResolutionEntry(button) {
+  const block = button.closest("[data-resolution-pair-block], [data-control-block]");
+  const grid = block?.querySelector("[data-resolution-grid]");
+  if (!block) return;
+  const badge = button.closest("[data-resolution-recent-value]");
+  const [widthRaw, heightRaw] = ((badge || button).dataset.resolutionRecentValue || "").split("x");
+  state.recentResolutions = removeRecentResolution(state.recentResolutions, Number(widthRaw), Number(heightRaw));
+  persistRecentResolutions();
+  syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
+}
+
+function recentResolutionsUserId() {
+  return state.session?.user?.id || "anonymous";
+}
+
+function loadRecentResolutionsForActiveSource() {
+  if (recentResolutionsRecordTimer) {
+    clearTimeout(recentResolutionsRecordTimer);
+    recentResolutionsRecordTimer = null;
+  }
+  if (!state.activeSourceKey) {
+    state.recentResolutions = [];
+    return;
+  }
+  let raw = null;
+  try {
+    raw = window.localStorage.getItem(recentResolutionKey(recentResolutionsUserId(), state.activeSourceKey));
+  } catch {
+    raw = null;
+  }
+  state.recentResolutions = loadRecentResolutions(raw);
+}
+
+function persistRecentResolutions() {
+  if (!state.activeSourceKey) {
+    state.recentResolutions = [];
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      recentResolutionKey(recentResolutionsUserId(), state.activeSourceKey),
+      JSON.stringify(state.recentResolutions),
+    );
+  } catch {
+    // Storage may be unavailable; the in-memory list still works for this session.
+  }
+}
+
+function commitRecentResolutionValue(grid) {
+  if (!grid || !state.activeSourceKey) return;
+  state.recentResolutions = recordRecentResolution(state.recentResolutions, resolutionValueForGrid(grid));
+  persistRecentResolutions();
+}
+
+// Continuous edits (typing, arrow-key nudges) settle into one recent entry:
+// the record is deferred until the last change of the burst.
+function queueRecentResolutionRecord(grid) {
+  if (!grid) return;
+  if (recentResolutionsRecordTimer) clearTimeout(recentResolutionsRecordTimer);
+  recentResolutionsRecordTimer = setTimeout(() => {
+    recentResolutionsRecordTimer = null;
+    if (!state.activeSourceKey) return;
+    commitRecentResolutionValue(grid);
+    syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
+  }, 600);
+}
+
+function syncRecentResolutionsRow(grid, value) {
+  const block = grid?.closest("[data-resolution-pair-block], [data-control-block]");
+  const editor = block?.querySelector(".resolution-editor");
+  if (!block || !editor) return;
+  const html = recentResolutionsMarkup(state.recentResolutions, value);
+  const existing = block.querySelector("[data-resolution-recent]");
+  if (!html) {
+    existing?.remove();
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const node = template.content.firstElementChild;
+  if (existing) existing.replaceWith(node);
+  else editor.prepend(node);
 }
 
 function syncResolutionPresetSelect(block, value) {
@@ -2030,6 +2145,7 @@ async function logout() {
   state.sources = [];
   state.activeSourceKey = null;
   state.activeSource = null;
+  state.recentResolutions = [];
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.checkpointTiers = {};
@@ -2890,6 +3006,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
       state.sourceLoadToken += 1;
       state.activeSourceKey = null;
       state.activeSource = null;
+      state.recentResolutions = [];
       state.parameters = {};
       state.explicitParameterIds = new Set();
       state.sourceDetailLoading = false;
@@ -2932,6 +3049,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
   state.activeSourceKey = key || null;
   state.activeSource = resolvedSummary;
   state.pendingSourceMigration = migration;
+  loadRecentResolutionsForActiveSource();
   const saved = key ? state.parameterStateBySource[key] : null;
   state.parameters = structuredClone(saved?.values || {});
   state.explicitParameterIds = new Set(saved?.explicitInputIds || []);
@@ -4992,6 +5110,7 @@ async function recall(id) {
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.pendingSourceMigration = null;
+  loadRecentResolutionsForActiveSource();
   state.explicitParameterIds = new Set(
     Object.entries(recalledState.parameters || {})
       .filter(([, value]) => value !== null && value !== undefined)
