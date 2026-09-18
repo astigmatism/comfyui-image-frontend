@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -15,11 +16,77 @@ from pathlib import Path
 ROOT = "/home/astigmatism/comfyui-image-frontend"
 
 
+def wait_for_job(container, env, check_only=False):
+    """Keep the Portal runner alive until the durable deployment actually finishes."""
+    try:
+        subprocess.run(
+            ["docker", "logs", "--follow", "--tail", "20", container],
+            env=env,
+            check=True,
+            timeout=1800,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"Deployment monitoring timed out; inspect existing job {container}. "
+            "It may still be running; do not launch another update."
+        ) from error
+    # Log EOF can precede Docker publishing the terminal container state.
+    subprocess.run(
+        ["docker", "wait", container],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    state = json.loads(
+        subprocess.run(
+            ["docker", "inspect", "--format", "{{json .State}}", container],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+    )
+    if state["Running"] or state["Status"] not in ("exited", "dead"):
+        raise RuntimeError(f"Deployment job {container} has not finished")
+    code = state["ExitCode"]
+    if code:
+        print(f"Error: deployment job {container} failed with exit code {code}", flush=True)
+        return code
+    logs = subprocess.run(
+        ["docker", "logs", "--tail", "20", container],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.splitlines()
+    records = []
+    for line in logs:
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    result = records[-1] if records and isinstance(records[-1], dict) else {}
+    verified = (result.get("phase") == "complete" and result.get("exit_code") == 0) or result.get(
+        "outcome"
+    ) == ("check-passed" if check_only else "already-current")
+    if not verified:
+        raise RuntimeError(f"Deployment job {container} exited without a verified result")
+    print(json.dumps({"job": container, "exit_code": 0, "verification": "passed"}), flush=True)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-view", type=Path, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument(
+        "--wait", action="store_true", help="Stream deployment progress and return its exit code"
+    )
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
         raise RuntimeError("Expected a full target SHA")
@@ -120,9 +187,13 @@ def main():
                     ),
                     "logs_command": f"docker -H unix://{sock} logs --tail 20 {name}",
                 }
-            )
+            ),
+            flush=True,
         )
+        if args.wait:
+            return wait_for_job(container, env, args.check_only)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

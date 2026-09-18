@@ -84,8 +84,11 @@ layout; a routine update must preserve the existing topology.
 | TLS material | Must resolve to the edge's actual certificate mount | `<deployment-root>/data/certificates`, passed as an absolute path |
 
 **Use Path B for the reported production deployment. Do not run
-`./update_and_restart` there, including through the Service Portal button.** The
-script accepts one `-f`, advances the checked-out branch, does not set
+`./update_and_restart` there, including through a Portal label pointing to the
+generic `scripts/update-and-restart.sh`.** The supported
+[production Portal entrypoint](production-service-portal.md) runs the same Path B
+transaction as `update_production`. The generic script accepts one `-f`, advances
+the checked-out branch, does not set
 `CIF_IMAGE_TAG`, and defaults TLS paths relative to its checkout. Pointing it at
 the example file can reconcile over the existing project with the wrong image,
 build context, and mounts. Migrating from B to A is a separate task requiring

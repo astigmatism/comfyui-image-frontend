@@ -109,8 +109,9 @@ stays unchanged. It also works from the agent's `/host` view without SSH setup.
 
 The single-file checkout updater below is for other installations. Samus uses
 `compose.yaml` + `compose.ordered-lora.yaml`, detached worktrees, and commit-tagged
-images. Its `update_production` command preserves that topology; the single-file
-updater and Portal update button do not. The
+images. Its `update_production` command and
+[production Portal integration](docs/production-service-portal.md) preserve that
+topology; the single-file updater below does not. The
 [manual reference](docs/manual-deployment-reference.md) covers deliberate recovery.
 
 For the single-file checkout layout, from a clean checkout with an upstream branch:
@@ -135,6 +136,12 @@ Override defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, `CIF_UPDATE_ST
 
 ### Service Portal "Update and restart" control
 
+**Samus production:** follow the
+[production installation instructions](docs/production-service-portal.md) to enable
+the button using `update_production_portal`. It waits for the existing production
+deployer's verified result. The remaining instructions here apply to single-file
+checkout installations.
+
 `compose.example.yml` opts the single long-lived service into Service Portal's project-scoped **Update and restart** control through the `io.service-portal.update.*` labels: after operator confirmation, the portal runs `scripts/update-and-restart.sh` in a detached maintenance container built from an existing local runner image, as the numeric user of the host checkout, with the Docker socket mounted. No portal rebuild is required; the labels are read from live container metadata. To activate the control:
 
 1. Build the runner image once on the Docker host (the portal never pulls or builds it):
@@ -143,14 +150,15 @@ Override defaults with `CIF_COMPOSE_FILE`, `CIF_COMPOSE_SERVICE`, `CIF_UPDATE_ST
    docker build -t comfyui-image-frontend-portal-runner:latest deployment/runner
    ```
 
-   The image contains exactly bash, Git, the Docker CLI, and the Compose v2 plugin — no application code and no secrets.
+   The image provides Bash, Python 3, Git, OpenSSL, Docker CLI and Compose, with no application code or secrets.
 2. In the deployment's `.env`, set `HOST_UID` and `HOST_GID` to the numeric owner of the checkout (`id -u; id -g`) and keep `PROJECT_RUNNER_IMAGE` pointing at the image you built (defaults documented in `.env.example`).
 3. Recreate the service so Docker records the new labels: `docker compose -f compose.example.yml up -d --force-recreate comfyui-image-frontend`.
 
 For a custom **single-file checkout** deployment compatible with the updater,
 copy the four labels from `compose.example.yml` and configure the verified update
-environment. Do not enable this script for the multi-file/worktree path: it cannot
-preserve frozen main, commit-tag selection, and deployment-root TLS paths. The
+environment. Do not enable the generic `scripts/update-and-restart.sh` for the
+multi-file/worktree path: use the production entrypoint linked above to preserve
+frozen main, commit-tag selection, and deployment-root TLS paths. The
 portal suppresses the control when more than one service opts in with different
 effective settings. The remote is public, so no Git credentials are required; if
 that ever changes, provision noninteractive least-privilege credentials inside the

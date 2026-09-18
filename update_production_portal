@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Install beside update_production at the native production deployment root.
+# Service Portal waits for this process; launching the child job is not success.
+set -Eeuo pipefail
+trap 'printf "Error: production Portal update failed (exit %s)\n" "$?" >&2' ERR
+deploy_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+if [[ ${SERVICE_PORTAL_UPDATE_DELEGATED:-} != 1 ]]; then
+  printf 'Error: use Service Portal for this entrypoint, or update_production --wait directly.\n' >&2
+  exit 1
+fi
+"$deploy_root/update_production" --wait

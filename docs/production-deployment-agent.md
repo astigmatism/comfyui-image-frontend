@@ -16,10 +16,16 @@ From an existing native host session, omit `/host` from that command. SSH setup
 is not required: the launcher uses the agent's existing Docker socket and mounts
 the project at its identical native host path inside the maintenance container.
 
+The Service Portal **Update and restart** button runs this same deployment and
+waits for its verified result. One-time setup is documented in
+[Service Portal installation](production-service-portal.md).
+
 The command prints a job name and exact commands to inspect its state and logs.
 Wait 30 seconds between checks. Finish when `running=false`; require `exit_code=0`
 and the final `complete` or `already-current` result. A tool timeout means check
 the same job, not launch another one. The job survives an agent disconnect.
+Alternatively, `update_production --wait` streams progress and returns the job's
+actual exit code. This is the mode the Portal entrypoint uses.
 
 Use `update_production --check-only` to check live state without building the app,
 backing up data, editing production configuration, or restarting services. The
@@ -59,7 +65,7 @@ its new image tag; do not overwrite an existing commit tag to retry a bad build.
 Do not create SSH keys, modify `authorized_keys`, inspect unrelated cron/services,
 benchmark disks, write replacement deploy/verification scripts, run test suites on
 production, change storage, or retry indefinitely. Do not use `update_and_restart`
-or the Portal update button for this two-file deployment. If access or an invariant
+or `scripts/update-and-restart.sh` for this two-file deployment. If access or an invariant
 fails, report that specific blocker while preserving the current service.
 
 The [manual reference](manual-deployment-reference.md) is for deliberate recovery

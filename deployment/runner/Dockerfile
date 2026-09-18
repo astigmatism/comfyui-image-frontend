@@ -9,8 +9,9 @@
 #
 #   docker build -t comfyui-image-frontend-portal-runner:latest deployment/runner
 #
-# It provides exactly the toolchain scripts/update-and-restart.sh needs:
-# bash, Git, the Docker CLI, the Compose v2 plugin, and OpenSSL (used by
+# It provides the toolchain for both scripts/update-and-restart.sh and the
+# production update_production_portal bootstrap: bash, Python 3, Git, the
+# Docker CLI, the Compose v2 plugin, and OpenSSL (used by
 # scripts/issue-local-cert.sh to keep the appliance-local TLS leaf current
 # before the edge is restarted). It contains no application code and no
 # secrets. If the Git remote were private, provision noninteractive
@@ -22,7 +23,7 @@
 
 FROM docker:28-cli
 
-RUN apk add --no-cache bash git docker-compose openssl
+RUN apk add --no-cache bash git docker-compose openssl python3
 
 # The portal overrides the working directory with the mounted project
 # directory; /tmp keeps the image default tidy (the portal sets HOME=/tmp).

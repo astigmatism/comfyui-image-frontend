@@ -228,6 +228,48 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Unexpected Compose change"):
             deploy.verify_candidate(before, after, self.root / ("ordered-lora-" + NEW), NEW)
 
+    def test_preserves_portal_labels_and_two_file_compose_identity(self):
+        before = self.config()
+        before["services"][deploy.APP]["labels"] = {
+            "io.service-portal.update.script": "update_production_portal"
+        }
+        after = copy.deepcopy(before)
+        app = after["services"][deploy.APP]
+        app["image"] = "frontend:" + NEW
+        app["build"]["context"] = str(self.root / ("ordered-lora-" + NEW))
+        app["environment"]["CIF_IMAGE_TAG"] = NEW
+        deploy.verify_candidate(before, after, self.root / ("ordered-lora-" + NEW), NEW)
+        command = deploy.compose_command(self.root)
+        self.assertEqual(
+            [command[i + 1] for i, value in enumerate(command) if value == "-f"],
+            [str(self.root / "compose.yaml"), str(self.root / "compose.ordered-lora.yaml")],
+        )
+
+    def test_wrong_remote_dirty_checkout_or_divergent_release_prevents_any_deployment(self):
+        original_output = self.output
+        for failure in ("remote", "branch", "dirty", "divergent"):
+            with self.subTest(failure=failure):
+
+                def reject(*args, failure=failure):
+                    if args[0] == "git":
+                        if failure == "remote" and "get-url" in args:
+                            return "https://example.invalid/other.git"
+                        if failure == "branch" and "branch" in args:
+                            return "unexpected"
+                        if failure == "dirty" and "status" in args:
+                            return " M user-work.py"
+                        if failure == "divergent" and "merge-base" in args:
+                            raise RuntimeError("Command failed: git merge-base")
+                    return original_output(*args)
+
+                with (
+                    patch.object(deploy, "output", side_effect=reject),
+                    self.assertRaises(RuntimeError),
+                ):
+                    deploy.deploy(self.root, NEW)
+                self.assertEqual(self.events, [])
+                self.assert_restored()
+
 
 class MaintenanceContextTests(unittest.TestCase):
     def test_verified_same_path_container_is_accepted(self):

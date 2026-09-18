@@ -1,0 +1,9 @@
+# Merge these labels into the existing compose.ordered-lora.yaml app service.
+# This is an installation fragment, NOT a third production Compose file.
+services:
+  comfyui-image-frontend:
+    labels:
+      io.service-portal.update.enabled: "true"
+      io.service-portal.update.script: "update_production_portal"
+      io.service-portal.update.image: "${PROJECT_RUNNER_IMAGE:-comfyui-image-frontend-portal-runner:latest}"
+      io.service-portal.update.user: "${PUID:-1000}:${PGID:-1000}"
