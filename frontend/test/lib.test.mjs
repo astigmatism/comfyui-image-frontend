@@ -809,7 +809,7 @@ test("resolution presets cover symmetric landscape and portrait sets", () => {
   for (const preset of landscape) {
     assert.ok(swapped.has(preset.key), `${preset.label} should have a portrait counterpart`);
   }
-  assert.ok(resolutionPresets().length >= 20);
+  assert.ok(resolutionPresets().length >= 15);
   for (const preset of presets) {
     assert.ok(preset.width % 4 === 0 && preset.height % 4 === 0, `${preset.label} should be divisible by 4`);
   }
@@ -837,15 +837,15 @@ test("resolution grid mirrors Resolution Master snapping and live details", () =
     heightStep: 64,
   });
   const largeGrid = resolutionGridConstraints({ constraints: { maximum: 16384 } });
-  assert.equal(largeGrid.maximumWidth, 3840);
-  assert.equal(largeGrid.maximumHeight, 3840);
+  assert.equal(largeGrid.maximumWidth, 2048);
+  assert.equal(largeGrid.maximumHeight, 2048);
   assert.deepEqual(resolutionGridConstraints({}), largeGrid);
   const mixedGrid = resolutionGridConstraints({
     constraints: { maximum_width: 16384, maximum_height: 2048 },
   });
-  assert.equal(mixedGrid.maximumWidth, 3840);
+  assert.equal(mixedGrid.maximumWidth, 2048);
   assert.equal(mixedGrid.maximumHeight, 2048);
-  assert.equal(snapResolutionValue(16384, 0, largeGrid.maximumWidth, largeGrid.widthStep), 3840);
+  assert.equal(snapResolutionValue(16384, 0, largeGrid.maximumWidth, largeGrid.widthStep), 2048);
   assert.equal(snapResolutionValue(1051, 0, 2048, 64), 1024);
   assert.equal(snapResolutionValue(2029, 0, 2048, 64), 2048);
   assert.deepEqual(resolutionSummary(1024, 1600), {

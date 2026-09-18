@@ -1025,8 +1025,8 @@ export function resolutionGridConstraints(control) {
   const limits = resolutionConstraints(control);
   const maximumWidth = Number(limits.maximumWidth);
   const maximumHeight = Number(limits.maximumHeight);
-  // Use the 4K long edge in either orientation, respecting smaller workflow limits.
-  const maximumDimension = 3840;
+  // Use the 2K long edge in either orientation, respecting smaller workflow limits.
+  const maximumDimension = 2048;
   return {
     minimumWidth: 0,
     maximumWidth: Number.isFinite(maximumWidth) && maximumWidth > 0 ? Math.min(maximumWidth, maximumDimension) : maximumDimension,
@@ -1128,10 +1128,6 @@ export const RESOLUTION_PRESET_GROUPS = [
       { width: 1920, height: 1080, tag: "16:9 · FHD" },
       { width: 2048, height: 1152, tag: "16:9" },
       { width: 2048, height: 1536, tag: "4:3" },
-      { width: 2304, height: 1296, tag: "16:9" },
-      { width: 2560, height: 1440, tag: "16:9 · QHD" },
-      { width: 3072, height: 1728, tag: "16:9" },
-      { width: 3840, height: 2160, tag: "16:9 · 4K" },
     ],
   },
   {
@@ -1143,10 +1139,6 @@ export const RESOLUTION_PRESET_GROUPS = [
       { width: 1080, height: 1920, tag: "9:16 · FHD" },
       { width: 1152, height: 2048, tag: "9:16" },
       { width: 1536, height: 2048, tag: "3:4" },
-      { width: 1296, height: 2304, tag: "9:16" },
-      { width: 1440, height: 2560, tag: "9:16 · QHD" },
-      { width: 1728, height: 3072, tag: "9:16" },
-      { width: 2160, height: 3840, tag: "9:16 · 4K" },
     ],
   },
 ];

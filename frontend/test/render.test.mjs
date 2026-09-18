@@ -1935,8 +1935,8 @@ test("resolution markup includes the responsive three-handle grid and live capti
     { capability_states: {} },
   );
   assert.match(html, /data-resolution-grid/);
-  assert.match(html, /data-resolution-min-width="0" data-resolution-max-width="3840"/);
-  assert.match(html, /data-resolution-min-height="0" data-resolution-max-height="3840"/);
+  assert.match(html, /data-resolution-min-width="0" data-resolution-max-width="2048"/);
+  assert.match(html, /data-resolution-min-height="0" data-resolution-max-height="2048"/);
   assert.match(html, /data-resolution-width-step="64" data-resolution-height-step="64"/);
   assert.match(html, /data-resolution-handle="both"/);
   assert.match(html, /data-resolution-handle="width"/);
