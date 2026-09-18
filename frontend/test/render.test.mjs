@@ -684,6 +684,13 @@ test("creative direction renders as its own collapsible section beneath the prom
   assert.match(section, /data-speech-target="creative-direction"/);
   assert.doesNotMatch(section, />Mode</);
   assert.match(section, /<details class="prompt-preprocessor">/);
+  const preprocessorIndex = section.indexOf('class="prompt-preprocessor"');
+  const directionIndex = section.indexOf('id="creative-direction"');
+  assert.ok(preprocessorIndex >= 0 && preprocessorIndex < directionIndex);
+  assert.match(
+    section,
+    /data-instructions-mode-hint>Your prompt is added after these instructions, then the Creative Direction\./,
+  );
   assert.match(section, /<\/details>[\s\S]*data-action="compose-prompt"/);
   assert.match(section, /Refine Current Prompt/);
   assert.match(section, /New Prompt from Creative Direction/);
@@ -725,8 +732,8 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /id="prompt-editor-thinking-mode" type="checkbox"/);
   assert.doesNotMatch(html, /id="prompt-editor-thinking-mode" type="checkbox" checked/);
   assert.ok(
-    html.indexOf('name="prompt-editor-assistant-mode" value="create"') <
-      html.indexOf('id="prompt-editor-thinking-mode"'),
+    html.indexOf('id="prompt-editor-thinking-mode"') <
+      html.indexOf('name="prompt-editor-assistant-mode" value="create"'),
   );
   assert.match(html, /Thinking mode/);
   assert.match(
@@ -738,6 +745,10 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /Apply Creative Direction/);
   assert.match(html, /Prompt pre-processor/);
   assert.match(html, /<details class="prompt-preprocessor">/);
+  const editorPreprocessorIndex = html.indexOf('class="prompt-preprocessor"');
+  const editorDirectionIndex = html.indexOf('id="prompt-editor-creative-direction"');
+  assert.ok(editorPreprocessorIndex >= 0 && editorPreprocessorIndex < editorDirectionIndex);
+  assert.match(html, /data-instructions-mode-hint>Your Creative Direction is added after these instructions\./);
   assert.match(html, /<details class="prompt-preprocessor">[^]*id="prompt-editor-thinking-mode"[^]*<\/details>/);
   assert.match(html, /<\/details>[\s\S]*data-action="compose-prompt-editor"/);
   assert.match(html, /id="prompt-editor-instructions"[^>]*>Write &lt;one&gt; concise scene\.<\/textarea>/);

@@ -80,6 +80,7 @@ import {
   moveDialogMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
+  PROMPT_INSTRUCTIONS_HINTS,
   promptEditorMarkup,
   recentResolutionsMarkup,
   renderCollectionBar,
@@ -3467,6 +3468,7 @@ function syncPromptInstructions(container, overrides, mode) {
   textarea.setCustomValidity(value.trim() ? "" : "Enter instructions or reset to the default.");
   container.querySelector("[data-instructions-mode-label]").textContent = mode === "create"
     ? "Instructions for a new prompt" : "Instructions for refining your prompt";
+  container.querySelector("[data-instructions-mode-hint]").textContent = PROMPT_INSTRUCTIONS_HINTS[mode];
   container.querySelector('[data-action="reset-prompt-instructions"]').disabled = textarea.disabled;
 }
 
