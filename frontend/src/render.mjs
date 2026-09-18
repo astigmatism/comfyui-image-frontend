@@ -1392,7 +1392,7 @@ export function collectionCountMarkup(collection) {
 
 function generationActivityInfo(state, now) {
   const run = state.generationSubmissionProgress || state.generationActivity?.run;
-  const remaining = state.generationActivity?.remaining_count || 0;
+  const remaining = Math.max(state.generationActivity?.remaining_count || 0, run?.remaining_count || 0);
   let mode = "progress";
   let label;
   let description;
@@ -1404,6 +1404,11 @@ function generationActivityInfo(state, now) {
         : state.submitting || state.promptAssistantComposing ? "Auto preparing"
           : remaining > 0 ? "Auto active" : "Auto waiting";
     description = state.autoGenerateStatusMessage || `${label}. ${remaining} generations remaining. Auto-generation is enabled in this tab.`;
+    if (state.autoGenerate && state.promptAssistantComposing && remaining > 0) {
+      description += " Preparing the next prompt while images generate.";
+    } else if (state.autoGenerate && state.autoGeneratePromptReady) {
+      description += " Next prompt ready.";
+    }
     if (state.autoGenerate && state.autoGeneratePinned) {
       const pinned = (Array.isArray(state.collections) ? state.collections : [])
         .find((collection) => collection.id === state.autoGeneratePinnedCollectionId);

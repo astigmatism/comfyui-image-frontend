@@ -2693,6 +2693,10 @@ test("auto activity replaces percentages and distinguishes preparing, retrying a
   assert.match(generationActivityMarkup({ ...state, autoGenerate: false, autoGenerateStatus: "paused" }), /Auto paused/);
   assert.match(generationActivityMarkup({ ...state, autoGenerate: false }), /25%/);
   assert.match(generationActivityMarkup({ autoGenerate: true }), /Auto waiting/);
+  const preparing = generationActivityMarkup({ ...state, promptAssistantComposing: true });
+  assert.match(preparing, /3 generations remaining/);
+  assert.match(preparing, /Preparing the next prompt while images generate/);
+  assert.match(generationActivityMarkup({ ...state, autoGeneratePromptReady: true }), /Next prompt ready/);
 });
 
 test("document title mirrors the activity indicator with blue and green markers", () => {

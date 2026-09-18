@@ -554,6 +554,7 @@ export function positivePromptInput(contract) {
 
 export function autoGenerationPromptAssistantFingerprint({
   sourceKey,
+  sourceRevision = null,
   mode,
   creativeDirection,
   prompt,
@@ -564,6 +565,7 @@ export function autoGenerationPromptAssistantFingerprint({
   if (!direction.trim()) return null;
   return JSON.stringify([
     String(sourceKey || ""),
+    sourceRevision,
     mode === "create" ? "create" : "refine",
     direction,
     String(prompt || ""),

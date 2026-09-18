@@ -223,6 +223,8 @@ let autoGenerateRetryTimer = null;
 let autoGenerateRetryFailures = 0;
 let autoGenerateRetryContext = null;
 let preparedAutoGenerateAssistantFingerprint = null;
+let autoGeneratePreparationVersion = 0;
+let autoGeneratePrefetchBlocked = false;
 // Auto-generate keeps submitting to the collection where the control was enabled,
 // so the user can browse elsewhere without re-aiming the queue. null pins Home.
 let autoGeneratePinned = false;
@@ -540,7 +542,7 @@ async function handleClick(event) {
     state.autoGenerate = element.checked;
     if (state.autoGenerate) setAutoGeneratePin();
     else clearAutoGeneratePin();
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     syncGenerationSubmissionState();
     scheduleAutoGenerate();
     updatePhotoViewerNextIn();
@@ -552,14 +554,14 @@ async function handleClick(event) {
   }
   if (element.id === "auto-generate-creative-direction") {
     state.autoGenerateCreativeDirection = element.checked;
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     scheduleAutoGenerate();
     return;
   }
   if (element.id === "prompt-assistant-thinking-mode") {
     state.promptAssistant.think = element.checked;
     setPromptAssistantError(null);
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     persistCreativeDirectionDraft();
     scheduleAutoGenerate();
     return;
@@ -983,7 +985,7 @@ function handleInput(event) {
     capturePromptInstructions(element.closest("#prompt-assistant"), state.promptAssistant.instructionOverrides);
     persistPromptInstructions();
     setPromptAssistantError(null);
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     scheduleAutoGenerate();
     return;
   }
@@ -1004,7 +1006,7 @@ function handleInput(event) {
   if (element.id === "creative-direction") {
     state.promptAssistant.creativeDirection = element.value;
     setPromptAssistantError(null);
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     persistCreativeDirectionDraft();
     scheduleAutoGenerate();
     return;
@@ -1015,7 +1017,7 @@ function handleInput(event) {
     state.promptAssistant.mode = element.value;
     syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, element.value);
     setPromptAssistantError(null);
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     persistCreativeDirectionDraft();
     scheduleAutoGenerate();
     return;
@@ -1023,6 +1025,7 @@ function handleInput(event) {
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
     const control = updateControlFromElement(element);
     if (control?.semantic_role === "positive_prompt" || control?.id === "prompt.text") {
+      invalidateAutoGeneratePreparation();
       setPromptAssistantError(null);
       if (
         state.promptDirectionSignal.status === "applied" &&
@@ -1119,7 +1122,7 @@ function applyPromptEditor() {
   state.promptAssistant.instructionOverrides = structuredClone(promptEditorInstructionOverrides);
   persistPromptInstructions();
   persistCreativeDirectionDraft();
-  preparedAutoGenerateAssistantFingerprint = null;
+  invalidateAutoGeneratePreparation();
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
     state.promptAssistant.historicalModel = dialog.dataset.promptAssistantModel || null;
@@ -2332,6 +2335,7 @@ async function enterApplication() {
 function stopApplicationStartup() {
   applicationStartupController?.abort();
   applicationStartupController = null;
+  invalidateAutoGeneratePreparation();
 }
 
 function requestWasAborted(error, signal) {
@@ -3068,6 +3072,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
 }
 
 async function selectSource(key, { summary = null, signal, diagnostic = false } = {}) {
+  invalidateAutoGeneratePreparation();
   const activeMigration = sourceInterface(state.activeSource)
     ? {
         sourceKey: state.activeSourceKey,
@@ -3156,6 +3161,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
 }
 
 function applyPreset(presetId) {
+  const previousPrompt = state.parameters[promptDirectionSignalControl()?.id];
   state.selectedPreset = presetId;
   const contract = sourceInterface(state.activeSource);
   state.parameters = defaultsForInterface(contract);
@@ -3172,6 +3178,9 @@ function applyPreset(presetId) {
     state.parameters,
     state.explicitParameterIds,
   );
+  if (previousPrompt !== state.parameters[promptDirectionSignalControl()?.id]) {
+    invalidateAutoGeneratePreparation();
+  }
   state.serverFieldErrors = {};
   state.formError = null;
   collapseActiveModelSelectionsFromParameters();
@@ -3493,7 +3502,7 @@ function resetPromptInstructions(button) {
     setPromptEditorAssistantError(dialog, null);
   } else {
     persistPromptInstructions();
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
     setPromptAssistantError(null);
     scheduleAutoGenerate();
   }
@@ -3503,6 +3512,15 @@ function resetPromptInstructions(button) {
 function syncPromptAssistantDraftFromPanel() {
   const assistant = document.querySelector("#prompt-assistant");
   if (!assistant) return;
+  const promptInput = promptDirectionSignalControl();
+  const prompt = promptInput && document.querySelector(
+    `[data-control-id="${CSS.escape(promptInput.id)}"]`,
+  );
+  if (prompt && state.parameters[promptInput.id] !== prompt.value) {
+    state.parameters[promptInput.id] = normalizeInputValue(promptInput, prompt.value);
+    persistActiveParameterState();
+    invalidateAutoGeneratePreparation();
+  }
   const direction = assistant.querySelector("#creative-direction");
   const mode = assistant.querySelector('[name="assistant-mode"]:checked');
   const thinkingMode = assistant.querySelector("#prompt-assistant-thinking-mode");
@@ -3523,7 +3541,7 @@ function syncPromptAssistantDraftFromPanel() {
     previousInstructions !== promptInstructionsForMode(state.promptAssistant, nextMode) ||
     nextAutomaticCreativeDirection !== state.autoGenerateCreativeDirection
   ) {
-    preparedAutoGenerateAssistantFingerprint = null;
+    invalidateAutoGeneratePreparation();
   }
   state.promptAssistant.creativeDirection = nextDirection;
   state.promptAssistant.mode = nextMode;
@@ -3682,11 +3700,24 @@ function syncGenerationSubmissionState() {
 
 function currentAutoGenerateRetryContext() {
   return JSON.stringify([
+    autoGeneratePreparationVersion,
     state.activeSourceKey || "",
     sourceRevision(state.activeSource),
-    state.selectedComfyuiInstanceId || "",
     currentAutoGenerateAssistantFingerprint(),
   ]);
+}
+
+function invalidateAutoGeneratePreparation() {
+  autoGeneratePreparationVersion += 1;
+  // Only discard provenance owned by the automatic preparation. Manual
+  // compositions remain available when automation is first enabled.
+  if (preparedAutoGenerateAssistantFingerprint !== null) {
+    state.compositionId = null;
+    setPromptDirectionSignal("idle");
+  }
+  preparedAutoGenerateAssistantFingerprint = null;
+  autoGeneratePrefetchBlocked = false;
+  resetAutoGenerateRetryState();
 }
 
 function cancelAutoGenerateRetryTimer() {
@@ -3737,7 +3768,7 @@ function retryAutoGenerate() {
   resetAutoGenerateRetryState();
   state.autoGenerate = true;
   setAutoGeneratePin();
-  preparedAutoGenerateAssistantFingerprint = null;
+  invalidateAutoGeneratePreparation();
   const control = document.querySelector("#auto-generate");
   if (control) control.checked = true;
   syncGenerationSubmissionState();
@@ -3745,7 +3776,7 @@ function retryAutoGenerate() {
 }
 
 function pauseAutoGenerateAfterCompositionFailure(error) {
-  cancelAutoGenerateRetryTimer();
+  invalidateAutoGeneratePreparation();
   state.autoGenerate = false;
   clearAutoGeneratePin();
   state.autoGenerateStatus = "paused";
@@ -3836,6 +3867,7 @@ function currentAutoGenerateAssistantFingerprint() {
     interfaceInputs(contract).find((input) => input.id === "prompt.text");
   return autoGenerationPromptAssistantFingerprint({
     sourceKey: state.activeSourceKey,
+    sourceRevision: sourceRevision(state.activeSource),
     mode: state.promptAssistant.mode,
     creativeDirection: state.promptAssistant.creativeDirection,
     prompt: promptInput ? state.parameters[promptInput.id] : "",
@@ -3846,6 +3878,10 @@ function currentAutoGenerateAssistantFingerprint() {
 
 function autoGenerationNeedsPromptAssistant() {
   const fingerprint = currentAutoGenerateAssistantFingerprint();
+  if (preparedAutoGenerateAssistantFingerprint !== null &&
+      fingerprint !== preparedAutoGenerateAssistantFingerprint) {
+    invalidateAutoGeneratePreparation();
+  }
   return Boolean(fingerprint && fingerprint !== preparedAutoGenerateAssistantFingerprint);
 }
 
@@ -3854,7 +3890,7 @@ function hasPendingGeneration() {
     pendingGenerationIds.size > 0 || hasActiveGeneration(state.generations);
 }
 
-function autoGenerationReady() {
+function autoGenerationReady({ preparing = false } = {}) {
   const contract = sourceInterface(state.activeSource);
   const selected =
     state.activeSource ||
@@ -3868,10 +3904,9 @@ function autoGenerationReady() {
   const assistantRequired = autoGenerationNeedsPromptAssistant();
   return Boolean(
     state.autoGenerate &&
-      !autoGenerateCycleRunning &&
       !promptCompositionRequests &&
       !galleryPending &&
-      !hasPendingGeneration() &&
+      (!hasPendingGeneration() || (preparing && !autoGeneratePrefetchBlocked)) &&
       !generationRequestBlocked(state, selected, contract, errors) &&
       (!assistantRequired || state.promptAssistant.available),
   );
@@ -3882,7 +3917,8 @@ async function runAutoGenerateCycle() {
   // background tab is discarded. Always reconcile the live assistant draft before deciding
   // whether generation must wait for prompt composition.
   syncPromptAssistantDraftFromPanel();
-  if (!autoGenerationReady()) return;
+  if (autoGenerateCycleRunning || !applicationStartupController ||
+      !autoGenerationReady({ preparing: autoGenerationNeedsPromptAssistant() })) return;
   const requestSourceKey = state.activeSourceKey;
   const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
@@ -3899,12 +3935,13 @@ async function runAutoGenerateCycle() {
       if (
         !composed ||
         !state.autoGenerate ||
-        hasPendingGeneration() ||
+        !autoGenerationReady() ||
         autoGenerationNeedsPromptAssistant()
       )
         return;
     }
     queued = await generate({ automatic: true });
+    autoGeneratePrefetchBlocked = !queued;
     if (queued) resetAutoGenerateRetryState();
   } finally {
     autoGenerateCycleRunning = false;
@@ -3917,7 +3954,7 @@ async function runAutoGenerateCycle() {
         state.selectedComfyuiInstanceId !== requestComfyuiInstanceId ||
         (autoGenerationNeedsPromptAssistant() &&
           currentAutoGenerateAssistantFingerprint() !== requestAssistantFingerprint) ||
-        (queued && !hasPendingGeneration()))
+        queued)
     ) {
       scheduleAutoGenerate();
     }
@@ -4051,7 +4088,10 @@ async function generateSingleSource({ automatic = false } = {}) {
     }
     return false;
   } finally {
-    await refreshGenerationActivity();
+    // Acceptance has already recorded pending IDs. An activity read must not
+    // delay preparing the next prompt while these images are rendering.
+    if (automatic) void refreshGenerationActivity();
+    else await refreshGenerationActivity();
     state.generationSubmissionProgress = null;
     state.submitting = false;
     syncGenerationSubmissionState();
@@ -4276,7 +4316,8 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
     }
     return false;
   } finally {
-    await refreshGenerationActivity();
+    if (automatic) void refreshGenerationActivity();
+    else await refreshGenerationActivity();
     state.generationSubmissionProgress = null;
     state.submitting = false;
     syncGenerationSubmissionState();
@@ -4291,6 +4332,8 @@ async function composePrompt(
 ) {
   if (!state.promptAssistant.available || promptCompositionRequests > 0) return false;
   syncPromptAssistantDraftFromPanel();
+  const requestSession = applicationStartupController;
+  const requestAutoGenerateContext = autoGenerateContext || currentAutoGenerateRetryContext();
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const contract = sourceInterface(state.activeSource);
@@ -4313,7 +4356,7 @@ async function composePrompt(
     if (automatic) scheduleAutoGenerateCompositionRetry({
       code: "instructions_required",
       message: "Enter prompt pre-processor instructions or reset to the default.",
-    }, autoGenerateContext || currentAutoGenerateRetryContext());
+    }, requestAutoGenerateContext);
     return false;
   }
   const requestInstructions = promptInstructionsForMode(state.promptAssistant);
@@ -4321,6 +4364,11 @@ async function composePrompt(
   setPromptAssistantError(null);
   syncPromptAssistantAction();
   setPromptDirectionSignal("composing");
+  const requestSignal = state.promptDirectionSignal;
+  const clearRequestSignal = () => {
+    if (state.promptDirectionSignal === requestSignal) setPromptDirectionSignal("idle");
+  };
+  renderGenerationActivity();
   try {
     const result = await api("/api/prompt-assistant/compose", {
       method: "POST",
@@ -4332,12 +4380,15 @@ async function composePrompt(
         ...(instructionsInput?.disabled ? {} : { instructions: requestInstructions }),
       }),
     });
+    if (requestSession !== applicationStartupController) return false;
+    if (automatic) syncPromptAssistantDraftFromPanel();
     if (
       !sourceContextIsCurrent(requestSourceKey, requestRevision) ||
       promptInstructionsForMode(state.promptAssistant) !== requestInstructions ||
       (automatic &&
         (!state.autoGenerate ||
           !state.autoGenerateCreativeDirection ||
+          currentAutoGenerateRetryContext() !== requestAutoGenerateContext ||
           (state.parameters[promptInput.id] || "") !== requestPrompt ||
           state.promptAssistant.mode !== requestMode ||
           state.promptAssistant.creativeDirection !== requestDirection ||
@@ -4346,7 +4397,7 @@ async function composePrompt(
       if (!automatic) {
         toast("Prompt composition finished after its inputs changed and was not applied.");
       }
-      setPromptDirectionSignal("idle");
+      clearRequestSignal();
       return false;
     }
     state.parameters[promptInput.id] = result.prompt;
@@ -4380,11 +4431,15 @@ async function composePrompt(
     }
     return true;
   } catch (error) {
+    if (requestSession !== applicationStartupController) return false;
     if (automatic) {
-      setPromptDirectionSignal("idle");
+      syncPromptAssistantDraftFromPanel();
+      clearRequestSignal();
+      if (!state.autoGenerate || !state.autoGenerateCreativeDirection ||
+          currentAutoGenerateRetryContext() !== requestAutoGenerateContext) return false;
       scheduleAutoGenerateCompositionRetry(
         error,
-        autoGenerateContext || currentAutoGenerateRetryContext(),
+        requestAutoGenerateContext,
       );
     } else if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       setPromptDirectionSignal("idle");
@@ -4398,6 +4453,7 @@ async function composePrompt(
   } finally {
     promptCompositionRequests = Math.max(0, promptCompositionRequests - 1);
     syncPromptAssistantAction();
+    renderGenerationActivity();
     if (!automatic) scheduleAutoGenerate();
   }
 }
@@ -5191,6 +5247,7 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
+  invalidateAutoGeneratePreparation();
   const runtimeWarning = applyRecalledComfyuiInstance(recalled);
   const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
   state.modelSelectionsBySourceRevision = new Map();
@@ -5825,7 +5882,13 @@ function beginGenerationActivitySubmission(count) {
 function generationActivitySnapshot() {
   return {
     ...state,
+    generationActivity: {
+      ...state.generationActivity,
+      remaining_count: Math.max(state.generationActivity?.remaining_count || 0, pendingGenerationIds.size),
+    },
     promptAssistantComposing: promptCompositionRequests > 0,
+    autoGeneratePromptReady: Boolean(preparedAutoGenerateAssistantFingerprint &&
+      preparedAutoGenerateAssistantFingerprint === currentAutoGenerateAssistantFingerprint()),
     autoGeneratePinned,
     autoGeneratePinnedCollectionId,
   };
