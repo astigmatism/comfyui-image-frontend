@@ -48,6 +48,7 @@ import {
   recentResolutionKey,
   recordRecentResolution,
   RECENT_RESOLUTIONS_LIMIT,
+  RESOLUTION_PRESET_GROUPS,
   recalledComfyuiInstanceState,
   removeRecentResolution,
   reconcileInterfaceValues,
@@ -811,17 +812,33 @@ test("resolution constraints accept contract axis aliases and reject invalid req
 
 test("resolution presets cover symmetric landscape and portrait sets", () => {
   const presets = resolutionPresets();
-  const landscape = presets.filter((preset) => preset.width > preset.height);
-  const portrait = presets.filter((preset) => preset.width < preset.height);
+  // Ultra-wide is intentionally landscape-only, so symmetry applies to the
+  // other groups only.
+  const symmetric = RESOLUTION_PRESET_GROUPS.filter((group) => group.label !== "Ultra-wide").flatMap((group) =>
+    group.options,
+  );
+  const landscape = symmetric.filter((preset) => preset.width > preset.height);
+  const portrait = symmetric.filter((preset) => preset.width < preset.height);
   assert.equal(landscape.length, portrait.length);
   const swapped = new Set(portrait.map((preset) => `${preset.height}x${preset.width}`));
   for (const preset of landscape) {
-    assert.ok(swapped.has(preset.key), `${preset.label} should have a portrait counterpart`);
+    assert.ok(
+      swapped.has(`${preset.width}x${preset.height}`),
+      `${preset.width} × ${preset.height} should have a portrait counterpart`,
+    );
   }
   assert.ok(resolutionPresets().length >= 15);
   for (const preset of presets) {
-    assert.ok(preset.width % 4 === 0 && preset.height % 4 === 0, `${preset.label} should be divisible by 4`);
+    assert.ok(preset.width % 8 === 0 && preset.height % 8 === 0, `${preset.label} should be divisible by 8`);
+    assert.ok(Math.max(preset.width, preset.height) <= 2048, `${preset.label} should stay within the 2048 long-edge limit`);
   }
+  const ultraWideGroup = RESOLUTION_PRESET_GROUPS.find((group) => group.label === "Ultra-wide");
+  assert.ok(ultraWideGroup, "an Ultra-wide group should exist");
+  assert.deepEqual(
+    ultraWideGroup.options.map((option) => `${option.width}x${option.height}`),
+    ["1792x768", "1920x800", "2048x880"],
+  );
+  assert.match(resolutionPresetForValue({ width: 1920, height: 800 }).label, /12:5/);
   assert.deepEqual(resolutionPresetForValue({ width: 1024, height: 1536 }), presets.find((preset) => preset.width === 1024 && preset.height === 1536));
   assert.equal(resolutionPresetForValue({ width: 1025, height: 1536 }), null);
   assert.equal(resolutionPresetForValue({ width: 1024 }), null);

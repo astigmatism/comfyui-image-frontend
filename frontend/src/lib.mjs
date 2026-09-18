@@ -1200,12 +1200,16 @@ export function normalizeStoredCreativeDirectionDraft(raw) {
 // user expands it, and that choice is persisted.
 export const DEFAULT_OPEN_CONTROL_SECTION_KINDS = new Set(["prompt", "seed", "resolution"]);
 
-// Common AI-image-generation resolutions. The set is 180-degree symmetric:
-// every landscape entry also appears as its portrait swap.
+// Common AI-image-generation resolutions. Square, Landscape, and Portrait are
+// 180-degree symmetric: every landscape entry also appears as its portrait
+// swap. Ultra-wide is intentionally landscape-only. Long edges stay within the
+// 2048px grid limit and every dimension is a multiple of 8.
 export const RESOLUTION_PRESET_GROUPS = [
   {
     label: "Square",
     options: [
+      { width: 512, height: 512, tag: "1:1" },
+      { width: 768, height: 768, tag: "1:1" },
       { width: 1024, height: 1024, tag: "1:1" },
       { width: 1344, height: 1344, tag: "1:1" },
       { width: 2048, height: 2048, tag: "1:1" },
@@ -1214,6 +1218,10 @@ export const RESOLUTION_PRESET_GROUPS = [
   {
     label: "Landscape",
     options: [
+      { width: 768, height: 512, tag: "3:2" },
+      { width: 1024, height: 576, tag: "16:9" },
+      { width: 1152, height: 896, tag: "9:7" },
+      { width: 1216, height: 832, tag: "3:2" },
       { width: 1344, height: 768, tag: "7:4" },
       { width: 1536, height: 1024, tag: "3:2" },
       { width: 1664, height: 928, tag: "16:9" },
@@ -1225,12 +1233,24 @@ export const RESOLUTION_PRESET_GROUPS = [
   {
     label: "Portrait",
     options: [
+      { width: 512, height: 768, tag: "2:3" },
+      { width: 576, height: 1024, tag: "9:16" },
+      { width: 832, height: 1216, tag: "2:3" },
+      { width: 896, height: 1152, tag: "7:9" },
       { width: 768, height: 1344, tag: "4:7" },
       { width: 1024, height: 1536, tag: "2:3" },
       { width: 928, height: 1664, tag: "9:16" },
       { width: 1080, height: 1920, tag: "9:16 · FHD" },
       { width: 1152, height: 2048, tag: "9:16" },
       { width: 1536, height: 2048, tag: "3:4" },
+    ],
+  },
+  {
+    label: "Ultra-wide",
+    options: [
+      { width: 1792, height: 768, tag: "21:9" },
+      { width: 1920, height: 800, tag: "12:5 · 32:9" },
+      { width: 2048, height: 880, tag: "≈21:9" },
     ],
   },
 ];

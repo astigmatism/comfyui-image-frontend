@@ -1950,6 +1950,8 @@ test("resolution markup includes a preset dropdown above the summary", () => {
   assert.match(html, /data-resolution-preset/);
   assert.match(html, /<optgroup label="Landscape">/);
   assert.match(html, /<optgroup label="Portrait">/);
+  assert.match(html, /<optgroup label="Ultra-wide">/);
+  assert.match(html, /<option value="1920x800">1920 × 800 · 12:5 · 32:9<\/option>/);
   assert.match(html, /<option value="1024x1536" selected>1024 × 1536 · 2:3<\/option>/);
   assert.ok(html.indexOf('data-resolution-preset') < html.indexOf("resolution-summary"), "preset dropdown should render before the summary");
   const customHtml = controlMarkup(control, { "size.resolution": { width: 1000, height: 900 } }, { capability_states: {} });
