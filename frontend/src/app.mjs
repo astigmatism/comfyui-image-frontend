@@ -3961,6 +3961,19 @@ async function runAutoGenerateCycle() {
   }
 }
 
+// The assistant inputs in force at submission time, snapshotted with every
+// generation (single and each batch item) so recall can restore the Creative
+// Direction section even for manual generations and for batch items whose
+// prompt was composed by a run linked to a sibling item.
+function promptAssistantSnapshotPayload() {
+  return {
+    mode: state.promptAssistant.mode === "create" ? "create" : "refine",
+    creative_direction: state.promptAssistant.creativeDirection || "",
+    instructions: promptInstructionsForMode(state.promptAssistant) || null,
+    thinking_enabled: state.promptAssistant.think !== false,
+  };
+}
+
 async function generate({ automatic = false } = {}) {
   if (state.autoGenerate && !automatic) return;
   if (automatic) {
@@ -4035,6 +4048,7 @@ async function generateSingleSource({ automatic = false } = {}) {
       },
     };
     if (requestCompositionId) payload.prompt_assistant_run_id = requestCompositionId;
+    payload.prompt_assistant = promptAssistantSnapshotPayload();
     const generation = await api("/api/generations", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -4182,6 +4196,9 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
           collection_id: requestCollectionId,
           revision: structuredClone(requestRevision),
           parameters: { ...sharedParameters, ...modelParameters },
+          // Every item snapshots the assistant inputs; only the first may
+          // consume the composition run (a run belongs to one generation).
+          prompt_assistant: promptAssistantSnapshotPayload(),
         };
         const usesPromptAssistant = Boolean(requestCompositionId && firstTarget);
         firstTarget = false;

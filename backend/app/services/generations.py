@@ -225,6 +225,7 @@ class GenerationService:
         except ValueError as exc:
             raise AppError("lora_runtime_unavailable", str(exc), status_code=422) from exc
         prompt_run = self._verify_prompt_run(session, user, request.prompt_assistant_run_id)
+        prompt_assistant_snapshot = self._assistant_snapshot(request, prompt_run)
         effective_request = self._apply_prompt_assistant_output(profile, request, prompt_run)
         compiled = self._compile(session, user=user, profile=profile, request=effective_request)
         uploads = self._verify_uploads(session, user, profile, compiled)
@@ -252,6 +253,7 @@ class GenerationService:
             selected_preset=compiled.selected_preset,
             requested_outputs_json=compiled.requested_outputs,
             final_prompt=compiled.final_prompt,
+            prompt_assistant_json=prompt_assistant_snapshot,
             compiled_graph_json=compiled.compiled_graph,
             compiled_graph_sha256=compiled.compiled_graph_hash,
             generation_source_json={
@@ -531,6 +533,34 @@ class GenerationService:
         parameters = copy.deepcopy(request.public_parameters)
         parameters[positive_prompt_id] = run.ollama_output
         return request.model_copy(update={"parameters": parameters, "controls": None})
+
+    @staticmethod
+    def _assistant_snapshot(
+        request: GenerationCreate, run: PromptAssistantRun | None
+    ) -> dict[str, Any] | None:
+        """Assistant inputs to persist with the generation so recall can restore them.
+
+        A linked run is authoritative (its fields are what the panel sent at
+        composition time). Otherwise the request's own snapshot covers manual
+        generations and batch items whose prompt was composed by a run linked
+        to a sibling item. Returns None when the client sent no snapshot.
+        """
+        if run is not None:
+            return {
+                "mode": run.mode,
+                "creative_direction": run.creative_direction,
+                "instructions": run.instructions,
+                "thinking_enabled": run.thinking_enabled,
+            }
+        snapshot = request.prompt_assistant
+        if snapshot is None:
+            return None
+        return {
+            "mode": snapshot.mode,
+            "creative_direction": snapshot.creative_direction,
+            "instructions": snapshot.instructions,
+            "thinking_enabled": snapshot.thinking_enabled,
+        }
 
     @staticmethod
     def _next_queue_sequence(session: Session) -> int:
@@ -1149,13 +1179,27 @@ class GenerationService:
             select(PromptAssistantRun).where(PromptAssistantRun.generation_id == generation.id)
         )
         assistant = None
-        if prompt_run:
+        snapshot = generation.prompt_assistant_json
+        if isinstance(snapshot, Mapping):
+            # The per-generation snapshot covers every generation type,
+            # including manual generations and batch items with no linked run.
+            assistant = {
+                "mode": snapshot.get("mode"),
+                "creative_direction": snapshot.get("creative_direction"),
+                "instructions": snapshot.get("instructions"),
+                "thinking_enabled": snapshot.get("thinking_enabled"),
+                "ollama_output": prompt_run.ollama_output if prompt_run is not None else None,
+                "model": prompt_run.model_name if prompt_run is not None else None,
+            }
+        elif prompt_run is not None:
+            # Legacy rows predate the snapshot; the linked run is the record.
             assistant = {
                 "mode": prompt_run.mode,
                 "creative_direction": prompt_run.creative_direction,
                 "ollama_output": prompt_run.ollama_output,
                 "model": prompt_run.model_name,
                 "instructions": prompt_run.instructions,
+                "thinking_enabled": prompt_run.thinking_enabled,
             }
         runtime = self._recall_runtime(session, generation)
         historical = {

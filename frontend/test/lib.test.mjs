@@ -660,6 +660,61 @@ test("recall immediately replaces source, controls, seed, and submitted prompt s
   assert.equal(recalled.promptAssistant.historicalModel, "m1");
 });
 
+test("recall restores creative direction, mode, instructions, and thinking mode", () => {
+  const state = {
+    activeProfileId: "current",
+    controls: { "prompt.text": "draft", "generation.seed": "random" },
+    promptAssistant: {
+      available: true,
+      mode: "create",
+      creativeDirection: "current direction",
+      think: true,
+      instructionOverrides: { create: "current custom instructions" },
+      defaultInstructions: { refine: "default refine", create: "default create" },
+    },
+  };
+  const recalled = overwriteWithRecall(state, {
+    source_key: "krea",
+    parameters: { "prompt.text": "historical prompt" },
+    revision: { publication_id: "p1" },
+    prompt_assistant: {
+      mode: "refine",
+      creative_direction: "historical direction",
+      instructions: "historical custom instructions",
+      thinking_enabled: false,
+      model: "ollama-model",
+    },
+  });
+  assert.equal(recalled.promptAssistant.mode, "refine");
+  assert.equal(recalled.promptAssistant.creativeDirection, "historical direction");
+  assert.equal(recalled.promptAssistant.think, false);
+  assert.equal(
+    recalled.promptAssistant.instructionOverrides.refine,
+    "historical custom instructions",
+  );
+  // The other mode's override is left untouched.
+  assert.equal(
+    recalled.promptAssistant.instructionOverrides.create,
+    "current custom instructions",
+  );
+  assert.equal(recalled.promptAssistant.historicalModel, "ollama-model");
+});
+
+test("recall preserves the current thinking mode when the recall carries none", () => {
+  const state = {
+    activeProfileId: "current",
+    controls: { "prompt.text": "draft" },
+    promptAssistant: { available: true, think: true },
+  };
+  const recalled = overwriteWithRecall(state, {
+    source_key: "krea",
+    parameters: { "prompt.text": "historical prompt" },
+    prompt_assistant: { mode: "create", creative_direction: "historical direction" },
+  });
+  assert.equal(recalled.promptAssistant.think, true);
+  assert.equal(recalled.promptAssistant.creativeDirection, "historical direction");
+});
+
 test("recall restores a configured historical ComfyUI runtime even while it is offline", () => {
   const result = recalledComfyuiInstanceState(
     {

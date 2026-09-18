@@ -2667,6 +2667,69 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
   await expect(card).toHaveCount(1);
 });
 
+test("recall restores the creative direction section from the generation snapshot", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  // Self-contained: sign in as the bootstrapped admin so this test does not
+  // depend on the serial bootstrap test having created artist.one first.
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+
+  const assistant = page.locator("#prompt-assistant");
+  await ensureControlSectionExpanded(page, "Creative Direction");
+  const direction = assistant.getByRole("textbox", { name: "Creative Direction", exact: true });
+  const preprocessor = assistant.locator(".prompt-preprocessor");
+  await preprocessor.locator("summary").click();
+  const instructions = preprocessor.getByRole("textbox", {
+    name: "Prompt pre-processor",
+    exact: true,
+  });
+  const thinking = preprocessor.locator("#prompt-assistant-thinking-mode");
+  const createMode = assistant.locator('input[name="assistant-mode"][value="create"]');
+
+  const defaults = await (await page.request.get("/api/prompt-assistant/status")).json();
+  await expect(instructions).toHaveValue(defaults.default_instructions.refine);
+
+  // Configure the section: create mode, custom instructions, thinking off.
+  await createMode.check();
+  await expect(instructions).toHaveValue(defaults.default_instructions.create);
+  await instructions.fill("Describe one dramatic coastal scene.");
+  await thinking.uncheck();
+  await direction.fill("lone lighthouse in a winter storm");
+  await page
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("a lighthouse standing in rough seas");
+
+  const accepted = await (await generateAndExpectAccepted(page)).json();
+  const card = page.locator(`.gallery-card[data-generation-id="${accepted.id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/);
+
+  // Change the panel after generation so a stale recall would show the wrong values.
+  await direction.fill("changed after generation");
+  await instructions.fill("Changed instructions that were never used.");
+  await thinking.check();
+
+  const recallResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/generations/${accepted.id}/recall` &&
+      response.request().method() === "GET",
+  );
+  await clickGalleryControl(card.getByRole("button", { name: "Recall settings" }));
+  const recallResponse = await recallResponsePromise;
+  expect(recallResponse.status()).toBe(200);
+  const recalled = await recallResponse.json();
+  expect(recalled.prompt_assistant.mode).toBe("create");
+  expect(recalled.prompt_assistant.creative_direction).toBe("lone lighthouse in a winter storm");
+  expect(recalled.prompt_assistant.instructions).toBe("Describe one dramatic coastal scene.");
+  expect(recalled.prompt_assistant.thinking_enabled).toBe(false);
+
+  // The panel shows the generation-time values, not the current ones.
+  await expect(direction).toHaveValue("lone lighthouse in a winter storm");
+  await expect(createMode).toBeChecked();
+  await expect(instructions).toHaveValue("Describe one dramatic coastal scene.");
+  await expect(thinking).not.toBeChecked();
+});
+
 test("cancelling a queued generation removes its card and history", async ({ page }) => {
   test.setTimeout(90_000);
   await page.goto("/");

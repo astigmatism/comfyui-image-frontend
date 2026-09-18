@@ -41,6 +41,14 @@ checkpoint values under each source and public selector ID. Existing users recei
 the browser reconciles it with the currently published choices and initially places every choice in
 Unsorted.
 
+Migration `4b9d2e6f8a1c_add_generation_prompt_assistant_snapshot.py` adds nullable
+`generations.prompt_assistant_json`, a point-in-time snapshot of the Creative Direction inputs used
+when a generation is accepted. Run-linked rows store the linked run's mode, instructions, creative
+direction, and thinking mode; manual rows store the submitted pre-processor draft. The column is
+added nullable with no row rewrites, so the upgrade is zero-downtime. Recall prefers the snapshot
+and falls back to the linked run for legacy `null` rows, whose recall now also reports the run's
+thinking mode.
+
 ## Main tables
 
 | Table | Ownership and purpose |

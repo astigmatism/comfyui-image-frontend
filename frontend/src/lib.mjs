@@ -862,6 +862,11 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
       ...(current.promptAssistant || {}),
       mode: recall.prompt_assistant?.mode || "refine",
       creativeDirection: recall.prompt_assistant?.creative_direction || "",
+      // Thinking mode is restored only when the recall carries it; legacy
+      // recalls without the field keep the current value.
+      ...(typeof recall.prompt_assistant?.thinking_enabled === "boolean"
+        ? { think: recall.prompt_assistant.thinking_enabled }
+        : {}),
       historicalModel: recall.prompt_assistant?.model || null,
       instructionOverrides: {
         ...(current.promptAssistant?.instructionOverrides || {}),

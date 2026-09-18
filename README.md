@@ -343,7 +343,7 @@ Browser closure or sign-out does not cancel work. Queued jobs survive restarts, 
 
 ## Recall and reproducibility
 
-**Recall settings** replaces the selected source and public parameters with the historical effective values, including concrete seeds and final submitted prompt, and reports the historical execution runtime. When that runtime remains configured, the selector can be restored to it; an unavailable or removed runtime is shown as a warning. Recall never queues automatically or invokes Ollama.
+**Recall settings** replaces the selected source and public parameters with the historical effective values, including concrete seeds and final submitted prompt, and reports the historical execution runtime. It also restores the Creative Direction panel from the snapshot recorded when the generation was accepted — direction text, pre-processor mode and instructions, and thinking mode — so the composer is shown as it was when the image was created; rows predating the snapshot fall back to the linked composition run. When that runtime remains configured, the selector can be restored to it; an unavailable or removed runtime is shown as a warning. Recall never queues automatically or invokes Ollama.
 
 Recall is enabled only when the exact publication ID plus workflow/API/manifest hashes remain registered and compile to the original graph. A newer publication is never silently substituted. Historical generations remain viewable even when exact recall is unavailable.
 

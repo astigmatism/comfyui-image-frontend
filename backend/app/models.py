@@ -399,6 +399,11 @@ class Generation(Base):
             context.get_current_parameters()["final_prompt"].encode("utf-8")
         ).hexdigest(),
     )
+    # Assistant inputs in force when this generation was accepted, so recall can
+    # restore the Creative Direction section for every generation (manual,
+    # composed, and any batch item). Null for rows accepted before the snapshot
+    # existed; those keep run-based recall when a run is linked.
+    prompt_assistant_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     compiled_graph_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     compiled_graph_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     submitted_graph_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)

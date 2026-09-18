@@ -258,11 +258,35 @@ class ComfyUIInstanceList(APIModel):
     items: list[ComfyUIInstanceStatus]
 
 
+class PromptAssistantSnapshot(APIModel):
+    """Assistant inputs in force when a generation was submitted.
+
+    The browser sends this with every generation request (single and every
+    batch item) so recall can restore the Creative Direction section even for
+    manual generations and for batch items whose prompt was composed by a run
+    linked to a different item.
+    """
+
+    mode: Literal["refine", "create"]
+    creative_direction: str = ""
+    instructions: str | None = Field(default=None, max_length=8000)
+    thinking_enabled: bool = True
+
+    @field_validator("instructions")
+    @classmethod
+    def normalize_instructions(cls, value: str | None) -> str | None:
+        # Unlike PromptComposeRequest, empty instructions are legal here: the
+        # snapshot records what the panel had, and an empty value means "no
+        # instructions in force" (assistant unavailable or cleared).
+        return value.strip() if value is not None and value.strip() else None
+
+
 class GenerationCreate(APIModel):
     source_key: str | None = None
     parameters: dict[str, Any] | None = None
     revision: SourceRevision | None = None
     prompt_assistant_run_id: str | None = None
+    prompt_assistant: PromptAssistantSnapshot | None = None
     collection_id: str | None = None
     comfyui_instance_id: str | None = Field(
         default=None,
