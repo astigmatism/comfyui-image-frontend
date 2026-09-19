@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .api import (
     admin,
     auth,
+    auto_generation,
     collections,
     comfyui_instances,
     events,
@@ -248,6 +249,7 @@ def create_app(
             container.start_workflow_discovery()
             if settings.enable_background_worker:
                 await container.worker.start()
+                await container.automation.start()
             yield
         finally:
             await container.close()
@@ -338,16 +340,19 @@ def create_app(
     def health() -> JSONResponse:
         database_healthy = container.db.healthcheck()
         worker = container.worker.health_snapshot()
-        healthy = database_healthy and bool(worker["ready"])
+        automation = container.automation.health_snapshot()
+        healthy = database_healthy and bool(worker["ready"]) and bool(automation["ready"])
         return JSONResponse(
             status_code=200 if healthy else 503,
             content={
                 "status": "ok" if healthy else "degraded",
                 "database": database_healthy,
                 "worker": worker,
+                "automation": automation,
             },
         )
 
+    app.include_router(auto_generation.router)
     app.include_router(auth.router)
     app.include_router(comfyui_instances.router)
     app.include_router(workflows.router)

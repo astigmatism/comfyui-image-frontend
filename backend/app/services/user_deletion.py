@@ -12,6 +12,7 @@ from ..models import (
     ACTIVE_STATUSES,
     Artifact,
     AuditLog,
+    AutoGeneration,
     Generation,
     GenerationStatus,
     GenerationUpload,
@@ -55,6 +56,11 @@ class UserDeletionService:
                 raise AppError(
                     "forbidden", "The bootstrap administrator cannot be deleted.", status_code=403
                 )
+            automation = session.get(AutoGeneration, target.id)
+            if automation:
+                automation.enabled = False
+                automation.revision += 1
+                automation.status = "off"
             target.state = UserState.DELETING
             self.auth.revoke_user_sessions(session, target)
             generations = list(

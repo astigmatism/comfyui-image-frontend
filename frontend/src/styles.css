@@ -5365,3 +5365,19 @@ tr:last-child td {
   .prompt-group-header .prompt-group-collapse, .prompt-group-header .prompt-group-select { min-width: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .prompt-group-collapse svg { transition: none; } }
+
+.auto-generation-server-settings { display: grid; gap: .4rem; margin: .5rem 0; font-size: .8rem; }
+.auto-generation-server-settings input, .auto-generation-server-settings select { width: 100%; min-width: 0; }
+.auto-generation-server-settings small, .shared-settings-status { font-size: .72rem; opacity: .8; }
+.auto-generation-server-settings pre { max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.auto-latest-prompt { max-height: 10rem; overflow: auto; }
+.auto-generate-status.blocked { border-color: #be7332; }
+
+.auto-limit-row { display: grid; grid-template-columns: 1fr 100px; align-items: center; gap: 12px; }
+.auto-generation-server-settings input, .auto-generation-server-settings select {
+  min-height: 34px; padding: 6px 9px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-0); color: var(--text);
+}
+.auto-generation-server-settings input:focus, .auto-generation-server-settings select:focus {
+  outline: 2px solid var(--focus); outline-offset: 1px;
+}

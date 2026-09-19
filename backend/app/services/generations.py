@@ -65,6 +65,7 @@ from .event_broker import EventBroker
 from .events import add_generation_event, publish_event
 from .generation_activity import begin_run, retain_deleted_outcome
 from .generation_eta import is_checkpoint_declaration
+from .user_state import asset_is_saved
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -212,11 +213,25 @@ class GenerationService:
             )
 
     def _prepare_accept(
-        self, session: Session, *, user: User, request: GenerationCreate
+        self,
+        session: Session,
+        *,
+        user: User,
+        request: GenerationCreate,
+        frozen_profile: WorkflowProfile | None = None,
     ) -> tuple[Generation, GenerationEvent]:
         instance = self._instance_for_request(session, request, require_available=True)
         collection = self._collection_for_owner(session, user.id, request.collection_id)
-        profile = self._profile_for_request(session, request)
+        profile = frozen_profile or self._profile_for_request(session, request)
+        if (
+            frozen_profile is not None
+            and not self.comfyui_instances.get(instance.id).cached_object_info()
+        ):
+            raise AppError(
+                "comfyui_instance_unavailable",
+                "The captured runtime is still being checked.",
+                status_code=503,
+            )
         try:
             validate_lora_runtime(
                 profile.source_api_json,
@@ -1413,7 +1428,7 @@ class GenerationService:
                 )
                 or 0
             )
-            if remaining == 0:
+            if remaining == 0 and not asset_is_saved(session, owner_id, upload_id):
                 upload = session.get(Upload, upload_id)
                 if upload:
                     upload_paths.append(upload.storage_path)

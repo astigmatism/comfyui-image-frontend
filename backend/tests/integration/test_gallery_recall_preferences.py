@@ -4,6 +4,7 @@ import copy
 
 from app.main import create_app
 from app.models import Generation
+from app.schemas import SharedSettings
 from fastapi.testclient import TestClient
 from tests.conftest import change_password, create_user, csrf, login
 from tests.helpers import (
@@ -39,6 +40,9 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         assert len(set(actual)) == 7
         assert third_page["next_cursor"] is None
         assert first.get("/api/preferences").json() == {
+            "revision": 0,
+            "settings_initialized": False,
+            "settings": SharedSettings().model_dump(),
             "gallery_scale": 45,
             "source_ratings": {},
             "source_colors": {},
@@ -52,6 +56,9 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         )
         assert saved.status_code == 200
         assert saved.json() == {
+            "revision": 1,
+            "settings_initialized": False,
+            "settings": SharedSettings().model_dump(),
             "gallery_scale": 93,
             "source_ratings": {},
             "source_colors": {},
@@ -64,6 +71,9 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
         )
         assert ratings_saved.status_code == 200
         assert ratings_saved.json() == {
+            "revision": 2,
+            "settings_initialized": False,
+            "settings": SharedSettings().model_dump(),
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
@@ -141,6 +151,9 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
     with TestClient(create_app(settings)) as second:
         restore_cookie(second, cookie, name=settings.session_cookie_name)
         assert second.get("/api/preferences").json() == {
+            "revision": 3,
+            "settings_initialized": False,
+            "settings": SharedSettings().model_dump(),
             "gallery_scale": 93,
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
@@ -284,31 +297,31 @@ def test_favorites_filter_inputs_are_flagged_on_list_endpoints(
             for index in range(2)
         ]
         assert (
-            client.put(f"/api/generations/{generations[0]['id']}/favorite", headers=headers)
-            .status_code
+            client.put(
+                f"/api/generations/{generations[0]['id']}/favorite", headers=headers
+            ).status_code
             == 200
         )
         assert (
-            client.put(f"/api/collections/{collections[0]['id']}/favorite", headers=headers)
-            .status_code
+            client.put(
+                f"/api/collections/{collections[0]['id']}/favorite", headers=headers
+            ).status_code
             == 200
         )
 
         listed_generations = {
             item["id"]: item
-            for item in client.get("/api/generations", params={"collection_id": ""}).json()[
-                "items"
-            ]
+            for item in client.get("/api/generations", params={"collection_id": ""}).json()["items"]
         }
-        assert [
-            listed_generations[item["id"]]["is_favorite"] for item in generations
-        ] == [True, False]
-        listed_collections = {
-            item["id"]: item for item in client.get("/api/collections").json()
-        }
-        assert [
-            listed_collections[item["id"]]["is_favorite"] for item in collections
-        ] == [True, False]
+        assert [listed_generations[item["id"]]["is_favorite"] for item in generations] == [
+            True,
+            False,
+        ]
+        listed_collections = {item["id"]: item for item in client.get("/api/collections").json()}
+        assert [listed_collections[item["id"]]["is_favorite"] for item in collections] == [
+            True,
+            False,
+        ]
 
         with client.app.state.container.db.session_factory() as session:
             stored = session.get(Generation, generations[0]["id"])
@@ -317,8 +330,6 @@ def test_favorites_filter_inputs_are_flagged_on_list_endpoints(
             session.commit()
         remaining = [
             item["id"]
-            for item in client.get("/api/generations", params={"collection_id": ""}).json()[
-                "items"
-            ]
+            for item in client.get("/api/generations", params={"collection_id": ""}).json()["items"]
         ]
         assert generations[0]["id"] not in remaining

@@ -69,7 +69,42 @@ class ResetPasswordRequest(APIModel):
     temporary_password: str
 
 
+class SourceSettings(APIModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    explicitInputIds: list[str] = Field(default_factory=list)
+    selectedPreset: str | None = None
+    revision: dict[str, Any] | None = None
+    interface: dict[str, Any] | None = None
+
+
+class SharedSettings(APIModel):
+    active_source: str | None = None
+    runtime_id: str | None = None
+    sources: dict[str, SourceSettings] = Field(default_factory=dict)
+    model_selections: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    quantity: int = Field(default=1, ge=1, le=16)
+    control_sections: dict[str, bool] = Field(default_factory=dict)
+    recent_resolutions: dict[str, list[dict[str, int]]] = Field(default_factory=dict)
+    creative_direction: str = ""
+    assistant_mode: Literal["create", "refine"] = "refine"
+    assistant_think: bool = True
+    assistant_instructions: dict[str, str] = Field(default_factory=dict)
+    use_creative_direction: bool = False
+    max_generations: int | None = Field(default=200, ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def bounded(self) -> SharedSettings:
+        if len(self.model_dump_json()) > 2_000_000:
+            raise ValueError("Saved settings exceed the size limit")
+        if any(len(value) > 8000 for value in self.assistant_instructions.values()):
+            raise ValueError("Prompt instructions exceed the size limit")
+        return self
+
+
 class PreferenceResponse(APIModel):
+    revision: int = 0
+    settings_initialized: bool = False
+    settings: SharedSettings = Field(default_factory=SharedSettings)
     gallery_scale: int
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
@@ -77,6 +112,9 @@ class PreferenceResponse(APIModel):
 
 
 class PreferenceUpdate(APIModel):
+    expected_revision: int | None = Field(default=None, ge=0)
+    import_if_empty: bool = False
+    settings: SharedSettings | None = None
     gallery_scale: int | None = Field(default=None, ge=0, le=100)
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
@@ -178,6 +216,7 @@ class PreferenceUpdate(APIModel):
             and self.source_ratings is None
             and self.source_colors is None
             and self.checkpoint_tiers is None
+            and self.settings is None
         ):
             raise ValueError("at least one preference field is required")
         return self
@@ -724,3 +763,57 @@ class ServiceStatus(APIModel):
     available: bool
     message: str | None
     checked_at: datetime | None
+
+
+class AutoGenerationSnapshot(APIModel):
+    generation: GenerationCreate
+    variants: list[dict[str, str]] = Field(
+        default_factory=lambda: [dict[str, str]()], min_length=1, max_length=256
+    )
+    quantity: int = Field(default=1, ge=1, le=16)
+    assistant: PromptComposeRequest | None = None
+    max_generations: int | None = Field(default=200, ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def validate_size(self) -> AutoGenerationSnapshot:
+        if len(self.variants) * self.quantity > 256:
+            raise ValueError("An automatic batch cannot exceed 256 generations")
+        if self.generation.prompt_assistant_run_id:
+            raise ValueError("Automation composes its own prompts")
+        return self
+
+
+class AutoGenerationUpdate(APIModel):
+    expected_revision: int = Field(ge=0)
+    enabled: bool
+    snapshot: AutoGenerationSnapshot | None = None
+
+
+class AutoGenerationApply(APIModel):
+    expected_revision: int = Field(ge=0)
+    snapshot: AutoGenerationSnapshot
+
+
+class AutoGenerationRetry(APIModel):
+    expected_revision: int = Field(ge=0)
+
+
+class AutoGenerationResponse(APIModel):
+    prompt_ready: bool = False
+    workflow_name: str | None = None
+    enabled: bool = False
+    revision: int = 0
+    status: str = "off"
+    snapshot: AutoGenerationSnapshot | None = None
+    latest_prompt: str | None = None
+    accepted_count: int = 0
+    remaining: int | None = None
+    error_code: str | None = None
+    message: str | None = None
+    next_retry_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AutoGenerationLimit(APIModel):
+    expected_revision: int = Field(ge=0)
+    max_generations: int | None = Field(ge=1, le=1_000_000)

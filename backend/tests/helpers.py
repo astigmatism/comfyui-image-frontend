@@ -49,6 +49,7 @@ def login_ready_admin(client: TestClient) -> str:
 def restore_cookie(client: TestClient, cookie: str, *, name: str = "cif_session") -> None:
     client.cookies.clear()
     client.cookies.set(name, cookie)
+    client.headers["X-CIF-Generation-Protocol"] = "2"
 
 
 def first_profile(client: TestClient, *, timeout: float = 3.0) -> dict[str, Any]:

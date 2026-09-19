@@ -91,6 +91,7 @@ test("control bar values, active source, and section states persist across reloa
   await expect(sectionTrigger("creative-direction")).toHaveAttribute("aria-expanded", "true");
   await expect(sectionTrigger("group-loras")).toHaveAttribute("aria-expanded", "true");
 
+  await expect(page.locator(".shared-settings-status")).toContainText("Settings saved across devices");
   await page.reload();
 
   // The active source, its values, and the section states all come back.

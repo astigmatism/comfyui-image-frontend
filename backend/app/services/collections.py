@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..errors import AppError
-from ..models import Artifact, AuditLog, Collection, CollectionFavorite, Generation
+from ..models import Artifact, AuditLog, AutoGeneration, Collection, CollectionFavorite, Generation
 from ..schemas import Collection as CollectionResponse
 from ..schemas import CollectionCreate, CollectionPreview, CollectionUpdate
 
@@ -265,6 +265,15 @@ class CollectionService:
                 )
             )
         )
+        for automation in session.scalars(
+            select(AutoGeneration).where(AutoGeneration.user_id == owner_id)
+        ):
+            if automation.snapshot_json.get("generation", {}).get("collection_id") in subtree_ids:
+                automation.status = "blocked"
+                automation.error_code = "collection_deleted"
+                automation.message = "The destination folder was deleted. Apply a new destination."
+                automation.revision += 1
+        session.commit()
         deleted_immediately = True
         for generation in generations:
             if not await self.generations.request_delete(session, generation):

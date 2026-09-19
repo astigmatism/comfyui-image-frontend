@@ -54,6 +54,7 @@ async def create_generation(
     session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GenerationSummary:
+    require_generation_protocol(request)
     return await get_container(request).generations.accept(
         session, user=context.user, request=payload
     )
@@ -66,6 +67,7 @@ async def create_generation_batch(
     session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GenerationBatchResult:
+    require_generation_protocol(request)
     return await get_container(request).generations.accept_batch(
         session, user=context.user, request=payload
     )
@@ -229,3 +231,12 @@ def artifact_thumbnail(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def require_generation_protocol(request: Request) -> None:
+    if request.headers.get("X-CIF-Generation-Protocol") != "2":
+        raise AppError(
+            "client_reload_required",
+            "Reload this page before generating. Auto generation is now managed by the server.",
+            status_code=409,
+        )

@@ -136,6 +136,9 @@ test("quantity multiplies every selected checkpoint in the batch request", async
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(trigger).toContainText("5 checkpoints selected");
 
+  // The account retains the first test's quantity across independent browsers.
+  await page.locator("#generation-quantity").fill("1");
+  await page.locator("#generation-quantity").blur();
   await page.getByRole("button", { name: "Increase generation quantity" }).click();
   await expect(page.locator("#generation-quantity")).toHaveValue("2");
 

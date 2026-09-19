@@ -1,3 +1,4 @@
+import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { installLoraControls } from "./lora-stack.mjs";
 import { api, setCsrfToken, upload } from "./api.mjs";
@@ -5,15 +6,12 @@ import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoVi
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
 import {
-  AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   CHECKPOINT_TIER_DEFINITIONS,
   MAX_BATCH_GENERATION_ITEMS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
-  autoGenerateCompositionRetryDelayMs,
-  autoGenerationPromptAssistantFingerprint,
   clampGenerationQuantity,
   clientValidate,
   choiceOptions,
@@ -29,7 +27,6 @@ import {
   hasActiveGeneration,
   interfaceInputs,
   insertTranscription,
-  isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
   loadRecentResolutions,
   migrateInterfaceState,
@@ -76,6 +73,7 @@ import {
   generationPanelMarkup,
   generationRequestBlocked,
   generationSubmissionDisabled,
+  serverControlsMarkup,
   loginMarkup,
   moveDialogMarkup,
   passwordChangeMarkup,
@@ -166,6 +164,13 @@ const state = {
   generationActivityUnavailable: false,
   generationSubmissionProgress: null,
   autoGenerate: false,
+  automation: null,
+  automationLoaded: false,
+  automationBusy: false,
+  maxAutoGenerations: 200,
+  sharedSettingsStatus: "loading",
+  sharedSettingsMessage: null,
+  recentResolutionsBySource: {},
   autoGenerateCreativeDirection: false,
   autoGenerateStatus: "idle",
   autoGenerateStatusMessage: null,
@@ -207,7 +212,6 @@ let collectionDialogReturnFocus = null;
 let collectionDeleteReturnFocus = null;
 let moveDialogReturnFocus = null;
 let checkpointTiersRevision = 0;
-let checkpointTiersSaveChain = Promise.resolve();
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
 let applicationStartupController = null;
@@ -216,24 +220,11 @@ let startupGalleryBoundary = null;
 let activityRefreshTimer = null;
 let activityRequestToken = 0;
 let activityRefreshRequest = null;
-let autoGenerateScheduled = false;
-let autoGenerateCycleRunning = false;
-let autoGenerateRescheduleRequested = false;
-let autoGenerateRetryTimer = null;
-let autoGenerateRetryFailures = 0;
-let autoGenerateRetryContext = null;
-let preparedAutoGenerateAssistantFingerprint = null;
-let autoGeneratePreparationVersion = 0;
-let autoGeneratePrefetchBlocked = false;
-// Auto-generate keeps submitting to the collection where the control was enabled,
-// so the user can browse elsewhere without re-aiming the queue. null pins Home.
+let settingsSync = null;
+let userStateTimer = null;
+let automationReadToken = 0;
 let autoGeneratePinned = false;
 let autoGeneratePinnedCollectionId = null;
-
-function setAutoGeneratePin() {
-  autoGeneratePinned = true;
-  autoGeneratePinnedCollectionId = state.currentCollectionId;
-}
 
 function clearAutoGeneratePin() {
   autoGeneratePinned = false;
@@ -359,6 +350,8 @@ function bindDelegatedEvents() {
   root.addEventListener("drop", handleDrop);
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
   window.addEventListener("resize", handlePhotoViewerResize);
+  window.addEventListener("focus", () => void refreshUserState());
+  root.addEventListener("focusout", () => setTimeout(() => void refreshUserState(), 0));
   window.addEventListener("hashchange", handleCollectionHashChange);
 }
 
@@ -482,7 +475,11 @@ async function handleClick(event) {
     else if (action === "compose-prompt-editor") await composePromptEditor(target);
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "reset-prompt-instructions") resetPromptInstructions(target);
-    else if (action === "retry-auto-generate") retryAutoGenerate();
+    else if (action === "retry-auto-generate") void autoGenerationCommand("/retry");
+    else if (action === "apply-auto-generate") void applyAutoGeneration();
+    else if (action === "settings-use-saved") void settingsSync?.resolve(false);
+    else if (action === "settings-keep-local") void settingsSync?.resolve(true);
+    else if (action === "settings-retry") void retrySharedSettings();
     else if (action === "increment-generation-quantity") applyGenerationQuantity(state.generationQuantity + 1);
     else if (action === "decrement-generation-quantity") applyGenerationQuantity(state.generationQuantity - 1);
     else if (action === "recall") await recall(target.dataset.generationId);
@@ -529,23 +526,36 @@ async function handleClick(event) {
       return;
     }
     state.selectedComfyuiInstanceId = selected.id;
+    settingsSync?.schedule();
     state.comfyuiInstanceError = null;
     state.comfyuiInstanceWarning = null;
     state.formError = null;
     renderPanel();
     renderServiceBanner();
-    scheduleAutoGenerate();
+    syncServerControls();
     return;
   }
   if (element.id === "auto-generate") {
-    resetAutoGenerateRetryState();
-    state.autoGenerate = element.checked;
-    if (state.autoGenerate) setAutoGeneratePin();
-    else clearAutoGeneratePin();
-    invalidateAutoGeneratePreparation();
-    syncGenerationSubmissionState();
-    scheduleAutoGenerate();
-    updatePhotoViewerNextIn();
+    void changeAutoGeneration(element.checked);
+    return;
+  }
+  if (element.id === "auto-generation-destination") {
+    state.pendingAutoDestination = element.value || null;
+    syncServerControls();
+    return;
+  }
+  if (element.id === "auto-generate-limit") {
+    const value = element.value.trim();
+    const limit = value === "" ? null : Number(value);
+    if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 1_000_000)) {
+      element.setCustomValidity("Enter a whole number from 1 to 1,000,000, or leave blank for unlimited.");
+      element.reportValidity();
+      return;
+    }
+    element.setCustomValidity("");
+    state.maxAutoGenerations = limit;
+    settingsSync?.schedule();
+    void autoGenerationCommand("/limit", { max_generations: limit });
     return;
   }
   if (element.id === "generation-quantity") {
@@ -554,16 +564,15 @@ async function handleClick(event) {
   }
   if (element.id === "auto-generate-creative-direction") {
     state.autoGenerateCreativeDirection = element.checked;
-    invalidateAutoGeneratePreparation();
-    scheduleAutoGenerate();
+    settingsSync?.schedule();
+    syncServerControls();
     return;
   }
   if (element.id === "prompt-assistant-thinking-mode") {
     state.promptAssistant.think = element.checked;
     setPromptAssistantError(null);
-    invalidateAutoGeneratePreparation();
     persistCreativeDirectionDraft();
-    scheduleAutoGenerate();
+    syncServerControls();
     return;
   }
   if (element.matches("[data-source-workflow-choice]")) {
@@ -907,19 +916,7 @@ async function applySourcePickerDialog() {
 }
 
 async function saveCheckpointTierPreferences() {
-  const checkpointTiers = structuredClone(state.checkpointTiers);
-  const save = checkpointTiersSaveChain.then(() =>
-    api("/api/preferences", {
-      method: "PUT",
-      body: JSON.stringify({ checkpoint_tiers: checkpointTiers }),
-    }),
-  );
-  checkpointTiersSaveChain = save.catch(() => {});
-  try {
-    await save;
-  } catch {
-    toast("Checkpoint tiers could not be saved.", "error");
-  }
+  await settingsSync?.save();
 }
 
 function handleSourcePickerDialogClose(event) {
@@ -985,8 +982,7 @@ function handleInput(event) {
     capturePromptInstructions(element.closest("#prompt-assistant"), state.promptAssistant.instructionOverrides);
     persistPromptInstructions();
     setPromptAssistantError(null);
-    invalidateAutoGeneratePreparation();
-    scheduleAutoGenerate();
+    syncServerControls();
     return;
   }
   if (element.matches("[data-prompt-editor-input]")) {
@@ -1006,9 +1002,8 @@ function handleInput(event) {
   if (element.id === "creative-direction") {
     state.promptAssistant.creativeDirection = element.value;
     setPromptAssistantError(null);
-    invalidateAutoGeneratePreparation();
     persistCreativeDirectionDraft();
-    scheduleAutoGenerate();
+    syncServerControls();
     return;
   }
   if (element.name === "assistant-mode") {
@@ -1017,15 +1012,14 @@ function handleInput(event) {
     state.promptAssistant.mode = element.value;
     syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, element.value);
     setPromptAssistantError(null);
-    invalidateAutoGeneratePreparation();
     persistCreativeDirectionDraft();
-    scheduleAutoGenerate();
+    syncServerControls();
     return;
   }
   if (element.matches("[data-control-id]") && !element.matches("input[type=file]")) {
     const control = updateControlFromElement(element);
     if (control?.semantic_role === "positive_prompt" || control?.id === "prompt.text") {
-      invalidateAutoGeneratePreparation();
+      syncServerControls();
       setPromptAssistantError(null);
       if (
         state.promptDirectionSignal.status === "applied" &&
@@ -1122,13 +1116,10 @@ function applyPromptEditor() {
   state.promptAssistant.instructionOverrides = structuredClone(promptEditorInstructionOverrides);
   persistPromptInstructions();
   persistCreativeDirectionDraft();
-  invalidateAutoGeneratePreparation();
+  syncServerControls();
   if (dialog.dataset.promptAssistantCompositionId) {
     state.compositionId = dialog.dataset.promptAssistantCompositionId;
     state.promptAssistant.historicalModel = dialog.dataset.promptAssistantModel || null;
-    if (state.autoGenerate && state.autoGenerateCreativeDirection) {
-      preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
-    }
   } else {
     state.compositionId = null;
   }
@@ -1864,10 +1855,12 @@ function loadRecentResolutionsForActiveSource() {
   } catch {
     raw = null;
   }
-  state.recentResolutions = loadRecentResolutions(raw);
+  state.recentResolutions = state.recentResolutionsBySource[state.activeSourceKey] || loadRecentResolutions(raw);
 }
 
 function persistRecentResolutions() {
+  if (state.activeSourceKey) state.recentResolutionsBySource[state.activeSourceKey] = structuredClone(state.recentResolutions);
+  settingsSync?.schedule();
   if (!state.activeSourceKey) {
     state.recentResolutions = [];
     return;
@@ -2033,7 +2026,7 @@ function syncNumberControlPair(element) {
   slider.value = element.value;
 }
 
-function syncParameterValidation(controlId, { scheduleAutomaticGeneration = true } = {}) {
+function syncParameterValidation(controlId) {
   const contract = sourceInterface(state.activeSource);
   const errors = {
     ...clientValidate(contract, state.parameters),
@@ -2059,7 +2052,7 @@ function syncParameterValidation(controlId, { scheduleAutomaticGeneration = true
       errors,
     );
   }
-  if (scheduleAutomaticGeneration) scheduleAutoGenerate();
+  syncServerControls();
 }
 
 function syncFieldError(block, controlId, message) {
@@ -2197,9 +2190,16 @@ async function logout() {
   state.galleryStatus = "idle";
   state.galleryMessage = null;
   state.autoGenerate = false;
+  state.maxAutoGenerations = 200;
+  state.pendingAutoDestination = undefined;
+  state.pendingAutoEnabled = undefined;
+  state.recentResolutionsBySource = {};
+  state.sharedSettingsStatus = "loading";
+  state.automation = null;
+  state.automationLoaded = false;
+  state.autoGenerateStatusMessage = "Checking auto generation…";
   state.autoGenerateCreativeDirection = false;
   clearAutoGeneratePin();
-  resetAutoGenerateRetryState();
   const session = await api("/api/auth/session", {
     operation: "Session request",
     deadlineMs: STARTUP_DEADLINES.session,
@@ -2255,10 +2255,17 @@ async function enterApplication() {
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
+  state.maxAutoGenerations = 200;
+  state.pendingAutoDestination = undefined;
+  state.pendingAutoEnabled = undefined;
+  state.recentResolutionsBySource = {};
+  state.sharedSettingsStatus = "loading";
+  state.automation = null;
+  state.automationLoaded = false;
+  state.autoGenerateStatusMessage = "Checking auto generation…";
   state.autoGenerateCreativeDirection = false;
   state.generationQuantity = loadGenerationQuantity();
   clearAutoGeneratePin();
-  resetAutoGenerateRetryState();
   state.checkpointTiers = {};
   checkpointTiersRevision += 1;
   state.parameterStateBySource = normalizeStoredParameterState(
@@ -2318,24 +2325,31 @@ async function enterApplication() {
       resumeLiveUpdates();
     }
   });
+  const preferencesRequest = loadStartupPreferences(controller.signal);
   const requests = [
-    loadStartupPreferences(controller.signal),
+    preferencesRequest,
+    refreshAutoGeneration(),
     loadCollections(controller.signal),
     refreshGenerationActivity(),
     servicesRequest,
-    loadStartupComfyuiInstances(controller.signal),
+    preferencesRequest.then(() => loadStartupComfyuiInstances(controller.signal)),
     galleryRequest,
     loadStartupPromptAssistant(controller.signal),
     loadStartupSpeechToText(controller.signal),
-    loadSources({ signal: controller.signal, diagnostic: true }),
+    preferencesRequest.then(() => loadSources({ signal: controller.signal, diagnostic: true })),
   ];
   void Promise.allSettled(requests);
+  userStateTimer = window.setInterval(() => void refreshUserState(), 15_000);
 }
 
 function stopApplicationStartup() {
+  clearInterval(userStateTimer);
+  userStateTimer = null;
+  settingsSync = null;
+  automationReadToken += 1;
   applicationStartupController?.abort();
   applicationStartupController = null;
-  invalidateAutoGeneratePreparation();
+  syncServerControls();
 }
 
 function requestWasAborted(error, signal) {
@@ -2343,25 +2357,18 @@ function requestWasAborted(error, signal) {
 }
 
 async function loadStartupPreferences(signal = applicationStartupController?.signal) {
-  const tiersRevision = checkpointTiersRevision;
-  try {
-    const preferences = await startupGet("/api/preferences", {
-      operation: "Display preferences",
-      deadlineMs: STARTUP_DEADLINES.preferences,
-      signal,
-    });
+  settingsSync = createSettingsSync({ api, read: captureSharedSettings, apply: applySharedSettings,
+    status: (status, message = null) => {
+      state.sharedSettingsStatus = status;
+      state.sharedSettingsMessage = message;
+      syncServerControls();
+    }, signal });
+  try { await settingsSync.load(); }
+  catch (error) {
     if (signal?.aborted) return;
-    state.galleryScale = preferences.gallery_scale;
-    if (tiersRevision === checkpointTiersRevision) {
-      state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
-      if (state.sourcePickerDialogOpen) renderSourcePickerDialog();
-    }
-    applyGalleryScale();
-    renderCollectionBarHost();
-    renderGallery();
-  } catch (error) {
-    if (requestWasAborted(error, signal)) return;
-    toast(`Display preferences unavailable: ${error.message}`, "error");
+    state.sharedSettingsStatus = "error";
+    state.sharedSettingsMessage = error.message;
+    syncServerControls();
   }
 }
 
@@ -2607,19 +2614,6 @@ async function loadCollections(signal = applicationStartupController?.signal) {
     });
     if (signal?.aborted) return;
     state.collections = Array.isArray(collections) ? collections : [];
-    if (
-      autoGeneratePinned &&
-      autoGeneratePinnedCollectionId &&
-      !state.collections.some((collection) => collection.id === autoGeneratePinnedCollectionId)
-    ) {
-      // The pinned folder no longer exists; continue auto-generation from the
-      // folder currently on screen instead of submitting to a stale id.
-      clearAutoGeneratePin();
-      if (state.autoGenerate) {
-        renderGenerationActivity();
-        scheduleAutoGenerate();
-      }
-    }
     applyCollectionActivity({ counts: false });
     scheduleActivityRefresh();
     state.collectionsStatus = "ready";
@@ -2731,7 +2725,7 @@ async function loadStartupGallery(
   }
   renderGallery();
   setupPaginationObserver();
-  scheduleAutoGenerate();
+  syncServerControls();
 }
 
 async function loadStartupPromptAssistant(signal = applicationStartupController?.signal) {
@@ -2835,6 +2829,7 @@ function setModelSelectionsForSource(source, selections) {
   const storeKey = modelSelectionStoreKey(source);
   const normalized = normalizeSourceModelSelections(source, selections);
   if (storeKey) {
+    settingsSync?.schedule();
     state.modelSelectionsBySourceRevision.set(storeKey, structuredClone(normalized));
   }
   return normalized;
@@ -2902,15 +2897,6 @@ function applyStoredModelSelectionsToActiveParameters() {
     }
   }
   if (changed || sourceModelSelectors(source).length) persistActiveParameterState();
-}
-
-function pruneModelSelectionsForCurrentSources() {
-  const currentKeys = new Set(
-    state.sources.map(modelSelectionStoreKey).filter(Boolean),
-  );
-  for (const key of state.modelSelectionsBySourceRevision.keys()) {
-    if (!currentKeys.has(key)) state.modelSelectionsBySourceRevision.delete(key);
-  }
 }
 
 function modelParameterVariantsForSource(source, contract = null) {
@@ -3033,10 +3019,15 @@ async function loadSources({ signal, diagnostic = false } = {}) {
         });
     if (signal?.aborted || catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
-    pruneModelSelectionsForCurrentSources();
-    pruneStoredParameterState();
     state.sourceCatalogStatus = "ready";
     const selected = state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
+    if (state.activeSourceKey && !selected && state.parameterStateBySource[state.activeSourceKey]) {
+      state.activeSource = null;
+      state.sourceDetailLoading = false;
+      state.sourceDetailError = "Your saved workflow is currently unavailable. Choose a workflow to continue editing.";
+      renderPanel();
+      return;
+    }
     const next = selected || state.sources.find((item) => item.available !== false) || state.sources[0] || null;
     if (!next) {
       persistActiveParameterState();
@@ -3072,7 +3063,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
 }
 
 async function selectSource(key, { summary = null, signal, diagnostic = false } = {}) {
-  invalidateAutoGeneratePreparation();
+  syncServerControls();
   const activeMigration = sourceInterface(state.activeSource)
     ? {
         sourceKey: state.activeSourceKey,
@@ -3179,7 +3170,7 @@ function applyPreset(presetId) {
     state.explicitParameterIds,
   );
   if (previousPrompt !== state.parameters[promptDirectionSignalControl()?.id]) {
-    invalidateAutoGeneratePreparation();
+    syncServerControls();
   }
   state.serverFieldErrors = {};
   state.formError = null;
@@ -3219,7 +3210,7 @@ function renderPanel() {
   syncPromptDirectionSignalInPanel();
   restorePanelView(panel, panelView);
   syncSpeechControls();
-  scheduleAutoGenerate();
+  syncServerControls();
 }
 
 function syncPromptAssistantAction() {
@@ -3339,6 +3330,7 @@ function loadPromptInstructions() {
 }
 
 function persistPromptInstructions() {
+  settingsSync?.schedule();
   try {
     localStorage.setItem(promptInstructionsStorageKey(), JSON.stringify(state.promptAssistant.instructionOverrides));
   } catch {
@@ -3359,6 +3351,7 @@ function loadGenerationQuantity() {
 }
 
 function persistGenerationQuantity() {
+  settingsSync?.schedule();
   try {
     localStorage.setItem(generationQuantityStorageKey(), String(state.generationQuantity));
   } catch {
@@ -3393,27 +3386,15 @@ function writeStoredItem(key, value) {
 }
 
 function persistParameterState() {
+  settingsSync?.schedule();
   writeStoredItem(parameterStateStorageKey(sessionStorageUserId()), JSON.stringify(state.parameterStateBySource));
 }
 
 // Published sources can disappear (or be renamed) between visits; drop
 // stored parameter sets for keys the current catalog no longer knows so
 // localStorage does not grow without bound.
-function pruneStoredParameterState() {
-  const knownKeys = new Set(
-    state.sources.map((source) => sourceKey(source)).filter(Boolean),
-  );
-  let changed = false;
-  for (const storedKey of Object.keys(state.parameterStateBySource)) {
-    if (!knownKeys.has(storedKey)) {
-      delete state.parameterStateBySource[storedKey];
-      changed = true;
-    }
-  }
-  if (changed) persistParameterState();
-}
-
 function persistActiveSourceKey() {
+  settingsSync?.schedule();
   writeStoredItem(
     activeSourceStorageKey(sessionStorageUserId()),
     state.activeSourceKey ? JSON.stringify(state.activeSourceKey) : null,
@@ -3421,10 +3402,12 @@ function persistActiveSourceKey() {
 }
 
 function persistControlSections() {
+  settingsSync?.schedule();
   writeStoredItem(controlSectionStorageKey(sessionStorageUserId()), JSON.stringify(state.controlSectionOpen));
 }
 
 function persistCreativeDirectionDraft() {
+  settingsSync?.schedule();
   writeStoredItem(
     creativeDirectionStorageKey(sessionStorageUserId()),
     JSON.stringify({
@@ -3502,9 +3485,8 @@ function resetPromptInstructions(button) {
     setPromptEditorAssistantError(dialog, null);
   } else {
     persistPromptInstructions();
-    invalidateAutoGeneratePreparation();
     setPromptAssistantError(null);
-    scheduleAutoGenerate();
+    syncServerControls();
   }
   container.querySelector("[data-prompt-instructions]").focus();
 }
@@ -3519,7 +3501,7 @@ function syncPromptAssistantDraftFromPanel() {
   if (prompt && state.parameters[promptInput.id] !== prompt.value) {
     state.parameters[promptInput.id] = normalizeInputValue(promptInput, prompt.value);
     persistActiveParameterState();
-    invalidateAutoGeneratePreparation();
+    syncServerControls();
   }
   const direction = assistant.querySelector("#creative-direction");
   const mode = assistant.querySelector('[name="assistant-mode"]:checked');
@@ -3541,7 +3523,7 @@ function syncPromptAssistantDraftFromPanel() {
     previousInstructions !== promptInstructionsForMode(state.promptAssistant, nextMode) ||
     nextAutomaticCreativeDirection !== state.autoGenerateCreativeDirection
   ) {
-    invalidateAutoGeneratePreparation();
+    syncServerControls();
   }
   state.promptAssistant.creativeDirection = nextDirection;
   state.promptAssistant.mode = nextMode;
@@ -3698,269 +3680,6 @@ function syncGenerationSubmissionState() {
   syncGenerationQuantityControl();
 }
 
-function currentAutoGenerateRetryContext() {
-  return JSON.stringify([
-    autoGeneratePreparationVersion,
-    state.activeSourceKey || "",
-    sourceRevision(state.activeSource),
-    currentAutoGenerateAssistantFingerprint(),
-  ]);
-}
-
-function invalidateAutoGeneratePreparation() {
-  autoGeneratePreparationVersion += 1;
-  // Only discard provenance owned by the automatic preparation. Manual
-  // compositions remain available when automation is first enabled.
-  if (preparedAutoGenerateAssistantFingerprint !== null) {
-    state.compositionId = null;
-    setPromptDirectionSignal("idle");
-  }
-  preparedAutoGenerateAssistantFingerprint = null;
-  autoGeneratePrefetchBlocked = false;
-  resetAutoGenerateRetryState();
-}
-
-function cancelAutoGenerateRetryTimer() {
-  if (autoGenerateRetryTimer === null) return;
-  window.clearTimeout(autoGenerateRetryTimer);
-  autoGenerateRetryTimer = null;
-}
-
-function syncAutoGenerateStatus() {
-  renderGenerationActivity();
-  const status = document.querySelector("#auto-generate-status");
-  if (!status) return;
-  status.replaceChildren();
-  status.className = `auto-generate-status ${state.autoGenerateStatus}`;
-  if (state.autoGenerateStatus === "idle" || !state.autoGenerateStatusMessage) {
-    status.hidden = true;
-    status.setAttribute("role", "status");
-    return;
-  }
-  status.hidden = false;
-  status.setAttribute(
-    "role",
-    state.autoGenerateStatus === "paused" ? "alert" : "status",
-  );
-  const message = document.createElement("span");
-  message.textContent = state.autoGenerateStatusMessage;
-  status.append(message);
-  if (state.autoGenerateStatus === "paused") {
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.className = "button low auto-generate-retry";
-    retry.dataset.action = "retry-auto-generate";
-    retry.textContent = "Retry Auto-generate";
-    status.append(retry);
-  }
-}
-
-function resetAutoGenerateRetryState() {
-  cancelAutoGenerateRetryTimer();
-  autoGenerateRetryFailures = 0;
-  autoGenerateRetryContext = null;
-  state.autoGenerateStatus = "idle";
-  state.autoGenerateStatusMessage = null;
-  syncAutoGenerateStatus();
-}
-
-function retryAutoGenerate() {
-  resetAutoGenerateRetryState();
-  state.autoGenerate = true;
-  setAutoGeneratePin();
-  invalidateAutoGeneratePreparation();
-  const control = document.querySelector("#auto-generate");
-  if (control) control.checked = true;
-  syncGenerationSubmissionState();
-  scheduleAutoGenerate();
-}
-
-function pauseAutoGenerateAfterCompositionFailure(error) {
-  invalidateAutoGeneratePreparation();
-  state.autoGenerate = false;
-  clearAutoGeneratePin();
-  state.autoGenerateStatus = "paused";
-  state.autoGenerateStatusMessage = `Auto-generate paused: ${
-    error?.message || "Prompt Assistant composition failed."
-  }`;
-  const control = document.querySelector("#auto-generate");
-  if (control) control.checked = false;
-  syncGenerationSubmissionState();
-  syncAutoGenerateStatus();
-}
-
-function scheduleAutoGenerateCompositionRetry(error, requestContext) {
-  if (!state.autoGenerate) return;
-  const currentContext = currentAutoGenerateRetryContext();
-  if (currentContext !== requestContext) {
-    resetAutoGenerateRetryState();
-    scheduleAutoGenerate();
-    return;
-  }
-  if (!isRetryablePromptAssistantError(error)) {
-    pauseAutoGenerateAfterCompositionFailure(error);
-    return;
-  }
-  autoGenerateRetryContext = requestContext;
-  autoGenerateRetryFailures += 1;
-  if (autoGenerateRetryFailures >= AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS) {
-    pauseAutoGenerateAfterCompositionFailure(error);
-    toast("Auto-generate paused after Prompt Assistant retries were exhausted.", "error");
-    return;
-  }
-  const delay = autoGenerateCompositionRetryDelayMs(autoGenerateRetryFailures);
-  const nextAttempt = autoGenerateRetryFailures + 1;
-  state.autoGenerateStatus = "retrying";
-  state.autoGenerateStatusMessage = `Prompt Assistant is temporarily unavailable. Retrying Auto-generate in ${
-    delay / 1_000
-  } ${delay === 1_000 ? "second" : "seconds"} (attempt ${nextAttempt} of ${
-    AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS
-  }).`;
-  syncAutoGenerateStatus();
-  if (autoGenerateRetryFailures === 1) {
-    toast("Prompt Assistant failed temporarily; Auto-generate will retry.");
-  }
-  cancelAutoGenerateRetryTimer();
-  autoGenerateRetryTimer = window.setTimeout(() => {
-    autoGenerateRetryTimer = null;
-    if (
-      !state.autoGenerate ||
-      currentAutoGenerateRetryContext() !== requestContext
-    ) {
-      resetAutoGenerateRetryState();
-      if (state.autoGenerate) scheduleAutoGenerate();
-      return;
-    }
-    scheduleAutoGenerate();
-  }, delay);
-}
-
-function scheduleAutoGenerate() {
-  if (!state.autoGenerate) {
-    if (state.autoGenerateStatus !== "paused") resetAutoGenerateRetryState();
-    return;
-  }
-  const context = currentAutoGenerateRetryContext();
-  if (autoGenerateRetryContext !== null && autoGenerateRetryContext !== context) {
-    resetAutoGenerateRetryState();
-  }
-  if (autoGenerateRetryTimer !== null) return;
-  if (autoGenerateCycleRunning) {
-    autoGenerateRescheduleRequested = true;
-    return;
-  }
-  if (autoGenerateScheduled) return;
-  autoGenerateScheduled = true;
-  queueMicrotask(() => {
-    autoGenerateScheduled = false;
-    void runAutoGenerateCycle().catch((error) => {
-      toast(error.message || "Auto-generation failed.", "error");
-    });
-  });
-}
-
-function currentAutoGenerateAssistantFingerprint() {
-  if (!state.autoGenerateCreativeDirection) return null;
-  const contract = sourceInterface(state.activeSource);
-  const promptInput =
-    positivePromptInput(contract) ||
-    interfaceInputs(contract).find((input) => input.id === "prompt.text");
-  return autoGenerationPromptAssistantFingerprint({
-    sourceKey: state.activeSourceKey,
-    sourceRevision: sourceRevision(state.activeSource),
-    mode: state.promptAssistant.mode,
-    creativeDirection: state.promptAssistant.creativeDirection,
-    prompt: promptInput ? state.parameters[promptInput.id] : "",
-    think: state.promptAssistant.think !== false,
-    instructions: promptInstructionsForMode(state.promptAssistant),
-  });
-}
-
-function autoGenerationNeedsPromptAssistant() {
-  const fingerprint = currentAutoGenerateAssistantFingerprint();
-  if (preparedAutoGenerateAssistantFingerprint !== null &&
-      fingerprint !== preparedAutoGenerateAssistantFingerprint) {
-    invalidateAutoGeneratePreparation();
-  }
-  return Boolean(fingerprint && fingerprint !== preparedAutoGenerateAssistantFingerprint);
-}
-
-function hasPendingGeneration() {
-  return (state.generationActivity?.remaining_count || 0) > 0 ||
-    pendingGenerationIds.size > 0 || hasActiveGeneration(state.generations);
-}
-
-function autoGenerationReady({ preparing = false } = {}) {
-  const contract = sourceInterface(state.activeSource);
-  const selected =
-    state.activeSource ||
-    state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
-  const errors = {
-    ...clientValidate(contract, state.parameters),
-    ...withoutNulls(state.serverFieldErrors),
-  };
-  const galleryPending =
-    state.galleryStatus !== undefined && state.galleryStatus !== "ready";
-  const assistantRequired = autoGenerationNeedsPromptAssistant();
-  return Boolean(
-    state.autoGenerate &&
-      !promptCompositionRequests &&
-      !galleryPending &&
-      (!hasPendingGeneration() || (preparing && !autoGeneratePrefetchBlocked)) &&
-      !generationRequestBlocked(state, selected, contract, errors) &&
-      (!assistantRequired || state.promptAssistant.available),
-  );
-}
-
-async function runAutoGenerateCycle() {
-  // Browsers can restore form values without dispatching input events, especially after a
-  // background tab is discarded. Always reconcile the live assistant draft before deciding
-  // whether generation must wait for prompt composition.
-  syncPromptAssistantDraftFromPanel();
-  if (autoGenerateCycleRunning || !applicationStartupController ||
-      !autoGenerationReady({ preparing: autoGenerationNeedsPromptAssistant() })) return;
-  const requestSourceKey = state.activeSourceKey;
-  const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
-  const requestAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
-  const requestRetryContext = currentAutoGenerateRetryContext();
-  autoGenerateRetryContext = requestRetryContext;
-  let queued = false;
-  autoGenerateCycleRunning = true;
-  try {
-    if (autoGenerationNeedsPromptAssistant()) {
-      const composed = await composePrompt(null, {
-        automatic: true,
-        autoGenerateContext: requestRetryContext,
-      });
-      if (
-        !composed ||
-        !state.autoGenerate ||
-        !autoGenerationReady() ||
-        autoGenerationNeedsPromptAssistant()
-      )
-        return;
-    }
-    queued = await generate({ automatic: true });
-    autoGeneratePrefetchBlocked = !queued;
-    if (queued) resetAutoGenerateRetryState();
-  } finally {
-    autoGenerateCycleRunning = false;
-    const rescheduleRequested = autoGenerateRescheduleRequested;
-    autoGenerateRescheduleRequested = false;
-    if (
-      state.autoGenerate &&
-      (rescheduleRequested ||
-        state.activeSourceKey !== requestSourceKey ||
-        state.selectedComfyuiInstanceId !== requestComfyuiInstanceId ||
-        (autoGenerationNeedsPromptAssistant() &&
-          currentAutoGenerateAssistantFingerprint() !== requestAssistantFingerprint) ||
-        queued)
-    ) {
-      scheduleAutoGenerate();
-    }
-  }
-}
-
 // The assistant inputs in force at submission time, snapshotted with every
 // generation (single and each batch item) so recall can restore the Creative
 // Direction section even for manual generations and for batch items whose
@@ -3974,14 +3693,7 @@ function promptAssistantSnapshotPayload() {
   };
 }
 
-async function generate({ automatic = false } = {}) {
-  if (state.autoGenerate && !automatic) return;
-  if (automatic) {
-    // Keep the ordering invariant at the submission boundary as well as at cycle startup.
-    // A draft restored while composition was in flight must start another cycle, not queue.
-    syncPromptAssistantDraftFromPanel();
-    if (autoGenerationNeedsPromptAssistant()) return false;
-  }
+async function generate() {
   const plannedTotal = plannedGenerationTotal();
   if (plannedTotal > MAX_BATCH_GENERATION_ITEMS) {
     state.formError = `Too many planned generations: ${plannedTotal} selected checkpoints × quantity ${state.generationQuantity} exceeds the ${MAX_BATCH_GENERATION_ITEMS}-item batch limit. Lower the quantity or select fewer checkpoints.`;
@@ -3990,24 +3702,20 @@ async function generate({ automatic = false } = {}) {
     return false;
   }
   if (plannedTotal > 1) {
-    return generateSelectedCheckpoints({ automatic });
+    return generateSelectedCheckpoints();
   }
-  return generateSingleSource({ automatic });
+  return generateSingleSource();
 }
 
-async function generateSingleSource({ automatic = false } = {}) {
+async function generateSingleSource() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const requestComfyuiInstanceId = state.selectedComfyuiInstanceId;
   const requestCompositionId = state.compositionId;
   const requestComfyuiInstance = selectedComfyuiInstance();
-  // Auto-generation stays aimed at the collection where the control was
-  // enabled; manual generation follows the collection currently on screen.
-  const requestCollectionId =
-    automatic && autoGeneratePinned
-      ? autoGeneratePinnedCollectionId
-      : state.currentCollectionId;
+  // Manual generation follows the folder currently on screen.
+  const requestCollectionId = state.currentCollectionId;
   if (
     !requestSourceKey ||
     !state.activeSource ||
@@ -4067,7 +3775,7 @@ async function generateSingleSource({ automatic = false } = {}) {
       state.compositionId === requestCompositionId
     ) {
       state.compositionId = null;
-      if (requestCompositionId) preparedAutoGenerateAssistantFingerprint = null;
+
     }
     if (belongsToCurrentView) upsertGalleryCard(current || generation);
     toast("Generation queued.", "success");
@@ -4102,10 +3810,7 @@ async function generateSingleSource({ automatic = false } = {}) {
     }
     return false;
   } finally {
-    // Acceptance has already recorded pending IDs. An activity read must not
-    // delay preparing the next prompt while these images are rendering.
-    if (automatic) void refreshGenerationActivity();
-    else await refreshGenerationActivity();
+    await refreshGenerationActivity();
     state.generationSubmissionProgress = null;
     state.submitting = false;
     syncGenerationSubmissionState();
@@ -4113,7 +3818,7 @@ async function generateSingleSource({ automatic = false } = {}) {
   }
 }
 
-async function generateSelectedCheckpoints({ automatic = false } = {}) {
+async function generateSelectedCheckpoints() {
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -4122,10 +3827,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
   const requestParameters = structuredClone(state.parameters);
   const requestSource = selectedGenerationSource();
   const requestComfyuiInstance = selectedComfyuiInstance();
-  const requestCollectionId =
-    automatic && autoGeneratePinned
-      ? autoGeneratePinnedCollectionId
-      : state.currentCollectionId;
+  const requestCollectionId = state.currentCollectionId;
   if (
     !requestSourceKey ||
     !requestSource ||
@@ -4250,7 +3952,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
       state.compositionId === requestCompositionId
     ) {
       state.compositionId = null;
-      if (requestCompositionId) preparedAutoGenerateAssistantFingerprint = null;
+
     }
 
     if (failures.length) {
@@ -4333,8 +4035,7 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
     }
     return false;
   } finally {
-    if (automatic) void refreshGenerationActivity();
-    else await refreshGenerationActivity();
+    await refreshGenerationActivity();
     state.generationSubmissionProgress = null;
     state.submitting = false;
     syncGenerationSubmissionState();
@@ -4345,12 +4046,10 @@ async function generateSelectedCheckpoints({ automatic = false } = {}) {
 
 async function composePrompt(
   button,
-  { automatic = false, autoGenerateContext = null } = {},
 ) {
   if (!state.promptAssistant.available || promptCompositionRequests > 0) return false;
   syncPromptAssistantDraftFromPanel();
   const requestSession = applicationStartupController;
-  const requestAutoGenerateContext = autoGenerateContext || currentAutoGenerateRetryContext();
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
   const contract = sourceInterface(state.activeSource);
@@ -4370,10 +4069,6 @@ async function composePrompt(
   const requestThink = state.promptAssistant.think !== false;
   const instructionsInput = document.querySelector("#prompt-assistant-instructions");
   if (!validatePromptInstructions(instructionsInput)) {
-    if (automatic) scheduleAutoGenerateCompositionRetry({
-      code: "instructions_required",
-      message: "Enter prompt pre-processor instructions or reset to the default.",
-    }, requestAutoGenerateContext);
     return false;
   }
   const requestInstructions = promptInstructionsForMode(state.promptAssistant);
@@ -4398,22 +4093,11 @@ async function composePrompt(
       }),
     });
     if (requestSession !== applicationStartupController) return false;
-    if (automatic) syncPromptAssistantDraftFromPanel();
     if (
       !sourceContextIsCurrent(requestSourceKey, requestRevision) ||
-      promptInstructionsForMode(state.promptAssistant) !== requestInstructions ||
-      (automatic &&
-        (!state.autoGenerate ||
-          !state.autoGenerateCreativeDirection ||
-          currentAutoGenerateRetryContext() !== requestAutoGenerateContext ||
-          (state.parameters[promptInput.id] || "") !== requestPrompt ||
-          state.promptAssistant.mode !== requestMode ||
-          state.promptAssistant.creativeDirection !== requestDirection ||
-          (state.promptAssistant.think !== false) !== requestThink))
+      promptInstructionsForMode(state.promptAssistant) !== requestInstructions
     ) {
-      if (!automatic) {
-        toast("Prompt composition finished after its inputs changed and was not applied.");
-      }
+      toast("Prompt composition finished after its inputs changed and was not applied.");
       clearRequestSignal();
       return false;
     }
@@ -4422,43 +4106,18 @@ async function composePrompt(
     persistActiveParameterState();
     state.compositionId = result.composition_id;
     state.promptAssistant.historicalModel = result.model;
-    if (
-      state.autoGenerate &&
-      state.autoGenerateCreativeDirection &&
-      state.promptAssistant.mode === requestMode &&
-      state.promptAssistant.creativeDirection === requestDirection &&
-      (state.promptAssistant.think !== false) === requestThink &&
-      promptInstructionsForMode(state.promptAssistant) === requestInstructions
-    ) {
-      preparedAutoGenerateAssistantFingerprint = currentAutoGenerateAssistantFingerprint();
-    }
     const prompt = document.querySelector(
       `[data-control-id="${CSS.escape(promptInput.id)}"]`,
     );
     if (prompt) prompt.value = result.prompt;
     setPromptDirectionSignal("applied", result.prompt);
-    syncParameterValidation(promptInput.id, {
-      scheduleAutomaticGeneration: !automatic,
-    });
-    if (!automatic) {
-      prompt?.focus();
-      toast("Creative direction applied to the editable Prompt field.", "success");
-    } else {
-      resetAutoGenerateRetryState();
-    }
+    syncParameterValidation(promptInput.id);
+    prompt?.focus();
+    toast("Creative direction applied to the editable Prompt field.", "success");
     return true;
   } catch (error) {
     if (requestSession !== applicationStartupController) return false;
-    if (automatic) {
-      syncPromptAssistantDraftFromPanel();
-      clearRequestSignal();
-      if (!state.autoGenerate || !state.autoGenerateCreativeDirection ||
-          currentAutoGenerateRetryContext() !== requestAutoGenerateContext) return false;
-      scheduleAutoGenerateCompositionRetry(
-        error,
-        requestAutoGenerateContext,
-      );
-    } else if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
+    if (sourceContextIsCurrent(requestSourceKey, requestRevision)) {
       setPromptDirectionSignal("idle");
       const message = error.message || "Creative direction could not be applied.";
       setPromptAssistantError(message);
@@ -4471,7 +4130,7 @@ async function composePrompt(
     promptCompositionRequests = Math.max(0, promptCompositionRequests - 1);
     syncPromptAssistantAction();
     renderGenerationActivity();
-    if (!automatic) scheduleAutoGenerate();
+    syncServerControls();
   }
 }
 
@@ -5205,7 +4864,7 @@ async function refreshGeneration(
   const navigationToken = collectionNavigationToken;
   try {
     let detail = await api(`/api/generations/${id}`, { signal: applicationStartupController?.signal });
-    if (TERMINAL_GENERATION_STATUSES.has(detail.status) && pendingGenerationIds.delete(id)) scheduleAutoGenerate();
+    if (TERMINAL_GENERATION_STATUSES.has(detail.status) && pendingGenerationIds.delete(id)) syncServerControls();
     if (!generationRefreshGate.isCurrent(id, refreshToken) || navigationToken !== collectionNavigationToken) return;
     const index = state.generations.findIndex((item) => item.id === id);
     const previous = index >= 0 ? state.generations[index] : null;
@@ -5234,7 +4893,7 @@ async function refreshGeneration(
     else return;
     state.generations = sortGenerationsNewestFirst(state.generations);
     upsertGalleryCard(detail);
-    scheduleAutoGenerate();
+    syncServerControls();
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);
     const completedForSlideshow =
@@ -5264,7 +4923,7 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
-  invalidateAutoGeneratePreparation();
+  syncServerControls();
   const runtimeWarning = applyRecalledComfyuiInstance(recalled);
   const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
   state.modelSelectionsBySourceRevision = new Map();
@@ -5868,7 +5527,7 @@ function removeGeneration(id) {
   galleryGroups?.invalidate();
   renderGallery();
   if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
-  scheduleAutoGenerate();
+  syncServerControls();
 }
 
 function removeGalleryGeneration(id) {
@@ -5880,7 +5539,7 @@ function removeGalleryGeneration(id) {
   galleryGroups?.invalidate();
   renderGallery();
   if (state.photoViewerGenerationId && !closesPhotoViewer) renderPhotoViewer();
-  scheduleAutoGenerate();
+  syncServerControls();
 }
 
 function beginGenerationActivitySubmission(count) {
@@ -5903,9 +5562,8 @@ function generationActivitySnapshot() {
       ...state.generationActivity,
       remaining_count: Math.max(state.generationActivity?.remaining_count || 0, pendingGenerationIds.size),
     },
-    promptAssistantComposing: promptCompositionRequests > 0,
-    autoGeneratePromptReady: Boolean(preparedAutoGenerateAssistantFingerprint &&
-      preparedAutoGenerateAssistantFingerprint === currentAutoGenerateAssistantFingerprint()),
+    promptAssistantComposing: promptCompositionRequests > 0 || Boolean(state.autoGenerate && state.automation?.status === "preparing" && state.automation?.snapshot?.assistant),
+    autoGeneratePromptReady: state.automation?.prompt_ready === true,
     autoGeneratePinned,
     autoGeneratePinnedCollectionId,
   };
@@ -5991,7 +5649,7 @@ async function fetchGenerationActivity(controller) {
     state.generationActivity = activity;
     state.generationActivityUnavailable = false;
     applyCollectionActivity();
-    if (previouslyRemaining !== activity.remaining_count) scheduleAutoGenerate();
+    if (previouslyRemaining !== activity.remaining_count) syncServerControls();
   } catch (error) {
     if (token !== activityRequestToken || requestWasAborted(error, controller.signal)) return;
     state.generationActivityUnavailable = true;
@@ -6004,6 +5662,9 @@ function startLiveUpdates({ paused = false } = {}) {
   state.liveUpdatesPaused = paused;
   state.pendingLiveUpdates = [];
   const source = new EventSource(`/api/events?last_event_id=${state.lastEventId}`);
+  for (const type of ["preferences.updated", "auto_generation.updated"]) {
+    source.addEventListener(type, () => void refreshUserState());
+  }
   const eventTypes = [
     "generation.queued",
     "generation.dispatching",
@@ -6030,7 +5691,7 @@ function startLiveUpdates({ paused = false } = {}) {
     });
   }
   source.onerror = () => {};
-  source.onopen = () => scheduleActivityRefresh();
+  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); };
   state.eventSource = source;
   startGenerationEtaTimer();
 }
@@ -6251,19 +5912,7 @@ function renderServiceBanner() {
 function updateGalleryScale(value, persist) {
   state.galleryScale = Number(value);
   applyGalleryScale();
-  if (persist) {
-    window.clearTimeout(state.scaleTimer);
-    state.scaleTimer = window.setTimeout(async () => {
-      try {
-        await api("/api/preferences", {
-          method: "PUT",
-          body: JSON.stringify({ gallery_scale: state.galleryScale }),
-        });
-      } catch {
-        toast("Gallery scale could not be saved.", "error");
-      }
-    }, 250);
-  }
+  if (persist) settingsSync?.schedule();
 }
 
 function applyGalleryScale() {
@@ -6401,3 +6050,201 @@ function renderFatal(error) {
 }
 
 initialize();
+
+
+function captureSharedSettings() {
+  const sources = structuredClone(state.parameterStateBySource);
+  if (state.activeSourceKey && sourceInterface(state.activeSource)) sources[state.activeSourceKey] = {
+    interface: structuredClone(sourceInterface(state.activeSource)),
+    revision: structuredClone(sourceRevision(state.activeSource)),
+    values: structuredClone(state.parameters), explicitInputIds: [...state.explicitParameterIds],
+    selectedPreset: state.selectedPreset,
+  };
+  const recent = structuredClone(state.recentResolutionsBySource);
+  if (state.activeSourceKey) recent[state.activeSourceKey] = structuredClone(state.recentResolutions);
+  // Import all legacy resolution lists, including sources not currently open.
+  if (state.sharedSettingsStatus === "loading") {
+    for (const key of Object.keys(sources)) {
+      recent[key] ||= loadRecentResolutions(readStoredItem(recentResolutionKey(sessionStorageUserId(), key)));
+    }
+  }
+  return { gallery_scale: state.galleryScale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
+    active_source: state.activeSourceKey, runtime_id: state.selectedComfyuiInstanceId,
+    sources, model_selections: Object.fromEntries(state.modelSelectionsBySourceRevision),
+    quantity: state.generationQuantity, control_sections: structuredClone(state.controlSectionOpen),
+    recent_resolutions: recent, creative_direction: state.promptAssistant.creativeDirection,
+    assistant_mode: state.promptAssistant.mode, assistant_think: state.promptAssistant.think !== false,
+    assistant_instructions: structuredClone(state.promptAssistant.instructionOverrides),
+    use_creative_direction: state.autoGenerateCreativeDirection, max_generations: state.maxAutoGenerations,
+  } };
+}
+
+async function applySharedSettings(preferences) {
+  const saved = preferences.settings;
+  const previousSource = state.activeSourceKey;
+  const changed = !settingsEqual(captureSharedSettings(), preferences);
+  state.galleryScale = preferences.gallery_scale;
+  state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
+  state.parameterStateBySource = normalizeStoredParameterState(JSON.stringify(saved.sources));
+  state.activeSourceKey = saved.active_source;
+  state.selectedComfyuiInstanceId = saved.runtime_id;
+  state.comfyuiInstanceSelectionInitialized = Boolean(saved.runtime_id);
+  state.generationQuantity = saved.quantity;
+  state.controlSectionOpen = saved.control_sections;
+  state.modelSelectionsBySourceRevision = new Map(Object.entries(saved.model_selections));
+  state.recentResolutionsBySource = saved.recent_resolutions;
+  state.autoGenerateCreativeDirection = saved.use_creative_direction;
+  state.maxAutoGenerations = saved.max_generations;
+  Object.assign(state.promptAssistant, { creativeDirection: saved.creative_direction,
+    mode: saved.assistant_mode, think: saved.assistant_think, instructionOverrides: saved.assistant_instructions });
+  const parameters = state.parameterStateBySource[state.activeSourceKey];
+  if (parameters) {
+    state.parameters = structuredClone(parameters.values);
+    state.explicitParameterIds = new Set(parameters.explicitInputIds);
+    state.selectedPreset = parameters.selectedPreset;
+  }
+  loadRecentResolutionsForActiveSource();
+  if (state.sources.length && previousSource !== state.activeSourceKey) {
+    // Avoid carrying the previous source's live values into a remote source change.
+    state.activeSource = null;
+    await selectSource(state.activeSourceKey);
+  } else if (changed && !document.activeElement?.matches("input, textarea, select")) renderPanel();
+  applyGalleryScale();
+  syncServerControls();
+}
+
+async function retrySharedSettings() {
+  try { await settingsSync?.refresh(); await settingsSync?.save(); }
+  catch (error) { state.sharedSettingsStatus = "error"; state.sharedSettingsMessage = error.message; syncServerControls(); }
+}
+
+async function refreshUserState() {
+  if (!applicationStartupController || applicationStartupController.signal.aborted) return;
+  const requests = [refreshAutoGeneration()];
+  if (!document.activeElement?.matches("input, textarea, select") && !state.sourcePickerDialogOpen &&
+      !document.querySelector("#prompt-editor-dialog[open]")) requests.push(settingsSync?.refresh());
+  await Promise.allSettled(requests);
+}
+
+function automationSnapshot({ starting = false } = {}) {
+  const contract = sourceInterface(state.activeSource);
+  if (!contract || !state.activeSourceKey) throw new Error("Choose a workflow first.");
+  const prompt = positivePromptInput(contract) || interfaceInputs(contract).find((item) => item.id === "prompt.text");
+  const direction = state.promptAssistant.creativeDirection || "";
+  return {
+    generation: { source_key: state.activeSourceKey, revision: sourceRevision(state.activeSource),
+      parameters: parametersForRequest(contract, state.parameters),
+      prompt_assistant: promptAssistantSnapshotPayload(),
+      comfyui_instance_id: state.selectedComfyuiInstanceId,
+      collection_id: starting ? state.currentCollectionId : state.pendingAutoDestination !== undefined
+        ? state.pendingAutoDestination : state.automation?.snapshot?.generation.collection_id ?? null,
+    },
+    variants: orderedModelParameterVariants(state.activeSource, contract, state.parameters),
+    quantity: state.generationQuantity,
+    assistant: state.autoGenerateCreativeDirection && direction.trim() ? {
+      mode: state.promptAssistant.mode, prompt: prompt ? String(state.parameters[prompt.id] || "") : "",
+      creative_direction: direction, think: state.promptAssistant.think !== false,
+      instructions: promptInstructionsForMode(state.promptAssistant) || null,
+    } : null,
+    max_generations: starting ? state.maxAutoGenerations : state.automation?.snapshot?.max_generations ?? null,
+  };
+}
+
+async function refreshAutoGeneration() {
+  const controller = applicationStartupController;
+  if (!controller || state.automationBusy) return;
+  const token = ++automationReadToken;
+  try {
+    const result = await api("/api/auto-generation", { signal: controller.signal, deadlineMs: 5000 });
+    if (controller.signal.aborted || token !== automationReadToken) return;
+    applyAutoGenerationState(result);
+  } catch (error) {
+    if (controller.signal.aborted || token !== automationReadToken) return;
+    state.autoGenerateStatusMessage = "Auto-generation status unavailable. Reconnecting…";
+    syncServerControls();
+  }
+}
+
+function applyAutoGenerationState(result) {
+  state.automation = result;
+  state.automationLoaded = true;
+  state.autoGenerate = result.enabled;
+  state.autoGenerateStatus = result.status;
+  const messages = {
+    waiting: "Auto generation is on. It continues with the browser closed.",
+    preparing: "Preparing the next automatic prompt.",
+    generating: "Auto generation is running on the server.",
+  };
+  state.autoGenerateStatusMessage = result.message
+    ? `${result.message}${result.status === "retrying" ? " Retrying automatically." : ""}`
+    : result.enabled ? messages[result.status] || "Auto generation is on." : null;
+  autoGeneratePinned = result.enabled;
+  autoGeneratePinnedCollectionId = result.snapshot?.generation.collection_id ?? null;
+  syncServerControls();
+  syncGenerationSubmissionState();
+  updatePhotoViewerNextIn();
+}
+
+async function autoGenerationCommand(path, payload = {}) {
+  if (!state.automationLoaded || state.automationBusy) return;
+  const controller = applicationStartupController;
+  state.automationBusy = true;
+  automationReadToken += 1;
+  syncServerControls();
+  try {
+    const result = await api(`/api/auto-generation${path}`, { method: path ? "POST" : "PUT",
+      signal: controller.signal,
+      body: JSON.stringify({ ...payload, expected_revision: state.automation.revision }),
+    });
+    if (controller.signal.aborted) return;
+    state.pendingAutoDestination = undefined;
+    applyAutoGenerationState(result);
+  } catch (error) {
+    if (!controller.signal.aborted) toast(error.message, "error");
+  } finally {
+    state.automationBusy = false;
+    if (!controller.signal.aborted) { await refreshAutoGeneration(); syncServerControls(); }
+  }
+}
+
+async function changeAutoGeneration(enabled) {
+  state.pendingAutoEnabled = enabled;
+  try {
+    syncPromptAssistantDraftFromPanel();
+    await autoGenerationCommand("", { enabled, ...(enabled ? { snapshot: automationSnapshot({ starting: true }) } : {}) });
+  } catch (error) { toast(error.message, "error"); }
+  finally { state.pendingAutoEnabled = undefined; syncServerControls(); }
+}
+
+async function applyAutoGeneration() {
+  try {
+    syncPromptAssistantDraftFromPanel();
+    await autoGenerationCommand("/apply", { snapshot: automationSnapshot() });
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function syncServerControls() {
+  try {
+    const captured = state.automation?.snapshot;
+    const current = captured ? automationSnapshot() : null;
+    const projected = captured ? { ...captured, generation: Object.fromEntries(Object.keys(current.generation)
+      .map((key) => [key, captured.generation[key]])) } : null;
+    state.autoSnapshotDirty = Boolean(current && !settingsEqual(current, projected));
+  } catch { state.autoSnapshotDirty = false; }
+  const control = document.querySelector("#auto-generate");
+  if (control) {
+    control.checked = state.pendingAutoEnabled ?? state.autoGenerate;
+    control.disabled = !state.automationLoaded || state.automationBusy ||
+      (!state.autoGenerate && state.sharedSettingsStatus === "loading");
+    control.setAttribute("aria-busy", String(!state.automationLoaded || state.automationBusy));
+  }
+  const host = document.querySelector("#server-controls");
+  const editingServerControl = host?.contains(document.activeElement) &&
+    document.activeElement.matches("input, textarea, select");
+  if (host && (!editingServerControl || !state.autoGenerate)) {
+    const detailsOpen = host.querySelector("details")?.open;
+    host.innerHTML = serverControlsMarkup(state);
+    if (detailsOpen && host.querySelector("details")) host.querySelector("details").open = true;
+  }
+  renderGenerationActivity();
+}

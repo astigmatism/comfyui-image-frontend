@@ -56,6 +56,7 @@ from .generation_eta import (
 )
 from .generations import GenerationService
 from .ollama import OllamaAdapter
+from .user_state import lock_user_state
 
 logger = logging.getLogger(__name__)
 
@@ -589,6 +590,7 @@ class QueueWorker:
     def _claim_next(self, instance_id: str | None = None) -> tuple[str, Any] | None:
         target_id = instance_id or self.comfyui_instances.default_id
         with self.session_factory() as session:
+            lock_user_state(session)
             rows = session.execute(
                 select(Generation.owner_id, func.min(Generation.queue_seq).label("first_seq"))
                 .where(
@@ -619,7 +621,7 @@ class QueueWorker:
                     Generation.status == GenerationStatus.QUEUED,
                     Generation.comfyui_instance_id == target_id,
                 )
-                .order_by(Generation.queue_seq)
+                .order_by(Generation.auto_cycle_id.is_not(None), Generation.queue_seq)
                 .limit(1)
             )
             if generation is None:

@@ -157,9 +157,57 @@ class UserPreference(Base):
     checkpoint_tiers_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    settings_initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class AutoGeneration(Base):
+    __tablename__ = "auto_generations"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="off")
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    profile_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workflow_profiles.id", ondelete="RESTRICT")
+    )
+    accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latest_prompt: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    message: Mapped[str | None] = mapped_column(Text)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AutoGenerationCycle(Base):
+    __tablename__ = "auto_generation_cycles"
+    __table_args__ = (
+        Index("ix_auto_cycles_owner", "user_id", "created_at"),
+        Index("ix_auto_cycles_state", "user_id", "state", "revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("auto_generations.user_id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="preparing")
+    claim: Mapped[str | None] = mapped_column(String(36))
+    prompt_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("prompt_assistant_runs.id", ondelete="SET NULL")
+    )
+    prompt: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class WorkflowProfile(Base):
@@ -367,6 +415,9 @@ class Generation(Base):
         Enum(GenerationStatus), nullable=False, default=GenerationStatus.QUEUED
     )
     queue_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    auto_cycle_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("auto_generation_cycles.id", ondelete="SET NULL"), index=True
+    )
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=uuid_str)
     comfyui_client_id: Mapped[str] = mapped_column(String(64), nullable=False, default=uuid_str)
     comfyui_prompt_id: Mapped[str | None] = mapped_column(String(100))

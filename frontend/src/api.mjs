@@ -34,6 +34,7 @@ export async function api(path, options = {}) {
   } = options;
   const method = requestedMethod.toUpperCase();
   const headers = new Headers(fetchOptions.headers || {});
+  headers.set("X-CIF-Generation-Protocol", "2");
   if (csrfToken && !SAFE_METHODS.has(method)) {
     headers.set("X-CSRF-Token", csrfToken);
   }

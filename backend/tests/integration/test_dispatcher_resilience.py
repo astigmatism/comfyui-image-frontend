@@ -44,6 +44,7 @@ def _start_worker(client: TestClient) -> Any:
     worker.settings.enable_background_worker = True
     assert client.portal is not None
     client.portal.call(worker.start)
+    client.portal.call(client.app.state.container.automation.start)
     return worker
 
 

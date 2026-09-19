@@ -95,6 +95,7 @@ def auth_session(client: TestClient) -> dict[str, object]:
 
 
 def login(client: TestClient, username: str, password: str) -> dict[str, object]:
+    client.headers["X-CIF-Generation-Protocol"] = "2"
     anonymous = auth_session(client)
     token = anonymous["csrf_token"]
     response = client.post(
