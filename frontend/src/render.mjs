@@ -189,6 +189,7 @@ export function generationPanelMarkup(state, profile, contract) {
         ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
         ${sourceStateMarkup(state, profile)}
+        ${state.pendingSubmission ? `<div class="submission-recovery" role="status">Submission status unknown. <button type="button" class="button secondary" data-action="resume-submission" ${state.submitting ? "disabled" : ""}>Check status / resume</button></div>` : ""}
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
@@ -211,7 +212,7 @@ export function generationPanelMarkup(state, profile, contract) {
 
 export function generationSubmissionDisabled(state, profile, contract, clientErrors = {}) {
   return Boolean(
-    state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
+    state.pendingSubmission || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
   );
 }
 
@@ -1468,7 +1469,7 @@ export function collectionTileMarkup(collection) {
     ? `<div class="collection-preview-grid">${Array.from({ length: 4 }, (_, index) => {
         const item = previews[index];
         return item
-          ? `<span class="collection-preview-cell"><img loading="lazy" src="${escapeHtml(item.thumbnail_url)}" alt="" /></span>`
+          ? `<span class="collection-preview-cell"><img data-thumbnail-src="${escapeHtml(item.thumbnail_url)}" alt="" /></span>`
           : `<span class="collection-preview-cell collection-preview-empty">${index === previews.length ? FOLDER_ICON : ""}</span>`;
       }).join("")}</div>`
     : `<div class="collection-folder-glyph">${FOLDER_ICON}</div>`;
@@ -1571,7 +1572,7 @@ export function galleryCardMarkup(generation) {
   const generationName = runtimeName ? `${sourceName}, ${runtimeName}` : sourceName;
   const stateClass = String(generation.status || "unknown").replaceAll("_", "-");
   const media = hasImage
-    ? `<img loading="lazy" src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
+    ? `<img data-thumbnail-src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
     : statusPlaceholderMarkup(generation);
   const progress = generationProgressMarkup(generation);
   const statusOverlay = generation.status === "succeeded" || progress ? "" : `<div class="media-status">${escapeHtml(statusLabel(generation.status))}</div>`;

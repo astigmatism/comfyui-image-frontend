@@ -8,4 +8,4 @@ if [[ ${SERVICE_PORTAL_UPDATE_DELEGATED:-} != 1 ]]; then
   printf 'Error: use Service Portal for this entrypoint, or update_production --wait directly.\n' >&2
   exit 1
 fi
-"$deploy_root/update_production" --wait
+"$deploy_root/update_production" --wait --restart

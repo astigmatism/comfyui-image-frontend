@@ -45,7 +45,9 @@ test("production build emits one content-addressed frontend module graph", async
   assert.doesNotMatch(index, /(?:href|src)="\/assets\/(?:styles\.css|app\.mjs)"/u);
 
   const expectedImports = {
-    app: new Set([first.assets.user_settings, first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
+    app: new Set([first.assets.generation_submissions, first.assets.thumbnails, first.assets.user_settings, first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
+    thumbnails: new Set([first.assets.api]),
+    generation_submissions: new Set([first.assets.api]),
     gallery_selection: new Set([first.assets.api, first.assets.lib]),
     gallery_hover: new Set(),
     gallery_groups: new Set([first.assets.api, first.assets.lib]),
@@ -57,7 +59,7 @@ test("production build emits one content-addressed frontend module graph", async
     lora_stack: new Set(),
     render: new Set([first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups]),
   };
-  for (const name of ["app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
+  for (const name of ["thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

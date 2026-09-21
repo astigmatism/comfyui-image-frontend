@@ -62,8 +62,14 @@ test("control bar values, active source, and section states persist across reloa
   const sectionTrigger = (key) =>
     page.locator(`[data-control-section="${key}"] .control-section-trigger`);
 
-  // Defaults: prompt, seed, and resolution are expanded; Creative Direction and
-  // LoRAs start collapsed.
+  // Establish the starting state explicitly: this account's settings are shared
+  // with earlier browser journeys, even though this is a fresh browser context.
+  for (const [key, expanded] of [["prompt", true], ["seed", true], ["resolution", true],
+    ["creative-direction", false], ["group-loras", false]]) {
+    if ((await sectionTrigger(key).getAttribute("aria-expanded")) !== String(expanded)) {
+      await sectionTrigger(key).click();
+    }
+  }
   await expect(sectionTrigger("prompt")).toHaveAttribute("aria-expanded", "true");
   await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "true");
   await expect(sectionTrigger("resolution")).toHaveAttribute("aria-expanded", "true");

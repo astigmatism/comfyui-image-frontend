@@ -35,6 +35,20 @@ class Base(DeclarativeBase):
     type_annotation_map: ClassVar[dict[Any, Any]] = {dict[str, Any]: JSON, list[Any]: JSON}
 
 
+class GenerationSubmission(Base):
+    __tablename__ = "generation_submissions"
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    key: Mapped[str] = mapped_column(String(36), primary_key=True)
+    endpoint: Mapped[str] = mapped_column(String(16))
+    request_digest: Mapped[str] = mapped_column(String(64))
+    outcomes: Mapped[list[Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class UserRole(enum.StrEnum):
     ADMIN = "admin"
     USER = "user"

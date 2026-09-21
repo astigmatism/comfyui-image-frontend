@@ -678,7 +678,30 @@ submission. It returns `201` with ordered `items`, each containing either a
 `generation` summary or an `error` (`code`, `message`, `fields`, `details`, `status`).
 Each item is validated independently. The full planned total, accepted jobs and
 submission failures commit together before queued events are published. An unexpected
-transaction failure rolls back the entire batch. Requests are never retried automatically.
+transaction failure rolls back the entire batch. Both submission endpoints require
+`X-CIF-Generation-Protocol: 3` and a UUID `Idempotency-Key`. Older clients receive
+`409 client_reload_required`; a missing or malformed key receives
+`400 idempotency_key_required`. Authentication and CSRF remain required.
+
+The key is unique within an account across both endpoints. Canonical validated
+payloads and endpoint identity determine the receipt digest. Repeating a key with
+the same payload returns the original accepted IDs and item failures without choosing
+new seeds or consuming another prompt composition. A different payload or endpoint
+returns `409 idempotency_conflict`. Receipts commit with all accepted generation rows,
+run membership, batch failures, and durable events. Deleting generation results
+retains the receipt; replay returns `410 submission_result_unavailable`. Account
+deletion cascades its receipts.
+
+`GET /api/generation-submissions/{key}` requires authentication and returns
+`{ "key": "UUID", "endpoint": "single" | "batch", "result": ... }`. An unknown
+account-scoped receipt returns `404 submission_not_found` and creates no work. Deleted
+results return `410 submission_result_unavailable`. Summaries reflect current job
+status; identity, seeds, and recorded item failures remain unchanged.
+
+The browser persists the frozen payload and key in account-scoped session storage,
+checks for a receipt after reload, and retries a submission at most five times within
+60 seconds. Expired budgets retain the key with a visible unknown-status action.
+Other mutations retain their existing retry behavior.
 The single-generation endpoint preserves its existing contract and joins the same run.
 
 New requests append to the current run while any member remains active; the first
@@ -706,3 +729,20 @@ ticks may be live-only because the same latest snapshot is durable on the genera
 lifecycle and artifact events continue to trigger a single-generation fetch. When present, the
 nested ETA travels with that same coalesced snapshot; a local countdown does not create additional
 SSE traffic.
+
+
+## Admission and overload
+
+Ordinary API metadata work admits eight active requests, with at most four media
+requests and 64 queued requests. Admission precedes authentication and waits at most
+five seconds. Queue overflow or expiration returns `503 service_busy` with
+`Retry-After: 1`. Cancelled/disconnected waiters release capacity. Long-lived file
+and SSE responses release admission and all metadata database sessions before
+streaming. Large request bodies retain ASGI transport backpressure while waiting.
+
+`GET /api/health` bypasses admission and uses one coalesced, read-only database probe
+with a one-second response deadline. Database or worker readiness failure returns
+503. The `load` object exposes aggregate request activity, rejection and wait counts,
+connection checkout pressure and duration, and event-loop lag, with no credentials,
+request bodies, or SQL parameters. Browser safe reads and thumbnails make at most
+four attempts, honoring `Retry-After` and their original overall deadline.

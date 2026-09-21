@@ -2,6 +2,7 @@
 # ruff: noqa: S603, S607
 
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -55,6 +56,44 @@ class PortalWaitTests(unittest.TestCase):
         self.state["ExitCode"] = 7
         self.assertEqual(self.wait(), 7)
 
+    def test_structured_cause_precedes_generic_failure_for_portal_parser(self):
+        self.state["ExitCode"] = 1
+        self.result = {
+            "phase": "failed",
+            "failed_phase": "recovery-verification",
+            "error": "Application readiness failed within 120 seconds",
+            "recovery": "restart-attempted",
+        }
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            self.assertEqual(self.wait(), 1)
+        first = captured.getvalue().splitlines()[0]
+        self.assertIn("Application readiness failed within 120 seconds", first)
+        self.assertIn("restart-attempted", first)
+        self.assertIn("Deployment job: job-id", first)
+
+    def test_check_only_rejects_restart_before_any_docker_call(self):
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "launcher",
+                    "--source-view",
+                    "/unused",
+                    "--sha",
+                    "a" * 40,
+                    "--check-only",
+                    "--restart",
+                ],
+            ),
+            patch.object(launch.subprocess, "run") as run,
+            patch("sys.stderr", io.StringIO()),
+            self.assertRaises(SystemExit) as result,
+        ):
+            launch.main()
+        self.assertEqual(result.exception.code, 2)
+        run.assert_not_called()
+
     def test_running_child_is_never_reported_as_success(self):
         self.state.update(Running=True, Status="running")
         with self.assertRaisesRegex(RuntimeError, "has not finished"):
@@ -100,7 +139,7 @@ class PortalEntrypointTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 7)
-            self.assertEqual(result.stdout.strip(), "arguments:--wait")
+            self.assertEqual(result.stdout.strip(), "arguments:--wait --restart")
             self.assertIn("Error:", result.stderr)
 
     def test_entrypoint_requires_portal_context(self):
@@ -177,7 +216,7 @@ class PortalDockerTests(unittest.TestCase):
                 "import json, os, sys\n"
                 'assert sys.argv[1:] == ["--source-view", "/project/source", "--sha", '
                 + repr("a" * 40)
-                + ', "--wait"]\n'
+                + ', "--wait", "--restart"]\n'
                 "assert os.getuid() == 1000\n"
                 'print(json.dumps({"bootstrap": "executed", "uid": os.getuid()}))\n'
                 'sys.exit(int(os.environ["FIXTURE_EXIT_CODE"]))\n'
@@ -228,7 +267,7 @@ class PortalDockerTests(unittest.TestCase):
 
     def test_real_container_exit_and_verified_result_determine_portal_status(self):
         cases = [
-            ('{"phase":"complete","exit_code":0}', 0, 0),
+            ('{"phase":"complete","exit_code":0,"https":"verified"}', 0, 0),
             ('{"phase":"failed","exit_code":7}', 7, 7),
             ('{"phase":"reconciling"}', 0, None),
         ]

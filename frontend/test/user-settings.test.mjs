@@ -60,3 +60,30 @@ test("simultaneous startup refreshes perform one settings load", async () => {
   assert.equal(calls, 1);
   controller.abort();
 });
+
+test("frequent background refreshes cannot postpone a pending settings save", async () => {
+  const controller = new AbortController();
+  let server = { settings_initialized: true, revision: 1, settings: { prompt: "old", quantity: 1 }, gallery_scale: 45, checkpoint_tiers: {} };
+  let local;
+  let writes = 0;
+  const sync = createSettingsSync({ signal: controller.signal,
+    read: () => structuredClone(local), apply: (value) => { local = structuredClone(value); }, status: () => {},
+    api: async (_path, options) => {
+      if (options.method === "PUT") { writes += 1; server = { ...server, ...JSON.parse(options.body), revision: server.revision + 1 }; }
+      return structuredClone(server);
+    },
+  });
+  try {
+    await sync.load();
+    local.settings.prompt = "my draft";
+    server.settings.quantity = 2; server.revision += 1;
+    await sync.refresh();
+    for (let i = 0; i < 14; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await sync.refresh();
+    }
+    assert.equal(writes, 1);
+    assert.equal(server.settings.prompt, "my draft");
+    assert.equal(server.settings.quantity, 2);
+  } finally { controller.abort(); }
+});

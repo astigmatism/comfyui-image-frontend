@@ -9,7 +9,6 @@ command -v docker >/dev/null 2>&1 || {
 IMAGE=${CIF_SMOKE_IMAGE:-comfyui-image-frontend:smoke}
 NAME="cif-smoke-$$"
 DATA_VOLUME="${NAME}-data"
-PORT=${CIF_SMOKE_PORT:-18080}
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker volume rm -f "$DATA_VOLUME" >/dev/null 2>&1 || true
@@ -19,7 +18,7 @@ trap cleanup EXIT INT TERM
 docker build -t "$IMAGE" .
 docker volume create "$DATA_VOLUME" >/dev/null
 docker run -d --name "$NAME" \
-  -p "127.0.0.1:${PORT}:8000" \
+  --network none \
   -v "$DATA_VOLUME:/data" \
   -e CIF_SESSION_SECRET=smoke-session-secret-0123456789-abcdef \
   -e CIF_BOOTSTRAP_ADMIN_USERNAME=smoke-admin \
@@ -31,15 +30,14 @@ docker run -d --name "$NAME" \
 attempt=0
 ready=0
 while [ "$attempt" -lt 40 ]; do
-  if python3 - "$PORT" <<'PY' >/dev/null 2>&1
+  # Probe inside the container so external runtime addresses remain unreachable.
+  if docker exec -i "$NAME" python - <<'PY' >/dev/null 2>&1
 import json
 import re
-import sys
 import urllib.request
 from urllib.parse import urljoin
 
-port = sys.argv[1]
-origin = f"http://127.0.0.1:{port}"
+origin = "http://127.0.0.1:8000"
 with urllib.request.urlopen(f"{origin}/api/health", timeout=1) as response:
     payload = json.load(response)
 assert response.status == 200 and payload["database"] is True
@@ -64,12 +62,16 @@ for path in entrypoints:
         with urllib.request.urlopen(urljoin(app_url, "render.mjs"), timeout=1) as response:
             render = response.read().decode("utf8")
             assert "sourcePickerDialogMarkup" in render
-            assert "favoritesGalleryMarkup" in render
+            assert "galleryMarkup" in render and "favoriteButtonMarkup" in render
             assert response.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
         with urllib.request.urlopen(urljoin(app_url, "lib.mjs"), timeout=1) as response:
             library = response.read().decode("utf8")
             assert "projectedParameterIds" in library
             assert response.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+        for module in ("thumbnails.mjs", "generation-submissions.mjs"):
+            with urllib.request.urlopen(urljoin(app_url, module), timeout=1) as response:
+                assert response.read()
+                assert response.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
 
 with urllib.request.urlopen(f"{origin}/build.json", timeout=1) as response:
     build = json.load(response)
@@ -104,7 +106,7 @@ assert instances[1].base_url == "http://192.168.1.21:8189"
 
 # A full runtime list supplied by an operator remains authoritative over the
 # bundled additional-worker default.
-docker run --rm --entrypoint python \
+docker run --rm --network none --entrypoint python \
   -e CIF_TEST_MODE=true \
   -e 'CIF_COMFYUI_INSTANCES=[{"id":"custom","label":"Custom","base_url":"http://127.0.0.1:9"}]' \
   "$IMAGE" -c '
@@ -114,7 +116,7 @@ assert [item.id for item in settings.configured_comfyui_instances] == ["custom"]
 '
 
 # An explicit empty additional list is the deliberate single-runtime opt-out.
-docker run --rm --entrypoint python \
+docker run --rm --network none --entrypoint python \
   -e CIF_TEST_MODE=true \
   -e CIF_COMFYUI_INSTANCE_ID=intentional-single \
   -e 'CIF_COMFYUI_ADDITIONAL_INSTANCES=[]' \
@@ -125,4 +127,4 @@ assert settings.comfyui_instance_configuration_mode == "explicit"
 assert [item.id for item in settings.configured_comfyui_instances] == ["intentional-single"]
 '
 
-echo "Container startup and two-runtime configuration smoke tests passed on port ${PORT}."
+echo "Isolated container startup and two-runtime configuration smoke tests passed."

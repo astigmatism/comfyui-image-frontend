@@ -17,10 +17,12 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .admission import Admission, AdmissionMiddleware
 from .api import (
     admin,
     auth,
@@ -37,6 +39,7 @@ from .api import (
     uploads,
     workflows,
 )
+from .blocking import run_blocking
 from .config import Settings, get_settings
 from .container import AppContainer
 from .db import run_migrations
@@ -75,6 +78,7 @@ class JsonFormatter(logging.Formatter):
             "route",
             "status_code",
             "duration_ms",
+            "queue_wait_ms",
             "client_disconnected",
             "service",
             "operation",
@@ -242,8 +246,13 @@ def create_app(
         # Alembic applies its CLI-oriented logging configuration while migrations run. Restore
         # the application's structured logger before startup continues and shutdown begins.
         configure_logging(settings.log_level)
-        with container.db.session_factory() as session:
-            container.auth.ensure_bootstrap_admin(session)
+
+        def bootstrap() -> None:
+            with container.db.session_factory() as session:
+                container.auth.ensure_bootstrap_admin(session)
+
+        await run_blocking(bootstrap)
+        lag_monitor = asyncio.create_task(monitor_loop(), name="event-loop-lag")
         try:
             await container.generation_eta.start()
             container.start_workflow_discovery()
@@ -252,6 +261,9 @@ def create_app(
                 await container.automation.start()
             yield
         finally:
+            admission.close()
+            lag_monitor.cancel()
+            await asyncio.gather(lag_monitor, return_exceptions=True)
             await container.close()
 
     app = FastAPI(
@@ -262,8 +274,39 @@ def create_app(
         openapi_url="/api/openapi.json",
         redoc_url=None,
     )
+    admission = Admission()
+    loop_metrics = {"event_loop_lag_ms": 0.0, "max_event_loop_lag_ms": 0.0}
+
+    async def monitor_loop() -> None:
+        while True:
+            started = time.monotonic()
+            await asyncio.sleep(0.25)
+            lag = max(0, (time.monotonic() - started - 0.25) * 1000)
+            loop_metrics["event_loop_lag_ms"] = round(lag, 1)
+            loop_metrics["max_event_loop_lag_ms"] = max(
+                loop_metrics["max_event_loop_lag_ms"], round(lag, 1)
+            )
+
+    app.add_middleware(AdmissionMiddleware, admission=admission)
     app.add_middleware(RequestContextMiddleware)
     app.state.container = container
+    app.state.admission = admission
+
+    @app.exception_handler(PoolTimeout)
+    async def pool_timeout_handler(request: Request, exc: PoolTimeout) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "1"},
+            content={
+                "error": {
+                    "code": "service_busy",
+                    "message": "Database access is busy. Please retry shortly.",
+                    "fields": {},
+                    "details": {},
+                    "request_id": request.state.request_id,
+                }
+            },
+        )
 
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
@@ -337,8 +380,8 @@ def create_app(
         )
 
     @app.get("/api/health", tags=["operations"])
-    def health() -> JSONResponse:
-        database_healthy = container.db.healthcheck()
+    async def health() -> JSONResponse:
+        database_healthy = await container.db.healthcheck_async()
         worker = container.worker.health_snapshot()
         automation = container.automation.health_snapshot()
         healthy = database_healthy and bool(worker["ready"]) and bool(automation["ready"])
@@ -349,6 +392,11 @@ def create_app(
                 "database": database_healthy,
                 "worker": worker,
                 "automation": automation,
+                "load": {
+                    **admission.snapshot(),
+                    **container.db.metrics(),
+                    **loop_metrics,
+                },
             },
         )
 

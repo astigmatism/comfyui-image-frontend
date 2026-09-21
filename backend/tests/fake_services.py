@@ -85,6 +85,8 @@ class FakeServiceState:
     initial_event_delay: float = 0.02
     default_stage_delay: float = 0.08
     slow_stage_delay: float = 0.5
+    wait_for_cancel_prompts: set[str] = field(default_factory=set)
+    cancellation_events: dict[str, asyncio.Event] = field(default_factory=dict)
     stage_delay_overrides: dict[str, float] = field(default_factory=dict)
     listing_mode: str = "v2"
     history_delay_polls: int = 0
@@ -138,6 +140,8 @@ class FakeServiceState:
         self.initial_event_delay = 0.02
         self.default_stage_delay = 0.08
         self.slow_stage_delay = 0.5
+        self.wait_for_cancel_prompts.clear()
+        self.cancellation_events.clear()
         self.stage_delay_overrides.clear()
         self.listing_mode = "v2"
         self.history_delay_polls = 0
@@ -301,6 +305,14 @@ class FakeServiceState:
             self.running_prompt_ids.discard(prompt_id)
             return
         await asyncio.sleep(delay)
+
+        # Cancellation tests hold the preview until their explicit interrupt.
+        # Their outcome must not depend on beating a short wall-clock window.
+        if (
+            prompt_text in self.wait_for_cancel_prompts
+            and prompt_id not in self.cancelled_prompt_ids
+        ):
+            await self.cancellation_events.setdefault(prompt_id, asyncio.Event()).wait()
 
         cancelled = prompt_id in self.cancelled_prompt_ids
         if cancelled and "race-success" not in prompt_text.casefold():
@@ -677,12 +689,17 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         for prompt_id in payload.get("delete", []):
             state.queued_prompt_ids.discard(str(prompt_id))
             state.cancelled_prompt_ids.add(str(prompt_id))
+            if signal := state.cancellation_events.get(str(prompt_id)):
+                signal.set()
         return {"ok": True}
 
     @app.post("/interrupt")
     async def interrupt() -> Response:
         require_comfy()
         state.cancelled_prompt_ids.update(state.running_prompt_ids)
+        for prompt_id in state.running_prompt_ids:
+            if signal := state.cancellation_events.get(prompt_id):
+                signal.set()
         return Response(status_code=204)
 
     @app.post("/upload/image")

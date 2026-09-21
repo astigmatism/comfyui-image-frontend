@@ -7,7 +7,7 @@ import logging
 import math
 import re
 import time
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Coroutine, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,6 +17,7 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
+from ..blocking import run_blocking as _run_blocking
 from ..config import Settings
 from ..domain.lora_stack import validate_lora_runtime
 from ..domain.publication import sha256_json
@@ -108,17 +109,6 @@ class _ProgressTracker:
     last_persisted_monotonic: float = 0.0
     last_audited_snapshot: dict[str, Any] | None = None
     progress_state_nodes: set[str] = field(default_factory=set)
-
-
-async def _run_blocking[T](operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-    """Finish a thread-owned database operation before propagating cancellation."""
-
-    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await asyncio.gather(task, return_exceptions=True)
-        raise
 
 
 class QueueWorker:
@@ -342,10 +332,19 @@ class QueueWorker:
                 for active_instance_id in self._active_instance_ids.values()
             )
             available_slots = int(config.concurrency or 1) - active_count
-            if available_slots <= 0 or not self._comfyui_available(instance_id):
+            if available_slots <= 0 or not await _run_blocking(
+                self._comfyui_available, instance_id
+            ):
                 continue
             for _ in range(available_slots):
-                claim = self._claim_next(instance_id)
+                claiming = asyncio.create_task(_run_blocking(self._claim_next, instance_id))
+                try:
+                    claim = await asyncio.shield(claiming)
+                except asyncio.CancelledError:
+                    claim = await claiming
+                    if claim:
+                        await self._requeue_unstarted_claim(claim[0])
+                    raise
                 if claim is None:
                     break
                 generation_id, event = claim
@@ -423,22 +422,28 @@ class QueueWorker:
 
     async def _requeue_unstarted_claim(self, generation_id: str) -> None:
         event = None
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if (
-                generation is not None
-                and generation.status == GenerationStatus.DISPATCHING
-                and not generation.comfyui_prompt_id
-            ):
-                generation.status = GenerationStatus.QUEUED
-                generation.progress_json = None
-                event = add_generation_event(
-                    session,
-                    generation,
-                    "generation.requeued",
-                    {"reason": "Dispatch task could not be scheduled."},
-                )
-                session.commit()
+
+        def requeue_unstarted_claim_transaction(event: Any = event) -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if (
+                    generation is not None
+                    and generation.status == GenerationStatus.DISPATCHING
+                    and not generation.comfyui_prompt_id
+                ):
+                    generation.status = GenerationStatus.QUEUED
+                    generation.progress_json = None
+                    event = add_generation_event(
+                        session,
+                        generation,
+                        "generation.requeued",
+                        {"reason": "Dispatch task could not be scheduled."},
+                    )
+                    session.commit()
+            return (event,)
+
+        _values = await _run_blocking(requeue_unstarted_claim_transaction)
+        (event,) = _values
         if event is not None:
             await self._publish_event_best_effort(event, generation_id=generation_id)
 
@@ -638,28 +643,16 @@ class QueueWorker:
             session.commit()
             return generation.id, event
 
-    def _register_run_timing(self, generation_id: str) -> None:
-        """Restore bounded, feature-tagged sibling observations at dispatch/recovery."""
+    def _load_run_timing(self, generation_id: str) -> Any:
         with self.session_factory() as session:
             member = session.get(GenerationRunMember, generation_id)
             if member is None:
-                return
+                return None
             run = session.get(GenerationRun, member.run_id)
             generation = session.get(Generation, generation_id)
             if run is None or generation is None or run.total_count <= 1:
-                return
-            if (
-                run.id not in self._run_members
-                and len(self._run_members) >= _MAX_TRACKED_TIMING_RUNS
-            ):
-                return
+                return None
             run_id = str(run.id)
-            first_registration = run_id not in self._run_members
-            self._generation_run_ids[generation_id] = run_id
-            self._run_members.setdefault(run_id, set()).add(generation_id)
-            self._run_cohorts[generation_id] = build_generation_timing_features(generation)
-            if not first_registration:
-                return
             completed = list(
                 session.scalars(
                     select(Generation)
@@ -691,13 +684,31 @@ class QueueWorker:
                     .limit(_MAX_RUN_SIBLING_DURATIONS)
                 )
             )
-            durations = self._run_sibling_durations.setdefault(run_id, {})
+            samples = {}
             for sibling in reversed(completed):
-                if sibling.started_at is None or sibling.completed_at is None:
-                    continue
+                assert sibling.started_at is not None and sibling.completed_at is not None
                 duration = _wall_duration(sibling.started_at, sibling.completed_at)
                 if duration is not None:
-                    durations[sibling.id] = (build_generation_timing_features(sibling), duration)
+                    samples[sibling.id] = (build_generation_timing_features(sibling), duration)
+            return run_id, build_generation_timing_features(generation), samples
+
+    def _apply_run_timing(self, generation_id: str, metadata: Any) -> None:
+        if metadata is None:
+            return
+        run_id, features, samples = metadata
+        if run_id not in self._run_members and len(self._run_members) >= _MAX_TRACKED_TIMING_RUNS:
+            return
+        self._generation_run_ids[generation_id] = run_id
+        self._run_members.setdefault(run_id, set()).add(generation_id)
+        self._run_cohorts[generation_id] = features
+        self._run_sibling_durations.setdefault(run_id, samples)
+
+    def _register_run_timing(self, generation_id: str) -> None:
+        self._apply_run_timing(generation_id, self._load_run_timing(generation_id))
+
+    async def _register_run_timing_async(self, generation_id: str) -> None:
+        metadata = await _run_blocking(self._load_run_timing, generation_id)
+        self._apply_run_timing(generation_id, metadata)
 
     def _sibling_durations_for(
         self,
@@ -728,23 +739,34 @@ class QueueWorker:
         )
 
     async def _execute(self, generation_id: str) -> None:
-        self._register_run_timing(generation_id)
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                return
-            if generation.status == GenerationStatus.CANCEL_REQUESTED:
-                await self._finish_without_execution(generation_id, cancelled=True)
-                return
-            instance_id = generation.comfyui_instance_id
-            graph = copy.deepcopy(generation.compiled_graph_json)
-            profile = session.get(WorkflowProfile, generation.workflow_profile_id)
-            attach_workflow = bool(
-                generation.resolved_contract_json.get("runtime", {}).get(
-                    "attach_workflow_as_extra_pnginfo", False
+        await self._register_run_timing_async(generation_id)
+
+        def load_execution() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return None
+                profile = session.get(WorkflowProfile, generation.workflow_profile_id)
+                return (
+                    generation.status == GenerationStatus.CANCEL_REQUESTED,
+                    generation.comfyui_instance_id,
+                    copy.deepcopy(generation.compiled_graph_json),
+                    bool(
+                        generation.resolved_contract_json.get("runtime", {}).get(
+                            "attach_workflow_as_extra_pnginfo", False
+                        )
+                    ),
+                    copy.deepcopy(profile.source_ui_json) if profile else None,
+                    generation.comfyui_client_id,
                 )
-            )
-            editable_workflow = copy.deepcopy(profile.source_ui_json) if profile else None
+
+        metadata = await _run_blocking(load_execution)
+        if metadata is None:
+            return
+        cancelled, instance_id, graph, attach_workflow, editable_workflow, client_id = metadata
+        if cancelled:
+            await self._finish_without_execution(generation_id, cancelled=True)
+            return
         try:
             comfyui = self._adapter_for_instance(instance_id)
         except AppError as exc:
@@ -752,16 +774,25 @@ class QueueWorker:
             return
         try:
             materialized = await self._materialize_uploads(generation_id, graph, comfyui=comfyui)
-            with self.session_factory() as session:
-                generation = session.get(Generation, generation_id)
-                if generation is None:
-                    return
-                if generation.status == GenerationStatus.CANCEL_REQUESTED:
-                    await self._finish_without_execution(generation_id, cancelled=True)
-                    return
-                generation.submitted_graph_json = materialized
-                generation.submitted_graph_sha256 = sha256_json(materialized)
-                session.commit()
+
+            def save_graph() -> str:
+                with self.session_factory() as session:
+                    generation = session.get(Generation, generation_id)
+                    if generation is None:
+                        return "missing"
+                    if generation.status == GenerationStatus.CANCEL_REQUESTED:
+                        return "cancelled"
+                    generation.submitted_graph_json = materialized
+                    generation.submitted_graph_sha256 = sha256_json(materialized)
+                    session.commit()
+                    return "ready"
+
+            graph_state = await _run_blocking(save_graph)
+            if graph_state == "missing":
+                return
+            if graph_state == "cancelled":
+                await self._finish_without_execution(generation_id, cancelled=True)
+                return
             extra_data = None
             if attach_workflow:
                 if editable_workflow is None:
@@ -780,7 +811,7 @@ class QueueWorker:
 
         runtime_channel = self._start_runtime_event_channel(
             generation_id,
-            generation.comfyui_client_id,
+            client_id,
             comfyui=comfyui,
         )
         try:
@@ -793,7 +824,7 @@ class QueueWorker:
                 self._submit_and_mark_running(
                     generation_id,
                     materialized,
-                    generation.comfyui_client_id,
+                    client_id,
                     comfyui=comfyui,
                     extra_data=extra_data,
                 ),
@@ -860,41 +891,43 @@ class QueueWorker:
         )
         cancel_prompt = False
         event = None
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                raise RuntimeError("generation disappeared after ComfyUI submission")
-            generation.comfyui_prompt_id = prompt_id
-            generation.dispatched_at = datetime.now(UTC)
-            if generation.status == GenerationStatus.CANCEL_REQUESTED:
-                cancel_prompt = True
-            else:
-                generation.status = GenerationStatus.RUNNING
-                generation.started_at = datetime.now(UTC)
-                progress = _progress_snapshot(
-                    kind="indeterminate",
-                    label="Starting workflow",
-                    identities={},
-                )
-                estimate = self.generation_eta.estimate(
-                    generation,
-                    progress=progress,
-                    now=generation.started_at,
-                    sibling_durations=self._sibling_durations_for(generation),
-                    compatible_sibling_durations=self._sibling_durations_for(
-                        generation, compatible=True
-                    ),
-                )
-                if estimate is not None:
-                    progress["eta"] = estimate
-                generation.progress_json = progress
-                event = add_generation_event(
-                    session,
-                    generation,
-                    "generation.running",
-                    {"status": GenerationStatus.RUNNING.value},
-                )
-            session.commit()
+
+        def submit_and_mark_running_transaction(
+            cancel_prompt: Any = cancel_prompt, event: Any = event
+        ) -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    raise RuntimeError("generation disappeared after ComfyUI submission")
+                generation.comfyui_prompt_id = prompt_id
+                generation.dispatched_at = datetime.now(UTC)
+                if generation.status == GenerationStatus.CANCEL_REQUESTED:
+                    cancel_prompt = True
+                else:
+                    generation.status = GenerationStatus.RUNNING
+                    generation.started_at = datetime.now(UTC)
+                    progress = _progress_snapshot(
+                        kind="indeterminate",
+                        label="Starting workflow",
+                        identities={},
+                    )
+                    generation.progress_json = progress
+                    event = add_generation_event(
+                        session,
+                        generation,
+                        "generation.running",
+                        {"status": GenerationStatus.RUNNING.value},
+                    )
+                session.commit()
+            return (
+                cancel_prompt,
+                event,
+            )
+
+        _values = await _run_blocking(submit_and_mark_running_transaction)
+        cancel_prompt, event = _values
+        if not cancel_prompt:
+            await self._persist_progress_snapshot(generation_id, audit=False)
         if cancel_prompt:
             with suppress(Exception):
                 await adapter.cancel(prompt_id, running=True)
@@ -919,16 +952,24 @@ class QueueWorker:
         comfyui: ComfyUIAdapter | None = None,
     ) -> dict[str, Any]:
         adapter = comfyui or self.comfyui
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                raise RuntimeError("generation disappeared")
-            links = {
-                link.upload_id: session.get(Upload, link.upload_id)
-                for link in session.scalars(
-                    select(GenerationUpload).where(GenerationUpload.generation_id == generation_id)
-                )
-            }
+
+        def materialize_uploads_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    raise RuntimeError("generation disappeared")
+                links = {
+                    link.upload_id: session.get(Upload, link.upload_id)
+                    for link in session.scalars(
+                        select(GenerationUpload).where(
+                            GenerationUpload.generation_id == generation_id
+                        )
+                    )
+                }
+            return (links,)
+
+        _values = await _run_blocking(materialize_uploads_transaction)
+        (links,) = _values
         cache: dict[str, str] = {}
 
         async def replace(value: Any) -> Any:
@@ -1041,12 +1082,20 @@ class QueueWorker:
     ) -> None:
         adapter = comfyui
         if runtime_channel is None:
-            with self.session_factory() as session:
-                generation = session.get(Generation, generation_id)
-                if generation is None:
-                    return
-                client_id = generation.comfyui_client_id
-                instance_id = generation.comfyui_instance_id
+
+            def monitor_transaction() -> Any:
+                with self.session_factory() as session:
+                    generation = session.get(Generation, generation_id)
+                    if generation is None:
+                        return None
+                    client_id = generation.comfyui_client_id
+                    instance_id = generation.comfyui_instance_id
+                return (client_id, instance_id)
+
+            _values = await _run_blocking(monitor_transaction)
+            if _values is None:
+                return
+            client_id, instance_id = _values
             adapter = adapter or self._adapter_for_instance(instance_id)
             runtime_channel = self._start_runtime_event_channel(
                 generation_id,
@@ -1232,36 +1281,43 @@ class QueueWorker:
         return False
 
     async def _update_stage(self, generation_id: str, node_id: str) -> None:
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None or generation.status in TERMINAL_STATUSES:
-                return
-            stage = next(
-                (
-                    item
-                    for item in generation.resolved_contract_json.get("stages", [])
-                    if node_id in item.get("resolved_node_ids", [])
-                ),
-                None,
-            )
-            if stage is None:
-                return
-            if generation.current_stage_id == stage.get("id"):
-                return
-            generation.current_stage_id = str(stage.get("id"))
-            generation.current_stage_label = str(stage.get("label"))
-            generation.current_stage_sequence = int(stage.get("sequence", 0))
-            event = add_generation_event(
-                session,
-                generation,
-                "generation.stage",
-                {
-                    "stage_id": generation.current_stage_id,
-                    "label": generation.current_stage_label,
-                    "sequence": generation.current_stage_sequence,
-                },
-            )
-            session.commit()
+        def update_stage_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None or generation.status in TERMINAL_STATUSES:
+                    return None
+                stage = next(
+                    (
+                        item
+                        for item in generation.resolved_contract_json.get("stages", [])
+                        if node_id in item.get("resolved_node_ids", [])
+                    ),
+                    None,
+                )
+                if stage is None:
+                    return None
+                if generation.current_stage_id == stage.get("id"):
+                    return None
+                generation.current_stage_id = str(stage.get("id"))
+                generation.current_stage_label = str(stage.get("label"))
+                generation.current_stage_sequence = int(stage.get("sequence", 0))
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "generation.stage",
+                    {
+                        "stage_id": generation.current_stage_id,
+                        "label": generation.current_stage_label,
+                        "sequence": generation.current_stage_sequence,
+                    },
+                )
+                session.commit()
+            return (event,)
+
+        _values = await _run_blocking(update_stage_transaction)
+        if _values is None:
+            return
+        (event,) = _values
         await self._publish_event_best_effort(event, generation_id=generation_id)
 
     async def _record_progress_state(
@@ -1279,7 +1335,7 @@ class QueueWorker:
         if not running:
             await self._flush_pending_progress(generation_id, force=True, audit=True)
             return
-        tracker = self._progress_tracker(generation_id)
+        tracker = await self._progress_tracker(generation_id)
         current_key = _progress_snapshot_node_key(tracker.last_snapshot)
         selected_node_id, selected = next(
             (
@@ -1308,7 +1364,7 @@ class QueueWorker:
     ) -> None:
         identities = _runtime_node_identities(data)
         node_key = _progress_node_key(identities)
-        tracker = self._progress_tracker(generation_id)
+        tracker = await self._progress_tracker(generation_id)
         if node_key and node_key in tracker.progress_state_nodes:
             return
         await self._record_numeric_or_indeterminate_progress(
@@ -1366,19 +1422,20 @@ class QueueWorker:
             audit=True,
         )
 
-    def _progress_tracker(self, generation_id: str) -> _ProgressTracker:
+    async def _progress_tracker(self, generation_id: str) -> _ProgressTracker:
         tracker = self._progress_trackers.get(generation_id)
         if tracker is not None:
             return tracker
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            saved = (
-                copy.deepcopy(generation.progress_json)
-                if generation is not None and isinstance(generation.progress_json, dict)
-                else None
-            )
-        tracker = _ProgressTracker(last_snapshot=saved)
-        self._progress_trackers[generation_id] = tracker
+
+        def load_progress() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                return copy.deepcopy(generation.progress_json) if generation else None
+
+        saved = await _run_blocking(load_progress)
+        tracker = self._progress_trackers.setdefault(
+            generation_id, _ProgressTracker(last_snapshot=saved)
+        )
         return tracker
 
     async def _queue_progress_snapshot(
@@ -1388,7 +1445,7 @@ class QueueWorker:
         *,
         audit: bool = False,
     ) -> None:
-        tracker = self._progress_tracker(generation_id)
+        tracker = await self._progress_tracker(generation_id)
         previous = tracker.last_snapshot
         if _same_progress_snapshot(previous, snapshot):
             return
@@ -1447,48 +1504,65 @@ class QueueWorker:
         *,
         audit: bool,
     ) -> None:
-        event = None
-        owner_id = None
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None or generation.status in TERMINAL_STATUSES:
-                return
-            if snapshot is not None:
-                stored_snapshot = copy.deepcopy(dict(snapshot))
-            elif isinstance(generation.progress_json, Mapping):
-                stored_snapshot = copy.deepcopy(dict(generation.progress_json))
-            else:
-                return
-            estimate = self.generation_eta.estimate(
-                generation,
-                progress=stored_snapshot,
-                sibling_durations=self._sibling_durations_for(generation),
-                compatible_sibling_durations=self._sibling_durations_for(
-                    generation, compatible=True
-                ),
-            )
-            if estimate is not None:
-                stored_snapshot["eta"] = estimate
-            else:
-                stored_snapshot.pop("eta", None)
-            generation.progress_json = stored_snapshot
-            owner_id = generation.owner_id
-            tracker = self._progress_tracker(generation_id)
-            if audit and not _same_progress_snapshot(
-                tracker.last_audited_snapshot,
-                stored_snapshot,
-            ):
-                event = add_generation_event(
-                    session,
-                    generation,
-                    "generation.progress",
-                    {"progress": stored_snapshot},
+        tracker = await self._progress_tracker(generation_id)
+
+        def load_generation() -> Generation | None:
+            with self.session_factory() as session:
+                return session.get(Generation, generation_id)
+
+        generation = await _run_blocking(load_generation)
+        if generation is None or generation.status in TERMINAL_STATUSES:
+            return
+        saved = snapshot if snapshot is not None else generation.progress_json
+        if not isinstance(saved, Mapping):
+            return
+        stored_snapshot = copy.deepcopy(dict(saved))
+        # Estimator and sibling caches belong to the event-loop thread.
+        estimate = self.generation_eta.estimate(
+            generation,
+            progress=stored_snapshot,
+            sibling_durations=self._sibling_durations_for(generation),
+            compatible_sibling_durations=self._sibling_durations_for(generation, compatible=True),
+        )
+        if estimate is not None:
+            stored_snapshot["eta"] = estimate
+        else:
+            stored_snapshot.pop("eta", None)
+        should_audit = audit and not _same_progress_snapshot(
+            tracker.last_audited_snapshot, stored_snapshot
+        )
+        observed_status = generation.status
+        observed_attempt = generation.started_at
+
+        def persist_progress() -> Any:
+            with self.session_factory() as session:
+                current = session.get(Generation, generation_id)
+                if (
+                    current is None
+                    or current.status != observed_status
+                    or current.started_at != observed_attempt
+                ):
+                    return None
+                current.progress_json = stored_snapshot
+                event = (
+                    add_generation_event(
+                        session, current, "generation.progress", {"progress": stored_snapshot}
+                    )
+                    if should_audit
+                    else None
                 )
-                tracker.last_audited_snapshot = copy.deepcopy(stored_snapshot)
-            session.commit()
-        tracker = self._progress_tracker(generation_id)
+                owner_id = current.owner_id
+                session.commit()
+                return event, owner_id
+
+        persisted = await _run_blocking(persist_progress)
+        if persisted is None:
+            return
+        event, owner_id = persisted
+        tracker = await self._progress_tracker(generation_id)
         tracker.last_persisted_monotonic = time.monotonic()
         if event is not None:
+            tracker.last_audited_snapshot = copy.deepcopy(stored_snapshot)
             await self._publish_event_best_effort(event, generation_id=generation_id)
         elif owner_id is not None:
             await self._publish_broker_best_effort(
@@ -1508,7 +1582,7 @@ class QueueWorker:
         generation_id: str,
         identities: Mapping[str, str | None],
     ) -> str:
-        tracker = self._progress_tracker(generation_id)
+        tracker = await self._progress_tracker(generation_id)
         current = tracker.last_snapshot
         if (
             current is not None
@@ -1525,14 +1599,22 @@ class QueueWorker:
             )
             if isinstance(value, str) and value
         ]
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                return "Processing"
-            graph = generation.compiled_graph_json
-            instance_id = generation.comfyui_instance_id
-            profile = session.get(WorkflowProfile, generation.workflow_profile_id)
-            editable = profile.source_ui_json if profile is not None else {}
+
+        def resolve_progress_label_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return None
+                graph = generation.compiled_graph_json
+                instance_id = generation.comfyui_instance_id
+                profile = session.get(WorkflowProfile, generation.workflow_profile_id)
+                editable = profile.source_ui_json if profile is not None else {}
+            return (editable, graph, instance_id)
+
+        _values = await _run_blocking(resolve_progress_label_transaction)
+        if _values is None:
+            return "Processing"
+        editable, graph, instance_id = _values
         class_type = None
         for candidate in candidates:
             raw_node = graph.get(candidate) if isinstance(graph, Mapping) else None
@@ -1625,22 +1707,26 @@ class QueueWorker:
     ) -> None:
         adapter = comfyui or self.comfyui
         reference = file_output.reference
-        with self.session_factory() as session:
-            duplicate = session.scalar(
-                select(Artifact.id).where(
-                    Artifact.generation_id == generation_id,
-                    Artifact.output_id == file_output.output_id,
-                    Artifact.source_node_id == file_output.node_id,
-                    Artifact.batch_index == file_output.batch_index,
-                    Artifact.source_filename == reference.get("filename"),
-                    Artifact.source_subfolder == (reference.get("subfolder") or None),
-                    Artifact.source_type == reference.get("type", "output"),
+
+        def persist_native_file_transaction() -> Any:
+            with self.session_factory() as session:
+                duplicate = session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.generation_id == generation_id,
+                        Artifact.output_id == file_output.output_id,
+                        Artifact.source_node_id == file_output.node_id,
+                        Artifact.batch_index == file_output.batch_index,
+                        Artifact.source_filename == reference.get("filename"),
+                        Artifact.source_subfolder == (reference.get("subfolder") or None),
+                        Artifact.source_type == reference.get("type", "output"),
+                    )
                 )
-            )
-            if duplicate is not None:
-                self._record_archived_source_reference(generation_id, file_output)
-                self._clear_persistence_failure(generation_id, file_output)
-                return
+                return duplicate is not None
+
+        if await _run_blocking(persist_native_file_transaction):
+            await _run_blocking(self._record_archived_source_reference, generation_id, file_output)
+            await _run_blocking(self._clear_persistence_failure, generation_id, file_output)
+            return
         stored: StoredImage | None = None
         retained = False
         try:
@@ -1673,8 +1759,8 @@ class QueueWorker:
             if not retained:
                 await self.assets.delete_stored_async(stored)
                 stored = None
-            self._record_archived_source_reference(generation_id, file_output)
-            self._clear_persistence_failure(generation_id, file_output)
+            await _run_blocking(self._record_archived_source_reference, generation_id, file_output)
+            await _run_blocking(self._clear_persistence_failure, generation_id, file_output)
             if event:
                 await self._publish_event_best_effort(event, generation_id=generation_id)
         except Exception as exc:
@@ -1695,7 +1781,7 @@ class QueueWorker:
         source_type: str | None,
     ) -> tuple[Any | None, bool]:
         task = asyncio.create_task(
-            asyncio.to_thread(
+            _run_blocking(
                 self._insert_artifact,
                 generation_id=generation_id,
                 declaration=declaration,
@@ -1891,38 +1977,46 @@ class QueueWorker:
         diagnostic_key = (
             "artifact_persistence_failures" if required else "artifact_persistence_warnings"
         )
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                return
-            diagnostics = dict(generation.internal_diagnostics_json or {})
-            failures = [
-                value
-                for value in diagnostics.get(diagnostic_key, [])
-                if not isinstance(value, Mapping)
-                or any(value.get(key) != expected for key, expected in failure_key.items())
-            ]
-            failures.append({**failure_key, "error": type(exc).__name__})
-            diagnostics[diagnostic_key] = failures
-            generation.internal_diagnostics_json = diagnostics
-            event = add_generation_event(
-                session,
-                generation,
-                "artifact.persistence_failed",
-                {
-                    "output_id": file_output.output_id,
-                    "required": required,
-                    "message": (
-                        "A required output could not be archived."
-                        if required
-                        else (
-                            "An optional output could not be archived; its native reference "
-                            "was retained."
-                        )
-                    ),
-                },
-            )
-            session.commit()
+
+        def record_persistence_failure_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return None
+                diagnostics = dict(generation.internal_diagnostics_json or {})
+                failures = [
+                    value
+                    for value in diagnostics.get(diagnostic_key, [])
+                    if not isinstance(value, Mapping)
+                    or any(value.get(key) != expected for key, expected in failure_key.items())
+                ]
+                failures.append({**failure_key, "error": type(exc).__name__})
+                diagnostics[diagnostic_key] = failures
+                generation.internal_diagnostics_json = diagnostics
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "artifact.persistence_failed",
+                    {
+                        "output_id": file_output.output_id,
+                        "required": required,
+                        "message": (
+                            "A required output could not be archived."
+                            if required
+                            else (
+                                "An optional output could not be archived; its native reference "
+                                "was retained."
+                            )
+                        ),
+                    },
+                )
+                session.commit()
+            return (event,)
+
+        _values = await _run_blocking(record_persistence_failure_transaction)
+        if _values is None:
+            return
+        (event,) = _values
         await self._publish_event_best_effort(event, generation_id=generation_id)
 
     def _record_archived_source_reference(
@@ -1985,66 +2079,80 @@ class QueueWorker:
             session.commit()
 
     async def _record_execution_error(self, generation_id: str, data: Mapping[str, Any]) -> None:
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                return
-            diagnostics = dict(generation.internal_diagnostics_json or {})
-            diagnostics["comfyui_execution_error"] = {
-                key: data.get(key)
-                for key in ("node_id", "node_type", "exception_type")
-                if data.get(key) is not None
-            }
-            generation.internal_diagnostics_json = diagnostics
-            generation.error_code = "execution_failed"
-            generation.error_message = "ComfyUI failed during workflow execution."
-            generation.result_errors_json = [
-                *(generation.result_errors_json or []),
-                {
-                    "code": generation.error_code,
-                    "message": generation.error_message,
-                },
-            ]
-            event = add_generation_event(
-                session,
-                generation,
-                "generation.error",
-                {"code": generation.error_code, "message": generation.error_message},
-            )
-            session.commit()
-        await self._publish_event_best_effort(event, generation_id=generation_id)
-
-    async def _record_reconciliation_error(self, generation_id: str, exc: AppError) -> None:
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None or generation.status in TERMINAL_STATUSES:
-                return
-            diagnostics = dict(generation.internal_diagnostics_json or {})
-            diagnostics["history_reconciliation_error"] = {"code": exc.code}
-            generation.internal_diagnostics_json = diagnostics
-            generation.error_code = "history_reconciliation_failed"
-            generation.error_message = (
-                "ComfyUI returned execution state that could not be reconciled safely."
-            )
-            errors = list(generation.result_errors_json or [])
-            if not any(
-                isinstance(value, Mapping) and value.get("code") == generation.error_code
-                for value in errors
-            ):
-                errors.append(
+        def record_execution_error_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return None
+                diagnostics = dict(generation.internal_diagnostics_json or {})
+                diagnostics["comfyui_execution_error"] = {
+                    key: data.get(key)
+                    for key in ("node_id", "node_type", "exception_type")
+                    if data.get(key) is not None
+                }
+                generation.internal_diagnostics_json = diagnostics
+                generation.error_code = "execution_failed"
+                generation.error_message = "ComfyUI failed during workflow execution."
+                generation.result_errors_json = [
+                    *(generation.result_errors_json or []),
                     {
                         "code": generation.error_code,
                         "message": generation.error_message,
-                    }
+                    },
+                ]
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "generation.error",
+                    {"code": generation.error_code, "message": generation.error_message},
                 )
-                generation.result_errors_json = errors
-            event = add_generation_event(
-                session,
-                generation,
-                "generation.error",
-                {"code": generation.error_code, "message": generation.error_message},
-            )
-            session.commit()
+                session.commit()
+            return (event,)
+
+        _values = await _run_blocking(record_execution_error_transaction)
+        if _values is None:
+            return
+        (event,) = _values
+        await self._publish_event_best_effort(event, generation_id=generation_id)
+
+    async def _record_reconciliation_error(self, generation_id: str, exc: AppError) -> None:
+        def record_reconciliation_error_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None or generation.status in TERMINAL_STATUSES:
+                    return None
+                diagnostics = dict(generation.internal_diagnostics_json or {})
+                diagnostics["history_reconciliation_error"] = {"code": exc.code}
+                generation.internal_diagnostics_json = diagnostics
+                generation.error_code = "history_reconciliation_failed"
+                generation.error_message = (
+                    "ComfyUI returned execution state that could not be reconciled safely."
+                )
+                errors = list(generation.result_errors_json or [])
+                if not any(
+                    isinstance(value, Mapping) and value.get("code") == generation.error_code
+                    for value in errors
+                ):
+                    errors.append(
+                        {
+                            "code": generation.error_code,
+                            "message": generation.error_message,
+                        }
+                    )
+                    generation.result_errors_json = errors
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "generation.error",
+                    {"code": generation.error_code, "message": generation.error_message},
+                )
+                session.commit()
+            return (event,)
+
+        _values = await _run_blocking(record_reconciliation_error_transaction)
+        if _values is None:
+            return
+        (event,) = _values
         await self._publish_event_best_effort(event, generation_id=generation_id)
 
     async def _ensure_cancel_sent(
@@ -2055,32 +2163,50 @@ class QueueWorker:
         comfyui: ComfyUIAdapter | None = None,
     ) -> None:
         instance_id: str | None = None
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            should_cancel = bool(
-                generation and generation.status == GenerationStatus.CANCEL_REQUESTED
+
+        def ensure_cancel_sent_transaction(instance_id: Any = instance_id) -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                should_cancel = bool(
+                    generation and generation.status == GenerationStatus.CANCEL_REQUESTED
+                )
+                diagnostics = dict(generation.internal_diagnostics_json or {}) if generation else {}
+                sent = bool(diagnostics.get("cancel_sent"))
+                if should_cancel and not sent and generation:
+                    instance_id = generation.comfyui_instance_id
+                    diagnostics["cancel_sent"] = True
+                    generation.internal_diagnostics_json = diagnostics
+                    session.commit()
+                else:
+                    should_cancel = False
+            return (
+                diagnostics,
+                generation,
+                instance_id,
+                should_cancel,
             )
-            diagnostics = dict(generation.internal_diagnostics_json or {}) if generation else {}
-            sent = bool(diagnostics.get("cancel_sent"))
-            if should_cancel and not sent and generation:
-                instance_id = generation.comfyui_instance_id
-                diagnostics["cancel_sent"] = True
-                generation.internal_diagnostics_json = diagnostics
-                session.commit()
-            else:
-                should_cancel = False
+
+        _values = await _run_blocking(ensure_cancel_sent_transaction)
+        diagnostics, generation, instance_id, should_cancel = _values
         if should_cancel:
             try:
                 adapter = comfyui or self._adapter_for_instance(str(instance_id))
                 await adapter.cancel(prompt_id, running=True)
             except Exception:
-                with self.session_factory() as session:
-                    generation = session.get(Generation, generation_id)
-                    if generation:
-                        diagnostics = dict(generation.internal_diagnostics_json or {})
-                        diagnostics.pop("cancel_sent", None)
-                        generation.internal_diagnostics_json = diagnostics
-                        session.commit()
+
+                def ensure_cancel_sent_transaction_1(
+                    diagnostics: Any = diagnostics, generation: Any = generation
+                ) -> Any:
+                    with self.session_factory() as session:
+                        generation = session.get(Generation, generation_id)
+                        if generation:
+                            diagnostics = dict(generation.internal_diagnostics_json or {})
+                            diagnostics.pop("cancel_sent", None)
+                            generation.internal_diagnostics_json = diagnostics
+                            session.commit()
+                    return ()
+
+                _values = await _run_blocking(ensure_cancel_sent_transaction_1)
 
     async def _wait_for_history(
         self,
@@ -2219,15 +2345,20 @@ class QueueWorker:
                 await self._refresh_sibling_eta(sibling_id)
 
     async def _refresh_sibling_eta(self, generation_id: str) -> None:
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            eligible = generation is not None and generation.status in {
-                GenerationStatus.DISPATCHING,
-                GenerationStatus.RUNNING,
-            }
+        def refresh_sibling_eta_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                eligible = generation is not None and generation.status in {
+                    GenerationStatus.DISPATCHING,
+                    GenerationStatus.RUNNING,
+                }
+            return (eligible,)
+
+        _values = await _run_blocking(refresh_sibling_eta_transaction)
+        (eligible,) = _values
         if not eligible:
             return
-        tracker = self._progress_tracker(generation_id)
+        tracker = await self._progress_tracker(generation_id)
         await self._persist_progress_snapshot(generation_id, tracker.last_snapshot, audit=False)
 
     async def _cleanup_comfyui_sources(
@@ -2241,9 +2372,15 @@ class QueueWorker:
             return
         adapter = comfyui
         if adapter is None:
-            with self.session_factory() as session:
-                generation = session.get(Generation, generation_id)
-                instance_id = generation.comfyui_instance_id if generation is not None else None
+
+            def cleanup_comfyui_sources_transaction() -> Any:
+                with self.session_factory() as session:
+                    generation = session.get(Generation, generation_id)
+                    instance_id = generation.comfyui_instance_id if generation is not None else None
+                return (instance_id,)
+
+            _values = await _run_blocking(cleanup_comfyui_sources_transaction)
+            (instance_id,) = _values
             if instance_id is None:
                 return
             try:
@@ -2541,14 +2678,14 @@ class QueueWorker:
 
     async def _requeue_after_outage(self, generation_id: str) -> None:
         self.generation_eta.forget(generation_id)
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                return
-            if generation.status == GenerationStatus.CANCEL_REQUESTED:
-                session.commit()
-            else:
-                instance_id = generation.comfyui_instance_id
+
+        def requeue() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return False, None
+                if generation.status == GenerationStatus.CANCEL_REQUESTED:
+                    return True, None
                 generation.status = GenerationStatus.QUEUED
                 generation.submitted_graph_json = None
                 generation.submitted_graph_sha256 = None
@@ -2559,54 +2696,66 @@ class QueueWorker:
                     "generation.requeued",
                     {"reason": "ComfyUI is temporarily unavailable."},
                 )
-                self._set_instance_health(
-                    session,
-                    instance_id,
-                    False,
-                    "ComfyUI is unreachable.",
-                )
+                instance_id = generation.comfyui_instance_id
+                self._set_instance_health(session, instance_id, False, "ComfyUI is unreachable.")
                 if instance_id == self.comfyui_instances.default_id:
                     self._set_health(session, "comfyui", False, "ComfyUI is unreachable.")
                 session.commit()
-                await self._publish_event_best_effort(event, generation_id=generation_id)
-                return
-        await self._finish_without_execution(generation_id, cancelled=True)
+                return False, event
+
+        cancelled, event = await _run_blocking(requeue)
+        if event is not None:
+            await self._publish_event_best_effort(event, generation_id=generation_id)
+        if cancelled:
+            await self._finish_without_execution(generation_id, cancelled=True)
 
     async def _fail_before_start(self, generation_id: str, exc: Exception) -> None:
-        with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
-            if generation is None:
-                return
-            generation.status = GenerationStatus.FAILED_WITHOUT_ARTIFACTS
-            generation.error_code = getattr(exc, "code", "comfyui_prompt_rejected")
-            generation.error_message = getattr(
-                exc, "message", "The workflow could not be dispatched to ComfyUI."
-            )
-            generation.result_errors_json = [
-                {"code": generation.error_code, "message": generation.error_message}
-            ]
-            generation.completed_at = datetime.now(UTC)
-            generation.progress_json = None
-            generation.internal_diagnostics_json = {
-                "exception_type": type(exc).__name__,
-                "queue_validation": copy.deepcopy(getattr(exc, "details", {})),
-            }
-            event = add_generation_event(
-                session,
-                generation,
-                "generation.terminal",
-                {"status": generation.status.value, "error": generation.error_message},
-            )
-            pending_delete = generation.pending_delete
-            owner_id = generation.owner_id
-            session.commit()
+        def fail_before_start_transaction() -> Any:
+            with self.session_factory() as session:
+                generation = session.get(Generation, generation_id)
+                if generation is None:
+                    return None
+                generation.status = GenerationStatus.FAILED_WITHOUT_ARTIFACTS
+                generation.error_code = getattr(exc, "code", "comfyui_prompt_rejected")
+                generation.error_message = getattr(
+                    exc, "message", "The workflow could not be dispatched to ComfyUI."
+                )
+                generation.result_errors_json = [
+                    {"code": generation.error_code, "message": generation.error_message}
+                ]
+                generation.completed_at = datetime.now(UTC)
+                generation.progress_json = None
+                generation.internal_diagnostics_json = {
+                    "exception_type": type(exc).__name__,
+                    "queue_validation": copy.deepcopy(getattr(exc, "details", {})),
+                }
+                event = add_generation_event(
+                    session,
+                    generation,
+                    "generation.terminal",
+                    {"status": generation.status.value, "error": generation.error_message},
+                )
+                pending_delete = generation.pending_delete
+                owner_id = generation.owner_id
+                session.commit()
+            return (event, generation, owner_id, pending_delete)
+
+        _values = await _run_blocking(fail_before_start_transaction)
+        if _values is None:
+            return
+        event, generation, owner_id, pending_delete = _values
         self._record_run_timing(generation_id, None)
         await self._publish_event_best_effort(event, generation_id=generation_id)
         if pending_delete:
-            with self.session_factory() as session:
-                generation = session.get(Generation, generation_id)
-                if generation:
-                    self.generations.delete_terminal(session, generation)
+
+            def fail_before_start_transaction_1(generation: Any = generation) -> Any:
+                with self.session_factory() as session:
+                    generation = session.get(Generation, generation_id)
+                    if generation:
+                        self.generations.delete_terminal(session, generation)
+                return ()
+
+            _values = await _run_blocking(fail_before_start_transaction_1)
             await self._publish_broker_best_effort(
                 owner_id,
                 {

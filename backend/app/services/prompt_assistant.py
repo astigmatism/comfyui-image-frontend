@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking as _run_blocking
 from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
 from ..models import PromptAssistantRun
@@ -18,7 +18,7 @@ PROMPT_HISTORY_SCAN_LIMIT = 64
 
 
 async def compose_prompt(
-    container: AppContainer, session: Session, owner_id: str, payload: PromptComposeRequest
+    container: AppContainer, owner_id: str, payload: PromptComposeRequest
 ) -> PromptComposeResponse:
     if payload.mode == "refine" and not payload.prompt.strip():
         raise AppError(
@@ -34,19 +34,24 @@ async def compose_prompt(
         )
     excluded_prompts: list[str] = []
     if payload.mode == "create":
-        with container.db.session_factory() as history_session:
-            recent_runs = history_session.scalars(
-                select(PromptAssistantRun)
-                .where(
-                    PromptAssistantRun.owner_id == owner_id,
-                    PromptAssistantRun.ollama_output.is_not(None),
-                    # Only successful runs seed the distinctness baseline; rejected or
-                    # errored runs must never pollute the exclusion set.
-                    PromptAssistantRun.error_code.is_(None),
-                )
-                .order_by(PromptAssistantRun.created_at.desc(), PromptAssistantRun.id.desc())
-                .limit(PROMPT_HISTORY_SCAN_LIMIT)
-            ).all()
+
+        def load_history() -> list[PromptAssistantRun]:
+            with container.db.session_factory() as history_session:
+                recent_runs = history_session.scalars(
+                    select(PromptAssistantRun)
+                    .where(
+                        PromptAssistantRun.owner_id == owner_id,
+                        PromptAssistantRun.ollama_output.is_not(None),
+                        # Only successful runs seed the distinctness baseline; rejected or
+                        # errored runs must never pollute the exclusion set.
+                        PromptAssistantRun.error_code.is_(None),
+                    )
+                    .order_by(PromptAssistantRun.created_at.desc(), PromptAssistantRun.id.desc())
+                    .limit(PROMPT_HISTORY_SCAN_LIMIT)
+                ).all()
+            return list(recent_runs)
+
+        recent_runs = await _run_blocking(load_history)
         excluded_prompts = [
             run.ollama_output
             for run in recent_runs
@@ -55,10 +60,6 @@ async def compose_prompt(
             and run.ollama_output
         ][:MAX_CREATE_EXCLUSIONS]
 
-    # Authentication and prompt-history reads are complete. Release their pooled
-    # connection before waiting on the external model; this Session can be reused
-    # afterward to record the result.
-    session.close()
     try:
         result = await container.ollama.compose(
             mode=payload.mode,
@@ -69,24 +70,21 @@ async def compose_prompt(
             instructions=payload.instructions,
         )
     except AppError as exc:
-        session.add(
-            PromptAssistantRun(
-                owner_id=owner_id,
-                mode=payload.mode,
-                thinking_enabled=payload.think,
-                # Failed composition diagnostics are intentionally metadata-only.
-                prompt_before="",
-                creative_direction="",
-                model_name=(
-                    exc.details.get("model") if isinstance(exc.details.get("model"), str) else None
-                ),
-                template_version=container.settings.prompt_template_version,
-                raw_response_json={"error_details": exc.details},
-                error_code=exc.code,
-                error_message=exc.message,
-            )
+        record = PromptAssistantRun(
+            owner_id=owner_id,
+            mode=payload.mode,
+            thinking_enabled=payload.think,
+            prompt_before="",
+            creative_direction="",
+            model_name=exc.details.get("model")
+            if isinstance(exc.details.get("model"), str)
+            else None,
+            template_version=container.settings.prompt_template_version,
+            raw_response_json={"error_details": exc.details},
+            error_code=exc.code,
+            error_message=exc.message,
         )
-        session.commit()
+        await _run_blocking(_save_run, container, record)
         raise
     run = PromptAssistantRun(
         owner_id=owner_id,
@@ -101,11 +99,16 @@ async def compose_prompt(
         raw_response_json=result.raw_response,
         duration_ms=result.duration_ms,
     )
-    session.add(run)
-    session.commit()
+    await _run_blocking(_save_run, container, run)
     return PromptComposeResponse(
         composition_id=run.id,
         prompt=result.prompt,
         model=result.model,
         template_version=run.template_version,
     )
+
+
+def _save_run(container: AppContainer, run: PromptAssistantRun) -> None:
+    with container.db.session_factory() as session:
+        session.add(run)
+        session.commit()

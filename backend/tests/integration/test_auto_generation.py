@@ -477,3 +477,38 @@ def test_every_automatic_batch_item_preserves_assistant_recall(app_client):
         assert assistant["creative_direction"] == "night"
         assert assistant["thinking_enabled"] is False
         assert assistant["instructions"] == "Describe the scene in one sentence."
+
+
+def test_cancelled_preparation_releases_its_committed_cycle_claim(app_client, monkeypatch):
+    import threading
+
+    user, _ = provision_user(app_client)
+    enable(app_client)
+    coordinator = app_client.app.state.container.automation
+    original = coordinator._prepare_cycle
+    claimed = threading.Event()
+    release = threading.Event()
+
+    def prepare(owner):
+        result = original(owner)
+        claimed.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(coordinator, "_prepare_cycle", prepare)
+
+    async def cancel_after_claim():
+        task = asyncio.create_task(coordinator.step(user["id"]))
+        assert await asyncio.to_thread(claimed.wait, 3)
+        task.cancel()
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+    app_client.portal.call(cancel_after_claim)
+    with app_client.app.state.container.db.session_factory() as session:
+        cycles = list(session.scalars(select(AutoGenerationCycle)))
+        assert len(cycles) == 1
+        assert cycles[0].claim is None
+    monkeypatch.setattr(coordinator, "_prepare_cycle", original)
+    tick(app_client, user["id"])
+    assert len(jobs(app_client)) == 1

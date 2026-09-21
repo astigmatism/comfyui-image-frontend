@@ -5,8 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     require_ready_csrf,
@@ -21,8 +23,9 @@ router = APIRouter(prefix="/api/preferences", tags=["preferences"])
 
 
 @router.get("", response_model=PreferenceResponse)
+@database_handler
 def get_preferences(
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> PreferenceResponse:
     return preference_response(session.get(UserPreference, context.user.id))
@@ -44,62 +47,77 @@ def preference_response(preference: UserPreference | None) -> PreferenceResponse
 async def update_preferences(
     payload: PreferenceUpdate,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> PreferenceResponse:
-    lock_user_state(session)
-    preference = session.get(UserPreference, context.user.id)
-    if preference is None:
-        preference = UserPreference(
-            user_id=context.user.id,
-            gallery_scale=45,
-            source_ratings_json={},
-            source_colors_json={},
-            checkpoint_tiers_json={},
-        )
-        session.add(preference)
-        session.flush()
-    if payload.import_if_empty and preference.settings_initialized:
-        return preference_response(preference)
-    if payload.expected_revision is not None and preference.revision != payload.expected_revision:
-        raise AppError("settings_conflict", "Settings changed on another device.", status_code=409)
-    if payload.settings is not None:
-        if payload.expected_revision is None:
-            raise AppError("revision_required", "A settings revision is required.", status_code=409)
-        settings = payload.settings.model_dump(mode="json")
+    container = get_container(request)
 
-        def verify_assets(value: object) -> None:
-            if isinstance(value, dict):
-                if isinstance(value.get("asset_id"), str):
-                    asset = session.get(Upload, value["asset_id"])
-                    if asset is None or asset.owner_id != context.user.id:
-                        raise AppError(
-                            "upload_invalid", "A saved image is unavailable.", status_code=422
-                        )
-                for item in value.values():
-                    verify_assets(item)
-            elif isinstance(value, list):
-                for item in value:
-                    verify_assets(item)
+    def save_preferences() -> PreferenceResponse:
+        with container.db.session_factory() as session:
+            lock_user_state(session)
+            preference = session.get(UserPreference, context.user.id)
+            if preference is None:
+                preference = UserPreference(
+                    user_id=context.user.id,
+                    gallery_scale=45,
+                    source_ratings_json={},
+                    source_colors_json={},
+                    checkpoint_tiers_json={},
+                )
+                session.add(preference)
+                session.flush()
+            if payload.import_if_empty and preference.settings_initialized:
+                return preference_response(preference)
+            if (
+                payload.expected_revision is not None
+                and preference.revision != payload.expected_revision
+            ):
+                raise AppError(
+                    "settings_conflict", "Settings changed on another device.", status_code=409
+                )
+            if payload.settings is not None:
+                if payload.expected_revision is None:
+                    raise AppError(
+                        "revision_required", "A settings revision is required.", status_code=409
+                    )
+                settings = payload.settings.model_dump(mode="json")
 
-        verify_assets(settings)
-        preference.settings_json = settings
-        preference.settings_initialized = True
-    if payload.gallery_scale is not None:
-        preference.gallery_scale = payload.gallery_scale
-    if payload.source_ratings is not None:
-        preference.source_ratings_json = dict(payload.source_ratings)
-    if payload.source_colors is not None:
-        preference.source_colors_json = dict(payload.source_colors)
-    if payload.checkpoint_tiers is not None:
-        preference.checkpoint_tiers_json = {
-            source_key: {
-                parameter_id: {tier: list(choices) for tier, choices in tiers.items()}
-                for parameter_id, tiers in selectors.items()
-            }
-            for source_key, selectors in payload.checkpoint_tiers.items()
-        }
-    preference.revision += 1
-    session.commit()
+                def verify_assets(value: object) -> None:
+                    if isinstance(value, dict):
+                        if isinstance(value.get("asset_id"), str):
+                            asset = session.get(Upload, value["asset_id"])
+                            if asset is None or asset.owner_id != context.user.id:
+                                raise AppError(
+                                    "upload_invalid",
+                                    "A saved image is unavailable.",
+                                    status_code=422,
+                                )
+                        for item in value.values():
+                            verify_assets(item)
+                    elif isinstance(value, list):
+                        for item in value:
+                            verify_assets(item)
+
+                verify_assets(settings)
+                preference.settings_json = settings
+                preference.settings_initialized = True
+            if payload.gallery_scale is not None:
+                preference.gallery_scale = payload.gallery_scale
+            if payload.source_ratings is not None:
+                preference.source_ratings_json = dict(payload.source_ratings)
+            if payload.source_colors is not None:
+                preference.source_colors_json = dict(payload.source_colors)
+            if payload.checkpoint_tiers is not None:
+                preference.checkpoint_tiers_json = {
+                    source_key: {
+                        parameter_id: {tier: list(choices) for tier, choices in tiers.items()}
+                        for parameter_id, tiers in selectors.items()
+                    }
+                    for source_key, selectors in payload.checkpoint_tiers.items()
+                }
+            preference.revision += 1
+            session.commit()
+            return preference_response(preference)
+
+    result = await run_blocking(save_preferences)
     await notify_user(get_container(request).broker, context.user.id, "preferences.updated")
-    return preference_response(preference)
+    return result

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     require_ready_csrf,
@@ -26,8 +27,9 @@ router = APIRouter(prefix="/api/auto-generation", tags=["auto generation"])
 
 
 @router.get("", response_model=AutoGenerationResponse)
+@database_handler
 def get_state(
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> AutoGenerationResponse:
     return response(session.get(AutoGeneration, context.user.id), session)

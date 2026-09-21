@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from ..dependencies import AuthContext, get_container, get_db, require_ready_user
+from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
 from ..domain.source_metadata import TIMELINE_MONTH_PATTERN, recognize_source_metadata
 from ..models import ServiceHealth
 from ..schemas import (
@@ -27,9 +27,10 @@ TIMELINE_MONTH_RE = re.compile(TIMELINE_MONTH_PATTERN)
 
 
 @router.get("/workflows", response_model=list[WorkflowSummary])
+@database_handler
 def list_workflows(
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> list[WorkflowSummary]:
     container = get_container(request)
@@ -69,10 +70,11 @@ def list_workflows(
 
 
 @router.get("/workflows/{source_key}", response_model=WorkflowDetail)
+@database_handler
 def get_workflow(
     source_key: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> WorkflowDetail:
     container = get_container(request)
@@ -85,8 +87,9 @@ def get_workflow(
 
 
 @router.get("/services", response_model=list[ServiceStatus])
+@database_handler
 def service_status(
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> list[ServiceStatus]:
     result: list[ServiceStatus] = []

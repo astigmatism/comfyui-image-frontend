@@ -7,12 +7,13 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..blocking import run_blocking
 from ..config import ComfyUIInstanceConfig
 from ..domain.compiler import CompileResult, WorkflowCompiler
 from ..domain.lora_stack import validate_lora_runtime
@@ -30,7 +31,6 @@ from ..models import (
     Favorite,
     Generation,
     GenerationEvent,
-    GenerationRunMember,
     GenerationStatus,
     GenerationUpload,
     PromptAssistantRun,
@@ -45,7 +45,6 @@ from ..schemas import (
     ArtifactSummary,
     FavoriteSummary,
     GenerationBatchCreate,
-    GenerationBatchItem,
     GenerationBatchResult,
     GenerationCreate,
     GenerationDetail,
@@ -62,10 +61,10 @@ from .assets import AssetStore
 from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
-from .events import add_generation_event, publish_event
-from .generation_activity import begin_run, retain_deleted_outcome
+from .events import add_generation_event, event_payload
+from .generation_activity import retain_deleted_outcome
 from .generation_eta import is_checkpoint_declaration
-from .user_state import asset_is_saved
+from .user_state import asset_is_saved, lock_user_state
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -162,55 +161,22 @@ class GenerationService:
     async def accept(
         self, session: Session, *, user: User, request: GenerationCreate
     ) -> GenerationSummary:
-        run = begin_run(session, user.id, 1)
-        generation, event = self._prepare_accept(session, user=user, request=request)
-        session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
-        session.commit()
-        await publish_event(self.broker, event)
-        with self.session_factory() as fresh:
-            stored = self.get_owned(fresh, user.id, generation.id)
-            return self.summary(fresh, stored)
+        from .submissions import accept
+
+        session.close()
+        result = await accept(self, user.id, request)
+        assert isinstance(result, GenerationSummary)
+        return result
 
     async def accept_batch(
         self, session: Session, *, user: User, request: GenerationBatchCreate
     ) -> GenerationBatchResult:
-        run = begin_run(session, user.id, len(request.items))
-        results: list[Generation | AppError] = []
-        events: list[GenerationEvent] = []
-        for item in request.items:
-            try:
-                with session.begin_nested():
-                    generation, event = self._prepare_accept(session, user=user, request=item)
-                    session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
-                results.append(generation)
-                events.append(event)
-            except AppError as error:
-                run.submission_failed_count += 1
-                results.append(error)
-        # All planned jobs and submission failures become visible together. There
-        # are no abandoned reservations if the browser disconnects or we restart.
-        session.commit()
-        for event in events:
-            await publish_event(self.broker, event)
-        with self.session_factory() as fresh:
-            return GenerationBatchResult(
-                items=[
-                    GenerationBatchItem(
-                        error={
-                            "code": item.code,
-                            "message": item.message,
-                            "fields": item.fields,
-                            "details": item.details,
-                            "status": item.status_code,
-                        }
-                    )
-                    if isinstance(item, AppError)
-                    else GenerationBatchItem(
-                        generation=self.summary(fresh, self.get_owned(fresh, user.id, item.id))
-                    )
-                    for item in results
-                ]
-            )
+        from .submissions import accept
+
+        session.close()
+        result = await accept(self, user.id, request)
+        assert isinstance(result, GenerationBatchResult)
+        return result
 
     def _prepare_accept(
         self,
@@ -1333,60 +1299,83 @@ class GenerationService:
         )
 
     async def cancel(self, session: Session, generation: Generation) -> GenerationSummary | None:
-        if generation.status in TERMINAL_STATUSES:
-            return self.summary(session, generation)
-        if generation.status == GenerationStatus.QUEUED:
-            generation_id = generation.id
-            owner_id = generation.owner_id
-            generation.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
-            generation.cancel_requested_at = datetime.now(UTC)
-            generation.completed_at = datetime.now(UTC)
-            self.delete_terminal(session, generation)
-            await self.broker.publish(
-                owner_id,
-                {
-                    "id": None,
-                    "type": "generation.deleted",
-                    "generation_id": generation_id,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "payload": {"reason": "queued_cancellation"},
-                },
-            )
-            return None
-        generation.status = GenerationStatus.CANCEL_REQUESTED
-        generation.cancel_requested_at = datetime.now(UTC)
-        if isinstance(generation.progress_json, dict) and "eta" in generation.progress_json:
-            progress = copy.deepcopy(generation.progress_json)
-            progress.pop("eta", None)
-            generation.progress_json = progress
-        event = add_generation_event(
-            session,
-            generation,
-            "generation.cancel_requested",
-            {"status": generation.status.value},
+        owner_id, generation_id = generation.owner_id, generation.id
+        session.close()
+        return await self.cancel_owned(owner_id, generation_id)
+
+    async def cancel_owned(self, owner_id: str, generation_id: str) -> GenerationSummary | None:
+        result, event, target, _ = await run_blocking(
+            self._cancel_transaction, owner_id, generation_id, False
         )
-        prompt_id = generation.comfyui_prompt_id
-        session.commit()
-        await publish_event(self.broker, event)
-        if prompt_id:
-            with suppress(Exception):
-                await self.comfyui_instances.get(generation.comfyui_instance_id).cancel(
-                    prompt_id,
-                    running=True,
-                )
-        return self.summary(session, generation)
+        await self._notify_cancel(owner_id, event, target)
+        return cast(GenerationSummary | None, result)
 
     async def request_delete(self, session: Session, generation: Generation) -> bool:
-        if generation.status == GenerationStatus.QUEUED:
-            await self.cancel(session, generation)
-            return True
-        if generation.status in ACTIVE_STATUSES:
-            generation.pending_delete = True
+        owner_id, generation_id = generation.owner_id, generation.id
+        session.close()
+        return await self.delete_owned(owner_id, generation_id)
+
+    async def delete_owned(self, owner_id: str, generation_id: str) -> bool:
+        _, event, target, deleted = await run_blocking(
+            self._cancel_transaction, owner_id, generation_id, True
+        )
+        await self._notify_cancel(owner_id, event, target)
+        return bool(deleted)
+
+    async def _notify_cancel(self, owner_id: str, event: Any, target: Any) -> None:
+        if event:
+            await self.broker.publish(owner_id, event)
+        if target:
+            with suppress(Exception):
+                await self.comfyui_instances.get(target[0]).cancel(target[1], running=True)
+
+    def _cancel_transaction(self, owner_id: str, generation_id: str, deleting: bool) -> Any:
+        with self.session_factory() as session:
+            lock_user_state(session)
+            generation = self.get_owned(session, owner_id, generation_id)
+            if generation.status in TERMINAL_STATUSES:
+                if deleting:
+                    self.delete_terminal(session, generation)
+                    return None, None, None, True
+                return self.summary(session, generation), None, None, False
+            if generation.status == GenerationStatus.QUEUED:
+                generation.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
+                generation.cancel_requested_at = datetime.now(UTC)
+                generation.completed_at = datetime.now(UTC)
+                self.delete_terminal(session, generation)
+                return (
+                    None,
+                    {
+                        "id": None,
+                        "type": "generation.deleted",
+                        "generation_id": generation_id,
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "payload": {"reason": "queued_cancellation"},
+                    },
+                    None,
+                    True,
+                )
+            if deleting:
+                generation.pending_delete = True
+            generation.status = GenerationStatus.CANCEL_REQUESTED
+            generation.cancel_requested_at = datetime.now(UTC)
+            if isinstance(generation.progress_json, dict):
+                progress = copy.deepcopy(generation.progress_json)
+                progress.pop("eta", None)
+                generation.progress_json = progress
+            event = add_generation_event(
+                session,
+                generation,
+                "generation.cancel_requested",
+                {"status": generation.status.value},
+            )
+            target = (
+                (generation.comfyui_instance_id, generation.comfyui_prompt_id)
+                if generation.comfyui_prompt_id
+                else None
+            )
             session.commit()
-            await self.cancel(session, generation)
-            return False
-        self.delete_terminal(session, generation)
-        return True
+            return self.summary(session, generation), event_payload(event), target, False
 
     def delete_terminal(self, session: Session, generation: Generation) -> None:
         if generation.status not in TERMINAL_STATUSES:

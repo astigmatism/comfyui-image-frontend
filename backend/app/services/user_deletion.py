@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..blocking import run_blocking as _run_blocking
 from ..errors import AppError
 from ..models import (
     ACTIVE_STATUSES,
@@ -25,6 +26,7 @@ from .assets import AssetStore
 from .auth import AuthService
 from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
+from .user_state import lock_user_state
 
 
 class UserDeletionService:
@@ -45,48 +47,78 @@ class UserDeletionService:
 
     async def delete_user(self, *, actor_id: str, target_id: str) -> None:
         prompt_targets: list[tuple[str, str]] = []
-        with self.session_factory() as session:
-            actor = session.get(User, actor_id)
-            target = session.get(User, target_id)
-            if actor is None or actor.role != UserRole.ADMIN:
-                raise AppError("forbidden", "Administrator access is required.", status_code=403)
-            if target is None:
-                raise AppError("not_found", "User was not found.", status_code=404)
-            if target.role != UserRole.USER or target.is_bootstrap:
-                raise AppError(
-                    "forbidden", "The bootstrap administrator cannot be deleted.", status_code=403
+
+        def mark_deleting() -> None:
+            with self.session_factory() as session:
+                lock_user_state(session)
+                actor = session.get(User, actor_id)
+                target = session.get(User, target_id)
+                if actor is None or actor.role != UserRole.ADMIN:
+                    raise AppError(
+                        "forbidden", "Administrator access is required.", status_code=403
+                    )
+                if target is None:
+                    raise AppError("not_found", "User was not found.", status_code=404)
+                if target.role != UserRole.USER or target.is_bootstrap:
+                    raise AppError(
+                        "forbidden",
+                        "The bootstrap administrator cannot be deleted.",
+                        status_code=403,
+                    )
+                automation = session.get(AutoGeneration, target.id)
+                if automation:
+                    automation.enabled = False
+                    automation.revision += 1
+                    automation.status = "off"
+                target.state = UserState.DELETING
+                self.auth.revoke_user_sessions(session, target)
+                generations = list(
+                    session.scalars(select(Generation).where(Generation.owner_id == target.id))
                 )
-            automation = session.get(AutoGeneration, target.id)
-            if automation:
-                automation.enabled = False
-                automation.revision += 1
-                automation.status = "off"
-            target.state = UserState.DELETING
-            self.auth.revoke_user_sessions(session, target)
-            generations = list(
-                session.scalars(select(Generation).where(Generation.owner_id == target.id))
-            )
-            for generation in generations:
-                if generation.status == GenerationStatus.QUEUED:
-                    generation.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
-                    generation.completed_at = datetime.now(UTC)
-                elif generation.status in ACTIVE_STATUSES:
-                    generation.status = GenerationStatus.CANCEL_REQUESTED
-                    generation.cancel_requested_at = datetime.now(UTC)
-                    if generation.comfyui_prompt_id:
-                        prompt_targets.append(
-                            (
-                                generation.comfyui_instance_id,
-                                generation.comfyui_prompt_id,
+                for generation in generations:
+                    if generation.status == GenerationStatus.QUEUED:
+                        generation.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
+                        generation.completed_at = datetime.now(UTC)
+                    elif generation.status in ACTIVE_STATUSES:
+                        generation.status = GenerationStatus.CANCEL_REQUESTED
+                        generation.cancel_requested_at = datetime.now(UTC)
+                        if generation.comfyui_prompt_id:
+                            prompt_targets.append(
+                                (
+                                    generation.comfyui_instance_id,
+                                    generation.comfyui_prompt_id,
+                                )
                             )
-                        )
-            session.commit()
+                session.commit()
+
+        await _run_blocking(mark_deleting)
         for instance_id, prompt_id in prompt_targets:
             with suppress(Exception):
                 await self.comfyui_instances.get(instance_id).cancel(prompt_id, running=True)
 
         for _ in range(20):
+
+            def still_active() -> bool:
+                with self.session_factory() as session:
+                    remaining = list(
+                        session.scalars(
+                            select(Generation).where(
+                                Generation.owner_id == target_id,
+                                Generation.status.in_(list(ACTIVE_STATUSES)),
+                            )
+                        )
+                    )
+                return bool(remaining)
+
+            if not await _run_blocking(still_active):
+                break
+            await asyncio.sleep(0.25)
+
+        def remove_account() -> list[str]:
             with self.session_factory() as session:
+                target = session.get(User, target_id)
+                if target is None:
+                    return []
                 remaining = list(
                     session.scalars(
                         select(Generation).where(
@@ -95,59 +127,50 @@ class UserDeletionService:
                         )
                     )
                 )
-            if not remaining:
-                break
-            await asyncio.sleep(0.25)
-
-        with self.session_factory() as session:
-            target = session.get(User, target_id)
-            if target is None:
-                return
-            remaining = list(
-                session.scalars(
-                    select(Generation).where(
-                        Generation.owner_id == target_id,
-                        Generation.status.in_(list(ACTIVE_STATUSES)),
+                for generation in remaining:
+                    # Cancellation and queue reconciliation already ran. Preserve explicit
+                    # uncertainty if no terminal state arrived.
+                    generation.status = GenerationStatus.INTERRUPTED
+                    generation.error_code = "execution_interrupted"
+                    generation.error_message = "Execution was interrupted during account deletion."
+                    generation.completed_at = datetime.now(UTC)
+                session.flush()
+                paths = [
+                    path
+                    for artifact in session.scalars(
+                        select(Artifact).where(Artifact.owner_id == target_id)
+                    )
+                    for path in (artifact.storage_path, artifact.thumbnail_path)
+                    if path
+                ]
+                paths.extend(
+                    upload.storage_path
+                    for upload in session.scalars(
+                        select(Upload).where(Upload.owner_id == target_id)
                     )
                 )
-            )
-            for generation in remaining:
-                # A history/queue reconciliation attempt already occurred through cancellation and
-                # the queue worker. If no terminal state arrived, preserve explicit uncertainty.
-                generation.status = GenerationStatus.INTERRUPTED
-                generation.error_code = "execution_interrupted"
-                generation.error_message = "Execution was interrupted during account deletion."
-                generation.completed_at = datetime.now(UTC)
-            session.flush()
-            paths = [
-                path
-                for artifact in session.scalars(
-                    select(Artifact).where(Artifact.owner_id == target_id)
+                # Uploads are owned by the user and use ON DELETE CASCADE, while
+                # generation_uploads deliberately RESTRICT direct upload deletion.
+                # Remove the ownership links first so SQLite can cascade both sides
+                # of the account cleanup without an immediate RESTRICT violation.
+                generation_ids = select(Generation.id).where(Generation.owner_id == target_id)
+                session.execute(
+                    delete(GenerationUpload).where(
+                        GenerationUpload.generation_id.in_(generation_ids)
+                    )
                 )
-                for path in (artifact.storage_path, artifact.thumbnail_path)
-                if path
-            ]
-            paths.extend(
-                upload.storage_path
-                for upload in session.scalars(select(Upload).where(Upload.owner_id == target_id))
-            )
-            # Uploads are owned by the user and use ON DELETE CASCADE, while
-            # generation_uploads deliberately RESTRICT direct upload deletion.
-            # Remove the ownership links first so SQLite can cascade both sides
-            # of the account cleanup without an immediate RESTRICT violation.
-            generation_ids = select(Generation.id).where(Generation.owner_id == target_id)
-            session.execute(
-                delete(GenerationUpload).where(GenerationUpload.generation_id.in_(generation_ids))
-            )
-            session.delete(target)
-            session.add(
-                AuditLog(
-                    actor_user_id=actor_id,
-                    target_type="user",
-                    target_id=target_id,
-                    action="user_deleted",
-                    metadata_json={},
+                session.delete(target)
+                session.add(
+                    AuditLog(
+                        actor_user_id=actor_id,
+                        target_type="user",
+                        target_id=target_id,
+                        action="user_deleted",
+                        metadata_json={},
+                    )
                 )
-            )
-            session.commit()
-        self.assets.delete_paths(paths)
+                session.commit()
+            return paths
+
+        paths = await _run_blocking(remove_account)
+        await asyncio.to_thread(self.assets.delete_paths, paths)

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from ..dependencies import AuthContext, get_container, get_db, require_ready_user
+from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
 from ..models import ComfyUIInstanceHealth, ServiceHealth
 from ..schemas import ComfyUIInstanceList, ComfyUIInstanceStatus
 
@@ -13,9 +13,10 @@ router = APIRouter(prefix="/api", tags=["comfyui-instances"])
 
 
 @router.get("/comfyui-instances", response_model=ComfyUIInstanceList)
+@database_handler
 def list_comfyui_instances(
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> ComfyUIInstanceList:
     instances = get_container(request).comfyui_instances

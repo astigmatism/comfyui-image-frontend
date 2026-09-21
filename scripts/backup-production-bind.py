@@ -65,7 +65,7 @@ def execution_context(root, maintenance_container=None):
         )
 
 
-def preflight(root, project, maintenance_container=None):
+def preflight(root, project, maintenance_container=None, *, require_health=True):
     execution_context(root, maintenance_container)
     require(
         root.is_absolute() and root.resolve() == root and not str(root).startswith("/host/"),
@@ -110,10 +110,12 @@ def preflight(root, project, maintenance_container=None):
         require(len(ids) == 1, f"Expected one existing container for {service}")
         live = inspect(ids[0])
         containers[service] = live
-        require(
-            live["State"]["Running"] and live["State"].get("Health", {}).get("Status") == "healthy",
-            f"Restore existing {service} health before starting an update",
-        )
+        if require_health:
+            require(
+                live["State"]["Running"]
+                and live["State"].get("Health", {}).get("Status") == "healthy",
+                f"Restore existing {service} health before starting an update",
+            )
         labels = live["Config"].get("Labels", {})
         require(
             labels.get("com.docker.compose.project") == project
@@ -125,6 +127,23 @@ def preflight(root, project, maintenance_container=None):
             live["Config"]["Image"] == definition["image"],
             f"Saved configuration does not match the running {service} image",
         )
+        configured_environment = definition.get("environment", {})
+        live_environment = dict(
+            value.split("=", 1) for value in live["Config"].get("Env", []) if "=" in value
+        )
+        require(
+            all(
+                live_environment.get(key) == str(value)
+                for key, value in configured_environment.items()
+                if value is not None
+            ),
+            f"Saved environment differs from the existing {service} container",
+        )
+        if "user" in definition:
+            require(
+                str(definition["user"]) == live["Config"]["User"],
+                f"Saved runtime identity differs from the existing {service} container",
+            )
         actual = {m["Destination"]: m for m in live["Mounts"]}
         requested = {m["target"]: m for m in definition.get("volumes", [])}
         require(set(actual) == set(requested), f"Unexpected storage mounts for {service}")

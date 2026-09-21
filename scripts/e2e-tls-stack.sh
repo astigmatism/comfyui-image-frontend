@@ -62,7 +62,8 @@ COMMAND="$1"
 # --- helpers -------------------------------------------------------------
 
 find_python() {
-  if [ -x "$ROOT/.venv/bin/python" ]; then printf '%s' "$ROOT/.venv/bin/python"
+  if [ -n "${PYTHON:-}" ]; then printf '%s' "$PYTHON"
+  elif [ -x "$ROOT/.venv/bin/python" ]; then printf '%s' "$ROOT/.venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then command -v python3
   else die "no python interpreter found"; fi
 }

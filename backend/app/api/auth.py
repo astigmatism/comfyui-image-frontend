@@ -7,12 +7,14 @@ from sqlalchemy.orm import Session
 
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     optional_auth,
     require_csrf,
 )
 from ..errors import AppError
+from ..models import User, UserState
 from ..schemas import ChangePasswordRequest, LoginRequest, SessionInfo, UserPublic
 from ..security import new_login_csrf, secure_compare, verify_login_csrf
 
@@ -64,11 +66,12 @@ def session_info(
 
 
 @router.post("/login", response_model=SessionInfo)
+@database_handler
 def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     x_csrf_token: Annotated[str | None, Header()] = None,
 ) -> SessionInfo:
     container = get_container(request)
@@ -98,7 +101,7 @@ def login(
         max_age=container.settings.session_ttl_hours * 3600,
     )
     response.delete_cookie(LOGIN_CSRF_COOKIE, path="/")
-    context = AuthContext(user=user, session=stored, raw_token=raw_token)
+    context = AuthContext.from_models(user, stored, raw_token)
     return SessionInfo(
         authenticated=True,
         user=_user_public(context),
@@ -108,10 +111,11 @@ def login(
 
 
 @router.post("/logout", status_code=204)
+@database_handler
 def logout(
     request: Request,
     response: Response,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_csrf)],
 ) -> None:
     container = get_container(request)
@@ -120,16 +124,20 @@ def logout(
 
 
 @router.post("/password", status_code=204)
+@database_handler
 def change_password(
     payload: ChangePasswordRequest,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_csrf)],
 ) -> None:
     container = get_container(request)
+    user = session.get(User, context.user.id)
+    if user is None or user.state != UserState.ACTIVE:
+        raise AppError("authentication_required", "Sign in is required.", status_code=401)
     container.auth.change_password(
         session,
-        user=context.user,
+        user=user,
         current_password=payload.current_password,
         new_password=payload.new_password,
         current_session_hash=context.session.id_hash,

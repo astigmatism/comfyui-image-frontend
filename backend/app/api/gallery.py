@@ -7,6 +7,7 @@ from starlette.background import BackgroundTask
 
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     require_ready_csrf,
@@ -29,19 +30,21 @@ router = APIRouter(prefix="/api/gallery", tags=["gallery"])
 
 
 @router.post("/prompt-groups/lookup", response_model=list[PromptGroupMembership])
+@database_handler
 def prompt_group_lookup(
     payload: PromptGroupLookup,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> list[PromptGroupMembership]:
     return lookup_groups(session, context.user.id, payload.collection_id, payload.generation_ids)
 
 
 @router.get("/prompt-groups/{generation_id}/members", response_model=GenerationPage)
+@database_handler
 def prompt_group_members(
     generation_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
     collection_id: str | None = None,
     cursor: str | None = None,
@@ -59,9 +62,10 @@ def prompt_group_members(
 
 
 @router.get("/prompt-groups/{generation_id}/changes", response_model=PromptChanges)
+@database_handler
 def prompt_group_changes(
     generation_id: str,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
     collection_id: str | None = None,
 ) -> PromptChanges:
@@ -69,10 +73,11 @@ def prompt_group_changes(
 
 
 @router.post("/favorite", response_model=GallerySelection)
+@database_handler
 def favorite_selection(
     payload: GallerySelection,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GallerySelection:
     container = get_container(request)
@@ -82,10 +87,11 @@ def favorite_selection(
 
 
 @router.post("/download")
+@database_handler
 def download_selection(
     payload: GallerySelection,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> FileResponse:
     container = get_container(request)
@@ -103,10 +109,11 @@ def download_selection(
 
 
 @router.post("/transfer", response_model=GalleryTransferResult)
+@database_handler
 def transfer_selection(
     payload: GalleryTransfer,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GalleryTransferResult:
     container = get_container(request)
@@ -119,10 +126,9 @@ def transfer_selection(
 async def delete_selection(
     payload: GallerySelection,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GalleryDeleteResult:
     container = get_container(request)
     return await GalleryService(container.generations, container.collections).delete(
-        session, owner_id=context.user.id, payload=payload
+        owner_id=context.user.id, payload=payload
     )

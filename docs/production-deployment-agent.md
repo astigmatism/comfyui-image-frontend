@@ -25,7 +25,8 @@ Wait 30 seconds between checks. Finish when `running=false`; require `exit_code=
 and the final `complete` or `already-current` result. A tool timeout means check
 the same job, not launch another one. The job survives an agent disconnect.
 Alternatively, `update_production --wait` streams progress and returns the job's
-actual exit code. This is the mode the Portal entrypoint uses.
+actual exit code. Add `--restart` to restart an unchanged release. The Portal entrypoint
+uses `--wait --restart`. `--check-only` rejects `--restart`.
 
 Use `update_production --check-only` to check live state without building the app,
 backing up data, editing production configuration, or restarting services. The
@@ -47,7 +48,13 @@ Builds have a 10-minute limit, archive creation 180 seconds, and startup/worker
 checks 120 seconds each. Most warm-cache updates should take a few minutes; these
 are bounds, not a performance promise. Every phase is timestamped. Build output,
 configuration checkpoints, backup and status are retained under `.deployment-backups`.
-An already-current release only gets verified; it is not rebuilt or restarted.
+An already-current release gets verified; `--restart` also restarts its existing app
+container without rebuilding or changing configuration. Structural checks precede
+operational recovery. Under the deployment lock, a degraded app gets 60 seconds to
+recover, then one restart and 120 seconds for readiness verification. That recovery
+restart counts toward `--restart`. TLS failure while the app is ready does not trigger
+an app restart. Preflight failures retain restricted status and diagnostic records
+when the deployment root is valid (except non-mutating `--check-only`).
 
 ## If it fails
 

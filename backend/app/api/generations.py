@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
-from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     require_ready_csrf,
     require_ready_user,
 )
 from ..errors import AppError
-from ..models import Artifact
+from ..file_response import StoredFileResponse as FileResponse
+from ..models import Artifact, User
 from ..schemas import (
     GenerationActivity,
     GenerationBatchCreate,
@@ -28,19 +31,23 @@ from ..schemas import (
     RecallResponse,
     ValidationResult,
 )
+from ..services import submissions
 from ..services.generation_activity import activity_snapshot
 
 router = APIRouter(prefix="/api", tags=["generations"])
 
 
 @router.post("/generations/validate", response_model=ValidationResult)
+@database_handler
 def validate_generation(
     payload: GenerationCreate,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> ValidationResult:
-    return get_container(request).generations.validate(session, user=context.user, request=payload)
+    return get_container(request).generations.validate(
+        session, user=_load_user(session, context.user.id), request=payload
+    )
 
 
 @router.post(
@@ -51,40 +58,44 @@ def validate_generation(
 async def create_generation(
     payload: GenerationCreate,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GenerationSummary:
-    require_generation_protocol(request)
-    return await get_container(request).generations.accept(
-        session, user=context.user, request=payload
+    key = require_generation_protocol(request)
+    result = await submissions.accept(
+        get_container(request).generations, context.user.id, payload, key
     )
+    assert isinstance(result, GenerationSummary)
+    return result
 
 
 @router.post("/generations/batch", response_model=GenerationBatchResult, status_code=201)
 async def create_generation_batch(
     payload: GenerationBatchCreate,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GenerationBatchResult:
-    require_generation_protocol(request)
-    return await get_container(request).generations.accept_batch(
-        session, user=context.user, request=payload
+    key = require_generation_protocol(request)
+    result = await submissions.accept(
+        get_container(request).generations, context.user.id, payload, key
     )
+    assert isinstance(result, GenerationBatchResult)
+    return result
 
 
 @router.get("/generation-activity", response_model=GenerationActivity)
+@database_handler
 def generation_activity(
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> GenerationActivity:
     return activity_snapshot(session, context.user.id)
 
 
 @router.get("/generations", response_model=GenerationPage)
+@database_handler
 def list_generations(
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=60)] = 24,
@@ -101,11 +112,12 @@ def list_generations(
 
 
 @router.post("/generations/{generation_id}/move", response_model=GenerationSummary)
+@database_handler
 def move_generation(
     generation_id: str,
     payload: GenerationMove,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GenerationSummary:
     return get_container(request).generations.move(
@@ -117,10 +129,11 @@ def move_generation(
 
 
 @router.get("/generations/{generation_id}", response_model=GenerationDetail)
+@database_handler
 def get_generation(
     generation_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> GenerationDetail:
     service = get_container(request).generations
@@ -129,10 +142,11 @@ def get_generation(
 
 
 @router.get("/generations/{generation_id}/recall", response_model=RecallResponse)
+@database_handler
 def recall_generation(
     generation_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> RecallResponse:
     service = get_container(request).generations
@@ -152,12 +166,10 @@ def recall_generation(
 async def cancel_generation(
     generation_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> GenerationSummary | Response:
     service = get_container(request).generations
-    generation = service.get_owned(session, context.user.id, generation_id)
-    result = await service.cancel(session, generation)
+    result = await service.cancel_owned(context.user.id, generation_id)
     if result is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return result
@@ -168,21 +180,20 @@ async def delete_generation(
     generation_id: str,
     request: Request,
     response: Response,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> None:
     service = get_container(request).generations
-    generation = service.get_owned(session, context.user.id, generation_id)
-    deleted = await service.request_delete(session, generation)
+    deleted = await service.delete_owned(context.user.id, generation_id)
     if not deleted:
         response.status_code = status.HTTP_202_ACCEPTED
 
 
 @router.get("/artifacts/{artifact_id}/content")
+@database_handler
 def artifact_content(
     artifact_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> FileResponse:
     artifact = session.scalar(
@@ -207,10 +218,11 @@ def artifact_content(
 
 
 @router.get("/artifacts/{artifact_id}/thumbnail")
+@database_handler
 def artifact_thumbnail(
     artifact_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> FileResponse:
     artifact = session.scalar(
@@ -233,10 +245,35 @@ def artifact_thumbnail(
     )
 
 
-def require_generation_protocol(request: Request) -> None:
-    if request.headers.get("X-CIF-Generation-Protocol") != "2":
+def require_generation_protocol(request: Request) -> str:
+    if request.headers.get("X-CIF-Generation-Protocol") != "3":
         raise AppError(
             "client_reload_required",
             "Reload this page before generating. Auto generation is now managed by the server.",
             status_code=409,
         )
+
+    try:
+        return str(UUID(request.headers.get("Idempotency-Key", "")))
+    except ValueError as exc:
+        raise AppError(
+            "idempotency_key_required",
+            "A UUID submission ID is required. Reload this page.",
+            status_code=400,
+        ) from exc
+
+
+@router.get("/generation-submissions/{key}")
+async def submission_status(
+    key: UUID, request: Request, context: Annotated[AuthContext, Depends(require_ready_user)]
+) -> dict[str, Any]:
+    return await run_blocking(
+        submissions.lookup, get_container(request).generations, context.user.id, str(key)
+    )
+
+
+def _load_user(session: Session, user_id: str) -> User:
+    user = session.get(User, user_id)
+    if user is None:
+        raise AppError("authentication_required", "Sign in is required.", status_code=401)
+    return user

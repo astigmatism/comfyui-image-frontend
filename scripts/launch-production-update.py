@@ -52,9 +52,6 @@ def wait_for_job(container, env, check_only=False):
     if state["Running"] or state["Status"] not in ("exited", "dead"):
         raise RuntimeError(f"Deployment job {container} has not finished")
     code = state["ExitCode"]
-    if code:
-        print(f"Error: deployment job {container} failed with exit code {code}", flush=True)
-        return code
     logs = subprocess.run(
         ["docker", "logs", "--tail", "20", container],
         env=env,
@@ -70,9 +67,27 @@ def wait_for_job(container, env, check_only=False):
         except json.JSONDecodeError:
             continue
     result = records[-1] if records and isinstance(records[-1], dict) else {}
-    verified = (result.get("phase") == "complete" and result.get("exit_code") == 0) or result.get(
-        "outcome"
-    ) == ("check-passed" if check_only else "already-current")
+    cause = next((line.strip() for line in logs if line.strip().startswith("Error:")), None)
+    if code:
+        if cause:
+            print(cause, flush=True)
+        elif result.get("error"):
+            print(
+                f"Error: production update failed during {result.get('failed_phase', 'unknown')}: "
+                f"{result['error']}. Recovery: {result.get('recovery', 'unknown')}. "
+                f"Deployment job: {container}.",
+                flush=True,
+            )
+        print(f"Error: deployment job {container} failed with exit code {code}", flush=True)
+        return code
+    verified = (
+        result.get("phase") == "complete"
+        and result.get("exit_code") == 0
+        and result.get("https") == "verified"
+    ) or (
+        result.get("outcome") == ("check-passed" if check_only else "already-current")
+        and result.get("https") == "verified"
+    )
     if not verified:
         raise RuntimeError(f"Deployment job {container} exited without a verified result")
     print(json.dumps({"job": container, "exit_code": 0, "verification": "passed"}), flush=True)
@@ -83,13 +98,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-view", type=Path, required=True)
     parser.add_argument("--sha", required=True)
-    parser.add_argument("--check-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-only", action="store_true")
+    mode.add_argument("--restart", action="store_true")
     parser.add_argument(
         "--wait", action="store_true", help="Stream deployment progress and return its exit code"
     )
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
         raise RuntimeError("Expected a full target SHA")
+    print("Phase: launcher validation", flush=True)
     view = args.source_view.parent
     if str(view) not in (ROOT, "/host" + ROOT):
         raise RuntimeError("Unexpected production checkout path")
@@ -140,6 +158,7 @@ def main():
             timeout=30,
         )
         if found.returncode:
+            print("Phase: deployment runner build", flush=True)
             archive = run(
                 ["git", "-C", str(args.source_view), "archive", args.sha, *paths],
                 capture_output=True,
@@ -174,6 +193,9 @@ def main():
         ]
         if args.check_only:
             command.append("--check-only")
+        if args.restart:
+            command.append("--restart")
+        print("Phase: deployment job launch", flush=True)
         container = run(command, capture_output=True, text=True).stdout.strip()
         print(
             json.dumps(
@@ -182,6 +204,7 @@ def main():
                     "container_id": container,
                     "target_sha": args.sha,
                     "check_only": args.check_only,
+                    "restart": args.restart,
                     "inspect_command": (
                         f"docker -H unix://{sock} inspect --format '{{{{json .State}}}}' {name}"
                     ),
@@ -196,4 +219,11 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (RuntimeError, subprocess.SubprocessError, OSError) as error:
+        # Never print subprocess arguments: future commands may include credentials.
+        cause = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+        cause = re.sub(r"[\x00-\x1f\x7f]+", " ", cause)[:1000]
+        print(f"Error: production update launcher failed: {cause}", flush=True)
+        sys.exit(1)

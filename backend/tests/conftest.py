@@ -95,7 +95,7 @@ def auth_session(client: TestClient) -> dict[str, object]:
 
 
 def login(client: TestClient, username: str, password: str) -> dict[str, object]:
-    client.headers["X-CIF-Generation-Protocol"] = "2"
+    client.headers["X-CIF-Generation-Protocol"] = "3"
     anonymous = auth_session(client)
     token = anonymous["csrf_token"]
     response = client.post(
@@ -140,3 +140,27 @@ def create_user(
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def submission_client_keys():
+    from uuid import uuid4
+
+    original = TestClient.request
+
+    def request(self, method, url, **kwargs):
+        if str(method).upper() == "POST" and str(url).split("?")[0] in {
+            "/api/generations",
+            "/api/generations/batch",
+        }:
+            headers = dict(kwargs.get("headers") or {})
+            if not any(k.lower() == "idempotency-key" for k in headers):
+                headers["Idempotency-Key"] = str(uuid4())
+            kwargs["headers"] = headers
+        return original(self, method, url, **kwargs)
+
+    TestClient.request = request
+    try:
+        yield
+    finally:
+        TestClient.request = original

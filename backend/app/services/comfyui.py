@@ -50,6 +50,7 @@ class ComfyUIAdapter:
             headers=headers,
         )
         self._capabilities: ComfyCapabilities | None = None
+        self._runtime_object_info: Mapping[str, Any] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -100,6 +101,7 @@ class ComfyUIAdapter:
                 "ComfyUI returned an invalid runtime schema.",
                 status_code=503,
             )
+        self._runtime_object_info = object_info
         list_route = await self._probe_list_route()
         get_route = await self._probe_get_route()
         system: dict[str, Any] = {}
@@ -430,7 +432,7 @@ class ComfyUIAdapter:
                     yield payload
 
     def cached_object_info(self) -> Mapping[str, Any]:
-        return self._capabilities.object_info if self._capabilities is not None else {}
+        return self._runtime_object_info
 
     async def history(self, prompt_id: str) -> dict[str, Any] | None:
         safe_id = quote(prompt_id, safe="")
@@ -579,6 +581,13 @@ class ComfyUIAdapter:
                 context="ComfyUI health response",
             )
             if response.is_success:
+                # Execution-only targets need the runtime schema too; they never
+                # participate in the primary target's publication discovery.
+                self._runtime_object_info = _response_json_object(
+                    response,
+                    maximum_bytes=self.settings.comfyui_object_info_max_bytes,
+                    context="ComfyUI health response",
+                )
                 return True, None
             return False, f"ComfyUI returned HTTP {response.status_code}."
         except (AppError, httpx.HTTPError):

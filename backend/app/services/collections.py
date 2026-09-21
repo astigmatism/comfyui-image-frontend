@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import builtins
 from collections import deque
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking
 from ..errors import AppError
 from ..models import Artifact, AuditLog, AutoGeneration, Collection, CollectionFavorite, Generation
 from ..schemas import Collection as CollectionResponse
@@ -240,65 +241,78 @@ class CollectionService:
 
     async def delete(
         self,
-        session: Session,
         *,
         owner_id: str,
         collection_id: str,
     ) -> bool:
-        root = self.get_owned(session, owner_id, collection_id)
-        levels = self._subtree_levels(session, owner_id=owner_id, root_id=root.id)
-        subtree_ids = [item_id for level in levels for item_id in level]
-        collection_metadata = {
-            item.id: (item.name, item.parent_id)
-            for item in session.scalars(
-                select(Collection).where(
-                    Collection.owner_id == owner_id,
-                    Collection.id.in_(subtree_ids),
+        def prepare() -> tuple[Any, Any, Any, list[str]]:
+            with self.generations.session_factory() as session:
+                root = self.get_owned(session, owner_id, collection_id)
+                levels = self._subtree_levels(session, owner_id=owner_id, root_id=root.id)
+                subtree_ids = [item_id for level in levels for item_id in level]
+                collection_metadata = {
+                    item.id: (item.name, item.parent_id)
+                    for item in session.scalars(
+                        select(Collection).where(
+                            Collection.owner_id == owner_id,
+                            Collection.id.in_(subtree_ids),
+                        )
+                    )
+                }
+                generations = list(
+                    session.scalars(
+                        select(Generation).where(
+                            Generation.owner_id == owner_id,
+                            Generation.collection_id.in_(subtree_ids),
+                        )
+                    )
                 )
-            )
-        }
-        generations = list(
-            session.scalars(
-                select(Generation).where(
-                    Generation.owner_id == owner_id,
-                    Generation.collection_id.in_(subtree_ids),
-                )
-            )
-        )
-        for automation in session.scalars(
-            select(AutoGeneration).where(AutoGeneration.user_id == owner_id)
-        ):
-            if automation.snapshot_json.get("generation", {}).get("collection_id") in subtree_ids:
-                automation.status = "blocked"
-                automation.error_code = "collection_deleted"
-                automation.message = "The destination folder was deleted. Apply a new destination."
-                automation.revision += 1
-        session.commit()
+                for automation in session.scalars(
+                    select(AutoGeneration).where(AutoGeneration.user_id == owner_id)
+                ):
+                    if (
+                        automation.snapshot_json.get("generation", {}).get("collection_id")
+                        in subtree_ids
+                    ):
+                        automation.status = "blocked"
+                        automation.error_code = "collection_deleted"
+                        automation.message = (
+                            "The destination folder was deleted. Apply a new destination."
+                        )
+                        automation.revision += 1
+                session.commit()
+                return levels, subtree_ids, collection_metadata, [g.id for g in generations]
+
+        levels, subtree_ids, collection_metadata, generation_ids = await run_blocking(prepare)
         deleted_immediately = True
-        for generation in generations:
-            if not await self.generations.request_delete(session, generation):
+        for generation_id in generation_ids:
+            if not await self.generations.delete_owned(owner_id, generation_id):
                 deleted_immediately = False
 
-        for item_id in subtree_ids:
-            name, parent_id = collection_metadata[item_id]
-            session.add(
-                AuditLog(
-                    actor_user_id=owner_id,
-                    target_type="collection",
-                    target_id=item_id,
-                    action="collection_deleted",
-                    metadata_json={"name": name, "parent_id": parent_id},
-                )
-            )
-        for level in reversed(levels):
-            session.execute(
-                delete(Collection).where(
-                    Collection.owner_id == owner_id,
-                    Collection.id.in_(level),
-                )
-            )
-            session.flush()
-        session.commit()
+        def finish() -> None:
+            with self.generations.session_factory() as session:
+                for item_id in subtree_ids:
+                    name, parent_id = collection_metadata[item_id]
+                    session.add(
+                        AuditLog(
+                            actor_user_id=owner_id,
+                            target_type="collection",
+                            target_id=item_id,
+                            action="collection_deleted",
+                            metadata_json={"name": name, "parent_id": parent_id},
+                        )
+                    )
+                for level in reversed(levels):
+                    session.execute(
+                        delete(Collection).where(
+                            Collection.owner_id == owner_id,
+                            Collection.id.in_(level),
+                        )
+                    )
+                    session.flush()
+                session.commit()
+
+        await run_blocking(finish)
         return deleted_immediately
 
     def _response(

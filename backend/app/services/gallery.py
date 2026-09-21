@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking
 from ..errors import AppError
 from ..models import (
     TERMINAL_STATUSES,
@@ -404,22 +405,24 @@ class GalleryService:
         )
         return clone.id
 
-    async def delete(
-        self, session: Session, *, owner_id: str, payload: GallerySelection
-    ) -> GalleryDeleteResult:
-        chosen = self.selection(session, owner_id, payload)
+    async def delete(self, *, owner_id: str, payload: GallerySelection) -> GalleryDeleteResult:
+
+        def load_targets() -> list[tuple[str, str]]:
+            with self.generations.session_factory() as fresh:
+                chosen = self.selection(fresh, owner_id, payload)
+                return [("generation", item.id) for item in chosen.generations] + [
+                    ("collection", item.id) for item in chosen.roots
+                ]
+
+        targets = await run_blocking(load_targets)
         results: list[GalleryDeleteItem] = []
-        targets = [("generation", item.id) for item in chosen.generations] + [
-            ("collection", item.id) for item in chosen.roots
-        ]
         for kind, item_id in targets:
             try:
                 if kind == "generation":
-                    generation = self.generations.get_owned(session, owner_id, item_id)
-                    deleted = await self.generations.request_delete(session, generation)
+                    deleted = await self.generations.delete_owned(owner_id, item_id)
                 else:
                     deleted = await self.collections.delete(
-                        session, owner_id=owner_id, collection_id=item_id
+                        owner_id=owner_id, collection_id=item_id
                     )
                 results.append(
                     GalleryDeleteItem(
@@ -427,7 +430,6 @@ class GalleryService:
                     )
                 )
             except AppError as error:
-                session.rollback()
                 results.append(
                     GalleryDeleteItem(kind=kind, id=item_id, status="failed", message=error.message)
                 )

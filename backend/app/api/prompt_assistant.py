@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     require_ready_csrf,
@@ -21,9 +22,10 @@ router = APIRouter(prefix="/api/prompt-assistant", tags=["prompt-assistant"])
 
 
 @router.get("/status", response_model=PromptAssistantStatus)
+@database_handler
 def status(
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> PromptAssistantStatus:
     container = get_container(request)
@@ -68,7 +70,6 @@ def status(
 async def compose(
     payload: PromptComposeRequest,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> PromptComposeResponse:
-    return await compose_prompt(get_container(request), session, context.user.id, payload)
+    return await compose_prompt(get_container(request), context.user.id, payload)

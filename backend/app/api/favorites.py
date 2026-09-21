@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..dependencies import (
     AuthContext,
+    database_handler,
     get_container,
     get_db,
     require_ready_csrf,
@@ -17,10 +18,11 @@ router = APIRouter(prefix="/api", tags=["favorites"])
 
 
 @router.put("/generations/{generation_id}/favorite", response_model=FavoriteSummary)
+@database_handler
 def add_favorite(
     generation_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> FavoriteSummary:
     service = get_container(request).generations
@@ -32,10 +34,11 @@ def add_favorite(
 
 
 @router.delete("/generations/{generation_id}/favorite", status_code=status.HTTP_204_NO_CONTENT)
+@database_handler
 def remove_favorite(
     generation_id: str,
     request: Request,
-    session: Annotated[Session, Depends(get_db)],
+    session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> None:
     service = get_container(request).generations

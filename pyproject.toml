@@ -9,7 +9,7 @@ description = "Private, contract-driven ComfyUI image generation appliance"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-  "fastapi>=0.115,<1",
+  "fastapi>=0.141.1,<1",
   "uvicorn[standard]>=0.34,<1",
   "sqlalchemy>=2.0.36,<3",
   "alembic>=1.14,<2",

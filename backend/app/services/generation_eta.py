@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
+from ..blocking import run_blocking
 from ..models import (
     ACTIVE_STATUSES,
     Generation,
@@ -419,7 +420,7 @@ class GenerationEtaEstimator:
                 return
             self._maintenance_task.result()
         self._audit_stop_event.clear()
-        self._profiles = await asyncio.to_thread(self._load_profiles)
+        self._profiles = await run_blocking(self._load_profiles)
         self._loop = asyncio.get_running_loop()
         self._stop_event.clear()
         self._wake_event.set()
@@ -699,7 +700,7 @@ class GenerationEtaEstimator:
                 logger.exception("generation_eta_maintenance_failed")
 
     async def _run_audit_batch(self) -> _AuditBatchResult:
-        audit_task = asyncio.create_task(asyncio.to_thread(self._audit_batch))
+        audit_task = asyncio.create_task(run_blocking(self._audit_batch))
         try:
             return await asyncio.shield(audit_task)
         except asyncio.CancelledError:
@@ -726,7 +727,7 @@ class GenerationEtaEstimator:
                 "generation_eta_cache_bound_exceeded",
                 extra={"profiles": len(profiles), "limit": self.max_profiles},
             )
-            profiles = self._load_profiles()
+            profiles = dict(list(profiles.items())[-self.max_profiles :])
         self._profiles = profiles
 
     def _load_profiles(self) -> dict[tuple[str, str], _ProfileSnapshot]:

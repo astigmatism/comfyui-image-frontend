@@ -908,6 +908,7 @@ def test_prompt_rejection_retains_safe_terminal_error_and_internal_node_errors(
 def test_cancel_after_checkpoint_and_failure_keep_best_available_and_recall(
     settings_factory, fake_state
 ) -> None:
+    fake_state.wait_for_cancel_prompts.add("slow cancellation sample")
     settings = settings_factory(enable_background_worker=True)
     with TestClient(create_app(settings)) as client:
         provision_user(client)

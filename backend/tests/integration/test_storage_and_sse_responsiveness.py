@@ -413,3 +413,28 @@ async def test_many_live_streams_leave_the_database_pool_available(
         await asyncio.gather(*pending, return_exceptions=True)
 
     assert not container.broker._subscribers
+
+
+def test_deletion_after_metadata_lookup_returns_missing_asset_without_leaking_permits(
+    app_client, monkeypatch
+):
+    provision_user(app_client, username="deleted.stream")
+    upload = app_client.post(
+        "/api/uploads/images",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        files={"file": ("source.png", make_png("delete race"), "image/png")},
+    )
+    assert upload.status_code == 200
+    assets = app_client.app.state.container.assets
+    original_open = assets.open
+
+    def delete_after_lookup(relative):
+        path = original_open(relative)
+        path.unlink()
+        return path
+
+    monkeypatch.setattr(assets, "open", delete_after_lookup)
+    response = app_client.get(upload.json()["preview_url"])
+    assert response.status_code == 404
+    assert app_client.app.state.admission.active == 0
+    assert app_client.app.state.container.db.engine.pool.checkedout() == 0

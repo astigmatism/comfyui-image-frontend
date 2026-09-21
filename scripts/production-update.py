@@ -14,6 +14,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -25,6 +26,7 @@ backup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backup)
 APP, EDGE = backup.APP, backup.EDGE
 PROJECT = "comfyui-image-frontend"
+LAST_READINESS = {"reason": "not-probed"}
 require, output, inspect = backup.require, backup.output, backup.inspect
 
 
@@ -200,38 +202,116 @@ print('Candidate import, migrations, database, worker and assets passed as confi
         )
 
 
-def verify_service(compose, config, root, image_id, edge_id):
-    app_id = output(*compose, "ps", "-q", APP).strip()
-    require(bool(app_id), "App container missing")
-    require(inspect(app_id)["Image"] == image_id, "Running app image differs from selected image")
-    require(output(*compose, "ps", "-q", EDGE).strip() == edge_id, "Edge identity changed")
-    code = (
-        "import json,urllib.request; from app.config import get_settings; "
-        "h=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=5)); "
-        "h['explicit_runtime']=get_settings().comfyui_instance_configuration_mode=='explicit'; "
-        "print(json.dumps(h))"
-    )
-    deadline = time.monotonic() + 120
-    while True:
-        h = json.loads(output("docker", "exec", app_id, "python", "-c", code))
-        worker = h.get("worker", {})
-        if (
-            h.get("status") == "ok"
-            and h.get("database")
-            and h.get("explicit_runtime")
+def application_ready(app_id):
+    """A bounded direct probe; operational failures are data, not structural failures."""
+    code = """
+import json, urllib.request, urllib.error
+from app.config import get_settings
+try:
+    response = urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)
+except urllib.error.HTTPError as error:
+    response = error
+health = json.load(response)
+health['explicit_runtime'] = get_settings().comfyui_instance_configuration_mode == 'explicit'
+print(json.dumps(health))
+"""
+    try:
+        checked = subprocess.run(
+            ["docker", "exec", app_id, "python", "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if checked.returncode:
+            LAST_READINESS.clear()
+            LAST_READINESS.update(reason="application-probe-unavailable")
+            return False
+        health = json.loads(checked.stdout)
+        worker = health.get("worker", {})
+        LAST_READINESS.clear()
+        LAST_READINESS.update(
+            database=bool(health.get("database")),
+            worker_ready=bool(worker.get("ready")),
+            worker_state=worker.get("state")
+            if worker.get("state")
+            in {
+                "not_started",
+                "recovering",
+                "running",
+                "backing_off",
+                "stopping",
+                "stopped",
+                "failed",
+            }
+            else "unknown",
+            automation_ready=bool(health.get("automation", {}).get("ready")),
+            explicit_runtime=bool(health.get("explicit_runtime")),
+        )
+        return bool(
+            health.get("status") == "ok"
+            and health.get("database")
+            and health.get("explicit_runtime")
             and worker.get("state") == "running"
             and worker.get("ready")
             and worker.get("dispatcher_running")
             and worker.get("heartbeat_fresh")
-        ):
-            break
-        require(time.monotonic() < deadline, "Worker did not finish recovering within 120 seconds")
-        time.sleep(2)
-    for container in (app_id, edge_id):
-        require(
-            inspect(container)["State"].get("Health", {}).get("Status") == "healthy",
-            "Container unhealthy",
         )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        LAST_READINESS.clear()
+        LAST_READINESS.update(reason="application-probe-unavailable")
+        return False
+
+
+def wait_for_application(app_id, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        if application_ready(app_id):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(2, remaining))
+
+
+def restart_application(app_id, log):
+    subprocess.run(
+        ["docker", "restart", "--time", "180", app_id],
+        check=True,
+        timeout=210,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+    )
+
+
+def recover_application(app, report, log):
+    if application_ready(app["Id"]):
+        report("readiness", recovery="not-needed")
+        return False
+    readiness = dict(LAST_READINESS)
+    # The existing Portal selects the first log line containing "failed" as
+    # its error summary. Reserve that word for the eventual human Error line.
+    if readiness.get("worker_state") == "failed":
+        readiness["worker_state"] = "unavailable"
+    report("recovery-wait", recovery="waiting-up-to-60-seconds", readiness=readiness)
+    if wait_for_application(app["Id"], 60):
+        report("readiness", recovery="recovered-without-restart")
+        return False
+    report("recovery-restart", recovery="restart-attempted")
+    restart_application(app["Id"], log)
+    report("recovery-verification", recovery="restart-attempted")
+    return True
+
+
+def verify_service(compose, config, root, image_id, edge_id):
+    app_id = output(*compose, "ps", "--all", "-q", APP).strip()
+    require(bool(app_id), "App container missing")
+    require(inspect(app_id)["Image"] == image_id, "Running app image differs from selected image")
+    require(output(*compose, "ps", "--all", "-q", EDGE).strip() == edge_id, "Edge identity changed")
+    deadline = time.monotonic() + 120
+    require(
+        wait_for_application(app_id, 120),
+        "Application readiness failed within 120 seconds: " + json.dumps(LAST_READINESS),
+    )
     edge = config["services"][EDGE]
     host = edge["environment"]["CIF_TLS_HOSTNAME"]
     port = next(p for p in edge["ports"] if p["target"] == 8443)
@@ -250,43 +330,70 @@ def verify_service(compose, config, root, image_id, edge_id):
         "--resolve",
         f"{host}:{port['published']}:{port['host_ip']}",
     ]
-    health = json.loads(output(*curl, origin + "/api/health"))
+
+    def read_url(path, *, discard=False):
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "Final verification exceeded 120 seconds")
+        bounded = list(curl)
+        bounded[bounded.index("--max-time") + 1] = str(min(10, remaining))
+        return output(*bounded, *(["--output", "/dev/null"] if discard else []), origin + path)
+
+    try:
+        health = json.loads(read_url("/api/health"))
+    except (RuntimeError, ValueError) as error:
+        raise RuntimeError(
+            "Trusted HTTPS verification failed while the application is ready"
+        ) from error
     require(
         health["status"] == "ok" and health["database"] and health["worker"]["state"] == "running",
         "HTTPS health check failed",
     )
-    page = output(*curl, origin + "/")
-    manifest = json.loads(output(*curl, origin + "/build.json"))
+    page = read_url("/")
+    manifest = json.loads(read_url("/build.json"))
     image_manifest = json.loads(
         output("docker", "exec", app_id, "cat", "/app/frontend/dist/build.json")
     )
     require(manifest == image_manifest, "Served manifest differs from running image")
-    for key in ("app", "styles", "lora_stack"):
-        path = manifest["assets"][key]
+    for key, path in manifest["assets"].items():
         require(path.startswith("/assets/") and not path.startswith("//"), "Unexpected asset path")
         if key in ("app", "styles"):
             require(path in page, "HTML asset does not match manifest")
-        output(*curl, "--output", "/dev/null", origin + path)
+        read_url(path, discard=True)
+    for container in (app_id, edge_id):
+        while inspect(container)["State"].get("Health", {}).get("Status") != "healthy":
+            require(
+                time.monotonic() < deadline,
+                "TLS edge health failed while the application is ready"
+                if container == edge_id
+                else "Application container health did not recover",
+            )
+            time.sleep(2)
     return {
         "app_id": app_id,
+        "app_started_at": inspect(app_id)["State"]["StartedAt"],
         "asset_version": manifest["asset_version"],
         "worker": "running",
         "https": "verified",
     }
 
 
-def deploy(root, sha, check_only=False):
+def _deploy(root, sha, check_only, restart, report, log, directory):
     require(re.fullmatch(r"[0-9a-f]{40}", sha), "Expected a full target SHA")
     os.umask(0o077)
     os.environ.update(GIT_TERMINAL_PROMPT="0", GIT_PAGER="cat")
     source = root / "source"
     compose = compose_command(root)
-    lock = root / ".deployment-update.lock"
-    require(not lock.exists(), "Deployment lock exists; report it rather than force-unlocking")
     require(not (source / ".git/service-portal-update.lock").exists(), "Portal update lock exists")
-    app = backup.preflight(root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"))
+    report("structural-preflight")
+    require(
+        output("docker", "info", "--format", "{{.Name}}").strip() == "samus",
+        "Expected the Samus production Docker daemon",
+    )
+    app = backup.preflight(
+        root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"), require_health=False
+    )
     before = json.loads(output(*compose, "config", "--format", "json"))
-    edge_id = output(*compose, "ps", "-q", EDGE).strip()
+    edge_id = output(*compose, "ps", "--all", "-q", EDGE).strip()
     edge = inspect(edge_id)
     require(
         output("git", "-C", str(source), "remote", "get-url", "origin").strip()
@@ -332,18 +439,42 @@ def deploy(root, sha, check_only=False):
         str(cert_dir / "tls.crt"),
     )
     output("openssl", "x509", "-in", str(cert_dir / "tls.crt"), "-noout", "-checkend", "86400")
-    if check_only or sha == deployed:
+    require(
+        output("openssl", "x509", "-in", str(cert_dir / "tls.crt"), "-noout", "-pubkey")
+        == output("openssl", "pkey", "-in", str(cert_dir / "tls.key"), "-pubout"),
+        "TLS certificate and private key do not match",
+    )
+    report("operational-preflight", previous_sha=deployed, frozen_main=frozen)
+    if check_only:
         verified = verify_service(compose, before, root, app["Image"], edge_id)
-        print(
-            json.dumps(
-                {
-                    "outcome": "check-passed" if check_only else "already-current",
-                    "target_sha": sha,
-                    "deployed_sha": deployed,
-                    **verified,
-                }
-            ),
-            flush=True,
+        report("complete", exit_code=0, outcome="check-passed", **verified)
+        return
+    recovered_by_restart = recover_application(app, report, log)
+    # A healthy application with a broken TLS edge must fail with its actual cause.
+    verify_service(compose, before, root, app["Image"], edge_id)
+    if recovered_by_restart:
+        report("readiness", recovery="restart-verified")
+    if sha == deployed:
+        if restart and not recovered_by_restart:
+            report("requested-restart")
+            restart_application(app["Id"], log)
+        report("final-verification")
+        verified = verify_service(compose, before, root, app["Image"], edge_id)
+        backup.preflight(root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"))
+        require(
+            json.loads(output(*compose, "config", "--format", "json")) == before,
+            "Configuration changed during restart verification",
+        )
+        if (restart or recovered_by_restart) and "StartedAt" in app["State"]:
+            require(
+                inspect(app["Id"])["State"]["StartedAt"] != app["State"]["StartedAt"],
+                "Application start time did not change after restart",
+            )
+        report(
+            "complete",
+            exit_code=0,
+            outcome="restarted" if restart or recovered_by_restart else "already-current",
+            **verified,
         )
         return
     candidate = candidate_files(root, sha)
@@ -351,34 +482,9 @@ def deploy(root, sha, check_only=False):
     require(
         shutil.disk_usage(root).free > size + 2 * 1024**3, "Insufficient backup/build disk space"
     )
-    lock.mkdir()
-    directory = (
-        root
-        / ".deployment-backups"
-        / ("update-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + sha[:12])
-    )
     saved = {}
     cutover = False
-    log = None
     try:
-        (lock / "owner.json").write_text(
-            json.dumps({"job": os.environ.get("CIF_MAINTENANCE_CONTAINER"), "pid": os.getpid()})
-        )
-        directory.mkdir(mode=0o700, parents=True)
-        log = (directory / "deployment.log").open("w")
-        status = {
-            "target_sha": sha,
-            "previous_sha": deployed,
-            "frozen_main": frozen,
-            "started_at": time.time(),
-        }
-
-        def report(phase, **fields):
-            status.update(phase=phase, updated_at=time.time(), **fields)
-            atomic_write(
-                directory / "deployment-status.json", (json.dumps(status, indent=2) + "\n").encode()
-            )
-            print(json.dumps({"phase": phase, "time": status["updated_at"], **fields}), flush=True)
 
         def run(command, timeout=180):
             subprocess.run(
@@ -466,8 +572,8 @@ def deploy(root, sha, check_only=False):
             == edge["Image"],
             "Edge image changed",
         )
-        report("reconciling")
         cutover = True
+        report("reconciling", cutover_attempted=True)
         run(
             [
                 *compose,
@@ -481,7 +587,7 @@ def deploy(root, sha, check_only=False):
                 "120",
             ]
         )
-        report("verifying")
+        report("final-verification")
         verified = verify_service(compose, after, root, image_id, edge_id)
         backup.preflight(root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"))
         require(
@@ -498,44 +604,132 @@ def deploy(root, sha, check_only=False):
             "TLS material changed",
         )
         report("complete", exit_code=0, image_id=image_id, **verified)
-    except Exception as error:
+    except Exception:
         if not cutover:
             for name, contents in saved.items():
                 atomic_write(root / name, contents)
-        if directory.exists():
-            failed_phase = status.get("phase", "preparing") if "status" in locals() else "preparing"
+        raise
+
+
+def public_error(error, phase):
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"Command timed out during {phase}; see the restricted deployment log"
+    if isinstance(error, subprocess.CalledProcessError):
+        return (
+            f"Command failed during {phase} (exit {error.returncode}); "
+            "see the restricted deployment log"
+        )
+    if isinstance(error, RuntimeError):
+        return re.sub(r"[\x00-\x1f\x7f]+", " ", str(error))[:1000]
+    return f"{type(error).__name__} during {phase}; see the restricted deployment log"
+
+
+def deploy(root, sha, check_only=False, restart=False):
+    require(not (check_only and restart), "--check-only cannot be combined with --restart")
+    os.umask(0o077)
+    lock = root / ".deployment-update.lock"
+    directory = None
+    log = None
+    acquired = False
+    status = {
+        "target_sha": sha,
+        "job": os.environ.get("CIF_MAINTENANCE_CONTAINER", "native-host"),
+        "started_at": time.time(),
+        "phase": "bootstrap",
+        "recovery": "not-attempted",
+        "cutover_attempted": False,
+    }
+
+    def report(phase, **fields):
+        status.update(phase=phase, updated_at=time.time(), **fields)
+        if directory is not None:
+            atomic_write(
+                directory / "deployment-status.json", (json.dumps(status, indent=2) + "\n").encode()
+            )
+        print(json.dumps(status), flush=True)
+
+    try:
+        require(re.fullmatch(r"[0-9a-f]{40}", sha), "Expected a full target SHA")
+        require(
+            root.is_absolute() and root.resolve() == root and root.is_dir(),
+            "Expected an existing canonical deployment root",
+        )
+        require(
+            root.stat().st_uid == os.getuid() and os.getuid() != 0,
+            "Run as the deployment owner, not root",
+        )
+        require(
+            not (root / ".deployment-backups").is_symlink(),
+            "Deployment records directory must not be a symlink",
+        )
+        if not check_only:
+            # Keep preflight diagnostics too. These records contain private config
+            # only in later phases and are always restricted to the deployment owner.
+            directory = root / ".deployment-backups" / (f"update-{time.time_ns()}-{sha[:12]}")
+            directory.mkdir(mode=0o700, parents=True)
+            log = (directory / "deployment.log").open("w")
+        report("lock", backup=str(directory) if directory else None)
+        require(
+            not lock.exists(),
+            "Deployment lock exists; inspect its owner instead of force-unlocking",
+        )
+        if not check_only:
+            try:
+                lock.mkdir(mode=0o700)
+            except FileExistsError as error:
+                raise RuntimeError("Deployment lock was acquired by another job") from error
+            acquired = True
+            (lock / "owner.json").write_text(json.dumps({"job": status["job"], "pid": os.getpid()}))
+        _deploy(root, sha, check_only, restart, report, log, directory)
+    except Exception as error:
+        failed_phase = status["phase"]
+        cause = public_error(error, failed_phase)
+        message = (
+            f"Error: production update failed during {failed_phase}: {cause}. "
+            f"Recovery: {status['recovery']}. Deployment job: {status['job']}."
+        )
+        print(message, flush=True)
+        if directory is not None:
             atomic_write(
                 directory / "failure.json",
                 json.dumps(
                     {
-                        "error": str(error),
-                        "cutover_attempted": cutover,
-                        "configuration_restored": not cutover,
-                        "data_restored": False,
+                        "error": cause,
                         "failed_phase": failed_phase,
+                        "cutover_attempted": status["cutover_attempted"],
+                        "configuration_restored": not status["cutover_attempted"],
+                        "data_restored": False,
+                        "recovery": status["recovery"],
+                        "job": status["job"],
                     }
                 ).encode(),
             )
-            if "report" in locals():
-                report("failed", exit_code=1, failed_phase=failed_phase, cutover_attempted=cutover)
+        report("failed", exit_code=1, failed_phase=failed_phase, error=cause)
         raise
     finally:
         if log:
             log.close()
-        (lock / "owner.json").unlink(missing_ok=True)
-        lock.rmdir()
+        if acquired:
+            (lock / "owner.json").unlink(missing_ok=True)
+            lock.rmdir()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deploy-root", type=Path, required=True)
     parser.add_argument("--sha", required=True)
-    parser.add_argument("--check-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-only", action="store_true")
+    mode.add_argument("--restart", action="store_true")
     args = parser.parse_args()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, backup.interrupted)
-    deploy(args.deploy_root, args.sha, args.check_only)
+    try:
+        deploy(args.deploy_root, args.sha, args.check_only, args.restart)
+    except Exception:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

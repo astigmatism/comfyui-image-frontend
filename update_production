@@ -3,13 +3,20 @@
 # It works through either the native host path or the agent's /host view.
 set -Eeuo pipefail
 export GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat
+phase='bootstrap validation'
+trap 'printf "Error: production update failed during %s (exit %s); see preceding cause and retained deployment job, if launched.\n" "$phase" "$?" >&2' ERR
+printf 'Phase: bootstrap validation\n'
+
 deploy_view=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source_view="$deploy_view/source"
 test "$(git -C "$source_view" remote get-url origin)" = https://github.com/astigmatism/comfyui-image-frontend.git
+phase='release fetch'
+printf 'Phase: release fetch\n'
 git -C "$source_view" fetch origin main
 target_sha=$(git -C "$source_view" rev-parse --verify 'origin/main^{commit}')
 # BusyBox (the Portal runner), GNU and BSD mktemp all accept trailing Xs.
 launch_file=$(mktemp /tmp/cif-launch.XXXXXXXX)
 trap 'rm -f "$launch_file"' EXIT
 git -C "$source_view" show "$target_sha:scripts/launch-production-update.py" > "$launch_file"
+phase='launcher execution'
 python3 "$launch_file" --source-view "$source_view" --sha "$target_sha" "$@"

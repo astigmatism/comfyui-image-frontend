@@ -347,7 +347,11 @@ Temporary Prompt Assistant/runtime outages retain the enabled setting and retry 
 
 Generation controls and display preferences are saved per account through `/api/preferences`, with revision checks and conflict resolution across devices. Existing browser settings are imported only when shared settings have not been initialized; subsequent browsers use the saved server values. Temporary navigation, dialogs, playback, and unsaved typing remain local. The UI reports saving failures and never treats an unavailable automation status as off.
 
-The authenticated automation API is `GET/PUT /api/auto-generation`, with `POST /apply`, `/retry`, and `/limit` beneath that path. Mutations require CSRF and `expected_revision`; stale revisions return HTTP 409. Manual generation submissions to `/api/generations` and `/api/generations/batch` require `X-CIF-Generation-Protocol: 2`. Update API clients and reload existing browser tabs when deploying this release; obsolete clients receive `client_reload_required` rather than continuing their browser-owned loops. The coordinator runs in the existing single application process, and `/api/health` includes its readiness.
+The authenticated automation API is `GET/PUT /api/auto-generation`, with `POST /apply`, `/retry`, and `/limit` beneath that path. Mutations require CSRF and `expected_revision`; stale revisions return HTTP 409. Manual generation submissions to `/api/generations` and `/api/generations/batch` require `X-CIF-Generation-Protocol: 3` and an account-scoped UUID `Idempotency-Key`.
+Accepted submissions and ordered batch failures have durable receipts. Identical retries
+reuse the original IDs; changed payloads conflict. The browser preserves unresolved
+submissions across reloads and exposes a status-check/resume action. See
+[concurrency and update reliability](docs/production-reliability.md). Update API clients and reload existing browser tabs when deploying this release; obsolete clients receive `client_reload_required` rather than continuing their browser-owned loops. The coordinator runs in the existing single application process, and `/api/health` includes its readiness.
 
 Browser closure or sign-out does not cancel work. Queued jobs survive restarts, but cancelling one before dispatch deletes its generation record and removes its gallery card. Running jobs reconcile from stored prompt ID, queue state, events, and history. Running cancellation is asynchronous; already returned partial files remain available when safely archived.
 

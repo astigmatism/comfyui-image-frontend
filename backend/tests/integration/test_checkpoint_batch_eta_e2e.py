@@ -30,6 +30,7 @@ import socket
 import threading
 import time
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -46,7 +47,9 @@ MOODY_DISPLAY_NAME = "Moody Krea 2 Mix V4"
 
 
 def _post(client, path, payload):
-    response = client.post(path, headers={"X-CSRF-Token": csrf(client)}, json=payload)
+    response = client.post(
+        path, headers={"X-CSRF-Token": csrf(client), "Idempotency-Key": str(uuid4())}, json=payload
+    )
     assert response.status_code == 201, response.text
     return response.json()
 

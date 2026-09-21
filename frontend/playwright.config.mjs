@@ -15,7 +15,7 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL,
-    extraHTTPHeaders: { "X-CIF-Generation-Protocol": "2" },
+    extraHTTPHeaders: { "X-CIF-Generation-Protocol": "3" },
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     ...devices["Desktop Chrome"],

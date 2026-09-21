@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking as _run_blocking
 from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
 from ..models import (
@@ -25,7 +26,7 @@ from ..models import (
     WorkflowProfile,
 )
 from ..schemas import AutoGenerationResponse, AutoGenerationSnapshot, PromptAssistantSnapshot
-from .events import publish_event
+from .events import event_payload
 from .generation_activity import begin_run, retain_deleted_outcome
 from .prompt_assistant import compose_prompt
 from .user_state import lock_user_state, notify_user
@@ -192,45 +193,51 @@ class AutoGenerationService:
         limit: int | None = None,
         reset_limit: bool = False,
     ) -> AutoGenerationResponse:
-        deleted: list[str] = []
-        with self.container.db.session_factory() as session:
-            row = self._get_locked(session, user_id, revision)
-            if enabled is not None and row.enabled == enabled:
-                return response(row, session)
-            if enabled is True or snapshot is not None:
-                if snapshot is None:
-                    raise AppError(
-                        "snapshot_required", "Capture settings before enabling auto generation."
-                    )
-                row.snapshot_json, row.profile_id = self._capture(session, user_id, snapshot)
-                row.latest_prompt = snapshot.assistant.prompt if snapshot.assistant else None
-            if (retry or reset_limit) and not row.snapshot_json:
-                raise AppError("snapshot_required", "Enable auto generation first.")
-            if enabled is True:
-                row.accepted_count = 0
-            if reset_limit:
-                row.snapshot_json = {**row.snapshot_json, "max_generations": limit}
-                row.accepted_count = 0
-            self._invalidate(session, row)
-            if enabled is not None:
-                row.enabled = enabled
-            row.status = "waiting" if row.enabled else "off"
-            if enabled is False:
-                # Serialize with dispatch. No external requests or partial commits here.
-                queued = session.scalars(
-                    select(Generation).where(
-                        Generation.owner_id == user_id,
-                        Generation.auto_cycle_id.is_not(None),
-                        Generation.status == GenerationStatus.QUEUED,
-                    )
-                ).all()
-                for job in queued:
-                    job.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
-                    retain_deleted_outcome(session, job)
-                    deleted.append(job.id)
-                    session.delete(job)
-            session.commit()
-            result = response(row, session)
+        def change_transaction() -> tuple[bool, AutoGenerationResponse, list[str]]:
+            deleted: list[str] = []
+            with self.container.db.session_factory() as session:
+                row = self._get_locked(session, user_id, revision)
+                if enabled is not None and row.enabled == enabled:
+                    return False, response(row, session), []
+                if enabled is True or snapshot is not None:
+                    if snapshot is None:
+                        raise AppError(
+                            "snapshot_required", "Capture settings before enabling auto generation."
+                        )
+                    row.snapshot_json, row.profile_id = self._capture(session, user_id, snapshot)
+                    row.latest_prompt = snapshot.assistant.prompt if snapshot.assistant else None
+                if (retry or reset_limit) and not row.snapshot_json:
+                    raise AppError("snapshot_required", "Enable auto generation first.")
+                if enabled is True:
+                    row.accepted_count = 0
+                if reset_limit:
+                    row.snapshot_json = {**row.snapshot_json, "max_generations": limit}
+                    row.accepted_count = 0
+                self._invalidate(session, row)
+                if enabled is not None:
+                    row.enabled = enabled
+                row.status = "waiting" if row.enabled else "off"
+                if enabled is False:
+                    # Serialize with dispatch. No external requests or partial commits here.
+                    queued = session.scalars(
+                        select(Generation).where(
+                            Generation.owner_id == user_id,
+                            Generation.auto_cycle_id.is_not(None),
+                            Generation.status == GenerationStatus.QUEUED,
+                        )
+                    ).all()
+                    for job in queued:
+                        job.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
+                        retain_deleted_outcome(session, job)
+                        deleted.append(job.id)
+                        session.delete(job)
+                session.commit()
+                result = response(row, session)
+            return True, result, deleted
+
+        changed, result, deleted = await _run_blocking(change_transaction)
+        if not changed:
+            return result
         for job_id in deleted:
             await self.container.broker.publish(
                 user_id,
@@ -254,16 +261,20 @@ class AutoGenerationService:
                     await asyncio.sleep(0.1)
                     continue
                 if not recovered:
-                    with self.container.db.session_factory() as session:
-                        lock_user_state(session)
-                        session.execute(
-                            update(AutoGenerationCycle)
-                            .where(
-                                AutoGenerationCycle.state == "preparing",
+
+                    def clear_abandoned_claims() -> None:
+                        with self.container.db.session_factory() as session:
+                            lock_user_state(session)
+                            session.execute(
+                                update(AutoGenerationCycle)
+                                .where(
+                                    AutoGenerationCycle.state == "preparing",
+                                )
+                                .values(claim=None)
                             )
-                            .values(claim=None)
-                        )
-                        session.commit()
+                            session.commit()
+
+                    await _run_blocking(clear_abandoned_claims)
                     recovered = True
                 self._ready = True
                 for user_id, task in list(self._users.items()):
@@ -271,21 +282,26 @@ class AutoGenerationService:
                         if not task.cancelled():
                             task.result()
                         del self._users[user_id]
-                with self.container.db.session_factory() as session:
-                    owners = list(
-                        session.scalars(
-                            select(AutoGeneration.user_id)
-                            .join(
-                                User,
-                                User.id == AutoGeneration.user_id,
-                            )
-                            .where(
-                                AutoGeneration.enabled.is_(True),
-                                AutoGeneration.status != "blocked",
-                                User.state == UserState.ACTIVE,
+
+                def enabled_owners() -> list[str]:
+                    with self.container.db.session_factory() as session:
+                        owners = list(
+                            session.scalars(
+                                select(AutoGeneration.user_id)
+                                .join(
+                                    User,
+                                    User.id == AutoGeneration.user_id,
+                                )
+                                .where(
+                                    AutoGeneration.enabled.is_(True),
+                                    AutoGeneration.status != "blocked",
+                                    User.state == UserState.ACTIVE,
+                                )
                             )
                         )
-                    )
+                    return owners
+
+                owners = await _run_blocking(enabled_owners)
                 for user_id in owners:
                     if user_id not in self._users:
                         self._users[user_id] = asyncio.create_task(self.step(user_id))
@@ -299,259 +315,306 @@ class AutoGenerationService:
             await asyncio.sleep(max(0.1, self.container.settings.dispatch_poll_seconds))
 
     async def step(self, user_id: str) -> None:
-        revision: int | None = None
+        revision = None
+        prepared = None
         try:
-            with self.container.db.session_factory() as session:
-                lock_user_state(session)
-                row = session.get(AutoGeneration, user_id)
-                user = session.get(User, user_id)
-                if (
-                    not row
-                    or not row.enabled
-                    or row.status == "blocked"
-                    or not user
-                    or user.state != UserState.ACTIVE
-                ):
-                    return
-                revision = row.revision
-                if row.next_retry_at and row.next_retry_at.replace(tzinfo=UTC) > datetime.now(UTC):
-                    return
-                snapshot = AutoGenerationSnapshot.model_validate(row.snapshot_json)
-                # A failed accepted cycle is observed once; never flood the gallery with failures.
-                accepted = session.scalars(
-                    select(AutoGenerationCycle).where(
-                        AutoGenerationCycle.user_id == user_id,
-                        AutoGenerationCycle.state == "accepted",
-                    )
-                ).all()
-                for previous in accepted:
-                    jobs = session.scalars(
-                        select(Generation).where(Generation.auto_cycle_id == previous.id)
-                    ).all()
-                    if any(job.status in ACTIVE_STATUSES for job in jobs):
-                        continue
-                    previous.state = "completed"
-                    failed = next(
-                        (
-                            job
-                            for job in jobs
-                            if job.status
-                            in {
-                                GenerationStatus.FAILED_WITH_ARTIFACTS,
-                                GenerationStatus.FAILED_WITHOUT_ARTIFACTS,
-                                GenerationStatus.INTERRUPTED,
-                            }
-                        ),
-                        None,
-                    )
-                    if failed and previous.revision == revision:
-                        row.status = "blocked"
-                        row.error_code = failed.error_code or "automatic_generation_failed"
-                        row.message = (
-                            failed.error_message
-                            or "An automatic generation failed. Review its result, then retry."
-                        )
-                        session.commit()
-                        await notify_user(self.container.broker, user_id, "auto_generation.updated")
-                        return
-                cycle = session.scalar(
-                    select(AutoGenerationCycle).where(
-                        AutoGenerationCycle.user_id == user_id,
-                        AutoGenerationCycle.revision == revision,
-                        AutoGenerationCycle.state.in_(["preparing", "ready"]),
-                    )
+            preparing = asyncio.create_task(_run_blocking(self._prepare_cycle, user_id))
+            try:
+                prepared = await asyncio.shield(preparing)
+            except asyncio.CancelledError:
+                prepared = await preparing
+                raise
+            if prepared is None:
+                return
+            revision = prepared["revision"]
+            if prepared["action"] == "changed":
+                await notify_user(self.container.broker, user_id, "auto_generation.updated")
+                return
+            if prepared["action"] == "compose":
+                await notify_user(self.container.broker, user_id, "auto_generation.updated")
+                composed = None
+                if prepared["assistant"]:
+                    composed = await compose_prompt(self.container, user_id, prepared["assistant"])
+                completed = await _run_blocking(
+                    self._complete_composition, user_id, prepared, composed
                 )
-                if cycle is None:
-                    cycle = AutoGenerationCycle(user_id=user_id, revision=revision)
-                    session.add(cycle)
-                    session.flush()
-                if cycle.state == "preparing":
-                    if cycle.claim:
-                        return
-                    claim = str(uuid.uuid4())
-                    cycle.claim = claim
-                    cycle_id = cycle.id
-                    row.status = "preparing"
-                    latest = row.latest_prompt
-                    session.commit()
-                    assistant = snapshot.assistant
-                    # Release the connection while calling the model.
-                    session.close()
-                    await notify_user(self.container.broker, user_id, "auto_generation.updated")
-                    composed = None
-                    if assistant:
-                        assistant = assistant.model_copy(
-                            update={"prompt": latest or assistant.prompt}
-                        )
-                        composed = await compose_prompt(self.container, session, user_id, assistant)
-                    lock_user_state(session)
-                    session.expire_all()
-                    row = session.get(AutoGeneration, user_id)
-                    cycle = session.get(AutoGenerationCycle, cycle_id)
-                    if (
-                        not row
-                        or not row.enabled
-                        or row.revision != revision
-                        or not cycle
-                        or cycle.claim != claim
-                    ):
-                        return
-                    cycle.prompt = composed.prompt if composed else None
-                    cycle.prompt_run_id = composed.composition_id if composed else None
-                    cycle.state = "ready"
-                    cycle.claim = None
-                    session.commit()
-                # Reacquire a transaction: controls may have changed during composition.
-                lock_user_state(session)
-                session.expire_all()
-                row = session.get(AutoGeneration, user_id)
-                cycle = session.get(AutoGenerationCycle, cycle.id)
-                if (
-                    not row
-                    or not row.enabled
-                    or row.revision != revision
-                    or not cycle
-                    or cycle.state != "ready"
-                ):
+                if not completed:
                     return
-                pending = session.scalar(
-                    select(Generation.id)
-                    .where(
-                        Generation.owner_id == user_id,
-                        Generation.status.in_(ACTIVE_STATUSES),
-                    )
-                    .limit(1)
-                )
-                if pending:
-                    row.status = "generating"
-                    session.commit()
-                    return
-                limit = snapshot.max_generations
-                budget = (
-                    min(len(snapshot.variants) * snapshot.quantity, limit - row.accepted_count)
-                    if limit is not None
-                    else len(snapshot.variants) * snapshot.quantity
-                )
-                if budget <= 0:
-                    row.enabled = False
-                    row.status = "completed"
-                    row.message = "Generation limit reached."
-                    session.commit()
-                    await notify_user(self.container.broker, user_id, "auto_generation.updated")
-                    return
-                profile = session.get(WorkflowProfile, row.profile_id)
-                if profile is None:
-                    raise AppError("source_unavailable", "The captured workflow is unavailable.")
-                parameters = copy.deepcopy(snapshot.generation.public_parameters)
-                if cycle.prompt:
-                    prompt_id = next(
-                        (
-                            item["id"]
-                            for item in profile.resolved_contract_json.get("inputs", [])
-                            if item.get("semantic_role") == "positive_prompt"
-                        ),
-                        None,
-                    )
-                    if not prompt_id:
-                        raise AppError(
-                            "source_unavailable", "The captured workflow has no prompt input."
-                        )
-                    parameters[prompt_id] = cycle.prompt
-                # Quantity one shares a seed across checkpoints; repeats resolve independently.
-                if snapshot.quantity == 1:
-                    compiled = self.container.generations._compile(
-                        session,
-                        user=user,
-                        profile=profile,
-                        request=snapshot.generation.model_copy(
-                            update={
-                                "parameters": {**parameters, **snapshot.variants[0]},
-                                "controls": None,
-                            }
-                        ),
-                    )
-                    parameters.update(
-                        {key: str(value) for key, value in compiled.resolved_seeds.items()}
-                    )
-                run = begin_run(session, user_id, budget)
-                events: list[GenerationEvent] = []
-                for variant in snapshot.variants:
-                    for _ in range(snapshot.quantity):
-                        if len(events) >= budget:
-                            break
-                        request = snapshot.generation.model_copy(
-                            update={
-                                "parameters": {**parameters, **variant},
-                                "controls": None,
-                                "prompt_assistant_run_id": cycle.prompt_run_id
-                                if not events
-                                else None,
-                            }
-                        )
-                        generation, event = self.container.generations._prepare_accept(
-                            session,
-                            user=user,
-                            request=request,
-                            frozen_profile=profile,
-                        )
-                        generation.auto_cycle_id = cycle.id
-                        session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
-                        events.append(event)
-                cycle.state = "accepted"
-                row.accepted_count += len(events)
-                row.latest_prompt = cycle.prompt or row.latest_prompt
-                row.failures = 0
-                row.next_retry_at = None
-                row.error_code = None
-                row.message = None
-                row.status = "generating"
-                if limit is not None and row.accepted_count >= limit:
-                    row.enabled = False
-                    row.status = "completed"
-                    row.message = "Generation limit reached. The final jobs will finish."
-                session.commit()
-                logger.info(
-                    "auto_generation_cycle_accepted",
-                    extra={"actor_user_id": user_id, "target_id": cycle.id},
-                )
-                for event in events:
-                    await publish_event(self.container.broker, event)
+            events = await _run_blocking(
+                self._accept_ready, user_id, revision, prepared["cycle_id"]
+            )
+            for event in events or []:
+                await self.container.broker.publish(user_id, event)
             await notify_user(self.container.broker, user_id, "auto_generation.updated")
         except asyncio.CancelledError:
+            if prepared and prepared.get("claim"):
+                await _run_blocking(self._release_claim, user_id, prepared)
             raise
         except Exception as error:
             logger.warning(
                 "auto_generation_cycle_failed",
                 extra={"actor_user_id": user_id, "exception_class": type(error).__name__},
             )
-            with self.container.db.session_factory() as session:
-                lock_user_state(session)
-                row = session.get(AutoGeneration, user_id)
-                if not row or not row.enabled or row.revision != revision:
-                    return
-                session.execute(
-                    update(AutoGenerationCycle)
-                    .where(
-                        AutoGenerationCycle.user_id == user_id,
-                        AutoGenerationCycle.state == "preparing",
-                    )
-                    .values(claim=None)
-                )
-                retryable = not isinstance(error, AppError) or error.code in _RETRYABLE
-                row.failures += 1
-                row.status = "retrying" if retryable else "blocked"
-                row.error_code = (
-                    error.code if isinstance(error, AppError) else "automation_unavailable"
-                )
-                row.message = (
-                    error.message
-                    if isinstance(error, AppError)
-                    else "Auto generation is temporarily unavailable. Retrying."
-                )
-                row.next_retry_at = (
-                    datetime.now(UTC) + timedelta(seconds=min(60, 2 ** min(row.failures - 1, 6)))
-                    if retryable
-                    else None
-                )
-                session.commit()
+            await _run_blocking(self._record_error, user_id, revision, error)
             await notify_user(self.container.broker, user_id, "auto_generation.updated")
+
+    def _prepare_cycle(self, user_id: str) -> dict[str, Any] | None:
+        with self.container.db.session_factory() as session:
+            lock_user_state(session)
+            row = session.get(AutoGeneration, user_id)
+            user = session.get(User, user_id)
+            if (
+                not row
+                or not row.enabled
+                or row.status == "blocked"
+                or not user
+                or user.state != UserState.ACTIVE
+            ):
+                return None
+            revision = row.revision
+            if row.next_retry_at and row.next_retry_at.replace(tzinfo=UTC) > datetime.now(UTC):
+                return None
+            snapshot = AutoGenerationSnapshot.model_validate(row.snapshot_json)
+            # A failed accepted cycle is observed once; never flood the gallery with failures.
+            accepted = session.scalars(
+                select(AutoGenerationCycle).where(
+                    AutoGenerationCycle.user_id == user_id,
+                    AutoGenerationCycle.state == "accepted",
+                )
+            ).all()
+            for previous in accepted:
+                jobs = session.scalars(
+                    select(Generation).where(Generation.auto_cycle_id == previous.id)
+                ).all()
+                if any(job.status in ACTIVE_STATUSES for job in jobs):
+                    continue
+                previous.state = "completed"
+                failed = next(
+                    (
+                        job
+                        for job in jobs
+                        if job.status
+                        in {
+                            GenerationStatus.FAILED_WITH_ARTIFACTS,
+                            GenerationStatus.FAILED_WITHOUT_ARTIFACTS,
+                            GenerationStatus.INTERRUPTED,
+                        }
+                    ),
+                    None,
+                )
+                if failed and previous.revision == revision:
+                    row.status = "blocked"
+                    row.error_code = failed.error_code or "automatic_generation_failed"
+                    row.message = (
+                        failed.error_message
+                        or "An automatic generation failed. Review its result, then retry."
+                    )
+                    session.commit()
+                    return {"action": "changed", "revision": revision}
+            cycle = session.scalar(
+                select(AutoGenerationCycle).where(
+                    AutoGenerationCycle.user_id == user_id,
+                    AutoGenerationCycle.revision == revision,
+                    AutoGenerationCycle.state.in_(["preparing", "ready"]),
+                )
+            )
+            if cycle is None:
+                cycle = AutoGenerationCycle(user_id=user_id, revision=revision)
+                session.add(cycle)
+                session.flush()
+            if cycle.state == "preparing":
+                if cycle.claim:
+                    return None
+                claim = str(uuid.uuid4())
+                cycle.claim = claim
+                cycle_id = cycle.id
+                row.status = "preparing"
+                latest = row.latest_prompt
+                session.commit()
+                assistant = snapshot.assistant
+                if assistant:
+                    assistant = assistant.model_copy(update={"prompt": latest or assistant.prompt})
+                return {
+                    "action": "compose",
+                    "revision": revision,
+                    "cycle_id": cycle_id,
+                    "claim": claim,
+                    "assistant": assistant,
+                }
+            return {"action": "ready", "revision": revision, "cycle_id": cycle.id}
+
+    def _complete_composition(self, user_id: str, prepared: dict[str, Any], composed: Any) -> bool:
+        with self.container.db.session_factory() as session:
+            lock_user_state(session)
+            row = session.get(AutoGeneration, user_id)
+            cycle = session.get(AutoGenerationCycle, prepared["cycle_id"])
+            if (
+                not row
+                or not row.enabled
+                or row.revision != prepared["revision"]
+                or not cycle
+                or cycle.claim != prepared["claim"]
+            ):
+                return False
+            cycle.prompt = composed.prompt if composed else None
+            cycle.prompt_run_id = composed.composition_id if composed else None
+            cycle.state = "ready"
+            cycle.claim = None
+            session.commit()
+            return True
+
+    def _release_claim(self, user_id: str, prepared: dict[str, Any]) -> None:
+        with self.container.db.session_factory() as session:
+            lock_user_state(session)
+            cycle = session.get(AutoGenerationCycle, prepared["cycle_id"])
+            if cycle and cycle.user_id == user_id and cycle.claim == prepared["claim"]:
+                cycle.claim = None
+                session.commit()
+
+    def _accept_ready(
+        self, user_id: str, revision: int, cycle_id: str
+    ) -> list[dict[str, Any]] | None:
+        with self.container.db.session_factory() as session:
+            lock_user_state(session)
+            row = session.get(AutoGeneration, user_id)
+            user = session.get(User, user_id)
+            cycle = session.get(AutoGenerationCycle, cycle_id)
+            if (
+                not row
+                or not row.enabled
+                or row.revision != revision
+                or not user
+                or user.state != UserState.ACTIVE
+                or not cycle
+                or cycle.state != "ready"
+            ):
+                return None
+            snapshot = AutoGenerationSnapshot.model_validate(row.snapshot_json)
+            pending = session.scalar(
+                select(Generation.id)
+                .where(
+                    Generation.owner_id == user_id,
+                    Generation.status.in_(ACTIVE_STATUSES),
+                )
+                .limit(1)
+            )
+            if pending:
+                row.status = "generating"
+                session.commit()
+                return None
+            limit = snapshot.max_generations
+            budget = (
+                min(len(snapshot.variants) * snapshot.quantity, limit - row.accepted_count)
+                if limit is not None
+                else len(snapshot.variants) * snapshot.quantity
+            )
+            if budget <= 0:
+                row.enabled = False
+                row.status = "completed"
+                row.message = "Generation limit reached."
+                session.commit()
+                return None
+            profile = session.get(WorkflowProfile, row.profile_id)
+            if profile is None:
+                raise AppError("source_unavailable", "The captured workflow is unavailable.")
+            parameters = copy.deepcopy(snapshot.generation.public_parameters)
+            if cycle.prompt:
+                prompt_id = next(
+                    (
+                        item["id"]
+                        for item in profile.resolved_contract_json.get("inputs", [])
+                        if item.get("semantic_role") == "positive_prompt"
+                    ),
+                    None,
+                )
+                if not prompt_id:
+                    raise AppError(
+                        "source_unavailable", "The captured workflow has no prompt input."
+                    )
+                parameters[prompt_id] = cycle.prompt
+            # Quantity one shares a seed across checkpoints; repeats resolve independently.
+            if snapshot.quantity == 1:
+                compiled = self.container.generations._compile(
+                    session,
+                    user=user,
+                    profile=profile,
+                    request=snapshot.generation.model_copy(
+                        update={
+                            "parameters": {**parameters, **snapshot.variants[0]},
+                            "controls": None,
+                        }
+                    ),
+                )
+                parameters.update(
+                    {key: str(value) for key, value in compiled.resolved_seeds.items()}
+                )
+            run = begin_run(session, user_id, budget)
+            events: list[GenerationEvent] = []
+            for variant in snapshot.variants:
+                for _ in range(snapshot.quantity):
+                    if len(events) >= budget:
+                        break
+                    request = snapshot.generation.model_copy(
+                        update={
+                            "parameters": {**parameters, **variant},
+                            "controls": None,
+                            "prompt_assistant_run_id": cycle.prompt_run_id if not events else None,
+                        }
+                    )
+                    generation, event = self.container.generations._prepare_accept(
+                        session,
+                        user=user,
+                        request=request,
+                        frozen_profile=profile,
+                    )
+                    generation.auto_cycle_id = cycle.id
+                    session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
+                    events.append(event)
+            cycle.state = "accepted"
+            row.accepted_count += len(events)
+            row.latest_prompt = cycle.prompt or row.latest_prompt
+            row.failures = 0
+            row.next_retry_at = None
+            row.error_code = None
+            row.message = None
+            row.status = "generating"
+            if limit is not None and row.accepted_count >= limit:
+                row.enabled = False
+                row.status = "completed"
+                row.message = "Generation limit reached. The final jobs will finish."
+            session.commit()
+            logger.info(
+                "auto_generation_cycle_accepted",
+                extra={"actor_user_id": user_id, "target_id": cycle.id},
+            )
+            return [event_payload(event) for event in events]
+
+    def _record_error(self, user_id: str, revision: int | None, error: Exception) -> None:
+        with self.container.db.session_factory() as session:
+            lock_user_state(session)
+            row = session.get(AutoGeneration, user_id)
+            if not row or not row.enabled or row.revision != revision:
+                return
+            session.execute(
+                update(AutoGenerationCycle)
+                .where(
+                    AutoGenerationCycle.user_id == user_id,
+                    AutoGenerationCycle.state == "preparing",
+                )
+                .values(claim=None)
+            )
+            retryable = not isinstance(error, AppError) or error.code in _RETRYABLE
+            row.failures += 1
+            row.status = "retrying" if retryable else "blocked"
+            row.error_code = error.code if isinstance(error, AppError) else "automation_unavailable"
+            row.message = (
+                error.message
+                if isinstance(error, AppError)
+                else "Auto generation is temporarily unavailable. Retrying."
+            )
+            row.next_retry_at = (
+                datetime.now(UTC) + timedelta(seconds=min(60, 2 ** min(row.failures - 1, 6)))
+                if retryable
+                else None
+            )
+            session.commit()

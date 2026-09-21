@@ -1,3 +1,5 @@
+import { submitGeneration, setSubmissionOwner, pendingSubmission, recoverSubmission, clearSubmissionStorage } from "./generation-submissions.mjs";
+import { installThumbnails } from "./thumbnails.mjs";
 import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { installLoraControls } from "./lora-stack.mjs";
@@ -89,6 +91,7 @@ import {
 
 const root = document.querySelector("#app");
 const galleryHover = bindGalleryCardHover(root);
+installThumbnails(root);
 
 const state = {
   session: null,
@@ -452,6 +455,7 @@ async function handleClick(event) {
     else if (action === "select-all-checkpoints") updateAllSourcePickerCheckpoints(true);
     else if (action === "clear-all-checkpoints") updateAllSourcePickerCheckpoints(false);
     else if (action === "logout") await logout();
+    else if (action === "resume-submission") await resumeGenerationSubmission(true);
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
       renderPasswordChange(false);
@@ -2143,6 +2147,8 @@ async function submitPassword(form) {
 
 async function logout() {
   await api("/api/auth/logout", { method: "POST" });
+  clearSubmissionStorage();
+  state.pendingSubmission = null;
   stopLiveUpdates();
   stopApplicationStartup();
   state.comfyuiInstances = [];
@@ -2224,6 +2230,8 @@ function renderPasswordChange(forced) {
 }
 
 async function enterApplication() {
+  setSubmissionOwner(state.session.user.id);
+  state.pendingSubmission = pendingSubmission();
   stopLiveUpdates();
   stopApplicationStartup();
   if (!window.location.hash) window.history.replaceState(null, "", "#/");
@@ -2327,6 +2335,7 @@ async function enterApplication() {
   });
   const preferencesRequest = loadStartupPreferences(controller.signal);
   const requests = [
+    resumeGenerationSubmission(false),
     preferencesRequest,
     refreshAutoGeneration(),
     loadCollections(controller.signal),
@@ -3610,6 +3619,7 @@ function restorePanelView(panel, view) {
 }
 
 function syncGenerationSubmissionState() {
+  state.pendingSubmission = pendingSubmission();
   renderGenerationActivity();
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
@@ -3631,6 +3641,22 @@ function syncGenerationSubmissionState() {
         if (section) setControlSectionElementOpen(section, true);
       }
     }
+  }
+
+  panel.querySelector(".submission-recovery")?.remove();
+  if (state.pendingSubmission) {
+    const recovery = document.createElement("div");
+    recovery.className = "submission-recovery";
+    recovery.setAttribute("role", "status");
+    recovery.textContent = "Submission status unknown. ";
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "button secondary";
+    resume.dataset.action = "resume-submission";
+    resume.textContent = "Check status / resume";
+    resume.disabled = state.submitting;
+    recovery.append(resume);
+    panel.querySelector(".panel-fixed")?.append(recovery);
   }
 
   let summary = panel.querySelector(".form-error.summary");
@@ -3708,6 +3734,7 @@ async function generate() {
 }
 
 async function generateSingleSource() {
+  const requestOwnerId = state.session.user.id;
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -3757,10 +3784,8 @@ async function generateSingleSource() {
     };
     if (requestCompositionId) payload.prompt_assistant_run_id = requestCompositionId;
     payload.prompt_assistant = promptAssistantSnapshotPayload();
-    const generation = await api("/api/generations", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    const generation = await submitGeneration("/api/generations", payload);
+    if (state.session?.user?.id !== requestOwnerId) return false;
     if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
     const belongsToCurrentView = generationBelongsToView(generation);
     const current = state.generations.find((item) => item.id === generation.id);
@@ -3781,6 +3806,7 @@ async function generateSingleSource() {
     toast("Generation queued.", "success");
     return true;
   } catch (error) {
+    if (state.session?.user?.id !== requestOwnerId) return false;
     if (
       !generationContextIsCurrent(
         requestSourceKey,
@@ -3810,15 +3836,18 @@ async function generateSingleSource() {
     }
     return false;
   } finally {
-    await refreshGenerationActivity();
-    state.generationSubmissionProgress = null;
-    state.submitting = false;
-    syncGenerationSubmissionState();
-    if (focusErrors) focusFirstInvalid();
+    if (state.session?.user?.id === requestOwnerId) {
+      await refreshGenerationActivity();
+      state.generationSubmissionProgress = null;
+      state.submitting = false;
+      syncGenerationSubmissionState();
+      if (focusErrors) focusFirstInvalid();
+    }
   }
 }
 
 async function generateSelectedCheckpoints() {
+  const requestOwnerId = state.session.user.id;
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -3908,10 +3937,8 @@ async function generateSelectedCheckpoints() {
         queueTargets.push({ payload, usesPromptAssistant });
       }
     }
-    const batch = await api("/api/generations/batch", {
-      method: "POST",
-      body: JSON.stringify({ items: queueTargets.map(({ payload }) => payload) }),
-    });
+    const batch = await submitGeneration("/api/generations/batch", { items: queueTargets.map(({ payload }) => payload) });
+    if (state.session?.user?.id !== requestOwnerId) return false;
     const queueResults = batch.items.map((item) => item.generation
       ? { status: "fulfilled", value: item.generation }
       : { status: "rejected", reason: Object.assign(new Error(item.error.message), item.error) });
@@ -4006,6 +4033,7 @@ async function generateSelectedCheckpoints() {
       queued.length === queueTargets.length
     );
   } catch (error) {
+    if (state.session?.user?.id !== requestOwnerId) return false;
     if (
       !generationContextIsCurrent(
         requestSourceKey,
@@ -4035,11 +4063,13 @@ async function generateSelectedCheckpoints() {
     }
     return false;
   } finally {
-    await refreshGenerationActivity();
-    state.generationSubmissionProgress = null;
-    state.submitting = false;
-    syncGenerationSubmissionState();
-    if (focusErrors) focusFirstInvalid();
+    if (state.session?.user?.id === requestOwnerId) {
+      await refreshGenerationActivity();
+      state.generationSubmissionProgress = null;
+      state.submitting = false;
+      syncGenerationSubmissionState();
+      if (focusErrors) focusFirstInvalid();
+    }
   }
 }
 
@@ -6247,4 +6277,44 @@ function syncServerControls() {
     if (detailsOpen && host.querySelector("details")) host.querySelector("details").open = true;
   }
   renderGenerationActivity();
+}
+
+async function resumeGenerationSubmission(resume) {
+  if (!pendingSubmission()) return;
+  const account = state.session.user.id;
+  state.submitting = true;
+  syncGenerationSubmissionState();
+  try {
+    const recovered = await recoverSubmission({ resume });
+    if (state.session?.user?.id !== account || !recovered?.result) return;
+    const items = recovered.pending.path.endsWith("/batch")
+      ? recovered.result.items : [{ generation: recovered.result }];
+    for (const { generation } of items) {
+      if (!generation) continue;
+      if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
+      if (generationBelongsToView(generation)) {
+        state.generations = sortGenerationsNewestFirst([
+          generation, ...state.generations.filter((item) => item.id !== generation.id),
+        ]);
+      }
+    }
+    const payload = JSON.parse(recovered.pending.body);
+    const inputs = payload.items || [payload];
+    if (items.some((item, index) => item.generation && inputs[index]?.prompt_assistant_run_id === state.compositionId)) {
+      state.compositionId = null;
+    }
+    const failures = items.filter((item) => item.error);
+    state.formError = failures.length
+      ? `${failures.length} submission item(s) failed. ${failures.map((item) => item.error.message).slice(0, 3).join(" ")}` : null;
+    renderGallery();
+    toast("Original submission resolved.", "success");
+    await refreshGenerationActivity();
+  } catch (error) {
+    if (state.session?.user?.id === account) state.formError = error.message;
+  } finally {
+    if (state.session?.user?.id === account) {
+      state.submitting = false;
+      syncGenerationSubmissionState();
+    }
+  }
 }

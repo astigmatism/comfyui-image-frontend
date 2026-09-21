@@ -93,7 +93,7 @@ export function createSettingsSync({ api, read, apply, status, signal }) {
     } finally {
       busy = false;
       release();
-      if (pending) schedule();
+      if (pending) schedule(false);
     }
   };
   const save = async () => {
@@ -101,7 +101,7 @@ export function createSettingsSync({ api, read, apply, status, signal }) {
     if (!base) { status("error", "Settings have not loaded. Retry before saving."); return; }
     if (busy) { pending = true; await new Promise((done) => waiters.push(done)); return save(); }
     const sent = read();
-    if (equal(sent, base)) { status("saved"); return; }
+    if (equal(sent, base)) { pending = false; status("saved"); return; }
     busy = true;
     pending = false;
     status("saving");
@@ -125,14 +125,17 @@ export function createSettingsSync({ api, read, apply, status, signal }) {
     } finally {
       busy = false;
       release();
-      if (pending && !remoteConflict) schedule();
+      if (pending && !remoteConflict) schedule(false);
     }
   };
-  const schedule = () => {
+  const schedule = (debounce = true) => {
     if (!active() || applying) return;
+    // User edits debounce; background refreshes must not keep moving a pending
+    // save into the future while generation events arrive continuously.
+    if (!debounce && timer !== null) return;
     clearTimeout(timer);
     if (base && !remoteConflict) status("saving");
-    timer = setTimeout(() => void save(), 400);
+    timer = setTimeout(() => { timer = null; void save(); }, 400);
   };
   const resolve = async (keepLocal) => {
     if (!remoteConflict) return;

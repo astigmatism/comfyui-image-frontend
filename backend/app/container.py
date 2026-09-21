@@ -6,6 +6,7 @@ import time
 
 import httpx
 
+from .blocking import run_blocking
 from .config import Settings
 from .db import Database
 from .domain.compiler import WorkflowCompiler
@@ -128,7 +129,7 @@ class AppContainer:
                 extra={"exception_class": type(exc).__name__},
             )
             failure_record = asyncio.create_task(
-                asyncio.to_thread(self.registry.record_background_refresh_failure)
+                run_blocking(self.registry.record_background_refresh_failure)
             )
             try:
                 await asyncio.shield(failure_record)

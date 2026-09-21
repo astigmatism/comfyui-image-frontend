@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from ..blocking import run_blocking as _run_blocking
 from ..container import AppContainer
 from ..dependencies import (
     AuthContext,
@@ -30,17 +31,6 @@ _KEEPALIVE_SECONDS = 15.0
 class _StreamContext:
     owner_id: str
     raw_token: str
-
-
-async def _run_blocking[T](operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-    """Finish a thread-owned database operation before propagating cancellation."""
-
-    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await asyncio.gather(task, return_exceptions=True)
-        raise
 
 
 @router.get("/events")
@@ -85,7 +75,7 @@ def _load_stream_context(
     with container.db.session_factory() as session:
         resolved = container.auth.resolve_session(session, raw_token)
         auth_context = (
-            AuthContext(user=resolved[0], session=resolved[1], raw_token=raw_token)
+            AuthContext.from_models(resolved[0], resolved[1], raw_token)
             if resolved is not None and raw_token is not None
             else None
         )
@@ -154,7 +144,7 @@ async def _event_stream(
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=timeout)
                 except TimeoutError:
-                    if not await asyncio.to_thread(
+                    if not await _run_blocking(
                         _session_is_valid,
                         container,
                         owner_id,
@@ -168,7 +158,7 @@ async def _event_stream(
                 if item_id is not None and item_id <= replay_high_water:
                     continue
                 if loop.time() >= next_revalidation:
-                    if not await asyncio.to_thread(
+                    if not await _run_blocking(
                         _session_is_valid,
                         container,
                         owner_id,

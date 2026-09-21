@@ -2,12 +2,13 @@
 
 import copy
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,7 +24,7 @@ class DeploymentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         for path in ("source", "data/certificates", "ordered-lora-" + OLD):
             (self.root / path).mkdir(parents=True)
         for name in ("ca.crt", "tls.crt", "tls.key"):
@@ -51,7 +52,12 @@ class DeploymentTests(unittest.TestCase):
         self.built = False
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch.object(deploy.backup, "preflight", return_value=self.app))
+        self.preflight = self.stack.enter_context(
+            patch.object(deploy.backup, "preflight", return_value=self.app)
+        )
+        self.ready = self.stack.enter_context(
+            patch.object(deploy, "application_ready", return_value=True)
+        )
         self.stack.enter_context(patch.object(deploy, "output", side_effect=self.output))
         self.stack.enter_context(patch.object(deploy, "inspect", side_effect=self.inspect))
         self.stack.enter_context(patch.object(deploy.subprocess, "run", side_effect=self.fake_run))
@@ -61,7 +67,7 @@ class DeploymentTests(unittest.TestCase):
         self.stack.enter_context(
             patch.object(deploy.backup, "verify_archive", return_value="verified-hash")
         )
-        self.stack.enter_context(
+        self.verify = self.stack.enter_context(
             patch.object(deploy, "verify_service", return_value={"https": "verified"})
         )
         self.stack.enter_context(patch.object(deploy, "smoke_image", side_effect=self.smoke))
@@ -93,6 +99,8 @@ class DeploymentTests(unittest.TestCase):
         return self.edge if container == "edge" else self.app
 
     def output(self, *args):
+        if args[:2] == ("docker", "info"):
+            return "samus\n"
         if args[0] == "git":
             if "get-url" in args:
                 return "https://github.com/astigmatism/comfyui-image-frontend.git\n"
@@ -126,7 +134,18 @@ class DeploymentTests(unittest.TestCase):
             return subprocess.CompletedProcess(
                 args, 0 if self.built else 1, stdout=json.dumps([{"Id": "new-image"}]).encode()
             )
-        phase = "build" if "build" in args else "up" if "up" in args else "worktree"
+        phase = (
+            "restart"
+            if "restart" in args
+            else "build"
+            if "build" in args
+            else "up"
+            if "up" in args
+            else "worktree"
+        )
+        if phase == "restart":
+            self.assertTrue((self.root / ".deployment-update.lock").exists())
+            self.assertEqual(args[-1], self.app["Id"])
         self.events.append(phase)
         if self.fail == phase:
             raise subprocess.CalledProcessError(1, args)
@@ -269,6 +288,99 @@ class DeploymentTests(unittest.TestCase):
                     deploy.deploy(self.root, NEW)
                 self.assertEqual(self.events, [])
                 self.assert_restored()
+
+    def test_unchanged_release_requested_restart_reuses_container(self):
+        deploy.deploy(self.root, OLD, restart=True)
+        self.assertEqual(self.events, ["restart"])
+        self.assert_restored()
+        result = json.loads(
+            next((self.root / ".deployment-backups").glob("*/deployment-status.json")).read_text()
+        )
+        self.assertEqual(result["outcome"], "restarted")
+        self.assertEqual(result["phase"], "complete")
+
+    def test_transient_degradation_recovers_without_a_restart(self):
+        self.ready.return_value = False
+        with patch.object(deploy, "wait_for_application", return_value=True) as wait:
+            deploy.deploy(self.root, OLD)
+        wait.assert_called_once_with("old-app", 60)
+        self.assertEqual(self.events, [])
+
+    def test_recovery_restart_counts_toward_requested_restart(self):
+        self.ready.return_value = False
+        with patch.object(deploy, "wait_for_application", return_value=False):
+            deploy.deploy(self.root, OLD, restart=True)
+        self.assertEqual(self.events, ["restart"])
+        self.assert_restored()
+
+    def test_persistent_degradation_stops_after_one_restart_and_retains_cause(self):
+        self.ready.return_value = False
+        self.verify.side_effect = RuntimeError("Application readiness failed after 120 seconds")
+        logs = io.StringIO()
+        with (
+            patch.object(deploy, "wait_for_application", return_value=False),
+            redirect_stdout(logs),
+            self.assertRaisesRegex(RuntimeError, "Application readiness"),
+        ):
+            deploy.deploy(self.root, OLD, restart=True)
+        self.assertEqual(self.events, ["restart"])
+        self.assert_restored()
+        self.assertIn(
+            "Error: production update failed during recovery-verification", logs.getvalue()
+        )
+        self.assertIn("Recovery: restart-attempted", logs.getvalue())
+        status = next((self.root / ".deployment-backups").glob("*/deployment-status.json"))
+        self.assertEqual(status.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(status.read_text())["phase"], "failed")
+
+    def test_structural_failure_is_recorded_before_any_recovery(self):
+        self.preflight.side_effect = RuntimeError("Host bind mismatch")
+        logs = io.StringIO()
+        with redirect_stdout(logs), self.assertRaisesRegex(RuntimeError, "Host bind mismatch"):
+            deploy.deploy(self.root, NEW, restart=True)
+        self.ready.assert_not_called()
+        self.assertEqual(self.events, [])
+        failure = next((self.root / ".deployment-backups").glob("*/failure.json"))
+        self.assertEqual(json.loads(failure.read_text())["failed_phase"], "structural-preflight")
+        self.assertIn(
+            "Error: production update failed during structural-preflight: Host bind mismatch",
+            logs.getvalue(),
+        )
+        self.assert_restored()
+
+    def test_healthy_app_with_broken_tls_does_not_restart(self):
+        self.verify.side_effect = RuntimeError(
+            "Trusted HTTPS verification failed while the application is ready"
+        )
+        with self.assertRaisesRegex(RuntimeError, "Trusted HTTPS"):
+            deploy.deploy(self.root, OLD, restart=True)
+        self.assertEqual(self.events, [])
+
+    def test_check_only_failure_cannot_attempt_recovery(self):
+        self.verify.side_effect = RuntimeError("Application readiness failed")
+        with self.assertRaisesRegex(RuntimeError, "readiness"):
+            deploy.deploy(self.root, NEW, check_only=True)
+        self.ready.assert_not_called()
+        self.assertEqual(self.events, [])
+        self.assertFalse((self.root / ".deployment-backups").exists())
+        with self.assertRaisesRegex(RuntimeError, "cannot be combined"):
+            deploy.deploy(self.root, NEW, check_only=True, restart=True)
+
+    def test_lock_contention_never_removes_another_job_lock(self):
+        lock = self.root / ".deployment-update.lock"
+        lock.mkdir()
+        (lock / "owner.json").write_text('{"job":"another-job"}')
+        with self.assertRaisesRegex(RuntimeError, "Deployment lock exists"):
+            deploy.deploy(self.root, OLD, restart=True)
+        self.assertEqual(json.loads((lock / "owner.json").read_text())["job"], "another-job")
+        self.assertEqual(self.events, [])
+
+    def test_command_arguments_are_excluded_from_public_failure(self):
+        message = deploy.public_error(
+            subprocess.CalledProcessError(1, ["tool", "secret-value"]), "building"
+        )
+        self.assertNotIn("secret-value", message)
+        self.assertIn("building", message)
 
 
 class MaintenanceContextTests(unittest.TestCase):

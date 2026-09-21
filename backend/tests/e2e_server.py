@@ -21,8 +21,10 @@ def main() -> None:
         build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
     )
     primary.state.slow_stage_delay = 2.0
+    worker.state.slow_stage_delay = 2.0
     # Keep this sample running through image persistence and the cancellation round trip.
     primary.state.stage_delay_overrides["slow cancellation sample"] = 10.0
+    worker.state.stage_delay_overrides["slow cancellation sample"] = 10.0
     primary.start()
     worker.start()
     configured_data = os.getenv("CIF_E2E_DATA_DIR")

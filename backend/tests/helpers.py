@@ -49,7 +49,7 @@ def login_ready_admin(client: TestClient) -> str:
 def restore_cookie(client: TestClient, cookie: str, *, name: str = "cif_session") -> None:
     client.cookies.clear()
     client.cookies.set(name, cookie)
-    client.headers["X-CIF-Generation-Protocol"] = "2"
+    client.headers["X-CIF-Generation-Protocol"] = "3"
 
 
 def first_profile(client: TestClient, *, timeout: float = 3.0) -> dict[str, Any]:
@@ -63,7 +63,9 @@ def first_profile(client: TestClient, *, timeout: float = 3.0) -> dict[str, Any]
             (
                 item
                 for item in profiles
-                if item["display_name"] == "Krea 2 NSFW V4" and item["available"] is True
+                if item["display_name"] == "Krea 2 NSFW V4"
+                and item["available"] is True
+                and item["readiness"] != "loading"
             ),
             None,
         )

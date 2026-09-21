@@ -1,13 +1,22 @@
 # Service Portal button for Samus production
 
 The production **Update and restart** button runs `update_production_portal` from
-the deployment root. That small entrypoint calls `update_production --wait`: fetch
+the deployment root. That small entrypoint calls `update_production --wait --restart`: fetch
 the latest `origin/main`, select its reviewed deployer, and stream the durable
 deployment job until it exits. The Portal stays running through build, backup,
 restart and verification. A failed child job returns its actual nonzero exit code;
 exit zero also requires the deployer's final verified result. A monitoring timeout
 fails the Portal job and names the retained deployment job to inspect, rather than
 starting another deployment or stopping an in-progress one.
+
+An unchanged release restarts the existing application container, preserving its
+image and configuration, and then verifies health, trusted HTTPS, and frontend assets.
+Structural safety failures still block the operation. Operational degradation gets a
+60-second grace period followed by at most one application recovery restart under
+the deployment lock. That restart also satisfies an unchanged-release restart request.
+A healthy application with broken TLS reports the TLS failure. The Portal receives a
+sanitized `Error:` summary with the failed phase, recovery result, and retained job
+reference; private diagnostic records also cover preflight failures.
 
 This uses the existing production transaction and lock. It preserves the frozen
 `source/main` checkout by deploying detached release worktrees. It preserves the

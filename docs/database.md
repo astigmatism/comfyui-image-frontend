@@ -190,3 +190,21 @@ deleting the owner cascades both run history and memberships. Ordinary completio
 is aggregated from durable generation statuses, so worker recovery needs no additional
 progress state transitions. Migration `3ab76df901e2` adopts existing active work into
 one run per owner. Historical completed generations remain outside new runs.
+
+
+## Generation submission receipts
+
+`generation_submissions` uses `(owner_id, key)` as its primary key. `owner_id`
+references users with delete cascade. Each row stores endpoint identity, a SHA-256
+canonical request digest, creation time, and ordered generation IDs or item failures.
+Generation deletion does not remove receipts. The receipt, accepted jobs, run
+membership, item failures and durable events commit atomically; writers serialize
+before looking up a receipt. Migration `a12c39e781b4` adds this table without modifying
+existing generations. Receipts contain no copied prompt bodies.
+
+The application pool has 15 connections with no overflow. Async runtime work runs
+session-owning operations off the event loop, bounded to eight request operations
+and four background operations. Sessions close before external awaits or response
+streaming. A separate single-thread read-only health probe cannot queue an unbounded
+executor backlog. Cancellation waits for an already-started transaction to finish;
+generation and automatic-cycle claims reconcile before their coordinator exits.

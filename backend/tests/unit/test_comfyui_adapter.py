@@ -36,6 +36,28 @@ def test_queue_prompt_id_parser_accepts_comfyui_list_and_object_shapes() -> None
     assert pending == {"wait-1", "wait-2"}
 
 
+def test_execution_target_health_materializes_runtime_schema_without_catalog(
+    tmp_path: Path,
+) -> None:
+    schema = {"KSampler": {"input": {"required": {}}}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/object_info"
+        return httpx.Response(200, json=schema)
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            assert adapter.cached_object_info() == {}
+            assert await adapter.health() == (True, None)
+            assert adapter.cached_object_info() == schema
+            assert adapter._capabilities is None
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+
+
 def test_preferred_v2_listing_is_recursive_and_preserves_comfy_user(tmp_path: Path) -> None:
     calls: list[tuple[bytes, dict[str, str], str | None]] = []
 

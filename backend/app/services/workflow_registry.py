@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +9,7 @@ import httpx
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..blocking import run_blocking as _run_blocking
 from ..domain.publication import (
     ValidatedPublication,
     display_name_for_source,
@@ -25,17 +25,6 @@ from .comfyui import ComfyUIAdapter
 
 logger = logging.getLogger(__name__)
 PUBLIC_DEPENDENCY_MESSAGE = "Required ComfyUI node classes are unavailable for this source."
-
-
-async def _run_blocking[T](operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-    """Finish a started thread operation before propagating task cancellation."""
-
-    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await asyncio.gather(task, return_exceptions=True)
-        raise
 
 
 class WorkflowRegistry:

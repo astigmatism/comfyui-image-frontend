@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-test.describe.configure({ mode: "serial" });
+// The project runs one worker. Keep later journeys runnable when one assertion fails.
+test.describe.configure({ mode: "default" });
 
 async function signIn(page, username, password) {
   await page.getByLabel("Username").fill(username);
@@ -33,6 +34,20 @@ async function setForcedPassword(page, password) {
   await page.getByLabel("Confirm new password").fill(password);
   await page.getByRole("button", { name: "Save password" }).click();
   await expect(page.locator(".gallery-viewport")).toBeVisible();
+}
+
+async function signInFreshUser(page, username) {
+  await signInAdminWithCurrentFixturePassword(page);
+  const session = await (await page.request.get("/api/auth/session")).json();
+  const headers = { "X-CSRF-Token": session.csrf_token };
+  const created = await page.request.post("/api/admin/users", {
+    headers, data: { username, temporary_password: "E2EUserTemporary123!" },
+  });
+  expect(created.status()).toBe(201);
+  expect((await page.request.post("/api/auth/logout", { headers })).ok()).toBe(true);
+  await page.goto("/");
+  await signIn(page, username, "E2EUserTemporary123!");
+  await setForcedPassword(page, "E2EUserPermanent123!");
 }
 
 async function openAccountMenu(page) {
@@ -81,6 +96,9 @@ async function clickGalleryControl(control) {
 }
 
 async function generateAndExpectAccepted(page) {
+  // Shared account settings survive other browser contexts and earlier specs.
+  await page.locator("#generation-quantity").fill("1");
+  await page.locator("#generation-quantity").blur();
   const responsePromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/generations" &&
@@ -547,26 +565,25 @@ test("Favorites filter follows the view sentinel and ignores stale cursor pages"
   await expect(folder).toHaveCount(0);
 });
 
-test("Auto-generate with the favorites filter on waits for its queued generation without inserting it into the feed", async ({ page }) => {
+test("server auto generation continues outside the favorites feed without browser submissions", async ({ page }) => {
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");
   await expect(page.locator("#workflow-source")).toBeEnabled();
   await page.getByRole("button", { name: "Favorites", exact: true }).click();
   await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("Favorites background generation");
-  const requests = [];
-  await page.route("**/api/generations", async (route) => {
-    if (route.request().method() !== "POST") return route.continue();
-    requests.push(route.request().postDataJSON());
-    await route.fulfill({ status: 201, json: { id: "favorites-pending", status: "queued", collection_id: null } });
+  const browserSubmissions = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/api\/generations(?:\/batch)?$/.test(request.url())) browserSubmissions.push(request.url());
   });
+  const configured = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/auto-generation" && response.request().method() === "PUT");
   await page.getByRole("switch", { name: "Auto-generate" }).check();
-  await expect.poll(() => requests.length).toBe(1);
-  // Give the scheduler several opportunities to retry; the queued job is outside this feed.
-  await page.waitForTimeout(500);
+  expect((await configured).ok()).toBe(true);
+  await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).accepted_count).toBeGreaterThan(0);
+  const stopped = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/auto-generation" && response.request().method() === "PUT");
   await page.getByRole("switch", { name: "Auto-generate" }).uncheck();
-  expect(requests).toHaveLength(1);
-  expect(requests[0].collection_id).toBeNull();
+  expect((await stopped).ok()).toBe(true);
+  expect(browserSubmissions).toEqual([]);
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
 });
 
@@ -1330,7 +1347,7 @@ test("workflow catalog failure stays local and can be retried", async ({ page })
   let catalogRequests = 0;
   await page.route("**/api/workflows", async (route) => {
     catalogRequests += 1;
-    if (catalogRequests === 1) {
+    if (catalogRequests <= 4) {
       await route.fulfill({
         status: 503,
         contentType: "application/json",
@@ -1599,6 +1616,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
     "Moody Krea 2 V4 INT8 ConvRot",
   );
 
+  await dialog.getByRole("button", { name: "Clear all", exact: true }).click();
   await dialog.getByRole("button", { name: "Select all", exact: true }).click();
   await expect(dialog.locator("[data-source-selection-count]")).toHaveText("5 of 5 selected");
   const preferenceSave = page.waitForResponse(
@@ -1712,13 +1730,8 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   expect((await saved).ok()).toBe(true);
 
-  const preferencesLoaded = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/preferences" &&
-      response.request().method() === "GET",
-  );
   await page.reload();
-  const preferences = await (await preferencesLoaded).json();
+  const preferences = await (await page.request.get("/api/preferences")).json();
   expect(
     Object.values(preferences.checkpoint_tiers)
       .flatMap((selectors) => Object.values(selectors))
@@ -2514,7 +2527,7 @@ test("recently used resolutions record on commit, restore on click, persist, and
 }) => {
   test.setTimeout(60_000);
   await page.goto("/");
-  await signInAdminWithCurrentFixturePassword(page);
+  await signInFreshUser(page, "resolution.recents");
   await selectPublishedSource(page, "Krea 2 NSFW V4");
 
   const width = page.getByRole("spinbutton", { name: "Width", exact: true });
@@ -2526,7 +2539,7 @@ test("recently used resolutions record on commit, restore on click, persist, and
   const badgeFor = (pair) =>
     recentRow.locator(`.resolution-recent-badge[data-resolution-recent-value="${pair}"]`);
 
-  // A fresh context has no recents, so the row is omitted entirely.
+  // A fresh account has no recents; browser contexts share server-owned settings.
   await expect(recentRow).toHaveCount(0);
 
   // Committing a width edit records the pair once the edit settles.
@@ -2660,8 +2673,8 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
   await signIn(page, "artist.one", "E2EUserPermanent123!");
   await selectPublishedSource(page, "Generic Landscape");
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("please fail after checkpoint");
-  await generateAndExpectAccepted(page);
-  const card = page.locator(".gallery-card").first();
+  const accepted = await (await generateAndExpectAccepted(page)).json();
+  const card = page.locator(`.gallery-card[data-generation-id="${accepted.id}"]`);
   await expect(card.locator(".media-status")).toContainText("Failed");
   await expect(card.getByRole("button", { name: "Recall settings" })).toBeEnabled();
   await expect(card).toHaveCount(1);
@@ -2670,9 +2683,8 @@ test("failed and cancelled attempts remain one-card, recallable history", async 
 test("recall restores the creative direction section from the generation snapshot", async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto("/");
-  // Self-contained: sign in as the bootstrapped admin so this test does not
-  // depend on the serial bootstrap test having created artist.one first.
-  await signInAdminWithCurrentFixturePassword(page);
+  // Defaults belong to a fresh account; settings survive browser contexts.
+  await signInFreshUser(page, "recall.snapshot");
   await selectPublishedSource(page, "Krea 2 NSFW V4");
 
   const assistant = page.locator("#prompt-assistant");
@@ -2978,7 +2990,7 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   page,
 }) => {
   await page.goto("/");
-  await signInAdminWithCurrentFixturePassword(page);
+  await signInFreshUser(page, "prompt.controls");
   await selectPublishedSource(page, "Generic Landscape");
   await ensureControlSectionExpanded(page, "Creative Direction");
 
@@ -3560,7 +3572,7 @@ test("mixed selection copies independently, moves originals, and deletes only th
 
 test("prompt pre-processor starts collapsed, keeps per-mode edits, and sends focused drafts", async ({ page }) => {
   await page.goto("/");
-  await signInAdminWithCurrentFixturePassword(page);
+  await signInFreshUser(page, "prompt.defaults");
   await selectPublishedSource(page, "Generic Landscape");
   await ensureControlSectionExpanded(page, "Creative Direction");
   const panel = page.locator("#prompt-assistant");
@@ -3585,6 +3597,7 @@ test("prompt pre-processor starts collapsed, keeps per-mode edits, and sends foc
   await create.check();
   await expect(instructions).toHaveValue("Create a cinematic image prompt using one sentence.");
 
+  await expect(page.locator(".shared-settings-status")).toContainText("Settings saved across devices");
   await page.reload();
   await expect(panel.locator("[data-prompt-instructions]")).toBeHidden();
   await disclosure.locator("summary").click();

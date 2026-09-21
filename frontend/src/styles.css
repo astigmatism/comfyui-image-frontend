@@ -5381,3 +5381,6 @@ tr:last-child td {
 .auto-generation-server-settings input:focus, .auto-generation-server-settings select:focus {
   outline: 2px solid var(--focus); outline-offset: 1px;
 }
+
+.thumbnail-retry { position: absolute; z-index: 5; inset: 40% 10% auto; padding: 0.5rem; }
+.submission-recovery { display: grid; gap: 0.5rem; padding: 0.5rem; color: var(--text); }
