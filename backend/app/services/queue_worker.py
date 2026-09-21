@@ -140,6 +140,7 @@ class QueueWorker:
         self._main_task: asyncio.Task[None] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
+        self._maintenance_task: asyncio.Task[None] | None = None
         self._active: dict[str, asyncio.Task[None]] = {}
         self._active_instance_ids: dict[str, str] = {}
         self._progress_trackers: dict[str, _ProgressTracker] = {}
@@ -187,7 +188,14 @@ class QueueWorker:
         if self._main_task is not None or self._dispatcher_task is not None:
             self._dispatcher_state = "stopping"
         tasks = [
-            task for task in (self._main_task, self._dispatcher_task, self._health_task) if task
+            task
+            for task in (
+                self._main_task,
+                self._dispatcher_task,
+                self._health_task,
+                self._maintenance_task,
+            )
+            if task
         ]
         active_tasks = list(self._active.values())
         for task in tasks:
@@ -200,6 +208,7 @@ class QueueWorker:
         self._main_task = None
         self._dispatcher_task = None
         self._health_task = None
+        self._maintenance_task = None
         self._dispatcher_state = "stopped"
         logger.info("generation_dispatcher_stopped")
 
@@ -230,6 +239,9 @@ class QueueWorker:
                     return
         if self._stop.is_set():
             return
+        self._maintenance_task = asyncio.create_task(
+            self._run_startup_maintenance(), name="generation-history-maintenance"
+        )
         while not self._stop.is_set():
             task = asyncio.create_task(
                 self._run_dispatcher(),
@@ -2405,7 +2417,11 @@ class QueueWorker:
 
     def _source_cleanup_references(self, generation_id: str) -> list[dict[str, str]] | None:
         with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
+            generation = session.get(
+                Generation,
+                generation_id,
+                options=[load_only(Generation.id, Generation.internal_diagnostics_json)],
+            )
             if generation is None:
                 return None
             diagnostics = generation.internal_diagnostics_json or {}
@@ -2419,7 +2435,17 @@ class QueueWorker:
 
     def _record_source_cleanup_result(self, generation_id: str, error: Exception | None) -> None:
         with self.session_factory() as session:
-            generation = session.get(Generation, generation_id)
+            generation = session.get(
+                Generation,
+                generation_id,
+                options=[
+                    load_only(
+                        Generation.id,
+                        Generation.internal_diagnostics_json,
+                        Generation.result_warnings_json,
+                    )
+                ],
+            )
             if generation is None:
                 return
             diagnostics = dict(generation.internal_diagnostics_json or {})
@@ -2770,14 +2796,6 @@ class QueueWorker:
 
     async def _reconcile_startup(self) -> None:
         notifications, prompt_jobs = await _run_blocking(self._prepare_startup_recovery)
-        cleanup_jobs = await _run_blocking(self._prepare_terminal_source_cleanup)
-        for generation_id, instance_id in cleanup_jobs:
-            try:
-                adapter = self._adapter_for_instance(instance_id)
-            except Exception:
-                adapter = None
-            await self._cleanup_comfyui_sources(generation_id, comfyui=adapter)
-        await _run_blocking(self._compact_existing_artifacts)
         for owner_id, event in notifications:
             generation_id = str(event["generation_id"])
             await self._publish_broker_best_effort(
@@ -2872,12 +2890,43 @@ class QueueWorker:
                     comfyui=comfyui,
                 )
 
+    async def _run_startup_maintenance(self) -> None:
+        """Historical retention and remote cleanup must not gate queue readiness."""
+        try:
+            # Capture legacy source locators before pruning archived artifacts.
+            cleanup_jobs = await _run_blocking(self._prepare_terminal_source_cleanup)
+            await _run_blocking(self._compact_existing_artifacts)
+            for generation_id, instance_id in cleanup_jobs:
+                try:
+                    adapter = self._adapter_for_instance(instance_id)
+                except Exception:
+                    adapter = None
+                await self._cleanup_comfyui_sources(generation_id, comfyui=adapter)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Receipts and archived files remain durable for the next startup.
+            logger.error(
+                "generation_history_maintenance_failed",
+                extra={"exception_class": type(exc).__name__},
+            )
+
     def _prepare_terminal_source_cleanup(self) -> list[tuple[str, str]]:
         """Seed cleanup locators for old rows and return terminal jobs needing cleanup."""
 
         with self.session_factory() as session:
             generations = list(
-                session.scalars(select(Generation).where(Generation.status.in_(TERMINAL_STATUSES)))
+                session.scalars(
+                    select(Generation)
+                    .options(
+                        load_only(
+                            Generation.id,
+                            Generation.comfyui_instance_id,
+                            Generation.internal_diagnostics_json,
+                        )
+                    )
+                    .where(Generation.status.in_(TERMINAL_STATUSES))
+                )
             )
             jobs: list[tuple[str, str]] = []
             for generation in generations:
@@ -2915,7 +2964,24 @@ class QueueWorker:
 
         pruned_paths: list[str] = []
         with self.session_factory() as session:
-            generations = list(session.scalars(select(Generation)))
+            generations = list(
+                session.scalars(
+                    select(Generation)
+                    .options(
+                        load_only(
+                            Generation.id,
+                            Generation.status,
+                            Generation.canonical_artifact_id,
+                            Generation.final_artifact_count,
+                            Generation.best_available_artifact_id,
+                            Generation.artifact_count,
+                        )
+                    )
+                    # Active generations now run concurrently with maintenance;
+                    # their execution/finalization owns artifact retention.
+                    .where(Generation.status.in_(TERMINAL_STATUSES))
+                )
+            )
             for generation in generations:
                 artifacts = list(
                     session.scalars(

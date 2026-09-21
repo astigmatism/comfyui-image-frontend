@@ -29,6 +29,12 @@ separate short transaction. Streaming, external HTTP, broker notifications, and
 worker cache updates happen outside transactions. Polling awaits its prior work;
 accepted generation work stays in the durable database queue.
 
+Only reconciliation of active generations gates dispatcher startup. Historical
+artifact retention and remote source cleanup run in a separate supervised task,
+use narrow database projections, and never compact active generations. Slow or
+failed housekeeping cannot prevent queued work from running. Shutdown cancels
+housekeeping while allowing its current database operation to finish.
+
 The browser shares four thumbnail fetches across visible galleries and collections,
 deduplicates URLs, cancels obsolete work, and revokes object URLs when consumers
 leave. Safe reads retry transient failures at most four times. Manual submission
@@ -70,7 +76,7 @@ recovery. Browser fault injection verifies lost replies, reload reconciliation,
 thumbnail retries, and the four-request limit. All synthetic traffic and injected
 failures stay local; production validation uses normal reads and authorized restarts.
 
-Release validation covered 655 backend cases (nine optional live-Ollama cases were
+Release validation covered 659 backend cases (nine optional live-Ollama cases were
 skipped), 168 frontend unit cases, 79 browser journeys, and 49 deployment/backup
 cases including four real Docker-runner tests. The full backend and browser runs
 needed focused reruns: local host contention exposed timing-sensitive fake-runtime
@@ -86,3 +92,10 @@ local emulation. Production image selection and container restrictions are uncha
 The Docker image smoke test passed startup, migrations, readiness, immutable asset
 delivery (including both new browser modules), and runtime configuration checks
 with external networking disabled.
+
+The first production rollout and unchanged-release restart both passed, but startup
+housekeeping over roughly 2,000 historical generations took about 100 seconds.
+That observation prompted the separate maintenance task above. Four additional
+local cases cover blocked database/remote cleanup, cleanup failure, and retention
+of active-generation artifacts; the affected worker, recovery, lifecycle, and
+shutdown suites were rerun before publishing the follow-up release.

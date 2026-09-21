@@ -110,6 +110,51 @@ async def test_startup_recovery_database_phase_does_not_block_the_event_loop(
     await reconciliation
 
 
+@pytest.mark.parametrize("obstruction", ["database", "remote", "failure"])
+def test_history_maintenance_cannot_delay_readiness_or_queued_work(
+    settings_factory, fake_state, monkeypatch, obstruction
+) -> None:
+    del fake_state
+    started, release = threading.Event(), threading.Event()
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="maintenance.isolation")
+        queued = create_generation(client, "work while historical cleanup waits", seed=841)
+        worker = client.app.state.container.worker
+        original_cleanup = worker._cleanup_comfyui_sources
+
+        def prepare():
+            if obstruction == "remote":
+                return [("historical-cleanup", worker.comfyui_instances.default_id)]
+            started.set()
+            if obstruction == "failure":
+                raise RuntimeError("historical cleanup unavailable")
+            if not release.wait(timeout=15):
+                raise TimeoutError("test did not release historical cleanup")
+            return []
+
+        async def cleanup(generation_id, **kwargs):
+            if generation_id != "historical-cleanup":
+                return await original_cleanup(generation_id, **kwargs)
+            started.set()
+            assert await asyncio.to_thread(release.wait, 15)
+
+        monkeypatch.setattr(worker, "_prepare_terminal_source_cleanup", prepare)
+        monkeypatch.setattr(worker, "_cleanup_comfyui_sources", cleanup)
+        try:
+            _start_worker(client)
+            assert started.wait(timeout=3)
+            began = time.monotonic()
+            health = client.get("/api/health")
+            assert time.monotonic() - began < 2
+            assert health.status_code == 200
+            assert health.json()["worker"]["dispatcher_running"] is True
+            assert health.json()["worker"]["heartbeat_fresh"] is True
+            assert wait_for_status(client, queued["id"], "succeeded")["final_artifact_count"] == 1
+        finally:
+            release.set()
+
+
 def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_state) -> None:
     del fake_state
     settings = settings_factory(enable_background_worker=False)

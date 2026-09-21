@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any
 
+import pytest
 from app.domain.results import NativeFileOutput
 from app.main import create_app
 from app.models import Artifact, ArtifactState, Generation, GenerationStatus
@@ -198,8 +199,9 @@ def test_queued_generation_survives_restart_and_dispatches(settings_factory, fak
         assert [item["prompt"] for item in fake_state.submitted] == ["queued across restart"]
 
 
-def test_startup_compacts_artifacts_created_under_the_legacy_retention_policy(
-    settings_factory, fake_state
+@pytest.mark.parametrize("active", [False, True])
+def test_startup_compacts_legacy_artifacts_without_touching_active_work(
+    settings_factory, fake_state, active
 ) -> None:
     settings = settings_factory(enable_background_worker=False)
     pruned_paths: list[str] = []
@@ -261,13 +263,20 @@ def test_startup_compacts_artifacts_created_under_the_legacy_retention_policy(
                         path for path in (stored.relative_path, stored.thumbnail_path) if path
                     )
             session.flush()
-            row.status = GenerationStatus.SUCCEEDED
+            row.status = GenerationStatus.RUNNING if active else GenerationStatus.SUCCEEDED
             row.artifact_count = 3
             row.final_artifact_count = 1
             row.canonical_artifact_id = artifacts[-1].id
             row.best_available_artifact_id = artifacts[-1].id
             row.internal_diagnostics_json = {}
             session.commit()
+        if active:
+            container.worker._compact_existing_artifacts()
+            detail = first.get(f"/api/generations/{generation['id']}").json()
+            assert detail["artifact_count"] == 3
+            assert len(detail["artifacts"]) == 3
+            assert all((settings.data_dir / path).exists() for path in pruned_paths)
+            return
 
     settings.enable_background_worker = True
     with TestClient(create_app(settings)) as second:
