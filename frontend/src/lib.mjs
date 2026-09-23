@@ -739,6 +739,32 @@ export function applyChoiceStrengthDefaults(
   return result;
 }
 
+function reconcileLoraStack(input, value) {
+  if (!Array.isArray(value)) return structuredClone(input.default);
+  const currentIds = new Set(input.items.map((item) => item.id));
+  const seen = new Set();
+  const result = [];
+  for (const entry of value) {
+    if (
+      !entry ||
+      Array.isArray(entry) ||
+      Object.keys(entry).sort().join() !== "id,strength" ||
+      typeof entry.id !== "string" ||
+      typeof entry.strength !== "number" ||
+      !Number.isFinite(entry.strength) ||
+      seen.has(entry.id)
+    ) return structuredClone(input.default);
+    seen.add(entry.id);
+    if (currentIds.has(entry.id)) result.push({ id: entry.id, strength: entry.strength });
+  }
+  // Preserve the user's application order; add newly published items in catalog order.
+  const defaults = new Map(input.default.map((entry) => [entry.id, entry.strength]));
+  for (const { id } of input.items) {
+    if (!seen.has(id)) result.push({ id, strength: defaults.get(id) });
+  }
+  return result;
+}
+
 export function reconcileInterfaceValues(
   contract,
   values = {},
@@ -756,8 +782,12 @@ export function reconcileInterfaceValues(
       !choiceOptions(input).some((option) => option.value === values[input.id])
     )
       continue;
-    result[input.id] =
-      input.type === "seed" ? seedFormValue(input, values[input.id]) : structuredClone(values[input.id]);
+    if (input.type === "lora_stack") {
+      result[input.id] = reconcileLoraStack(input, values[input.id]);
+    } else {
+      result[input.id] =
+        input.type === "seed" ? seedFormValue(input, values[input.id]) : structuredClone(values[input.id]);
+    }
   }
   return applyChoiceStrengthDefaults(contract, result, explicitInputIds);
 }
@@ -809,8 +839,12 @@ export function migrateInterfaceState(
       !choiceOptions(target).some((option) => option.value === value)
     )
       continue;
-    result[target.id] =
-      target.type === "seed" ? seedFormValue(target, value) : structuredClone(value);
+    if (target.type === "lora_stack") {
+      result[target.id] = reconcileLoraStack(target, value);
+    } else {
+      result[target.id] =
+        target.type === "seed" ? seedFormValue(target, value) : structuredClone(value);
+    }
     if (sourceExplicit.has(source.id)) explicit.add(target.id);
     else explicit.delete(target.id);
   }
@@ -829,22 +863,26 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
   const historicalExplicitInputIds = Object.entries(historicalParameters)
     .filter(([, value]) => value !== null && value !== undefined)
     .map(([id]) => id);
+  // History predating stacks must not inherit the current form's nonzero strengths.
+  // Seed defaults before migration so stacks matched by semantic role still carry over.
+  const recallBaseValues = { ...(current.parameters || current.controls || {}) };
+  for (const input of interfaceInputs(currentContract)) {
+    if (input.type === "lora_stack") recallBaseValues[input.id] = structuredClone(input.default);
+  }
   const migrated = !sourceAvailable && currentContract
     ? migrateInterfaceState(
         currentContract,
         { inputs: recall.input_definitions || [] },
         historicalParameters,
         historicalExplicitInputIds,
-        current.parameters || current.controls || {},
+        recallBaseValues,
         current.explicitParameterIds || [],
       )
     : { values: historicalParameters, explicitInputIds: historicalExplicitInputIds };
   const parameters = migrated.values;
-  // Recalling a generation from before stacks existed must reproduce its zero
-  // LoRA use, even if the current form has nonzero strengths.
   for (const input of interfaceInputs(currentContract)) {
-    if (input.type === "lora_stack" && !Object.hasOwn(historicalParameters, input.id)) {
-      parameters[input.id] = structuredClone(input.default);
+    if (input.type === "lora_stack") {
+      parameters[input.id] = reconcileLoraStack(input, parameters[input.id]);
     }
   }
   const historicalRevision = structuredClone(recall.revision || recall.identity || null);

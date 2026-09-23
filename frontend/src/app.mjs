@@ -4955,9 +4955,9 @@ async function recall(id) {
   }
   syncServerControls();
   const runtimeWarning = applyRecalledComfyuiInstance(recalled);
-  const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
   state.modelSelectionsBySourceRevision = new Map();
   if (recalled.source_available === false) {
+    const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
     state.parameters = recalledState.parameters;
     state.explicitParameterIds = recalledState.explicitParameterIds;
     state.promptAssistant = recalledState.promptAssistant;
@@ -4985,6 +4985,7 @@ async function recall(id) {
   const key = recalled.source_key || recalled.profile_id;
   const source = await api(`/api/workflows/${encodeURIComponent(key)}`);
   const contract = sourceInterface(source);
+  const recalledState = overwriteWithRecall(state, recalled, contract);
   state.activeSourceKey = key;
   persistActiveSourceKey();
   state.activeSource = { ...source, interface: contract };
