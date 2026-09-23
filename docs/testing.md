@@ -217,3 +217,25 @@ PYTHONPATH=backend pytest -q backend/tests/live/test_ollama_integration.py
 ```
 
 The repeated-create case carries each generated prompt forward as the current prompt and requires four distinct results for the same Creative Direction. Two additional live cases exercise the authenticated application composition API, persistence, and generation preparation with a fake ComfyUI service and temporary storage.
+
+### Production release tooling
+
+`make test-deployment` (also included in `make test` and validation) runs the
+standard-library tests in `scripts/tests`. They use temporary deployment fixtures,
+a local Git repository, and real SQLite archives to cover installation, restored
+image tags, external TLS paths, source ancestry, app-only Compose operations,
+preparation failures, stopped-backup ordering, database rollback, lock contention,
+and the portal's verified-result/exit-code contract. No production host is contacted.
+
+With a local Docker daemon, opt in to the runner/entrypoint and isolated image
+startup regressions:
+
+```sh
+CIF_RUN_DOCKER_TESTS=1 python3 -m unittest discover -s scripts/tests -q
+```
+
+The Docker fixtures use unique image/container names and disposable tmpfs data.
+They verify both the installed entrypoint under the portal's mount contract and
+application startup as non-root numeric users. Live Samus installation, button
+visibility, trusted HTTPS, and the 16-LoRA generation acceptance are separate
+operator checks in [the installation guide](production-service-portal.md).

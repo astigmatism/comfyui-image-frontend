@@ -104,15 +104,16 @@ For an AI agent operating on the production host, follow
 preflight checks, backups, deployment, verification, and failure recovery.
 On Samus (`192.168.1.5`), run the installed deployment-root `update_production`
 command, or give the agent this [short update prompt](docs/production-update-prompt.md).
-The command fetches the latest reviewed deployment code; frozen `source/main`
-stays unchanged. It also works from the agent's `/host` view without SSH setup.
+The command uses a pinned release runner, fetches application source in temporary
+scratch, and retains release artifacts without a permanent checkout. It also works
+from the agent's `/host` view without SSH setup.
 
-The single-file checkout updater below is for other installations. Samus uses
-`compose.yaml` + `compose.ordered-lora.yaml`, detached worktrees, and commit-tagged
-images. Its `update_production` command and
+The checkout updater below is for other installations. Samus uses one JSON-formatted
+`compose.yaml` at `/home/astigmatism/deployments/comfyui-image-frontend`, external
+credentials, and pinned local images. Its `update_production` command and
 [production Portal integration](docs/production-service-portal.md) preserve that
-topology; the single-file updater below does not. The
-[manual reference](docs/manual-deployment-reference.md) covers deliberate recovery.
+topology; the single-file updater below does not. The current runbook covers recovery; the
+[historical reference](docs/manual-deployment-reference.md) describes retired layouts.
 
 For the single-file checkout layout, from a clean checkout with an upstream branch:
 
@@ -157,8 +158,8 @@ checkout installations.
 For a custom **single-file checkout** deployment compatible with the updater,
 copy the four labels from `compose.example.yml` and configure the verified update
 environment. Do not enable the generic `scripts/update-and-restart.sh` for the
-multi-file/worktree path: use the production entrypoint linked above to preserve
-frozen main, commit-tag selection, and deployment-root TLS paths. The
+Samus deployment: use the production entrypoint linked above to preserve its
+pinned images, external credentials, data bind, and app-only cutover. The
 portal suppresses the control when more than one service opts in with different
 effective settings. The remote is public, so no Git credentials are required; if
 that ever changes, provision noninteractive least-privilege credentials inside the

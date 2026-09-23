@@ -1,4 +1,4 @@
-"""Portal integration waits for the existing two-file deployment transaction."""
+"""Portal integration waits for the restored-layout deployment transaction."""
 # ruff: noqa: S603, S607
 
 import importlib.util
@@ -48,6 +48,7 @@ class PortalWaitTests(unittest.TestCase):
     def test_waits_for_job_and_verified_result_before_success(self):
         self.assertEqual(self.wait(), 0)
         self.assertIn("--follow", self.commands[0])
+        self.assertIn("all", self.commands[0])
         self.assertEqual(self.commands[1], ["docker", "wait", "job-id"])
         self.assertEqual(self.commands[2][1], "inspect")
         self.assertEqual(self.commands[3], ["docker", "logs", "--tail", "20", "job-id"])
@@ -68,9 +69,44 @@ class PortalWaitTests(unittest.TestCase):
         with patch("sys.stdout", captured):
             self.assertEqual(self.wait(), 1)
         first = captured.getvalue().splitlines()[0]
-        self.assertIn("Application readiness failed within 120 seconds", first)
-        self.assertIn("restart-attempted", first)
-        self.assertIn("Deployment job: job-id", first)
+        self.assertIn("job-execution", first)
+        self.assertIn("recovery unknown", first)
+        self.assertIn("retained job job-id", first)
+
+    def test_streamed_error_is_not_duplicated_by_exit_handling(self):
+        self.state["ExitCode"] = 1
+        original = self.docker
+
+        def docker(command, **kwargs):
+            result = original(command, **kwargs)
+            if command[1] == "logs" and "--follow" not in command:
+                result.stdout = (
+                    "Error: failed during building; recovery original-preserved; job-id.\n"
+                    + result.stdout
+                )
+            return result
+
+        captured = io.StringIO()
+        with (
+            patch.object(launch.subprocess, "run", side_effect=docker),
+            patch("sys.stdout", captured),
+        ):
+            self.assertEqual(launch.wait_for_job("job-id", {"DOCKER_CONFIG": "private-config"}), 1)
+        self.assertEqual(captured.getvalue(), "")
+
+    def test_job_mounts_only_deployment_credentials_and_socket(self):
+        args = type(
+            "Args", (), {"sha": None, "install": None, "check_only": False, "restart": True}
+        )()
+        command = launch.job_command(launch.ROOT, "runner", "job", "1000:1000", 999, args)
+        mounts = [command[i + 1] for i, word in enumerate(command) if word == "--mount"]
+        self.assertEqual(len(mounts), 3)
+        self.assertIn(
+            f"type=bind,source={launch.CREDENTIALS},target={launch.CREDENTIALS},readonly", mounts
+        )
+        self.assertNotIn("/source", " ".join(command))
+        self.assertNotIn("--rm", command)
+        self.assertIn("--restart", command)
 
     def test_check_only_rejects_restart_before_any_docker_call(self):
         with (
@@ -78,7 +114,7 @@ class PortalWaitTests(unittest.TestCase):
                 "sys.argv",
                 [
                     "launcher",
-                    "--source-view",
+                    "--deploy-root",
                     "/unused",
                     "--sha",
                     "a" * 40,
@@ -105,7 +141,12 @@ class PortalWaitTests(unittest.TestCase):
             self.wait()
 
     def test_already_current_success_requires_verification_result(self):
-        self.result = {"outcome": "already-current", "https": "verified"}
+        self.result = {
+            "phase": "complete",
+            "exit_code": 0,
+            "outcome": "already-current",
+            "https": "verified",
+        }
         self.assertEqual(self.wait(), 0)
 
     def test_timeout_fails_without_stopping_or_relaunching_the_child(self):
@@ -140,7 +181,7 @@ class PortalEntrypointTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 7)
             self.assertEqual(result.stdout.strip(), "arguments:--wait --restart")
-            self.assertIn("Error:", result.stderr)
+            self.assertEqual(result.stderr, "")
 
     def test_entrypoint_requires_portal_context(self):
         env = dict(os.environ)
@@ -162,7 +203,18 @@ class PortalDockerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.image = "cif-portal-runner-test:" + uuid.uuid4().hex
         subprocess.run(
-            ["docker", "build", "-q", "-t", cls.image, str(ROOT / "deployment/runner")],
+            [
+                "docker",
+                "build",
+                "-q",
+                "--build-arg",
+                "RUNNER_REVISION=" + "f" * 40,
+                "-t",
+                cls.image,
+                "-f",
+                str(ROOT / "deployment/production-runner/Dockerfile"),
+                str(ROOT),
+            ],
             check=True,
             timeout=180,
         )
@@ -181,89 +233,14 @@ class PortalDockerTests(unittest.TestCase):
                 "bash",
                 self.image,
                 "-ec",
-                "git --version; python3 --version; docker --version; docker compose version",
+                "git --version; python3 --version; docker --version; docker compose version; "
+                "python3 /opt/cif/production-update.py --help >/dev/null; "
+                "python3 /opt/cif/launch-production-update.py --help >/dev/null; "
+                "test -x /opt/cif/update_production_portal",
             ],
             check=True,
             timeout=30,
         )
-
-    def test_full_portal_bootstrap_in_actual_runner(self):
-        # Fake only remote Git content. Run real Bash, Alpine mktemp and Python,
-        # starting from the exact Portal entrypoint as its non-root identity.
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            root.chmod(0o755)
-            (root / "source").mkdir(mode=0o755)
-            (root / "bin").mkdir(mode=0o755)
-            (root / "source").chmod(0o755)
-            (root / "bin").chmod(0o755)
-            for name in ("update_production", "update_production_portal"):
-                shutil.copy2(ROOT / name, root)
-            (root / "bin/git").write_text(
-                '#!/bin/sh\nset -eu\ntest "$1" = -C\ntest "$2" = /project/source\n'
-                'shift 2\nprintf "git:%s\\n" "$*" >> /tmp/git-calls\n'
-                'case "$*" in\n'
-                '"remote get-url origin") '
-                "echo https://github.com/astigmatism/comfyui-image-frontend.git;;\n"
-                '"fetch origin main") :;;\n'
-                '"rev-parse --verify origin/main^{commit}") echo ' + "a" * 40 + ";;\n"
-                '"show ' + "a" * 40 + ':scripts/launch-production-update.py") '
-                "cat /project/launcher-fixture.py;;\n"
-                "*) exit 99;;\nesac\n"
-            )
-            (root / "bin/git").chmod(0o755)
-            (root / "launcher-fixture.py").write_text(
-                "import json, os, sys\n"
-                'assert sys.argv[1:] == ["--source-view", "/project/source", "--sha", '
-                + repr("a" * 40)
-                + ', "--wait", "--restart"]\n'
-                "assert os.getuid() == 1000\n"
-                'print(json.dumps({"bootstrap": "executed", "uid": os.getuid()}))\n'
-                'sys.exit(int(os.environ["FIXTURE_EXIT_CODE"]))\n'
-            )
-            (root / "launcher-fixture.py").chmod(0o644)
-            for exit_code in (0, 7):
-                with self.subTest(exit_code=exit_code):
-                    result = subprocess.run(
-                        [
-                            "docker",
-                            "run",
-                            "--rm",
-                            "--user",
-                            "1000:1000",
-                            "--mount",
-                            f"type=bind,source={root},target=/project,readonly",
-                            "--env",
-                            "SERVICE_PORTAL_UPDATE_DELEGATED=1",
-                            "--env",
-                            f"FIXTURE_EXIT_CODE={exit_code}",
-                            "--env",
-                            "PATH=/project/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                            "--entrypoint",
-                            "bash",
-                            self.image,
-                            "-c",
-                            "/project/update_production_portal; code=$?; "
-                            "test -z \"$(find /tmp -maxdepth 1 -name 'cif-launch.*')\" || exit 98; "
-                            'cat /tmp/git-calls; exit "$code"',
-                        ],
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        timeout=30,
-                    )
-                    self.assertEqual(result.returncode, exit_code, result.stderr)
-                    self.assertIn('"bootstrap": "executed"', result.stdout)
-                    calls = [line for line in result.stdout.splitlines() if line.startswith("git:")]
-                    self.assertEqual(
-                        calls,
-                        [
-                            "git:remote get-url origin",
-                            "git:fetch origin main",
-                            "git:rev-parse --verify origin/main^{commit}",
-                            "git:show " + "a" * 40 + ":scripts/launch-production-update.py",
-                        ],
-                    )
 
     def test_real_container_exit_and_verified_result_determine_portal_status(self):
         cases = [
@@ -304,6 +281,82 @@ class PortalDockerTests(unittest.TestCase):
                     self.assertGreater(time.monotonic() - started, 0.2)
                 finally:
                     subprocess.run(["docker", "rm", "-f", container], check=True, timeout=30)
+
+    def test_installed_entrypoint_runs_without_checkout_or_outer_credentials(self):
+        # Run real Bash/Python/Alpine with precisely the portal's two mounts.
+        # Stub Docker responses only, so this cannot launch a production job.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            (root / "bin").mkdir(mode=0o755)
+            revision = "f" * 40
+            (root / "release-config.json").write_text(
+                json.dumps(
+                    {
+                        "repository": launch.REPOSITORY,
+                        "branch": "main",
+                        "runner_revision": revision,
+                        "runner_image": "local/comfyui-image-frontend-release:" + revision,
+                    }
+                )
+            )
+            for name in ("update_production", "update_production_portal"):
+                shutil.copy2(ROOT / name, root)
+            (root / "bin/docker").write_text(
+                "#!/usr/bin/python3\n"
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "code = int(os.environ['FIXTURE_EXIT'])\n"
+                "if args[0] == 'info': print('samus')\n"
+                "elif args[:2] == ['image', 'inspect']:\n"
+                " print(json.dumps([{'Config': {'Labels': {'org.opencontainers.image.revision': '"
+                + revision
+                + "'}}}]))\n"
+                "elif args[0] == 'run':\n"
+                " assert '--restart' in args and '--rm' not in args\n"
+                " assert any('/credentials/' in a and a.endswith(',readonly') for a in args)\n"
+                " print('fixture-child')\n"
+                "elif args[0] == 'wait': print(code)\n"
+                "elif args[0] == 'inspect': "
+                "print(json.dumps({'Running': False, 'Status': 'exited', 'ExitCode': code}))\n"
+                "elif args[0] == 'logs':\n"
+                " if code: print('Error: production update failed during fixture; "
+                "recovery original-preserved; retained job fixture.')\n"
+                " print(json.dumps({'phase': 'failed' if code else 'complete', "
+                "'exit_code': code, 'https': 'verified'}))\n"
+                "else: sys.exit(99)\n"
+            )
+            (root / "bin/docker").chmod(0o755)
+            for code in (0, 7):
+                result = subprocess.run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--user",
+                        f"{os.getuid()}:{os.getgid()}",
+                        "--mount",
+                        f"type=bind,source={root},target={launch.ROOT}",
+                        "--mount",
+                        "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock",
+                        "--env",
+                        "SERVICE_PORTAL_UPDATE_DELEGATED=1",
+                        "--env",
+                        f"FIXTURE_EXIT={code}",
+                        "--env",
+                        f"PATH={launch.ROOT}/bin:/usr/local/bin:/usr/bin:/bin",
+                        "--entrypoint",
+                        launch.ROOT + "/update_production_portal",
+                        self.image,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.count("Error:"), int(code != 0))
+                self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

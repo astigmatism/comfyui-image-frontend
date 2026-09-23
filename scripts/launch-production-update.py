@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # ruff: noqa: S603, S607
-"""Launch one durable production update using existing Docker access; no SSH setup."""
+"""Launch and wait for a pinned, durable Samus release job using the local socket."""
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -13,24 +12,25 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = "/home/astigmatism/comfyui-image-frontend"
+ROOT = "/home/astigmatism/deployments/comfyui-image-frontend"
+CREDENTIALS = "/home/astigmatism/credentials/comfyui-image-frontend"
+REPOSITORY = "https://github.com/astigmatism/comfyui-image-frontend.git"
+STATUS = {"phase": "launcher-preflight", "job": "none-launched"}
 
 
 def wait_for_job(container, env, check_only=False):
-    """Keep the Portal runner alive until the durable deployment actually finishes."""
+    """Only the final verified result AND a successful exit constitute success."""
     try:
         subprocess.run(
-            ["docker", "logs", "--follow", "--tail", "20", container],
+            ["docker", "logs", "--follow", "--tail", "all", container],
             env=env,
             check=True,
             timeout=1800,
         )
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(
-            f"Deployment monitoring timed out; inspect existing job {container}. "
-            "It may still be running; do not launch another update."
+            f"Monitoring timed out; inspect retained job {container}; do not launch another update"
         ) from error
-    # Log EOF can precede Docker publishing the terminal container state.
     subprocess.run(
         ["docker", "wait", container],
         env=env,
@@ -51,7 +51,6 @@ def wait_for_job(container, env, check_only=False):
     )
     if state["Running"] or state["Status"] not in ("exited", "dead"):
         raise RuntimeError(f"Deployment job {container} has not finished")
-    code = state["ExitCode"]
     logs = subprocess.run(
         ["docker", "logs", "--tail", "20", container],
         env=env,
@@ -63,167 +62,148 @@ def wait_for_job(container, env, check_only=False):
     records = []
     for line in logs:
         try:
-            records.append(json.loads(line))
+            value = json.loads(line)
+            if isinstance(value, dict):
+                records.append(value)
         except json.JSONDecodeError:
-            continue
-    result = records[-1] if records and isinstance(records[-1], dict) else {}
-    cause = next((line.strip() for line in logs if line.strip().startswith("Error:")), None)
-    if code:
-        if cause:
-            print(cause, flush=True)
-        elif result.get("error"):
+            pass
+    result = records[-1] if records else {}
+    if state["ExitCode"]:
+        # The child's single sanitized Error line has already been streamed.
+        if not any(line.startswith("Error:") for line in logs):
             print(
-                f"Error: production update failed during {result.get('failed_phase', 'unknown')}: "
-                f"{result['error']}. Recovery: {result.get('recovery', 'unknown')}. "
-                f"Deployment job: {container}.",
+                f"Error: production update failed during job-execution; "
+                f"recovery unknown; retained job {container}.",
                 flush=True,
             )
-        print(f"Error: deployment job {container} failed with exit code {code}", flush=True)
-        return code
-    verified = (
+        return state["ExitCode"]
+    if not (
         result.get("phase") == "complete"
         and result.get("exit_code") == 0
         and result.get("https") == "verified"
-    ) or (
-        result.get("outcome") == ("check-passed" if check_only else "already-current")
-        and result.get("https") == "verified"
-    )
-    if not verified:
+        and (not check_only or result.get("outcome") == "check-passed")
+    ):
         raise RuntimeError(f"Deployment job {container} exited without a verified result")
-    print(json.dumps({"job": container, "exit_code": 0, "verification": "passed"}), flush=True)
     return 0
+
+
+def job_command(root, image, name, owner, socket_gid, args):
+    command = [
+        "docker",
+        "run",
+        "-d",
+        "--init",
+        "--pull",
+        "never",
+        "--name",
+        name,
+        "--label",
+        "cif.production-update=true",
+        "--label",
+        "io.service-portal.hidden=true",
+        "--label",
+        "io.service-portal.maintenance=true",
+        "--user",
+        owner,
+        "--group-add",
+        str(socket_gid),
+        "--mount",
+        f"type=bind,source={root},target={root}",
+        "--mount",
+        f"type=bind,source={CREDENTIALS},target={CREDENTIALS},readonly",
+        "--mount",
+        "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock",
+        "--env",
+        "CIF_MAINTENANCE_CONTAINER=" + name,
+        image,
+        "--deploy-root",
+        str(root),
+    ]
+    if args.check_only:
+        command.append("--check-only")
+    if args.restart:
+        command.append("--restart")
+    if args.sha:
+        command.extend(["--sha", args.sha])
+    if args.install:
+        command.extend(["--install", args.install])
+    return command
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-view", type=Path, required=True)
-    parser.add_argument("--sha", required=True)
+    parser.add_argument("--deploy-root", type=Path, required=True)
+    parser.add_argument("--sha", help="Optional full reviewed ancestor of main to deploy")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check-only", action="store_true")
     mode.add_argument("--restart", action="store_true")
-    parser.add_argument(
-        "--wait", action="store_true", help="Stream deployment progress and return its exit code"
-    )
+    mode.add_argument("--install", metavar="RUNNER_SHA")
+    parser.add_argument("--wait", action="store_true", help="Compatibility flag; always waits")
     args = parser.parse_args()
-    if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
+    if args.sha and not re.fullmatch(r"[0-9a-f]{40}", args.sha):
         raise RuntimeError("Expected a full target SHA")
-    print("Phase: launcher validation", flush=True)
-    view = args.source_view.parent
-    if str(view) not in (ROOT, "/host" + ROOT):
-        raise RuntimeError("Unexpected production checkout path")
-    sock = next(
-        (p for p in (Path("/var/run/docker.sock"), Path("/host/run/docker.sock")) if p.is_socket()),
-        None,
-    )
-    if sock is None:
-        raise RuntimeError(
-            "Docker socket unavailable; report the access blocker. Do not configure SSH."
-        )
-    with tempfile.TemporaryDirectory(prefix="cif-docker-") as config:
-        env = dict(os.environ, DOCKER_HOST="unix://" + str(sock), DOCKER_CONFIG=config)
+    if args.install and (args.sha or not re.fullmatch(r"[0-9a-f]{40}", args.install)):
+        raise RuntimeError("Installation requires only a full runner revision")
+    if str(args.deploy_root) != ROOT or args.deploy_root.resolve() != args.deploy_root:
+        raise RuntimeError("Unexpected production deployment path")
+    owner = args.deploy_root.stat()
+    if owner.st_uid == 0 or owner.st_uid != os.getuid():
+        raise RuntimeError("Run as the deployment owner, not root")
+    if args.install:
+        revision = args.install
+        image = "local/comfyui-image-frontend-release:" + revision
+    else:
+        config = json.loads((args.deploy_root / "release-config.json").read_text())
+        revision, image = config["runner_revision"], config["runner_image"]
+        if config["repository"] != REPOSITORY or config["branch"] != "main":
+            raise RuntimeError("Unexpected release source")
+    if not re.fullmatch(r"[0-9a-f]{40}", revision) or image != (
+        "local/comfyui-image-frontend-release:" + revision
+    ):
+        raise RuntimeError("Expected a pinned release runner")
+    sock = Path("/var/run/docker.sock")
+    if not sock.is_socket():
+        raise RuntimeError("Native Docker socket unavailable")
+    with tempfile.TemporaryDirectory(prefix="cif-docker-") as config_dir:
+        env = dict(os.environ, DOCKER_HOST="unix://" + str(sock), DOCKER_CONFIG=config_dir)
         env.pop("DOCKER_CONTEXT", None)
 
-        def run(command, **kwargs):
-            return subprocess.run(command, env=env, check=True, timeout=180, **kwargs)
+        def output(command):
+            return subprocess.run(
+                command, env=env, check=True, capture_output=True, text=True, timeout=60
+            ).stdout.strip()
 
-        daemon = run(
-            ["docker", "info", "--format", "{{.Name}}"], capture_output=True, text=True
-        ).stdout.strip()
-        if daemon != "samus":
+        if output(["docker", "info", "--format", "{{.Name}}"]) != "samus":
             raise RuntimeError("Expected the Samus production Docker daemon")
-        existing = run(
-            ["docker", "ps", "-q", "--filter", "label=cif.production-update=true"],
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        if existing:
-            raise RuntimeError("A deployment/check is already running: " + existing)
-        paths = [
-            "deployment/production-runner/Dockerfile",
-            "scripts/production-update.py",
-            "scripts/backup-production-bind.py",
-        ]
-        content = b"".join(
-            run(
-                ["git", "-C", str(args.source_view), "show", f"{args.sha}:{p}"], capture_output=True
-            ).stdout
-            for p in paths
-        )
-        image = "comfyui-image-frontend-deployer:" + hashlib.sha256(content).hexdigest()[:20]
-        found = subprocess.run(
-            ["docker", "image", "inspect", image],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-        )
-        if found.returncode:
-            print("Phase: deployment runner build", flush=True)
-            archive = run(
-                ["git", "-C", str(args.source_view), "archive", args.sha, *paths],
-                capture_output=True,
-            ).stdout
-            run(["docker", "build", "-q", "-t", image, "-f", paths[0], "-"], input=archive)
+        STATUS["phase"] = "runner-validation"
+        runner = json.loads(output(["docker", "image", "inspect", image]))[0]
+        if runner["Config"].get("Labels", {}).get("org.opencontainers.image.revision") != revision:
+            raise RuntimeError("Runner image revision does not match its pinned tag")
         name = f"cif-production-update-{time.time_ns()}"
-        owner = view.stat()
-        command = [
-            "docker",
-            "run",
-            "-d",
-            "--init",
-            "--name",
-            name,
-            "--label",
-            "cif.production-update=true",
-            "--user",
-            f"{owner.st_uid}:{owner.st_gid}",
-            "--group-add",
-            str(sock.stat().st_gid),
-            "--mount",
-            f"type=bind,source={ROOT},target={ROOT}",
-            "--mount",
-            "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock",
-            "--env",
-            "CIF_MAINTENANCE_CONTAINER=" + name,
-            image,
-            "--deploy-root",
-            ROOT,
-            "--sha",
-            args.sha,
-        ]
-        if args.check_only:
-            command.append("--check-only")
-        if args.restart:
-            command.append("--restart")
-        print("Phase: deployment job launch", flush=True)
-        container = run(command, capture_output=True, text=True).stdout.strip()
-        print(
-            json.dumps(
-                {
-                    "job": name,
-                    "container_id": container,
-                    "target_sha": args.sha,
-                    "check_only": args.check_only,
-                    "restart": args.restart,
-                    "inspect_command": (
-                        f"docker -H unix://{sock} inspect --format '{{{{json .State}}}}' {name}"
-                    ),
-                    "logs_command": f"docker -H unix://{sock} logs --tail 20 {name}",
-                }
-            ),
-            flush=True,
+        STATUS.update(phase="job-launch", job=name)
+        print(json.dumps({"phase": "launch", "job": name}), flush=True)
+        output(
+            job_command(
+                args.deploy_root,
+                image,
+                name,
+                f"{owner.st_uid}:{owner.st_gid}",
+                sock.stat().st_gid,
+                args,
+            )
         )
-        if args.wait:
-            return wait_for_job(container, env, args.check_only)
-    return 0
+        STATUS["phase"] = "job-monitor"
+        return wait_for_job(name, env, args.check_only)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (RuntimeError, subprocess.SubprocessError, OSError) as error:
-        # Never print subprocess arguments: future commands may include credentials.
-        cause = str(error) if isinstance(error, RuntimeError) else type(error).__name__
-        cause = re.sub(r"[\x00-\x1f\x7f]+", " ", cause)[:1000]
-        print(f"Error: production update launcher failed: {cause}", flush=True)
+    except Exception as error:
+        # Do not expose exception text, arguments, Docker config or credentials.
+        print(
+            f"Error: production update failed during {STATUS['phase']}; recovery unknown; "
+            f"retained job {STATUS['job']} ({type(error).__name__}); inspect before retrying.",
+            flush=True,
+        )
         sys.exit(1)

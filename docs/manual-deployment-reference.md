@@ -1,4 +1,12 @@
-# Manual deployment and recovery reference
+# Historical deployment reference — retired Samus layout
+
+**This document records the deployment before the September 22, 2026 restore.
+Do not execute its Samus paths, worktree creation, or two-file Compose commands
+on the current host.** Use [the current runbook](production-deployment-agent.md)
+and [the current installer](production-service-portal.md). Current Samus has one
+JSON Compose file under `deployments/`, external credentials, and no checkout.
+The older Path A/Path B distinction below is retained only as historical context.
+
 
 **Routine Samus updates use [the one-command guide](production-deployment-agent.md).**
 This long reference is retained for human-led recovery and other deployment layouts.

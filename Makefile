@@ -2,7 +2,7 @@ SHELL := /bin/sh
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: install-dev format-check lint typecheck test test-backend test-frontend build traceability container-smoke e2e e2e-tls validate validate-available clean
+.PHONY: install-dev format-check lint typecheck test test-backend test-frontend test-deployment build traceability container-smoke e2e e2e-tls validate validate-available clean
 
 install-dev:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -25,7 +25,10 @@ test-backend:
 test-frontend:
 	cd frontend && $(NODE) --test test/*.test.mjs
 
-test: test-backend test-frontend
+test-deployment:
+	$(PYTHON) -m unittest discover -s scripts/tests -q
+
+test: test-backend test-frontend test-deployment
 
 build:
 	$(PYTHON) -m compileall -q backend/app comfyui_extension

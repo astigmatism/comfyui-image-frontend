@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
@@ -49,8 +50,11 @@ class CheckoutPermissionsTests(unittest.TestCase):
             worktree = root / "release"
             original_umask = os.umask(0o077)
             try:
-                with (root / "private.log").open("w") as log:
-                    deploy.create_release_worktree(source, worktree, sha, log)
+                with (
+                    (root / "private.log").open("w") as log,
+                    patch.object(deploy, "REPOSITORY", str(source)),
+                ):
+                    deploy.fetch_source(worktree, sha, sha, log)
                 (root / "private.json").write_text("private record")
             finally:
                 os.umask(original_umask)

@@ -187,7 +187,7 @@ class HostGateTests(unittest.TestCase):
     def test_wrong_mount_is_rejected_even_when_both_compose_configs_agree(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
-            files = [str(root / p) for p in ("compose.yaml", "compose.ordered-lora.yaml")]
+            files = [str(root / p) for p in ("compose.yaml",)]
             definition = {
                 "image": "app:sha",
                 "volumes": [
@@ -244,6 +244,94 @@ class HostGateTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "Host bind mismatch"),
             ):
                 backup.preflight(root, "project")
+
+
+class RestoredLayoutTests(unittest.TestCase):
+    def test_external_credentials_and_single_json_compose_pass_host_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve() / "deployments" / backup.APP
+            credentials = root.parent.parent / "credentials" / root.name / "tls"
+            credentials.mkdir(parents=True)
+            (root / "data/assets").mkdir(parents=True)
+            (root / "data/app.db").touch()
+            (root / "Caddyfile").write_text(
+                "tls /etc/caddy/certificates/leaf.crt /etc/caddy/certificates/leaf.key\n"
+            )
+            for name in ("ca.crt", "leaf.crt", "leaf.key"):
+                (credentials / name).touch()
+            services = {
+                backup.APP: {
+                    "image": "local/frontend:restored",
+                    "user": "1000:1000",
+                    "environment": {"CIF_SESSION_SECRET": "fixture"},
+                    "volumes": [{"type": "bind", "source": str(root / "data"), "target": "/data"}],
+                },
+                backup.EDGE: {
+                    "image": "local/edge:restored",
+                    "volumes": [
+                        {
+                            "type": "bind",
+                            "source": str(root / "Caddyfile"),
+                            "target": "/etc/caddy/Caddyfile",
+                            "read_only": True,
+                        },
+                        {
+                            "type": "bind",
+                            "source": str(credentials),
+                            "target": "/etc/caddy/certificates",
+                            "read_only": True,
+                        },
+                    ],
+                },
+            }
+            containers = {}
+            for name, definition in services.items():
+                containers[name] = {
+                    "Id": name,
+                    "Config": {
+                        "Image": definition["image"],
+                        "User": "1000:1000",
+                        "Env": ["CIF_SESSION_SECRET=fixture"] if name == backup.APP else [],
+                        "Labels": {
+                            "com.docker.compose.project": backup.APP,
+                            "com.docker.compose.project.working_dir": str(root),
+                            "com.docker.compose.project.config_files": str(root / "compose.yaml"),
+                        },
+                    },
+                    "State": {"Running": True, "Health": {"Status": "healthy"}},
+                    "Mounts": [
+                        {
+                            "Type": m["type"],
+                            "Source": m["source"],
+                            "Destination": m["target"],
+                            "RW": not m.get("read_only", False),
+                        }
+                        for m in definition["volumes"]
+                    ],
+                }
+
+            def output(*args):
+                if args[1:3] == ("context", "inspect"):
+                    return json.dumps(
+                        [{"Endpoints": {"docker": {"Host": "unix:///var/run/docker.sock"}}}]
+                    )
+                if args[1] == "info":
+                    return backup.socket.gethostname()
+                if "config" in args:
+                    self.assertEqual(args.count("-f"), 1)
+                    return json.dumps({"services": services})
+                return args[-1]
+
+            with (
+                patch.object(backup, "execution_context"),
+                patch.object(backup, "output", side_effect=output),
+                patch.object(backup, "inspect", side_effect=containers.__getitem__),
+                patch.dict(backup.os.environ, {}, clear=True),
+            ):
+                self.assertEqual(backup.preflight(root, backup.APP)["Id"], backup.APP)
+                services[backup.APP]["environment"]["CIF_SESSION_SECRET"] = "changed"  # noqa: S105 - synthetic fixture
+                with self.assertRaisesRegex(RuntimeError, "Saved environment differs"):
+                    backup.preflight(root, backup.APP)
 
 
 if __name__ == "__main__":

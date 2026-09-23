@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 # ruff: noqa: S603, S607
-"""The fixed two-file production deployment. Launched as a durable Docker job."""
+"""Pinned-source releases for Samus, with no persistent source checkout."""
 
 import argparse
 import copy
-import fcntl
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 import re
 import secrets
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+from contextlib import closing, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
@@ -26,6 +30,9 @@ backup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backup)
 APP, EDGE = backup.APP, backup.EDGE
 PROJECT = "comfyui-image-frontend"
+REPOSITORY = "https://github.com/astigmatism/comfyui-image-frontend.git"
+ORIGIN = "https://192.168.1.5:8443"
+REVISION = "org.opencontainers.image.revision"
 LAST_READINESS = {"reason": "not-probed"}
 require, output, inspect = backup.require, backup.output, backup.inspect
 
@@ -37,13 +44,11 @@ def compose_command(root):
         "--project-directory",
         str(root),
         "--env-file",
-        str(root / ".env"),
+        "/dev/null",
         "-p",
         PROJECT,
         "-f",
         str(root / "compose.yaml"),
-        "-f",
-        str(root / "compose.ordered-lora.yaml"),
     ]
 
 
@@ -60,56 +65,78 @@ def atomic_write(path, contents):
             os.unlink(temporary)
 
 
-def candidate_files(root, sha):
-    patterns = {
-        ".env": (
-            rb"(?m)^([ \t]*CIF_IMAGE_TAG[ \t]*=[ \t]*)"
-            rb"(?:[0-9a-f]{7,40}|\"[0-9a-f]{7,40}\"|'[0-9a-f]{7,40}')"
-            rb"([ \t]*(?:#[^\r\n]*)?\r?)$",
-            sha.encode(),
-        ),
-        "compose.ordered-lora.yaml": (
-            rb"(?m)^([ \t]+context:[ \t]*)\./ordered-lora-[0-9a-f]{7,40}([ \t]*(?:#[^\r\n]*)?\r?)$",
-            f"./ordered-lora-{sha}".encode(),
-        ),
+def read_compose(root):
+    path = root / "compose.yaml"
+    require(path.is_file() and not path.is_symlink(), "Expected a regular compose.yaml")
+    config = json.loads(path.read_text())
+    require(set(config["services"]) == {APP, EDGE}, "Unexpected Compose service scope")
+    require(all("build" not in v for v in config["services"].values()), "Unexpected build context")
+    require(isinstance(config["services"][APP].get("labels"), dict), "Expected mapping labels")
+    require(
+        config["services"][EDGE].get("labels", {}).get("io.service-portal.update.enabled")
+        == "false",
+        "Edge must remain excluded from updates",
+    )
+    return config
+
+
+def candidate_config(before, sha):
+    after = copy.deepcopy(before)
+    app = after["services"][APP]
+    app["image"] = "local/comfyui-image-frontend:" + sha
+    app["labels"][REVISION] = sha
+    return after
+
+
+def portal_labels(revision, user):
+    require(re.fullmatch(r"[0-9a-f]{40}", revision), "Expected full runner revision")
+    require(re.fullmatch(r"[1-9][0-9]*:[0-9]+", user), "Expected numeric non-root owner")
+    return {
+        "io.service-portal.update.enabled": "true",
+        "io.service-portal.update.script": "update_production_portal",
+        "io.service-portal.update.image": "local/comfyui-image-frontend-release:" + revision,
+        "io.service-portal.update.user": user,
     }
-    prepared = {}
-    for name, (pattern, value) in patterns.items():
-        path = root / name
-        require(path.is_file() and not path.is_symlink(), "Expected regular deployment files")
-        changed, count = re.subn(
-            pattern, lambda m, value=value: m[1] + value + m[2], path.read_bytes()
-        )
-        require(count == 1, "Unexpected deployment file layout; no automatic edits allowed")
-        prepared[name] = changed
-    return prepared
-
-
-def verify_candidate(before, after, worktree, sha):
-    expected = copy.deepcopy(before)
-    app = expected["services"][APP]
-    app["image"] = app["image"].rsplit(":", 1)[0] + ":" + sha
-    app["build"]["context"] = str(worktree)
-    if "CIF_IMAGE_TAG" in app.get("environment", {}):
-        app["environment"]["CIF_IMAGE_TAG"] = sha
-    require(after == expected, "Unexpected Compose change; refusing to recreate services")
-    return app["image"]
 
 
 def mounts_equal(a, b):
     return sorted(a, key=lambda m: m["Destination"]) == sorted(b, key=lambda m: m["Destination"])
 
 
-def create_release_worktree(source, worktree, sha, log):
-    # Keep private records at 0600/0700, but do not bake those modes into code.
-    subprocess.run(
-        ["git", "-C", str(source), "worktree", "add", "--detach", str(worktree), sha],
-        check=True,
-        timeout=180,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        umask=0o022,
+def run(command, log, timeout=180, **kwargs):
+    return subprocess.run(
+        command, check=True, timeout=timeout, stdout=log, stderr=subprocess.STDOUT, **kwargs
     )
+
+
+def fetch_source(source, sha, deployed, log):
+    # The scratch directory is inside this container, never on the host home mount.
+    run(["git", "init", "-q", str(source)], log)
+    run(["git", "-C", str(source), "remote", "add", "origin", REPOSITORY], log)
+    run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "fetch",
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+        log,
+    )
+    target = sha or output("git", "-C", str(source), "rev-parse", "origin/main").strip()
+    require(re.fullmatch(r"[0-9a-f]{40}", target), "Expected a full target SHA")
+    # Both checks use the same fetched main snapshot, never a second branch resolution.
+    output("git", "-C", str(source), "merge-base", "--is-ancestor", deployed, target)
+    output("git", "-C", str(source), "merge-base", "--is-ancestor", target, "origin/main")
+    run(["git", "-C", str(source), "checkout", "-q", "--detach", target], log, umask=0o022)
+    require(
+        output("git", "-C", str(source), "rev-parse", "HEAD").strip() == target,
+        "Source revision mismatch",
+    )
+    require(not output("git", "-C", str(source), "status", "--porcelain"), "Source is not clean")
+    return target
 
 
 def smoke_image(image_id, runtime_user, log, timeout=90):
@@ -139,18 +166,12 @@ def smoke_image(image_id, runtime_user, log, timeout=90):
         f"/data:rw,nosuid,nodev,mode=0700,uid={uid},gid={gid}",
         "--tmpfs",
         "/tmp:rw,nosuid,nodev,mode=1777",  # noqa: S108 - isolated container tmpfs, no host path
-        "--env",
-        "CIF_SESSION_SECRET=" + secrets.token_hex(32),
-        "--env",
-        "CIF_BOOTSTRAP_ADMIN_USERNAME=smoke",
-        "--env",
-        "CIF_BOOTSTRAP_ADMIN_TEMPORARY_PASSWORD=" + secrets.token_hex(24),
-        "--env",
-        'CIF_COMFYUI_INSTANCES=[{"id":"smoke","label":"Smoke","base_url":"http://127.0.0.1:9"}]',
         image_id,
     ]
     probe = """
 import app, json, sqlite3, urllib.request
+from contextlib import closing, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 assert Path(app.__file__).is_relative_to(Path('/app/backend')), app.__file__
 base = 'http://127.0.0.1:8000'
@@ -166,7 +187,16 @@ for key in ('app', 'styles', 'lora_stack'):
 print('Candidate import, migrations, database, worker and assets passed as configured UID.')
 """
     try:
-        subprocess.run(command, check=True, timeout=30, stdout=log, stderr=subprocess.STDOUT)
+        with tempfile.NamedTemporaryFile(mode="w", prefix="cif-smoke-env-") as env_file:
+            env_file.write("CIF_SESSION_SECRET=" + secrets.token_hex(32) + "\n")
+            env_file.write("CIF_BOOTSTRAP_ADMIN_USERNAME=smoke\n")
+            env_file.write("CIF_BOOTSTRAP_ADMIN_TEMPORARY_PASSWORD=" + secrets.token_hex(24) + "\n")
+            env_file.write(
+                'CIF_COMFYUI_INSTANCES=[{"id":"smoke","label":"Smoke","base_url":"http://127.0.0.1:9"}]\n'
+            )
+            env_file.flush()
+            command[-1:-1] = ["--env-file", env_file.name]
+            subprocess.run(command, check=True, timeout=30, stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not inspect(name)["State"]["Running"]:
@@ -307,15 +337,12 @@ def verify_service(compose, config, root, image_id, edge_id):
     require(bool(app_id), "App container missing")
     require(inspect(app_id)["Image"] == image_id, "Running app image differs from selected image")
     require(output(*compose, "ps", "--all", "-q", EDGE).strip() == edge_id, "Edge identity changed")
-    deadline = time.monotonic() + 120
     require(
         wait_for_application(app_id, 120),
         "Application readiness failed within 120 seconds: " + json.dumps(LAST_READINESS),
     )
-    edge = config["services"][EDGE]
-    host = edge["environment"]["CIF_TLS_HOSTNAME"]
-    port = next(p for p in edge["ports"] if p["target"] == 8443)
-    origin = f"https://{host}:{port['published']}"
+    deadline = time.monotonic() + 120
+    origin = ORIGIN
     curl = [
         "curl",
         "--fail",
@@ -326,9 +353,7 @@ def verify_service(compose, config, root, image_id, edge_id):
         "--noproxy",
         "*",
         "--cacert",
-        str(root / "data/certificates/ca.crt"),
-        "--resolve",
-        f"{host}:{port['published']}:{port['host_ip']}",
+        str(credentials_dir(root) / "tls/ca.crt"),
     ]
 
     def read_url(path, *, discard=False):
@@ -377,14 +402,16 @@ def verify_service(compose, config, root, image_id, edge_id):
     }
 
 
-def _deploy(root, sha, check_only, restart, report, log, directory):
-    require(re.fullmatch(r"[0-9a-f]{40}", sha), "Expected a full target SHA")
-    os.umask(0o077)
-    os.environ.update(GIT_TERMINAL_PROMPT="0", GIT_PAGER="cat")
-    source = root / "source"
-    compose = compose_command(root)
-    require(not (source / ".git/service-portal-update.lock").exists(), "Portal update lock exists")
-    report("structural-preflight")
+def credentials_dir(root):
+    return root.parent.parent / "credentials" / root.name
+
+
+def fingerprints(root):
+    paths = [root / "Caddyfile", *credentials_dir(root).rglob("*")]
+    return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths if p.is_file()}
+
+
+def structural_preflight(root):
     require(
         output("docker", "info", "--format", "{{.Name}}").strip() == "samus",
         "Expected the Samus production Docker daemon",
@@ -392,29 +419,18 @@ def _deploy(root, sha, check_only, restart, report, log, directory):
     app = backup.preflight(
         root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"), require_health=False
     )
-    before = json.loads(output(*compose, "config", "--format", "json"))
-    edge_id = output(*compose, "ps", "--all", "-q", EDGE).strip()
+    before = read_compose(root)
+    edge_id = output(*compose_command(root), "ps", "--all", "-q", EDGE).strip()
     edge = inspect(edge_id)
+    deployed = app["Config"].get("Labels", {}).get(REVISION, "")
+    require(re.fullmatch(r"[0-9a-f]{40}", deployed), "Expected the live release revision label")
     require(
-        output("git", "-C", str(source), "remote", "get-url", "origin").strip()
-        == "https://github.com/astigmatism/comfyui-image-frontend.git",
-        "Unexpected Git remote",
+        before["services"][APP]["labels"].get(REVISION) == deployed,
+        "Saved and running release revisions differ",
     )
     require(
-        output("git", "-C", str(source), "branch", "--show-current").strip() == "main"
-        and not output("git", "-C", str(source), "status", "--porcelain"),
-        "Frozen checkout must be clean main",
-    )
-    frozen = output("git", "-C", str(source), "rev-parse", "HEAD").strip()
-    deployed = app["Config"]["Image"].rsplit(":", 1)[1]
-    require(re.fullmatch(r"[0-9a-f]{40}", deployed), "Running image must use its full release SHA")
-    output("git", "-C", str(source), "merge-base", "--is-ancestor", deployed, sha)
-    output("git", "-C", str(source), "merge-base", "--is-ancestor", sha, "origin/main")
-    old_worktree = before["services"][APP]["build"]["context"]
-    require(
-        output("git", "-C", old_worktree, "rev-parse", "HEAD").strip() == deployed
-        and not output("git", "-C", old_worktree, "status", "--porcelain"),
-        "Current release context mismatch",
+        re.fullmatch(r"[1-9][0-9]*:[0-9]+", app["Config"]["User"]),
+        "Expected an explicit production UID:GID",
     )
     for live in (app, edge):
         require(
@@ -422,234 +438,379 @@ def _deploy(root, sha, check_only, restart, report, log, directory):
             == live["Image"],
             "An existing image tag was overwritten",
         )
-    cert_dir = root / "data/certificates"
-    fingerprints = {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in cert_dir.iterdir()
-        if p.is_file()
-    }
-    hostname = before["services"][EDGE]["environment"]["CIF_TLS_HOSTNAME"]
+    state_path = root / "release-state.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        require(
+            state.get("status") == "healthy"
+            and state.get("candidate") == deployed
+            and state.get("image") == app["Config"]["Image"]
+            and state.get("image_id") == app["Image"],
+            "Release state differs from live app",
+        )
+    ca, certificate, private_key = backup.tls_files(root)
+    hostname = ORIGIN.split("//", 1)[1].split(":", 1)[0]
+    ipaddress.ip_address(hostname)
     output(
         "openssl",
         "verify",
         "-CAfile",
-        str(cert_dir / "ca.crt"),
-        "-verify_hostname",
+        str(ca),
+        "-verify_ip",
         hostname,
-        str(cert_dir / "tls.crt"),
+        str(certificate),
     )
-    output("openssl", "x509", "-in", str(cert_dir / "tls.crt"), "-noout", "-checkend", "86400")
+    output("openssl", "x509", "-in", str(certificate), "-noout", "-checkend", "86400")
     require(
-        output("openssl", "x509", "-in", str(cert_dir / "tls.crt"), "-noout", "-pubkey")
-        == output("openssl", "pkey", "-in", str(cert_dir / "tls.key"), "-pubout"),
+        output("openssl", "x509", "-in", str(certificate), "-noout", "-pubkey")
+        == output("openssl", "pkey", "-in", str(private_key), "-pubout"),
         "TLS certificate and private key do not match",
     )
-    report("operational-preflight", previous_sha=deployed, frozen_main=frozen)
-    if check_only:
-        verified = verify_service(compose, before, root, app["Image"], edge_id)
-        report("complete", exit_code=0, outcome="check-passed", **verified)
-        return
-    recovered_by_restart = recover_application(app, report, log)
-    # A healthy application with a broken TLS edge must fail with its actual cause.
-    verify_service(compose, before, root, app["Image"], edge_id)
-    if recovered_by_restart:
-        report("readiness", recovery="restart-verified")
-    if sha == deployed:
-        if restart and not recovered_by_restart:
-            report("requested-restart")
-            restart_application(app["Id"], log)
-        report("final-verification")
-        verified = verify_service(compose, before, root, app["Image"], edge_id)
-        backup.preflight(root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"))
-        require(
-            json.loads(output(*compose, "config", "--format", "json")) == before,
-            "Configuration changed during restart verification",
-        )
-        if (restart or recovered_by_restart) and "StartedAt" in app["State"]:
-            require(
-                inspect(app["Id"])["State"]["StartedAt"] != app["State"]["StartedAt"],
-                "Application start time did not change after restart",
-            )
-        report(
-            "complete",
-            exit_code=0,
-            outcome="restarted" if restart or recovered_by_restart else "already-current",
-            **verified,
-        )
-        return
-    candidate = candidate_files(root, sha)
-    size = int(output("du", "-sk", str(root / "data")).split()[0]) * 1024
-    require(
-        shutil.disk_usage(root).free > size + 2 * 1024**3, "Insufficient backup/build disk space"
+    return before, app, edge, deployed
+
+
+def reconcile(compose, log):
+    run(
+        [
+            *compose,
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "--wait",
+            "--wait-timeout",
+            "120",
+            APP,
+        ],
+        log,
     )
-    saved = {}
-    cutover = False
-    try:
 
-        def run(command, timeout=180):
-            subprocess.run(
-                command, check=True, timeout=timeout, stdout=log, stderr=subprocess.STDOUT
+
+def restore_database(root, archive, directory):
+    """Restore SQLite only; keep the data directory and every asset/upload in place."""
+    backup.verify_archive(archive)
+    with tempfile.TemporaryDirectory(prefix="database-", dir=directory) as scratch:
+        scratch = Path(scratch)
+        with tarfile.open(archive, "r:") as stream:
+            members = {m.name.removeprefix("./"): m for m in stream.getmembers()}
+            for name in ("app.db", "app.db-wal", "app.db-shm", "app.db-journal"):
+                if name in members:
+                    require(members[name].isfile(), "Unexpected archived database file")
+                    with (
+                        stream.extractfile(members[name]) as src,
+                        (scratch / name).open("wb") as dst,
+                    ):
+                        shutil.copyfileobj(src, dst)
+        # Consolidate any archived WAL into a standalone database before installation.
+        with (
+            closing(sqlite3.connect(scratch / "app.db")) as src,
+            closing(sqlite3.connect(scratch / "restored.db")) as dst,
+        ):
+            src.backup(dst)
+            require(
+                dst.execute("PRAGMA integrity_check").fetchall() == [("ok",)],
+                "Restored database integrity check failed",
             )
+        failed = directory / "database.after-cutover"
+        failed.mkdir(mode=0o700)
+        data = root / "data"
+        # Rename on the data filesystem; avoid loading a large database into memory.
+        fd, temporary = tempfile.mkstemp(prefix=".restore-", dir=data)
+        try:
+            with os.fdopen(fd, "wb") as dst, (scratch / "restored.db").open("rb") as src:
+                shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+            for name in ("app.db", "app.db-wal", "app.db-shm", "app.db-journal"):
+                path = data / name
+                require(not path.is_symlink(), "Unexpected live database symlink")
+                if path.exists():
+                    path.rename(failed / name)
+            os.replace(temporary, data / "app.db")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
-        report("preparing", backup=str(directory))
-        for name in (".env", "compose.yaml", "compose.ordered-lora.yaml"):
-            saved[name] = (root / name).read_bytes()
-            (directory / name).write_bytes(saved[name])
-        (directory / "compose.before.json").write_text(json.dumps(before))
-        (directory / "containers.before.json").write_text(json.dumps([app, edge]))
-        worktree = root / ("ordered-lora-" + sha)
-        if not worktree.exists():
-            create_release_worktree(source, worktree, sha, log)
-        require(
-            output("git", "-C", str(worktree), "rev-parse", "HEAD").strip() == sha
-            and not output("git", "-C", str(worktree), "branch", "--show-current").strip()
-            and not output("git", "-C", str(worktree), "status", "--porcelain"),
-            "Target worktree must be clean and detached",
-        )
-        for name, content in candidate.items():
+
+def restore_files(root, saved):
+    for name, content in saved.items():
+        if content is None:
+            (root / name).unlink(missing_ok=True)
+        elif not (root / name).exists() or (root / name).read_bytes() != content:
             atomic_write(root / name, content)
-        after = json.loads(output(*compose, "config", "--format", "json"))
-        target_image = verify_candidate(before, after, worktree, sha)
-        (directory / "compose.candidate.json").write_text(json.dumps(after))
-        records = root / ".deployment-records"
-        records.mkdir(exist_ok=True)
-        receipt = records / (sha + ".json")
-        existing = subprocess.run(
-            ["docker", "image", "inspect", target_image], capture_output=True, timeout=30
+
+
+def build_image(source, sha, directory, log):
+    image = "local/comfyui-image-frontend:" + sha
+    run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "archive",
+            "--format=tar.gz",
+            "--output=" + str(directory / "source.tar.gz"),
+            sha,
+        ],
+        log,
+    )
+    existing = subprocess.run(
+        ["docker", "image", "inspect", image], capture_output=True, timeout=30
+    )
+    if existing.returncode == 0:
+        image_id = json.loads(existing.stdout)[0]["Id"]
+        # Never overwrite a full-SHA tag, or accept an unrecorded image by label alone.
+        receipts = directory.parent.glob("*/image.json")
+        require(
+            any(
+                json.loads(p.read_text()) == {"sha": sha, "image": image, "image_id": image_id}
+                for p in receipts
+            ),
+            "Target image exists without matching provenance",
         )
-        report("building")
-        if existing.returncode == 0:
+    else:
+        run(
+            ["docker", "build", "--label", REVISION + "=" + sha, "-t", image, str(source)],
+            log,
+            timeout=600,
+        )
+        image_id = json.loads(output("docker", "image", "inspect", image))[0]["Id"]
+    atomic_write(
+        directory / "image.json",
+        json.dumps({"sha": sha, "image": image, "image_id": image_id}).encode(),
+    )
+    return image_id
+
+
+def save_state(root, previous, sha, image, image_id):
+    atomic_write(
+        root / "release-state.json",
+        json.dumps(
+            {
+                "previous": previous,
+                "candidate": sha,
+                "image": image,
+                "image_id": image_id,
+                "status": "healthy",
+            },
+            indent=2,
+        ).encode()
+        + b"\n",
+    )
+
+
+def transaction(root, sha, install, before, app, edge, deployed, source, directory, report, log):
+    compose = compose_command(root)
+    require(read_compose(root) == before, "Compose changed since structural preflight")
+    saved = {
+        name: (root / name).read_bytes() if (root / name).exists() else None
+        for name in (
+            "compose.yaml",
+            "release-state.json",
+            "release-config.json",
+            "update_production",
+            "update_production_portal",
+        )
+    }
+    for name, content in saved.items():
+        if content is not None:
+            atomic_write(directory / (name + ".previous"), content)
+    atomic_write(directory / "compose.previous.json", saved["compose.yaml"])
+    baseline = fingerprints(root)
+    stopped = False
+    cutover = False
+    archive = directory / "data.tar"
+    try:
+        if install:
+            after = copy.deepcopy(before)
+            owner = f"{os.getuid()}:{os.getgid()}"
+            labels = portal_labels(install, owner)
+            after["services"][APP]["labels"].update(labels)
+            image_id = app["Image"]
+            runner = json.loads(
+                output("docker", "image", "inspect", labels["io.service-portal.update.image"])
+            )[0]
             require(
-                receipt.is_file(),
-                "Target image already exists without a deployment receipt; refusing overwrite",
+                runner["Config"].get("Labels", {}).get(REVISION) == install,
+                "Runner image revision mismatch",
             )
-            require(
-                json.loads(receipt.read_text())
-                == {
-                    "sha": sha,
-                    "context": str(worktree),
-                    "image_id": json.loads(existing.stdout)[0]["Id"],
-                },
-                "Target image provenance mismatch",
+            for name in ("update_production", "update_production_portal"):
+                atomic_write(root / name, Path(__file__).with_name(name).read_bytes())
+                (root / name).chmod(0o755)
+            atomic_write(
+                root / "release-config.json",
+                json.dumps(
+                    {
+                        "repository": REPOSITORY,
+                        "branch": "main",
+                        "runner_revision": install,
+                        "runner_image": labels["io.service-portal.update.image"],
+                    },
+                    indent=2,
+                ).encode()
+                + b"\n",
             )
         else:
-            run([*compose, "build", APP], timeout=600)
-        image_id = json.loads(output("docker", "image", "inspect", target_image))[0]["Id"]
-        atomic_write(
-            receipt,
-            json.dumps({"sha": sha, "context": str(worktree), "image_id": image_id}).encode(),
+            after = candidate_config(before, sha)
+            report("building", target_sha=sha)
+            image_id = build_image(source, sha, directory, log)
+            report("image-smoke")
+            smoke_image(image_id, app["Config"]["User"], log)
+        candidate_path = directory / "compose.candidate.json"
+        atomic_write(candidate_path, json.dumps(after).encode())
+        validation = compose.copy()
+        validation[-1] = str(candidate_path)
+        run([*validation, "config", "--quiet"], log)
+        require(
+            (root / "compose.yaml").read_bytes() == saved["compose.yaml"],
+            "Configuration changed during preparation",
         )
-        report("image-smoke")
-        smoke_image(image_id, app["Config"]["User"], log)
+        require(
+            fingerprints(root) == baseline, "Operational configuration changed during preparation"
+        )
         current = inspect(app["Id"])
         require(
             current["State"]["Running"]
             and current["Image"] == app["Image"]
             and mounts_equal(current["Mounts"], app["Mounts"]),
-            "Original app changed during build",
+            "Original app changed",
         )
-        with (root / ".production-backup.lock").open("a") as backup_lock:
-            fcntl.flock(backup_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            archive = directory / "data.tar.partial"
-            backup.stopped_archive(
-                app["Id"], root / "data", archive, 180, 120, lambda phase: report("backup-" + phase)
+        require(
+            output(*compose, "ps", "--all", "-q", EDGE).strip() == edge["Id"],
+            "Edge identity changed",
+        )
+        if not install:
+            report("backup")
+            size = int(output("du", "-sk", str(root / "data")).split()[0]) * 1024
+            require(
+                shutil.disk_usage(root).free > size * 2 + 2 * 1024**3,
+                "Insufficient backup and recovery disk space",
             )
+            backup.stopped_archive(
+                app["Id"],
+                root / "data",
+                archive,
+                180,
+                120,
+                lambda phase: report("backup-" + phase),
+                keep_stopped=True,
+                log=log,
+            )
+            stopped = True
             report("backup-verifying")
             checksum = backup.verify_archive(archive)
-            archive.rename(directory / "data.tar")
-            (directory / "data.tar.sha256").write_text(checksum + "  data.tar\n")
+            atomic_write(directory / "data.tar.sha256", (checksum + "  data.tar\n").encode())
+        require(fingerprints(root) == baseline, "Operational configuration changed before cutover")
         require(
-            output("git", "-C", str(source), "rev-parse", "HEAD").strip() == frozen,
-            "Frozen main changed",
+            (root / "compose.yaml").read_bytes() == saved["compose.yaml"],
+            "Compose changed before cutover",
         )
-        require(
-            json.loads(output(*compose, "config", "--format", "json")) == after,
-            "Configuration changed during build/backup",
-        )
-        require(
-            inspect(edge_id)["Image"] == edge["Image"]
-            and json.loads(output("docker", "image", "inspect", edge["Config"]["Image"]))[0]["Id"]
-            == edge["Image"],
-            "Edge image changed",
-        )
-        cutover = True
         report("reconciling", cutover_attempted=True)
-        run(
-            [
-                *compose,
-                "up",
-                "-d",
-                "--no-build",
-                "--pull",
-                "never",
-                "--wait",
-                "--wait-timeout",
-                "120",
-            ]
-        )
+        cutover = True
+        atomic_write(root / "compose.yaml", json.dumps(after, indent=2).encode() + b"\n")
+        reconcile(compose, log)
         report("final-verification")
-        verified = verify_service(compose, after, root, image_id, edge_id)
+        verified = verify_service(compose, after, root, image_id, edge["Id"])
         backup.preflight(root, PROJECT, os.environ.get("CIF_MAINTENANCE_CONTAINER"))
         require(
-            output("git", "-C", str(source), "rev-parse", "HEAD").strip() == frozen,
-            "Frozen main changed during verification",
+            read_compose(root) == after and fingerprints(root) == baseline,
+            "Operational configuration changed during verification",
         )
+        live = inspect(verified["app_id"])
         require(
-            fingerprints
-            == {
-                p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in cert_dir.iterdir()
-                if p.is_file()
-            },
-            "TLS material changed",
+            live["Config"].get("Labels", {}).get(REVISION) == sha, "Live revision label mismatch"
         )
-        report("complete", exit_code=0, image_id=image_id, **verified)
+        if install:
+            require(
+                all(live["Config"]["Labels"].get(k) == v for k, v in labels.items()),
+                "Portal labels were not published",
+            )
+        save_state(root, deployed, sha, after["services"][APP]["image"], image_id)
+        report(
+            "complete",
+            exit_code=0,
+            outcome="installed" if install else "updated",
+            target_sha=sha,
+            image_id=image_id,
+            **verified,
+        )
     except Exception:
-        if not cutover:
-            for name, contents in saved.items():
-                atomic_write(root / name, contents)
+        # Recovery must run even if a second signal or a full diagnostic disk intervenes.
+        handlers = {
+            sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGINT, signal.SIGTERM)
+        }
+        try:
+            if cutover:
+                run([*compose, "stop", "--timeout", "30", APP], log, timeout=45)
+                ids = output(*compose, "ps", "--all", "-q", APP).split()
+                require(
+                    all(not inspect(c)["State"]["Running"] for c in ids),
+                    "Could not stop candidate for rollback",
+                )
+                if not install:
+                    restore_database(root, archive, directory)
+                restore_files(root, saved)
+                reconcile(compose, log)
+                verify_service(compose, before, root, app["Image"], edge["Id"])
+                report(
+                    None,
+                    recovery="rolled-back",
+                    configuration_restored=True,
+                    data_restored=not install,
+                )
+            else:
+                if stopped:
+                    backup.restart(app["Id"], 120)
+                if install:
+                    restore_files(root, {k: v for k, v in saved.items() if k != "compose.yaml"})
+                verify_service(compose, before, root, app["Image"], edge["Id"])
+                report(None, recovery="original-preserved")
+        except Exception as recovery_error:
+            with suppress(OSError):
+                log.write(f"Recovery: {type(recovery_error).__name__}\n")
+                log.flush()
+            report(None, recovery="operator-required")
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
         raise
 
 
 def public_error(error, phase):
+    # Public logs never include command arguments, output, paths from data or exception text.
     if isinstance(error, subprocess.TimeoutExpired):
-        return f"Command timed out during {phase}; see the restricted deployment log"
-    if isinstance(error, subprocess.CalledProcessError):
-        return (
-            f"Command failed during {phase} (exit {error.returncode}); "
-            "see the restricted deployment log"
-        )
-    if isinstance(error, RuntimeError):
-        return re.sub(r"[\x00-\x1f\x7f]+", " ", str(error))[:1000]
-    return f"{type(error).__name__} during {phase}; see the restricted deployment log"
+        return f"command timeout in {phase}"
+    return f"{type(error).__name__} in {phase}; see restricted deployment.log"
 
 
-def deploy(root, sha, check_only=False, restart=False):
+def deploy(root, sha=None, check_only=False, restart=False, install=None):
     require(not (check_only and restart), "--check-only cannot be combined with --restart")
     os.umask(0o077)
-    lock = root / ".deployment-update.lock"
+    os.environ.update(GIT_TERMINAL_PROMPT="0", GIT_PAGER="cat", COMPOSE_DISABLE_ENV_FILE="1")
     directory = None
     log = None
     acquired = False
+    lock = root / ".deployment-update.lock"
     status = {
         "target_sha": sha,
         "job": os.environ.get("CIF_MAINTENANCE_CONTAINER", "native-host"),
-        "started_at": time.time(),
         "phase": "bootstrap",
         "recovery": "not-attempted",
+        "started_at": time.time(),
         "cutover_attempted": False,
     }
 
     def report(phase, **fields):
-        status.update(phase=phase, updated_at=time.time(), **fields)
-        if directory is not None:
-            atomic_write(
-                directory / "deployment-status.json", (json.dumps(status, indent=2) + "\n").encode()
-            )
+        if phase is not None:
+            status["phase"] = phase
+        status.update(updated_at=time.time(), **fields)
+        if directory:
+            atomic_write(directory / "receipt.json", (json.dumps(status, indent=2) + "\n").encode())
         print(json.dumps(status), flush=True)
 
     try:
-        require(re.fullmatch(r"[0-9a-f]{40}", sha), "Expected a full target SHA")
         require(
             root.is_absolute() and root.resolve() == root and root.is_dir(),
             "Expected an existing canonical deployment root",
@@ -658,53 +819,95 @@ def deploy(root, sha, check_only=False, restart=False):
             root.stat().st_uid == os.getuid() and os.getuid() != 0,
             "Run as the deployment owner, not root",
         )
+        require(not (root / "releases").is_symlink(), "Release directory must not be a symlink")
+        # All modes, including installation and check-only, use the same atomic lock.
+        report("lock")
+        try:
+            lock.mkdir(mode=0o700)
+        except FileExistsError as error:
+            raise RuntimeError("Deployment lock exists; inspect the recorded job") from error
+        acquired = True
+        (lock / "owner.json").write_text(json.dumps({"job": status["job"], "pid": os.getpid()}))
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        directory = root / "releases" / (stamp + "-preflight")
+        directory.mkdir(mode=0o700, parents=True)
+        log = (directory / "deployment.log").open("w")
+        report("structural-preflight")
+        before, app, edge, deployed = structural_preflight(root)
         require(
-            not (root / ".deployment-backups").is_symlink(),
-            "Deployment records directory must not be a symlink",
+            install or (root / "release-config.json").is_file(), "Install release tooling first"
         )
-        if not check_only:
-            # Keep preflight diagnostics too. These records contain private config
-            # only in later phases and are always restricted to the deployment owner.
-            directory = root / ".deployment-backups" / (f"update-{time.time_ns()}-{sha[:12]}")
-            directory.mkdir(mode=0o700, parents=True)
-            log = (directory / "deployment.log").open("w")
-        report("lock", backup=str(directory) if directory else None)
-        require(
-            not lock.exists(),
-            "Deployment lock exists; inspect its owner instead of force-unlocking",
-        )
-        if not check_only:
-            try:
-                lock.mkdir(mode=0o700)
-            except FileExistsError as error:
-                raise RuntimeError("Deployment lock was acquired by another job") from error
-            acquired = True
-            (lock / "owner.json").write_text(json.dumps({"job": status["job"], "pid": os.getpid()}))
-        _deploy(root, sha, check_only, restart, report, log, directory)
+        if check_only:
+            report("operational-preflight", previous_sha=deployed)
+            verified = verify_service(compose_command(root), before, root, app["Image"], edge["Id"])
+            report("complete", exit_code=0, outcome="check-passed", **verified)
+            return
+        with tempfile.TemporaryDirectory(prefix="cif-release-") as scratch:
+            source = Path(scratch) / "source"
+            report("release-fetch")
+            sha = deployed if install else fetch_source(source, sha, deployed, log)
+            renamed = directory.with_name(stamp + "-" + sha[:12])
+            directory.rename(renamed)
+            directory = renamed
+            report("release-selected", target_sha=sha, release=str(directory.relative_to(root)))
+            require(read_compose(root) == before, "Compose changed during source fetch")
+            report("operational-preflight", previous_sha=deployed)
+            # Installation changes labels only; it requires existing health.
+            recovered = False if install else recover_application(app, report, log)
+            verify_service(compose_command(root), before, root, app["Image"], edge["Id"])
+            if recovered:
+                report("readiness", recovery="restart-verified")
+            if not install and sha == deployed:
+                original = (root / "compose.yaml").read_bytes()
+                baseline = fingerprints(root)
+                if restart and not recovered:
+                    report("requested-restart")
+                    restart_application(app["Id"], log)
+                report("final-verification")
+                verified = verify_service(
+                    compose_command(root), before, root, app["Image"], edge["Id"]
+                )
+                require(
+                    (root / "compose.yaml").read_bytes() == original
+                    and fingerprints(root) == baseline,
+                    "Configuration changed during restart",
+                )
+                if restart or recovered:
+                    require(
+                        inspect(app["Id"])["State"]["StartedAt"] != app["State"]["StartedAt"],
+                        "App start time did not change",
+                    )
+                report(
+                    "complete",
+                    exit_code=0,
+                    outcome="restarted" if restart or recovered else "already-current",
+                    **verified,
+                )
+            else:
+                transaction(
+                    root, sha, install, before, app, edge, deployed, source, directory, report, log
+                )
     except Exception as error:
-        failed_phase = status["phase"]
-        cause = public_error(error, failed_phase)
-        message = (
-            f"Error: production update failed during {failed_phase}: {cause}. "
-            f"Recovery: {status['recovery']}. Deployment job: {status['job']}."
+        phase = status["phase"]
+        if log:
+            with suppress(OSError):
+                # Do not retain exception arguments from external commands.
+                log.write(
+                    f"\n{type(error).__name__}: "
+                    + (
+                        str(error)
+                        if isinstance(error, RuntimeError)
+                        else "command/system operation unsuccessful"
+                    )
+                    + "\n"
+                )
+                log.flush()
+        print(
+            f"Error: production update failed during {phase}; recovery {status['recovery']}; "
+            f"retained job {status['job']} ({public_error(error, phase)}).",
+            flush=True,
         )
-        print(message, flush=True)
-        if directory is not None:
-            atomic_write(
-                directory / "failure.json",
-                json.dumps(
-                    {
-                        "error": cause,
-                        "failed_phase": failed_phase,
-                        "cutover_attempted": status["cutover_attempted"],
-                        "configuration_restored": not status["cutover_attempted"],
-                        "data_restored": False,
-                        "recovery": status["recovery"],
-                        "job": status["job"],
-                    }
-                ).encode(),
-            )
-        report("failed", exit_code=1, failed_phase=failed_phase, error=cause)
+        report("failed", exit_code=1, failed_phase=phase)
         raise
     finally:
         if log:
@@ -717,15 +920,16 @@ def deploy(root, sha, check_only=False, restart=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deploy-root", type=Path, required=True)
-    parser.add_argument("--sha", required=True)
+    parser.add_argument("--sha")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check-only", action="store_true")
     mode.add_argument("--restart", action="store_true")
+    mode.add_argument("--install")
     args = parser.parse_args()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, backup.interrupted)
     try:
-        deploy(args.deploy_root, args.sha, args.check_only, args.restart)
+        deploy(args.deploy_root, args.sha, args.check_only, args.restart, args.install)
     except Exception:
         return 1
     return 0

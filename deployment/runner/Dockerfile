@@ -9,8 +9,11 @@
 #
 #   docker build -t comfyui-image-frontend-portal-runner:latest deployment/runner
 #
-# It provides the toolchain for both scripts/update-and-restart.sh and the
-# production update_production_portal bootstrap: bash, Python 3, Git, the
+# This image is for checkout-based installations only. Samus uses the pinned
+# deployment/production-runner/Dockerfile image documented in
+# docs/production-service-portal.md.
+#
+# It provides Bash, Python 3, Git, the
 # Docker CLI, the Compose v2 plugin, and OpenSSL (used by
 # scripts/issue-local-cert.sh to keep the appliance-local TLS leaf current
 # before the edge is restarted). It contains no application code and no

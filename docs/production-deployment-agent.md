@@ -1,80 +1,82 @@
 # Routine production update — Samus
 
-Use the installed `update_production` command. It fetches `origin/main`, pins the
-commit, and launches the reviewed deployment code as one durable Docker job.
-**Do not translate this document into another script.**
+Samus now uses `/home/astigmatism/deployments/comfyui-image-frontend/compose.yaml`
+(single JSON-formatted Compose file), local pinned images, external credentials,
+and no permanent source checkout. Install the reviewed release runner once using
+[Service Portal installation](production-service-portal.md). The previous
+multi-file/worktree deployment instructions do not apply to this restored layout.
+
+## Choose the correct updater
+
+| Deployment | Entry point | Source and configuration |
+| --- | --- | --- |
+| Samus restored deployment | `update_production` or `update_production_portal` | Pinned runner; temporary source fetch; existing single deployment Compose file |
+| Other checkout-based deployments (historical Path A) | `update_and_restart` | Clean checkout; supported example Compose layout |
+| Retired Samus worktree layout (historical Path B) | Historical reference only | Frozen `source/main`, two Compose files, `.env`, detached release worktrees |
+
+The path-selection and preservation guidance from
+`codex/restore-production-deployment-workflow` is incorporated here. Do not merge
+that older runbook over these instructions. The production portal entrypoint
+supports the **current Samus layout**. The generic `update_and_restart` entrypoint
+still does not support Samus. Never substitute the example Compose file.
 
 ## Run
 
-From the production agent:
+From the native Docker host as its deployment owner:
 
 ```bash
-/host/home/astigmatism/comfyui-image-frontend/update_production
+/home/astigmatism/deployments/comfyui-image-frontend/update_production --wait
 ```
 
-From an existing native host session, omit `/host` from that command. SSH setup
-is not required: the launcher uses the agent's existing Docker socket and mounts
-the project at its identical native host path inside the maintenance container.
+An agent with the existing `/host` view can use the same path prefixed by `/host`.
+No SSH setup is needed. The installed wrapper launches its pinned tool image using
+the Docker socket. `--wait` is accepted for compatibility; the command always
+waits for verified completion. `--restart` also restarts an unchanged release.
+The portal uses `--wait --restart`.
 
-The Service Portal **Update and restart** button runs this same deployment and
-waits for its verified result. One-time setup is documented in
-[Service Portal installation](production-service-portal.md).
+`--check-only` checks structural invariants and live health/HTTPS without fetching,
+building, backing up data, or restarting. It still takes the deployment lock and
+retains a diagnostic receipt. It cannot be combined with `--restart`.
+`--sha <full-sha>` optionally selects a reviewed ancestor of fetched `main` that is
+at least as new as the deployed revision. Default updates resolve `main` once.
+Application releases do not silently upgrade the pinned release runner; repeat
+installation at a new reviewed tooling revision when changing deployment code.
 
-The command prints a job name and exact commands to inspect its state and logs.
-Wait 30 seconds between checks. Finish when `running=false`; require `exit_code=0`
-and the final `complete` or `already-current` result. A tool timeout means check
-the same job, not launch another one. The job survives an agent disconnect.
-Alternatively, `update_production --wait` streams progress and returns the job's
-actual exit code. Add `--restart` to restart an unchanged release. The Portal entrypoint
-uses `--wait --restart`. `--check-only` rejects `--restart`.
+The launcher prints the durable job name. On a tool or browser disconnect, inspect
+that **same job** with `docker inspect --format '{{json .State}}' <job>` and
+`docker logs --tail 20 <job>`. Poll at most every 30 seconds. A successful launch
+is not completion: require terminal exit 0 and the final verified JSON result.
+The portal waits for that same result and stays independent of the restarted app.
 
-Use `update_production --check-only` to check live state without building the app,
-backing up data, editing production configuration, or restarting services. The
-launcher may build/cache its maintenance tool image, and it fetches remote refs.
+## Preservation and recovery
 
-## What the command does
+The transaction builds and smoke-tests while the old app stays available, then
+stops only the app for a consistent backup and app-only cutover. It preserves the
+Compose project, runtime environment, ComfyUI identity/network, external TLS,
+`Caddyfile`, deployment `data/`, uploads/assets, restore records, edge, ComfyUI,
+and portal. Do not modify application source on the host, create a permanent
+checkout, run production tests, reconfigure SSH, rotate credentials, or prune.
 
-It checks the existing project, configuration, images, mounts, certificates and
-Git state; holds the deployment lock; prepares the detached target worktree;
-builds with the old app running; starts the candidate as the production UID in an
-isolated container with disposable data, no network or production mounts; takes a
-consistent backup with restart cleanup
-on handled failures; reconciles the original two-file Compose project; and checks
-the running image, database, worker, explicit runtime configuration, trusted HTTPS,
-frontend assets and manifest. It preserves frozen `source/main`, production data,
-settings, certificates, network, external runtimes, and previous recovery copies.
+Artifacts live in restricted `releases/<timestamp>-<sha-prefix>/`: source archive,
+image receipt, previous Compose/operational files, data archive and checksum when
+cutover is needed, `deployment.log`, and `receipt.json`. Preflight failures use a
+`<timestamp>-preflight` directory. Logs/configuration may contain private data;
+report only sanitized phase, SHA, image ID, outcome, and job reference.
 
-Builds have a 10-minute limit, archive creation 180 seconds, and startup/worker
-checks 120 seconds each. Most warm-cache updates should take a few minutes; these
-are bounds, not a performance promise. Every phase is timestamped. Build output,
-configuration checkpoints, backup and status are retained under `.deployment-backups`.
-An already-current release gets verified; `--restart` also restarts its existing app
-container without rebuilding or changing configuration. Structural checks precede
-operational recovery. Under the deployment lock, a degraded app gets 60 seconds to
-recover, then one restart and 120 seconds for readiness verification. That recovery
-restart counts toward `--restart`. TLS failure while the app is ready does not trigger
-an app restart. Preflight failures retain restricted status and diagnostic records
-when the deployment root is valid (except non-mutating `--check-only`).
+Before cutover, a failed preparation leaves the original app selected; backup
+errors attempt to restart it. After cutover, rollback stops the candidate, retains
+its database, restores the pre-cutover database and previous operational files,
+and starts/verifies the previous image once. Assets/uploads and the data directory
+remain in place. Rollback success still returns failure for the attempted update.
+Report `operator-required` if rollback cannot be verified; do not retry indefinitely.
 
-## If it fails
+A deployment lock is never automatically force-cleared. For an interrupted job,
+read `.deployment-update.lock/owner.json`, inspect that container and its receipt,
+and establish that it has stopped before any operator-directed recovery. Preserve
+both pre- and post-cutover databases. Never run the old image against a database
+whose migration state is uncertain. Host loss/SIGKILL can bypass normal cleanup.
 
-Report the job's actual exit code, failed phase and concise error. A candidate that
-cannot import its code, migrate a fresh database or serve its assets fails before
-the live app is stopped. Before cutover,
-the command restores its configuration edits and the backup routine restarts the
-old app. After cutover it retains the current data and diagnostic records; it does
-not risk launching old code against a newly migrated database. SIGKILL, host or
-Docker failure can still require operator recovery.
-
-Retain failed images and their receipts. Publish a fix as a new commit and deploy
-its new image tag; do not overwrite an existing commit tag to retry a bad build.
-
-Do not create SSH keys, modify `authorized_keys`, inspect unrelated cron/services,
-benchmark disks, write replacement deploy/verification scripts, run test suites on
-production, change storage, or retry indefinitely. Do not use `update_and_restart`
-or `scripts/update-and-restart.sh` for this two-file deployment. If access or an invariant
-fails, report that specific blocker while preserving the current service.
-
-The [manual reference](manual-deployment-reference.md) is for deliberate recovery
-or a different deployment layout, **not required reading for routine updates**.
-Release development, test evidence and review belong before merging to `main`.
+When done, report the actual deployed SHA/image, HTTPS/asset verification, outcome,
+retained release reference, and any operator action. Production acceptance includes
+the browser and LoRA-generation checks in the installation guide; repository tests
+do not replace those live checks.

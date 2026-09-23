@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Install beside update_production at the native production deployment root.
-# Service Portal waits for this process; launching the child job is not success.
+# Portal owns this runner; the durable child owns the deployment transaction.
 set -Eeuo pipefail
-trap 'printf "Error: production Portal update failed (exit %s)\n" "$?" >&2' ERR
 deploy_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 if [[ ${SERVICE_PORTAL_UPDATE_DELEGATED:-} != 1 ]]; then
-  printf 'Error: use Service Portal for this entrypoint, or update_production --wait directly.\n' >&2
+  printf 'Error: production update failed during entrypoint; recovery not-needed; use update_production directly (no job launched).\n' >&2
   exit 1
 fi
-"$deploy_root/update_production" --wait --restart
+exec "$deploy_root/update_production" --wait --restart

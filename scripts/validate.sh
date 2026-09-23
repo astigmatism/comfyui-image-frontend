@@ -25,6 +25,7 @@ optional_python_check() {
 optional_python_check ruff python3 -m ruff format --check backend/app backend/tests comfyui_extension
 optional_python_check ruff python3 -m ruff check backend/app backend/tests comfyui_extension
 optional_python_check mypy env PYTHONPATH=backend python3 -m mypy backend/app
+python3 -m unittest discover -s scripts/tests -q
 python3 scripts/generate_traceability.py --check
 python3 -m compileall -q backend/app comfyui_extension
 PYTHONPATH=backend python3 -m pytest -q

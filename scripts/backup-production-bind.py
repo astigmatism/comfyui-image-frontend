@@ -2,7 +2,7 @@
 # ruff: noqa: S603, S607
 # Operator-run host tool: fixed executables on the owner's PATH, argument arrays,
 # no shell interpolation, and deployment paths/container IDs verified before use.
-"""Bounded, restart-safe backup for the documented host-native Path B deployment.
+"""Bounded, restart-safe backup for the restored host-native Samus deployment.
 
 Run with nohup as shown in the runbook. This does not deploy, migrate, restore data,
 or change configuration. The caller must exclude other deployment jobs first.
@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import signal
 import socket
 import sqlite3
@@ -40,6 +41,30 @@ def output(*args):
 
 def inspect(container):
     return json.loads(output("docker", "inspect", container))[0]
+
+
+def tls_files(root):
+    """Read the restored Caddyfile's explicit leaf paths; retain its naming scheme."""
+    declarations = []
+    for line in (root / "Caddyfile").read_text().splitlines():
+        fields = shlex.split(line, comments=True)
+        if fields and fields[0] == "tls":
+            declarations.append(fields)
+    require(
+        len(declarations) == 1 and len(declarations[0]) >= 3,
+        "Expected one explicit TLS certificate/key declaration in Caddyfile",
+    )
+    mounted = Path("/etc/caddy/certificates")
+    directory = root.parent.parent / "credentials" / root.name / "tls"
+    paths = []
+    for value in declarations[0][1:3]:
+        path = Path(value)
+        require(
+            path.is_relative_to(mounted) and ".." not in path.parts,
+            "TLS leaf paths must stay inside the certificate bind",
+        )
+        paths.append(directory / path.relative_to(mounted))
+    return directory / "ca.crt", *paths
 
 
 def execution_context(root, maintenance_container=None):
@@ -89,14 +114,14 @@ def preflight(root, project, maintenance_container=None, *, require_health=True)
             output("docker", "info", "--format", "{{.Name}}").strip() == socket.gethostname(),
             "Docker daemon and execution host differ",
         )
-    files = [root / "compose.yaml", root / "compose.ordered-lora.yaml"]
+    files = [root / "compose.yaml"]
     compose = [
         "docker",
         "compose",
         "--project-directory",
         str(root),
         "--env-file",
-        str(root / ".env"),
+        "/dev/null",
         "-p",
         project,
     ]
@@ -104,6 +129,10 @@ def preflight(root, project, maintenance_container=None, *, require_health=True)
         compose.extend(["-f", str(path)])
     config = json.loads(output(*compose, "config", "--format", "json"))
     require(set(config["services"]) == {APP, EDGE}, "Unexpected Compose service scope")
+    require(
+        all("build" not in service for service in config["services"].values()),
+        "Production Compose must reference existing pinned images only",
+    )
     containers = {}
     for service, definition in config["services"].items():
         ids = output(*compose, "ps", "--all", "-q", service).split()
@@ -155,7 +184,9 @@ def preflight(root, project, maintenance_container=None, *, require_health=True)
                 and current["RW"] == (not mount.get("read_only", False)),
                 f"Host bind mismatch at {service}:{target}",
             )
-            require(Path(current["Source"]).exists(), f"Missing host source for {target}")
+            require(Path(current["Source"]).exists(), "Missing configured host bind source")
+    edge = containers[EDGE]
+    require(all(not mount["RW"] for mount in edge["Mounts"]), "Edge binds must be read-only")
     app = containers[APP]
     require(
         len(app["Mounts"]) == 1
@@ -166,26 +197,34 @@ def preflight(root, project, maintenance_container=None, *, require_health=True)
     )
     require(
         not (root / "data").is_symlink()
+        and not (root / "data/app.db").is_symlink()
         and (root / "data/app.db").is_file()
         and (root / "data/assets").is_dir(),
         "Expected the existing production database and assets",
     )
     edge_mounts = {m["Destination"]: Path(m["Source"]) for m in containers[EDGE]["Mounts"]}
     require(
-        edge_mounts.get("/etc/caddy/Caddyfile", Path("/nonexistent")).is_file(),
+        edge_mounts.get("/etc/caddy/Caddyfile") == root / "Caddyfile"
+        and (root / "Caddyfile").is_file(),
         "Caddyfile must be an existing file",
     )
     certificates = edge_mounts.get("/etc/caddy/certificates")
     require(
-        certificates == root / "data/certificates"
-        and all((certificates / f).is_file() for f in ("ca.crt", "tls.crt", "tls.key")),
-        "Expected existing production TLS material inside the data backup",
+        certificates == root.parent.parent / "credentials" / root.name / "tls"
+        and all(p.is_file() for p in tls_files(root)),
+        "Expected existing production TLS material in the credentials directory",
     )
     return app
 
 
 def restart(app_id, timeout):
-    subprocess.run(["docker", "start", app_id], check=True, timeout=40, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["docker", "start", app_id],
+        check=True,
+        timeout=40,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = inspect(app_id)["State"]
@@ -195,8 +234,11 @@ def restart(app_id, timeout):
     raise RuntimeError("Original app was started but did not become healthy; inspect immediately")
 
 
-def stopped_archive(app_id, source, archive, timeout, health_timeout, report):
+def stopped_archive(
+    app_id, source, archive, timeout, health_timeout, report, *, keep_stopped=False, log=None
+):
     """The restart is part of the same host process, including stop/tar failures."""
+    complete = False
     try:
         report("stopping")
         subprocess.run(
@@ -204,12 +246,18 @@ def stopped_archive(app_id, source, archive, timeout, health_timeout, report):
             check=True,
             timeout=45,
             stdout=subprocess.DEVNULL,
+            stderr=log or subprocess.DEVNULL,
         )
         require(not inspect(app_id)["State"]["Running"], "App did not stop; refusing live archive")
         report("archiving")
         subprocess.run(
-            ["tar", "-C", str(source), "-cf", str(archive), "."], check=True, timeout=timeout
+            ["tar", "-C", str(source), "-cf", str(archive), "."],
+            check=True,
+            timeout=timeout,
+            stdout=log or subprocess.DEVNULL,
+            stderr=log or subprocess.DEVNULL,
         )
+        complete = True
     finally:
         # A second interrupt must not skip recovery after the first interrupt.
         previous = {
@@ -217,8 +265,9 @@ def stopped_archive(app_id, source, archive, timeout, health_timeout, report):
         }
         try:
             # Restart precedes status-file writes: a full backup disk must not prevent it.
-            restart(app_id, health_timeout)
-            report("restarted")
+            if not (complete and keep_stopped):
+                restart(app_id, health_timeout)
+                report("restarted")
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
@@ -287,7 +336,7 @@ def main():
         destination is not None
         and destination.is_dir()
         and destination.resolve() == destination
-        and destination.is_relative_to(args.deploy_root / ".deployment-backups"),
+        and destination.is_relative_to(args.deploy_root / "releases"),
         "Output must be a new restricted backup directory under the deployment root",
     )
     require(
