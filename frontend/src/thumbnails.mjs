@@ -1,26 +1,60 @@
 import { api } from "./api.mjs";
 
-export function createThumbnailScheduler({ limit = 4, load = (url, signal) => api(url, {
+// Gallery cards are re-rendered by live updates, so a URL's blob must survive
+// the <img> elements that reference it being replaced. Completed blobs stay in
+// the scheduler until LRU pressure evicts them, and a re-subscribed element
+// gets its URL back on a microtask — no second fetch, no blank frame.
+export function createThumbnailScheduler({ limit = 4, maxRetained = 256, load = (url, signal) => api(url, {
   responseType: "blob", signal, deadlineMs: 30_000, operation: "Thumbnail",
 }), createURL = URL.createObjectURL, revokeURL = URL.revokeObjectURL } = {}) {
   const entries = new Map();
   const queue = [];
   let active = 0;
+  let sequence = 0;
+  const touch = (entry) => { entry.lastUsed = ++sequence; };
+  function deliver(entry, listener) {
+    if (entry.blob) {
+      if (!entry.objectURL) entry.objectURL = createURL(entry.blob);
+      listener({ url: entry.objectURL });
+    } else if (entry.error) {
+      listener({ error: entry.error });
+    }
+  }
   function drain() {
     while (active < limit && queue.length) {
       const entry = queue.shift();
-      if (!entry.listeners.size) continue;
+      if (!entry.listeners.size) { queue.push(entry); break; }
       active += 1;
       entry.running = true;
       Promise.resolve().then(() => load(entry.url, entry.controller.signal)).then((blob) => {
-        if (!entry.listeners.size) return;
-        entry.objectURL = createURL(blob);
-        for (const listener of entry.listeners) listener({ url: entry.objectURL });
+        if (entry.running) {
+          entry.running = false;
+          entry.blob = blob;
+          touch(entry);
+          evict();
+        }
+        for (const listener of [...entry.listeners]) deliver(entry, listener);
       }).catch((error) => {
         if (entry.controller.signal.aborted) return;
-        entry.error = error;
-        for (const listener of entry.listeners) listener({ error });
+        if (entry.running) {
+          entry.running = false;
+          entry.error = error;
+          evict();
+        }
+        for (const listener of [...entry.listeners]) deliver(entry, listener);
       }).finally(() => { active -= 1; drain(); });
+    }
+  }
+  function evict() {
+    while (entries.size > maxRetained) {
+      let oldest = null;
+      for (const entry of entries.values()) {
+        if (entry.listeners.size || entry.running || queue.includes(entry)) continue;
+        if (!oldest || entry.lastUsed < oldest.lastUsed) oldest = entry;
+      }
+      if (!oldest) return;
+      entries.delete(oldest.url);
+      if (oldest.objectURL) revokeURL(oldest.objectURL);
     }
   }
   function subscribe(url, listener) {
@@ -28,27 +62,40 @@ export function createThumbnailScheduler({ limit = 4, load = (url, signal) => ap
     if (!entry) {
       entry = { url, controller: new AbortController(), listeners: new Set() };
       entries.set(url, entry);
+      touch(entry);
       queue.push(entry);
+      evict();
     }
     entry.listeners.add(listener);
-    if (entry.objectURL || entry.error) queueMicrotask(() => {
-      if (entry.listeners.has(listener)) listener({ url: entry.objectURL, error: entry.error });
+    touch(entry);
+    if (entry.blob || entry.error) queueMicrotask(() => {
+      if (entry.listeners.has(listener)) deliver(entry, listener);
     });
     drain();
     return () => {
       entry.listeners.delete(listener);
       if (entry.listeners.size) return;
-      entry.controller.abort();
-      if (entry.objectURL) revokeURL(entry.objectURL);
-      entries.delete(url);
+      if (entry.running) return; // Let the in-flight load finish; its blob is cached.
       const index = queue.indexOf(entry);
-      if (index >= 0) queue.splice(index, 1);
+      if (index >= 0) {
+        // Never started: drop the request and the entry.
+        queue.splice(index, 1);
+        entries.delete(url);
+        entry.controller.abort();
+        return;
+      }
+      // Finished: keep the blob cached, release only the live object URL.
+      if (entry.objectURL) {
+        revokeURL(entry.objectURL);
+        entry.objectURL = null;
+      }
     };
   }
   function retry(url) {
     const entry = entries.get(url);
     if (!entry?.error) return;
     entry.error = null;
+    touch(entry);
     queue.push(entry);
     drain();
   }

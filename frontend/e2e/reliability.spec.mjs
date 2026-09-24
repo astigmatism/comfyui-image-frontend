@@ -86,3 +86,36 @@ test("failed gallery thumbnails have a working visible retry action", async ({ p
   await expect(card.locator("img[data-thumbnail-src]")).toHaveAttribute("src", /^blob:/);
   await expect.poll(() => card.locator("img[data-thumbnail-src]").evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
 });
+
+test("re-rendered gallery cards keep their loaded thumbnail without refetching", async ({ page }) => {
+  await enter(page);
+  const thumbnailRequests = {};
+  await page.route("**/api/artifacts/*/thumbnail", async (route) => {
+    const url = route.request().url();
+    thumbnailRequests[url] = (thumbnailRequests[url] || 0) + 1;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await route.continue();
+  });
+  const generated = page.waitForResponse((response) => /\/api\/generations(?:\/batch)?$/.test(response.url()) && response.request().method() === "POST");
+  await page.locator("#generate-button").click();
+  const result = await (await generated).json();
+  const id = result.id || result.items[0].generation.id;
+  const card = page.locator(`.gallery-card[data-generation-id="${id}"]`);
+  await expect(card).toHaveClass(/status-succeeded/);
+  const image = card.locator("img[data-thumbnail-src]");
+  await expect(image).toHaveAttribute("src", /^blob:/);
+  await expect.poll(() => image.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
+  const count = () => Object.values(thumbnailRequests).reduce((sum, total) => sum + total, 0);
+  const firstCount = count();
+  expect(firstCount).toBeGreaterThan(0);
+  // Favoriting rebuilds the card from scratch. The replacement element must
+  // get its image from the scheduler cache — no blank frame, no new request.
+  // Click through the card's delegated handler: the favorite button lives in a
+  // pointer-events hover overlay that is timing-sensitive for synthetic pointers.
+  await card.getByRole("button", { name: "Add to Favorites" }).evaluate((button) => button.click());
+  await expect(card.getByRole("button", { name: "Remove from Favorites" })).toHaveCount(1);
+  const rerenderedImage = card.locator("img[data-thumbnail-src]");
+  await expect(rerenderedImage).toHaveAttribute("src", /^blob:/);
+  await expect.poll(() => rerenderedImage.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
+  expect(count()).toBe(firstCount);
+});

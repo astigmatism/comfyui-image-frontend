@@ -168,6 +168,7 @@ const state = {
   servicesMessage: null,
   galleryStatus: "idle",
   galleryMessage: null,
+  galleryCardSignature: new Map(),
   submitting: false,
   generationActivity: null,
   generationActivityUnavailable: false,
@@ -2259,6 +2260,7 @@ async function logout() {
   state.servicesStatus = "idle";
   state.servicesMessage = null;
   state.generations = [];
+  state.galleryCardSignature = new Map();
   pendingGenerationIds.clear();
   state.generationActivity = null;
   state.generationSubmissionProgress = null;
@@ -2327,6 +2329,7 @@ async function enterApplication() {
   state.servicesStatus = "loading";
   state.servicesMessage = null;
   state.generations = [];
+  state.galleryCardSignature = new Map();
   pendingGenerationIds.clear();
   state.generationActivity = null;
   state.generationSubmissionProgress = null;
@@ -4938,6 +4941,7 @@ async function toggleCollectionPreviews(collectionId) {
 }
 
 function upsertGalleryCard(generation) {
+  state.galleryCardSignature.set(generation.id, JSON.stringify(generation));
   if (!document.querySelector(`#gallery [data-gallery-card="generation"][data-generation-id="${CSS.escape(generation.id)}"]`)) { renderGallery(); return; }
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
@@ -5029,6 +5033,10 @@ async function refreshGeneration(
       state.generations.unshift(detail);
     else return;
     state.generations = sortGenerationsNewestFirst(state.generations);
+    // Live events (stage, progress, polling) fire many times per generation.
+    // Only rewrite the card when its rendered content actually changed, so an
+    // unchanged card keeps its loaded image instead of refetching its thumbnail.
+    if (index >= 0 && state.galleryCardSignature.get(id) === JSON.stringify(detail)) return;
     upsertGalleryCard(detail);
     syncServerControls();
     const dialog = document.querySelector("#detail-dialog");
@@ -5663,6 +5671,7 @@ function removeGeneration(id) {
   const closesPhotoViewer = state.photoViewerGenerationId === id;
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
+  state.galleryCardSignature.delete(id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
   galleryGroups?.invalidate();
   renderGallery();
@@ -5675,6 +5684,7 @@ function removeGalleryGeneration(id) {
   const closesPhotoViewer = state.photoViewerGenerationId === id;
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
+  state.galleryCardSignature.delete(id);
   document.querySelector(`#gallery [data-generation-id="${CSS.escape(id)}"]`)?.remove();
   galleryGroups?.invalidate();
   renderGallery();
