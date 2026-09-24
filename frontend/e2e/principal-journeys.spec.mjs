@@ -1881,8 +1881,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await expect(focusedCreateMode).toBeChecked();
   await expect(focusedThinkingMode).toBeChecked();
   await expect(columnThinkingMode).toBeChecked();
-  await expect(focusedThinkingMode).toBeHidden();
-  await dialog.locator(".prompt-preprocessor summary").click();
+  await expect(focusedThinkingMode).toBeVisible();
   await focusedPrompt.fill("this canceled draft should not be applied");
   await focusedDirection.fill("canceled direction");
   await focusedRefineMode.check();
@@ -1906,9 +1905,7 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
     `${longPrompt.length.toLocaleString()} characters`,
   );
   await focusedDirection.fill("focused assistant direction");
-  await dialog.locator(".prompt-preprocessor summary").click();
   await focusedThinkingMode.uncheck();
-  await dialog.locator(".prompt-preprocessor summary").click();
   const focusedCompositionRequest = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/prompt-assistant/compose" &&
@@ -2227,8 +2224,9 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(prompt).toBeVisible();
   for (const [key, title] of [
     ["resolution", "Resolution"],
-    ["seed", "Seed"],
+    ["seed", "Seed Randomizer"],
   ]) {
+    await ensureControlSectionExpanded(page, title);
     await expect(
       page.locator(`[data-control-section="${key}"]`).getByRole("button", {
         name: title,
@@ -2260,10 +2258,10 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   const seedSection = page.locator('[data-control-section="seed"]');
   const seedSectionStatus = seedSection.locator('[data-control-section-status="seed"]');
-  const seedSectionTrigger = seedSection.getByRole("button", { name: "Seed", exact: true });
-  await expect(seedSectionStatus).toHaveText("Random");
+  const seedSectionTrigger = seedSection.getByRole("button", { name: "Seed Randomizer", exact: true });
+  await expect(seedSectionStatus).toHaveCount(0);
   await seedSectionTrigger.click();
-  await expect(seedSectionStatus).toBeVisible();
+  await expect(seedSection.getByLabel("Random seed", { exact: true })).toBeVisible();
   await seedSectionTrigger.click();
   const generationPanel = page.locator("#generation-panel");
   await expect(generationPanel.getByRole("tooltip")).toHaveCount(0);
@@ -2698,7 +2696,7 @@ test("recall restores the creative direction section from the generation snapsho
     name: "Prompt pre-processor",
     exact: true,
   });
-  const thinking = preprocessor.locator("#prompt-assistant-thinking-mode");
+  const thinking = assistant.locator("#prompt-assistant-thinking-mode");
   const createMode = assistant.locator('input[name="assistant-mode"][value="create"]');
 
   const defaults = await (await page.request.get("/api/prompt-assistant/status")).json();
@@ -3586,7 +3584,7 @@ test("prompt pre-processor starts collapsed, keeps per-mode edits, and sends foc
   const refine = panel.getByRole("radio", { name: "Refine Current Prompt" });
   const defaults = await (await page.request.get("/api/prompt-assistant/status")).json();
   await expect(panel.locator("[data-prompt-instructions]")).toBeHidden();
-  await expect(panel.locator("#prompt-assistant-thinking-mode")).toBeHidden();
+  await expect(panel.locator("#prompt-assistant-thinking-mode")).toBeVisible();
   await expect(panel.locator("#prompt-assistant-thinking-mode")).toBeChecked();
   await expect(panel.getByRole("button", { name: "Apply Creative Direction" })).toBeVisible();
   await disclosure.locator("summary").click();
@@ -3612,7 +3610,7 @@ test("prompt pre-processor starts collapsed, keeps per-mode edits, and sends foc
   const draftDisclosure = dialog.locator(".prompt-preprocessor");
   const draft = dialog.getByRole("textbox", { name: "Prompt pre-processor", exact: true });
   await expect(dialog.locator("[data-prompt-instructions]")).toBeHidden();
-  await expect(dialog.locator("#prompt-editor-thinking-mode")).toBeHidden();
+  await expect(dialog.locator("#prompt-editor-thinking-mode")).toBeVisible();
   await expect(dialog.locator("#prompt-editor-thinking-mode")).toBeChecked();
   await expect(dialog.getByRole("button", { name: "Apply Creative Direction" })).toBeVisible();
   await draftDisclosure.locator("summary").click();

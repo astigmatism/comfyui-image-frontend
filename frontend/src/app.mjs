@@ -608,12 +608,6 @@ async function handleClick(event) {
   if (element.id === "auto-generate") {
     const enabled = element.checked;
     state.pendingAutoEnabled = enabled;
-    if (enabled) {
-      state.controlSectionOpen["auto-generation"] = true;
-      persistControlSections();
-      const section = element.closest("[data-control-section]");
-      if (section) setControlSectionElementOpen(section, true);
-    }
     void changeAutoGeneration(enabled);
     return;
   }
@@ -688,6 +682,8 @@ async function handleClick(event) {
     if (!input) return;
     const current = seedFormValue(input, state.parameters[id]);
     state.parameters[id] = { mode: element.checked ? "random" : "fixed", value: current.value };
+    state.controlSectionOpen.seed = !element.checked;
+    persistControlSections();
     state.explicitParameterIds.add(id);
     state.serverFieldErrors[id] = null;
     persistActiveParameterState();
@@ -3612,7 +3608,7 @@ function syncPromptInstructions(container, overrides, mode) {
   textarea.setCustomValidity(value.trim() ? "" : "Enter instructions or reset to the default.");
   container.querySelector("[data-instructions-mode-label]").textContent = mode === "create"
     ? "Instructions for a new prompt" : "Instructions for refining your prompt";
-  container.querySelector("[data-instructions-mode-hint]").textContent = PROMPT_INSTRUCTIONS_HINTS[mode];
+  container.querySelector("[data-instructions-mode-hint]").title = PROMPT_INSTRUCTIONS_HINTS[mode];
   container.querySelector('[data-action="reset-prompt-instructions"]').disabled = textarea.disabled;
 }
 
@@ -3726,7 +3722,7 @@ function capturePanelView(panel) {
     selector,
     selection,
     sectionKey: element.closest("[data-control-section]")?.dataset.controlSection || null,
-    sectionOpen: Boolean(element.closest(".control-section.is-expanded")),
+    sectionOpen: Boolean(element.closest(".control-section-body") && element.closest(".control-section.is-expanded")),
   };
 }
 

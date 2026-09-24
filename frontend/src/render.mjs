@@ -721,6 +721,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                       section.kind === "seed" ||
                       input.type === "image" ||
                       input.type === "resolution",
+                    hideSeedSwitch: section.kind === "seed" && input === first,
                     recentResolutions,
                   }),
                 )
@@ -732,21 +733,24 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
         required: section.controls.some((input) => input.required),
         content: content + (section.kind === "prompt" && state.latestGeneratedPrompt ? `<div class="prompt-draft-result"><small>A newer generated prompt is available. Your draft is preserved.</small><button type="button" class="button low" data-action="use-latest-prompt">Use latest prompt</button></div>` : ""),
         status: controlSectionStatus(section, values),
-        // A minimal set of sections (prompt, seed, resolution) opens by
-        // default; everything else stays collapsed until the user expands
-        // it. A section with a validation error opens so the block is visible.
+        // Random seeds need no input. Fixed seeds, prompts, and resolution
+        // open by default; validation errors also reveal their controls.
         open:
           sectionHasError ||
           controlSectionIsOpen(
             openState,
             section.key,
-            DEFAULT_OPEN_CONTROL_SECTION_KINDS.has(section.kind),
+            section.kind === "seed"
+              ? seedFormValue(first, values[first.id]).mode !== "random"
+              : DEFAULT_OPEN_CONTROL_SECTION_KINDS.has(section.kind),
           ),
         className: `control-section-${section.kind}`,
         actions:
           section.kind === "prompt"
             ? promptSectionActionsMarkup(first, values, contract)
-            : section.kind === "creative-direction" ? featureSwitchMarkup("auto-generate-creative-direction", "Use Creative Direction", state.autoGenerateCreativeDirection) : "",
+            : section.kind === "seed"
+              ? `<div class="control-section-actions feature-section-switch">${seedSwitchMarkup(first, values[first.id], !controlPresentation(first, values, contract?.capability_states || {}).enabled, true)}</div>`
+              : section.kind === "creative-direction" ? featureSwitchMarkup("auto-generate-creative-direction", "Use Creative Direction", state.autoGenerateCreativeDirection) : "",
       });
     })
     .join("");
@@ -758,7 +762,7 @@ function controlSectionDescriptor(input) {
     return { key: "prompt", kind: "prompt", title: "Prompt" };
   }
   if (input.type === "seed" || input.semantic_role === "seed") {
-    return { key: "seed", kind: "seed", title: "Seed" };
+    return { key: "seed", kind: "seed", title: "Seed Randomizer" };
   }
   if (input.type === "resolution") {
     return { key: "resolution", kind: "resolution", title: "Resolution" };
@@ -815,7 +819,7 @@ function controlSectionStatus(section, values) {
   }
   if (section.kind === "seed") {
     const control = section.controls[0];
-    return seedFormValue(control, values[control.id]).mode === "random" ? "Random" : "Fixed";
+    return seedFormValue(control, values[control.id]).mode === "random" ? "" : "Fixed";
   }
   return "";
 }
@@ -858,12 +862,12 @@ function promptGenerationMarkup(state) {
     </select></label>
     ${inputs}
     <button type="button" class="button secondary" data-action="generate-prompt" ${!source || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${state.promptGenerationBusy ? "Generating prompt…" : "Generate prompt"}</button>
-    <p class="prompt-generation-hint">Subject entry is independent of LoRAs. Each batch shares one generated prompt, manual or automatic.</p>
     ${state.promptGenerationMessage ? `<p class="prompt-pipeline-status" role="status">${escapeHtml(state.promptGenerationMessage)}</p>` : ""}
     ${state.promptGenerationError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError)}</p>` : ""}
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
   </div>`;
   return controlSectionMarkup({ key: "prompt-generation", title: "Prompt Generation", content,
+    titleHelp: "Subject entry is independent of LoRAs. Each batch shares one generated prompt, manual or automatic.",
     open: controlSectionIsOpen(state.controlSectionOpen, "prompt-generation", false),
     actions: featureSwitchMarkup("prompt-generation-enabled", "Use Prompt Generation", selection.enabled),
     className: "control-section-prompt-generation" });
@@ -878,6 +882,7 @@ function controlSectionMarkup({
   status = "",
   actions = "",
   className = "",
+  titleHelp = "",
 }) {
   const slug = sectionSlug(key);
   const triggerId = `control-section-${slug}-trigger`;
@@ -885,7 +890,7 @@ function controlSectionMarkup({
   return `<section class="control-section ${className} ${open ? "is-expanded" : ""}" data-control-section="${escapeHtml(key)}">
     <div class="control-section-header">
       <button type="button" class="control-section-trigger" id="${triggerId}" data-action="toggle-control-section" aria-controls="${bodyId}" aria-expanded="${open}">
-        <span class="control-section-title">${escapeHtml(title)}${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</span>
+        <span class="control-section-title"${titleHelp ? ` title="${escapeHtml(titleHelp)}"` : ""}>${escapeHtml(title)}${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</span>
         <svg class="control-section-indicator" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path class="control-section-indicator-vertical" d="M12 5v14"/></svg>
       </button>
       ${status ? `<span class="control-section-status" data-control-section-status="${escapeHtml(key)}">${escapeHtml(status)}</span>` : ""}
@@ -1014,7 +1019,7 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
       break;
     }
     case "seed":
-      input = seedMarkup(control, value, common, disabled);
+      input = seedMarkup(control, value, common, disabled, options.hideSeedSwitch);
       field = `<fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}><legend${options.hideLabel ? ' class="visually-hidden"' : ""}>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "boolean":
@@ -1084,16 +1089,21 @@ function controlConstraint(control, name) {
   return control?.[name] ?? control?.constraints?.[name];
 }
 
-function seedMarkup(control, value, common, disabled) {
-  const seed = seedFormValue(control, value);
-  const random = seed.mode === "random";
+function seedSwitchMarkup(control, value, disabled, inHeader = false) {
+  const random = seedFormValue(control, value).mode === "random";
   const switchDisabled = disabled || !seedAllowsRandom(control);
-  return `<div class="seed-control">
-    <label class="switch">
+  return `<label class="switch">
       <input type="checkbox" data-seed-mode="${escapeHtml(control.id)}" aria-label="Random seed" ${random ? "checked" : ""} ${switchDisabled ? "disabled" : ""} />
       <span aria-hidden="true"></span>
-      <em>${random ? "Random" : "Fixed"}</em>
-    </label>
+      <em>${inHeader ? (random ? "On" : "Off") : (random ? "Random" : "Fixed")}</em>
+    </label>`;
+}
+
+function seedMarkup(control, value, common, disabled, hideSwitch = false) {
+  const seed = seedFormValue(control, value);
+  const random = seed.mode === "random";
+  return `<div class="seed-control">
+    ${hideSwitch ? "" : seedSwitchMarkup(control, value, disabled)}
     <input ${common} type="text" inputmode="numeric" pattern="-?[0-9]*" value="${random ? "" : escapeHtml(seed.value)}" ${random ? "disabled" : ""} data-minimum="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" data-maximum="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" aria-label="${escapeHtml(control.label)} value" />
   </div>`;
 }
@@ -1310,15 +1320,12 @@ function promptInstructionsMarkup(id, assistant = {}) {
   const instructions = assistant.instructionOverrides?.[mode] ??
     assistant.defaultInstructions?.[mode] ?? "";
   const ready = typeof assistant.defaultInstructions?.[mode] === "string";
-  const thinkingId = id.replace("-instructions", "-thinking-mode");
   return `<details class="prompt-preprocessor">
-    <summary id="${id}-summary"><span id="${id}-label">Prompt pre-processor</span><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="m7 4 6 6-6 6" /></svg></summary>
+    <summary id="${id}-summary"><span id="${id}-label" data-instructions-mode-hint title="${escapeHtml(PROMPT_INSTRUCTIONS_HINTS[mode])}">Prompt pre-processor</span><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="m7 4 6 6-6 6" /></svg></summary>
     <div class="prompt-preprocessor-content">
       <p class="prompt-preprocessor-context" data-instructions-mode-label>${mode === "create" ? "Instructions for a new prompt" : "Instructions for refining your prompt"}</p>
-      <textarea id="${id}" data-prompt-instructions data-instructions-mode="${mode}" rows="8" maxlength="8000" required aria-labelledby="${id}-label" aria-describedby="${id}-hint" placeholder="Loading default instructions…" ${ready ? "" : "disabled"}>${escapeHtml(instructions)}</textarea>
+      <textarea id="${id}" data-prompt-instructions data-instructions-mode="${mode}" rows="8" maxlength="8000" required aria-labelledby="${id}-label" placeholder="Loading default instructions…" ${ready ? "" : "disabled"}>${escapeHtml(instructions)}</textarea>
       <div class="prompt-preprocessor-tools"><button type="button" class="button low" data-action="reset-prompt-instructions" ${ready ? "" : "disabled"}><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3.5 8a6.5 6.5 0 1 1 .7 6M3.5 3.5V8H8" /></svg>Reset to default</button></div>
-      <p id="${id}-hint" class="prompt-preprocessor-hint" data-instructions-mode-hint>${escapeHtml(PROMPT_INSTRUCTIONS_HINTS[mode])}</p>
-      <label class="prompt-preprocessor-thinking-option"><input id="${thinkingId}" type="checkbox" ${assistant.think !== false ? "checked" : ""} /> Thinking mode</label>
     </div>
   </details>`;
 }
@@ -1329,11 +1336,15 @@ function promptAssistantMarkup(state = {}) {
       ${promptInstructionsMarkup("prompt-assistant-instructions")}
       ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
-      ${state.promptGeneration?.enabled ? '<p class="prompt-generation-hint">Prompt Generation supplies the starting prompt; Creative Direction refines it.</p>' : ""}
+      ${thinkingModeMarkup("prompt-assistant-thinking-mode", state.promptAssistant)}
       <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
       <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
   </section>`;
+}
+
+function thinkingModeMarkup(id, assistant = {}) {
+  return `<label class="prompt-assistant-thinking-option"><input id="${id}" type="checkbox" ${assistant.think !== false ? "checked" : ""} /> Thinking mode</label>`;
 }
 
 export function promptEditorMarkup(controlId, label, value, promptAssistant = {}) {
@@ -1365,6 +1376,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
           <div class="prompt-editor-assistant-action-row">
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
+          ${thinkingModeMarkup("prompt-editor-thinking-mode", promptAssistant)}
           <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
         </div>
@@ -2297,21 +2309,16 @@ export function serviceBannerMarkup(
 
 export function serverControlsMarkup(state) {
   return `<div class="auto-generation-server-settings">
-    <div class="auto-limit-row"><label for="auto-generate-limit">Stop after</label>
-      <input id="auto-generate-limit" type="number" min="1" max="1000000" step="1" placeholder="Unlimited" aria-label="Images queued limit" aria-describedby="auto-limit-help" value="${state.maxAutoGenerations ?? ""}" ${state.automationBusy ? "disabled" : ""} />
+    <div class="auto-limit-row"><label for="auto-generate-limit" title="Blank for unlimited.">Stop after</label>
+      <input id="auto-generate-limit" type="number" min="1" max="1000000" step="1" placeholder="Unlimited" aria-label="Images queued limit" value="${state.maxAutoGenerations ?? ""}" ${state.automationBusy ? "disabled" : ""} />
       <span>images queued</span></div>
-    <small id="auto-limit-help">Blank for unlimited.</small>
   </div>`;
 }
 
 export function automationStatusMarkup(state) {
   const auto = state.automation;
-  const status = state.automationLoaded === false ? "Checking auto generation…" : state.autoGenerateStatusMessage;
   const syncStatus = state.autoSettingsStatus;
-  return `<div id="auto-generate-status" class="auto-generate-status ${escapeHtml(auto?.status || "idle")}" role="${auto?.status === "blocked" ? "alert" : "status"}" ${status ? "" : "hidden"}>
-    ${escapeHtml(status || "")}
-    ${auto?.status === "blocked" && auto.error_code !== "collection_deleted" ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
-  </div>
+  return `${auto?.status === "blocked" && auto.error_code !== "collection_deleted" ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
   ${state.autoSettingsMessage ? `<div class="auto-settings-status" role="${["error", "conflict"].includes(syncStatus) ? "alert" : "status"}">${escapeHtml(state.autoSettingsMessage)}
     ${["error", "conflict"].includes(syncStatus) ? '<button class="button low" data-action="retry-auto-settings">Retry changes</button>' : ""}
   </div>` : ""}`;

@@ -27,9 +27,13 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await expect(page.locator('[data-control-section="prompt-generation"] .control-section-trigger')).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-control-section="prompt-generation"]')).not.toContainText("Subject entry is independent");
   await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
   await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
   await page.getByRole("switch", { name: "Use Creative Direction" }).check();
+  await expect(page.locator("#prompt-assistant-thinking-mode")).toBeVisible();
+  await expect(page.locator("#prompt-assistant .prompt-preprocessor input[type=checkbox]")).toHaveCount(0);
+  await expect(page.locator("#prompt-assistant")).not.toContainText("Prompt Generation supplies the starting prompt");
   const create = page.getByRole("radio", { name: "New Prompt from Creative Direction", exact: true });
   await create.check();
   await page.getByRole("switch", { name: "Use Prompt Generation" }).check();
@@ -113,7 +117,7 @@ test("late results preserve a draft across reload and offer Use latest", async (
   await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/slow Mira explores/);
 });
 
-test("enabling auto generation expands controls and respects the image limit", async ({ page }) => {
+test("auto-generation toggles preserve expansion and respect the image limit", async ({ page }) => {
   await page.getByRole("textbox", { name: "Generation quantity" }).fill("2");
   await page.getByRole("textbox", { name: "Generation quantity" }).blur();
   const autoSection = page.locator('[data-control-section="auto-generation"]');
@@ -121,7 +125,8 @@ test("enabling auto generation expands controls and respects the image limit", a
   await page.getByRole("spinbutton", { name: "Images queued limit" }).fill("2");
   await autoSection.locator(".control-section-trigger").click();
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
-  await expect(autoSection.locator(".control-section-trigger")).toHaveAttribute("aria-expanded", "true");
+  await expect(autoSection.locator(".control-section-trigger")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#auto-generate-status")).toHaveCount(0);
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).revision).toBeGreaterThan(0);
   await page.reload();
   await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(2);
@@ -138,6 +143,9 @@ test("automatic limit edits synchronize without Apply and survive refresh", asyn
   await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("slow Mira");
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).enabled).toBe(true);
+  const autoTrigger = page.locator('[data-control-section="auto-generation"] .control-section-trigger');
+  await expect(autoTrigger).toHaveAttribute("aria-expanded", "false");
+  await autoTrigger.click();
   await page.getByRole("spinbutton", { name: "Images queued limit" }).fill("3");
   await page.getByRole("spinbutton", { name: "Images queued limit" }).blur();
   await page.reload();
@@ -146,4 +154,5 @@ test("automatic limit edits synchronize without Apply and survive refresh", asyn
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).snapshot.max_generations).toBe(3);
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).enabled).toBe(false);
+  await expect(autoTrigger).toHaveAttribute("aria-expanded", "true");
 });

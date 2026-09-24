@@ -86,6 +86,14 @@ test("control bar values, active source, and section states persist across reloa
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("persistence lighthouse");
   await page.getByLabel("Random seed", { exact: true }).uncheck();
   await page.getByLabel("Seed value", { exact: true }).fill("987654321");
+  await page.getByLabel("Random seed", { exact: true }).check();
+  await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByLabel("Random seed", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Random seed", { exact: true })).toBeFocused();
+  await page.getByLabel("Random seed", { exact: true }).uncheck();
+  await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-control-section-status="seed"]')).toHaveText("Fixed");
+  await expect(page.getByLabel("Seed value", { exact: true })).toHaveValue("987654321");
   await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("1280");
   await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("960");
 

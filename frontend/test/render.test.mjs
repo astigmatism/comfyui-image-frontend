@@ -691,7 +691,7 @@ test("creative direction renders as its own collapsible section beneath the prom
   assert.ok(preprocessorIndex >= 0 && preprocessorIndex < directionIndex);
   assert.match(
     section,
-    /data-instructions-mode-hint>Your prompt is added after these instructions, then the Creative Direction\./,
+    /data-instructions-mode-hint title="Your prompt is added after these instructions, then the Creative Direction\./,
   );
   assert.match(section, /<\/details>[\s\S]*data-action="compose-prompt"/);
   assert.match(section, /Refine Current Prompt/);
@@ -703,7 +703,8 @@ test("creative direction renders as its own collapsible section beneath the prom
     section,
     /id="prompt-assistant-thinking-mode"[\s\S]*id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden/,
   );
-  assert.match(section, /<details class="prompt-preprocessor">[^]*id="prompt-assistant-thinking-mode"[^]*<\/details>/);
+  assert.doesNotMatch(section, /<details class="prompt-preprocessor">(?:(?!<\/details>)[^])*id="prompt-assistant-thinking-mode"/);
+  assert.ok(section.indexOf('name="assistant-mode" value="create"') < section.indexOf('id="prompt-assistant-thinking-mode"'));
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {
@@ -734,7 +735,7 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   assert.match(html, /id="prompt-editor-thinking-mode" type="checkbox"/);
   assert.doesNotMatch(html, /id="prompt-editor-thinking-mode" type="checkbox" checked/);
   assert.ok(
-    html.indexOf('id="prompt-editor-thinking-mode"') <
+    html.indexOf('id="prompt-editor-thinking-mode"') >
       html.indexOf('name="prompt-editor-assistant-mode" value="create"'),
   );
   assert.match(html, /Thinking mode/);
@@ -750,8 +751,8 @@ test("focused prompt editor renders the prompt and mirrored Prompt Assistant dra
   const editorPreprocessorIndex = html.indexOf('class="prompt-preprocessor"');
   const editorDirectionIndex = html.indexOf('id="prompt-editor-creative-direction"');
   assert.ok(editorPreprocessorIndex >= 0 && editorPreprocessorIndex < editorDirectionIndex);
-  assert.match(html, /data-instructions-mode-hint>Your Creative Direction is added after these instructions\./);
-  assert.match(html, /<details class="prompt-preprocessor">[^]*id="prompt-editor-thinking-mode"[^]*<\/details>/);
+  assert.match(html, /data-instructions-mode-hint title="Your Creative Direction is added after these instructions\./);
+  assert.doesNotMatch(html, /<details class="prompt-preprocessor">(?:(?!<\/details>)[^])*id="prompt-editor-thinking-mode"/);
   assert.match(html, /<\/details>[\s\S]*data-action="compose-prompt-editor"/);
   assert.match(html, /id="prompt-editor-instructions"[^>]*>Write &lt;one&gt; concise scene\.<\/textarea>/);
   assert.match(html, /Reset to default/);
@@ -1085,12 +1086,13 @@ test("auto-generation dropdown contains only the labeled queue limit", () => {
   const html = serverControlsMarkup({ maxAutoGenerations: 200, automation: { enabled: true, latest_prompt: "private latest prompt", snapshot: { generation: { collection_id: "folder" }, quantity: 2 } } });
   assert.match(html, /Stop after/);
   assert.match(html, /images queued/);
-  assert.match(html, /Blank for unlimited/);
+  assert.match(html, /<label[^>]*title="Blank for unlimited\.">Stop after<\/label>/);
+  assert.doesNotMatch(html, /<small/);
   assert.equal((html.match(/<input/g) || []).length, 1);
   assert.doesNotMatch(html, /<select|<details|latest.prompt|Active auto|Apply to auto|shared-settings-status/i);
 });
 
-test("auto-generate renders a persistent accessible blocked state with a retry action", () => {
+test("auto-generate omits status text while retaining the blocked retry action", () => {
   const state = {
     submitting: false,
     autoGenerate: true,
@@ -1109,11 +1111,7 @@ test("auto-generate renders a persistent accessible blocked state with a retry a
   const autoGenerate = html.match(/<input id="auto-generate"[^>]*>/)?.[0] || "";
 
   assert.match(autoGenerate, /checked/);
-  assert.match(
-    html,
-    /id="auto-generate-status" class="auto-generate-status blocked" role="alert"/,
-  );
-  assert.match(html, /Auto-generate blocked: output budget exhausted\./);
+  assert.doesNotMatch(html, /id="auto-generate-status"|Auto-generate blocked: output budget exhausted/);
   assert.match(html, /data-action="retry-auto-generate">Retry Auto-generate<\/button>/);
 });
 
@@ -2078,7 +2076,8 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.match(html, /data-control-id="height"[^>]*data-resolution-axis="height"[^>]*type="number"[^>]*step="8"/);
   assert.match(html, /data-resolution-summary[^>]*>1080 × 1920 · 2.07 MP · 9:16/);
   assert.match(html, /data-control-section-status="resolution">1080 × 1920<\/span>/);
-  assert.match(html, /data-control-section-status="seed">Random<\/span>/);
+  assert.doesNotMatch(html, /data-control-section-status="seed"/);
+  assert.match(html, /Seed Randomizer/);
   assert.match(html, /<div class="resolution-preview">/);
   assert.doesNotMatch(html, /<span aria-hidden="true">×<\/span>/);
   assert.ok(html.indexOf('data-control-block="seed"') < html.indexOf('data-control-block="prompt"'));
@@ -2097,7 +2096,7 @@ test("published source pairs scalar dimensions in the resolution picker and rend
     html,
     /data-control-id="knpv4_1_strength"[^>]*data-number-entry[^>]*type="number"[^>]*step="0.05"/,
   );
-  for (const section of ["prompt", "resolution", "seed"]) {
+  for (const section of ["prompt", "resolution"]) {
     assert.match(
       html,
       new RegExp(
@@ -2105,7 +2104,7 @@ test("published source pairs scalar dimensions in the resolution picker and rend
       ),
     );
   }
-  for (const section of ["creative-direction", "upscaling"]) {
+  for (const section of ["creative-direction", "upscaling", "seed"]) {
     assert.match(
       html,
       new RegExp(
@@ -2152,7 +2151,7 @@ test("minimal sections open by default; stored open state and validation errors 
 
   const defaults = generationPanelMarkup(base, publishedSource, publishedInterface);
   assert.equal(sectionState(defaults, "prompt"), "true");
-  assert.equal(sectionState(defaults, "seed"), "true");
+  assert.equal(sectionState(defaults, "seed"), "false");
   assert.equal(sectionState(defaults, "resolution"), "true");
   assert.equal(sectionState(defaults, "creative-direction"), "false");
   assert.equal(sectionState(defaults, "upscaling"), "false");
@@ -2167,7 +2166,7 @@ test("minimal sections open by default; stored open state and validation errors 
     publishedInterface,
   );
   assert.equal(sectionState(stored, "prompt"), "false");
-  assert.equal(sectionState(stored, "seed"), "true");
+  assert.equal(sectionState(stored, "seed"), "false");
   assert.equal(sectionState(stored, "creative-direction"), "true");
   assert.equal(sectionState(stored, "upscaling"), "true");
   assert.equal(sectionState(stored, "advanced"), "false");
