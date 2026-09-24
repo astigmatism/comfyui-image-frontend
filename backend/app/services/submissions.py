@@ -21,7 +21,7 @@ from ..schemas import (
 )
 from .events import event_payload
 from .generation_activity import begin_run
-from .user_state import lock_user_state
+from .user_state import lock_user_state, require_manual_generation
 
 if TYPE_CHECKING:
     from .generations import GenerationService
@@ -103,6 +103,7 @@ async def accept(
                         status_code=409,
                     )
                 return project_receipt(service, session, receipt), []
+            require_manual_generation(session, owner_id)
             user = session.get(User, owner_id)
             if user is None or user.state != UserState.ACTIVE:
                 raise AppError("authentication_required", "Sign in is required.", status_code=401)

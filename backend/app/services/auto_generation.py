@@ -34,7 +34,7 @@ from ..schemas import (
     PromptAssistantSnapshot,
 )
 from .events import event_payload
-from .generation_activity import begin_run, retain_deleted_outcome
+from .generation_activity import begin_run
 from .prompt_assistant import compose_prompt
 from .user_state import lock_user_state, notify_user
 
@@ -233,21 +233,39 @@ class AutoGenerationService:
         limit: int | None = None,
         reset_limit: bool = False,
     ) -> AutoGenerationResponse:
-        def change_transaction() -> tuple[bool, AutoGenerationResponse, list[str]]:
-            deleted: list[str] = []
+        def change_transaction() -> tuple[bool, AutoGenerationResponse]:
             with self.container.db.session_factory() as session:
                 row = self._get_locked(session, user_id, revision)
+                if row.enabled and row.error_code == "collection_deleted" and enabled is not False:
+                    raise AppError(
+                        "collection_deleted",
+                        "The destination folder was deleted. Turn off auto generation, "
+                        "open another folder, and turn it on again.",
+                        status_code=409,
+                    )
                 if enabled is not None and row.enabled == enabled:
-                    return False, response(row, session), []
+                    return False, response(row, session)
                 if enabled is True or snapshot is not None:
                     if snapshot is None:
                         raise AppError(
                             "snapshot_required", "Capture settings before enabling auto generation."
                         )
-                    previous_limit = (row.snapshot_json or {}).get("max_generations")
-                    row.snapshot_json, row.profile_id = self._capture(session, user_id, snapshot)
-                    if previous_limit != snapshot.max_generations:
-                        row.accepted_count = 0
+                    if enabled is not True and not row.enabled:
+                        raise AppError(
+                            "auto_generation_disabled", "Auto generation is off.", status_code=409
+                        )
+                    if row.enabled and snapshot.generation.collection_id != row.snapshot_json.get(
+                        "generation", {}
+                    ).get("collection_id"):
+                        raise AppError(
+                            "auto_generation_destination_locked",
+                            "Turn off auto generation before choosing another destination folder.",
+                            status_code=409,
+                        )
+                    captured, profile_id = self._capture(session, user_id, snapshot)
+                    if row.enabled and captured == row.snapshot_json:
+                        return False, response(row, session)
+                    row.snapshot_json, row.profile_id = captured, profile_id
                     row.latest_prompt = snapshot.assistant.prompt if snapshot.assistant else None
                 if (retry or reset_limit) and not row.snapshot_json:
                     raise AppError("snapshot_required", "Enable auto generation first.")
@@ -255,47 +273,26 @@ class AutoGenerationService:
                     row.accepted_count = 0
                 if reset_limit:
                     row.snapshot_json = {**row.snapshot_json, "max_generations": limit}
-                    row.accepted_count = 0
                 self._invalidate(session, row)
                 if enabled is not None:
                     row.enabled = enabled
                 row.status = "waiting" if row.enabled else "off"
-                if enabled is False:
-                    # Serialize with dispatch. No external requests or partial commits here.
-                    queued = session.scalars(
-                        select(Generation).where(
-                            Generation.owner_id == user_id,
-                            Generation.auto_cycle_id.is_not(None),
-                            Generation.status == GenerationStatus.QUEUED,
-                            Generation.id.not_in(
-                                select(GenerationPreparation.generation_id).where(
-                                    GenerationPreparation.generation_id.is_not(None)
-                                )
-                            ),
-                        )
-                    ).all()
-                    for job in queued:
-                        job.status = GenerationStatus.CANCELLED_WITHOUT_ARTIFACTS
-                        retain_deleted_outcome(session, job)
-                        deleted.append(job.id)
-                        session.delete(job)
+                maximum = row.snapshot_json.get("max_generations")
+                if row.enabled and maximum is not None and row.accepted_count >= maximum:
+                    row.enabled, row.status = False, "completed"
+                    row.message = "Image queue limit reached. Accepted images will finish."
                 session.commit()
                 result = response(row, session)
-            return True, result, deleted
+            return True, result
 
-        changed, result, deleted = await _run_blocking(change_transaction)
+        changed, result = await _run_blocking(change_transaction)
         if not changed:
             return result
-        for job_id in deleted:
-            await self.container.broker.publish(
-                user_id,
-                {"id": None, "type": "generation.deleted", "generation_id": job_id, "payload": {}},
-            )
         logger.info(
             "auto_generation_configuration_changed",
             extra={
                 "actor_user_id": user_id,
-                "action": "limit_reset" if reset_limit else "configuration",
+                "action": "limit_changed" if reset_limit else "configuration",
             },
         )
         await notify_user(self.container.broker, user_id, "auto_generation.updated")

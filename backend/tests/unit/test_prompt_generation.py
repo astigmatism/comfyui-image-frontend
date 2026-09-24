@@ -61,14 +61,21 @@ def test_adapter_is_pinned_and_changes_only_request_local_seed():
         manifest_sha256=STABLELLAMA_HASHES[2],
     )
     hashes = []
-    for seed in [17, 23]:
-        compiler = WorkflowCompiler(seed_resolver=lambda lo, hi, selected=seed: selected)
+    for seed in [0, 2**31 - 1]:
+        bounds = []
+
+        def resolve(lo, hi, selected=seed, recorded=bounds):
+            recorded.append((lo, hi))
+            return selected
+
+        compiler = WorkflowCompiler(seed_resolver=resolve)
         compiled = compiler.compile(
             contract=source.private_contract,
             api_document=graph,
             requested_controls={"subject_name": "Mira"},
         )
         hashes.append(adapt_seed(profile, compiled, compiler))
+        assert bounds[-1] == (0, 2**31 - 1)
         assert compiled.compiled_graph["909"]["inputs"]["seed"] == seed
         assert compiled.resolved_seeds["stablellama.dataset_seed"] == str(seed)
     assert len(set(hashes)) == 2

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
+from ..errors import AppError
 from ..models import AppLock, AutoGeneration, GenerationPreparation, UserPreference
 from .event_broker import EventBroker
 
@@ -20,6 +21,17 @@ def lock_user_state(session: Session) -> None:
             set_={"integer_value": AppLock.integer_value + 1},
         )
     )
+
+
+def require_manual_generation(session: Session, owner_id: str) -> None:
+    """Call under the user-state lock, after looking up an idempotency receipt."""
+    auto = session.get(AutoGeneration, owner_id)
+    if auto and auto.enabled:
+        raise AppError(
+            "auto_generation_enabled",
+            "Turn off auto generation before generating images manually.",
+            status_code=409,
+        )
 
 
 async def notify_user(broker: EventBroker, owner_id: str, event_type: str) -> None:

@@ -175,7 +175,7 @@ def test_declared_text_matching_and_bounds():
             collect_text(contract, changed)
 
 
-def test_automation_generates_per_image_and_stops_at_limit(app_client, fake_state):
+def test_automation_shares_one_prompt_and_stops_at_limit(app_client, fake_state):
     from tests.integration.test_auto_generation import enable, tick
 
     user, _ = provision_user(app_client)
@@ -192,8 +192,11 @@ def test_automation_generates_per_image_and_stops_at_limit(app_client, fake_stat
     assert result["status"] == "completed", result
     assert result["accepted_count"] == 2
     with app_client.app.state.container.db.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(PromptGenerationRun)) == 2
-        assert len(set(session.scalars(select(Generation.final_prompt)))) == 2
+        assert session.scalar(select(func.count()).select_from(PromptGenerationRun)) == 1
+        assert len(set(session.scalars(select(Generation.final_prompt)))) == 1
+        images = list(session.scalars(select(Generation)))
+        assert len(images) == 2
+        assert images[0].resolved_seeds_json != images[1].resolved_seeds_json
 
 
 def test_stop_discards_unaccepted_preparations_and_keeps_accepted_images(app_client, fake_state):
@@ -281,11 +284,8 @@ def test_stop_keeps_an_accepted_image_and_apply_invalidates_pending_work(app_cli
     stopped = command(app_client, expected_revision=enabled["revision"], enabled=False)
     assert stopped.status_code == 200
     with container.db.session_factory() as session:
-        assert set(session.scalars(select(GenerationPreparation.status))) == {
-            "accepted",
-            "discarded",
-        }
-        assert session.scalar(select(func.count()).select_from(Generation)) == 1
+        assert set(session.scalars(select(GenerationPreparation.status))) == {"accepted"}
+        assert session.scalar(select(func.count()).select_from(Generation)) == 2
     enabled = enable(app_client, prompt_generation=prompt, quantity=2)
     # The accepted image continues; complete it to allow another automatic cycle.
     from tests.integration.test_auto_generation import complete
@@ -293,7 +293,10 @@ def test_stop_keeps_an_accepted_image_and_apply_invalidates_pending_work(app_cli
     complete(app_client)
     tick(app_client, user["id"])
     applied = command(
-        app_client, "/apply", expected_revision=enabled["revision"], snapshot=enabled["snapshot"]
+        app_client,
+        "/apply",
+        expected_revision=enabled["revision"],
+        snapshot={**enabled["snapshot"], "quantity": 1},
     )
     assert applied.status_code == 200, applied.text
     with container.db.session_factory() as session:
@@ -312,11 +315,15 @@ def test_text_and_image_jobs_share_capacity_and_manual_priority(
 
     user, _ = provision_user(app_client)
     prompt = register(app_client, fake_state)
+    image = create_generation(app_client, "manual image")
     enable(app_client, prompt_generation=prompt)
     tick(app_client, user["id"])
-    image = create_generation(app_client, "manual image")
     worker = app_client.app.state.container.worker
     assert worker._claim_next()[0] == image["id"]
+    from tests.integration.test_auto_generation import complete
+
+    complete(app_client)
+    tick(app_client, user["id"])
     claim = worker._claim_next()
     assert claim[0].startswith("text:")
 

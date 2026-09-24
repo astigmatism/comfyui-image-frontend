@@ -39,11 +39,11 @@ from ..schemas import (
     PromptAssistantSnapshot,
     PromptGenerationCreate,
 )
-from .comfyui import _queue_prompt_ids
+from .comfyui import _queue_prompt_ids, prompt_rejection_diagnostics
 from .events import event_payload
 from .generation_activity import begin_run
 from .prompt_assistant import compose_prompt
-from .user_state import lock_user_state, notify_user
+from .user_state import lock_user_state, notify_user, require_manual_generation
 
 if TYPE_CHECKING:
     from ..container import AppContainer
@@ -117,6 +117,7 @@ class PromptGenerationService:
         self.container = container
         self._task: asyncio.Task[None] | None = None
         self._active: dict[str, asyncio.Task[None]] = {}
+        self._batch_locks: dict[str, asyncio.Lock] = {}
 
     def validate_source(
         self, session: Session, payload: PromptGenerationCreate
@@ -223,9 +224,29 @@ class PromptGenerationService:
         group = str(uuid.uuid4())
         activity = begin_run(session, owner_id, len(payload.items))
         rows = []
+        shared_text = (
+            self.create_text(session, owner_id, payload.items[0].prompt_generation, automatic=True)
+            if cycle
+            else None
+        )
+        automation = session.get(AutoGeneration, owner_id) if cycle else None
+        compare_checkpoints = bool(automation and automation.snapshot_json.get("quantity") == 1)
+        shared_image_seeds: dict[str, Any] = {}
         for position, item in enumerate(payload.items):
             image_profile, captured = self.capture_image(session, owner_id, item, profile=profile)
-            text_run = self.create_text(
+            if compare_checkpoints:
+                if position == 0:
+                    shared_image_seeds = {
+                        entry["id"]: captured.generation.public_parameters[entry["id"]]
+                        for entry in image_profile.resolved_contract_json["inputs"]
+                        if entry["type"] == "seed"
+                    }
+                else:
+                    captured.generation.parameters = {
+                        **captured.generation.public_parameters,
+                        **shared_image_seeds,
+                    }
+            text_run = shared_text or self.create_text(
                 session, owner_id, item.prompt_generation, automatic=cycle is not None
             )
             row = GenerationPreparation(
@@ -275,6 +296,7 @@ class PromptGenerationService:
                 if isinstance(payload, PromptGenerationCreate):
                     outcomes = [{"prompt_run_id": self.create_text(session, owner_id, payload).id}]
                 else:
+                    require_manual_generation(session, owner_id)
                     outcomes = [
                         {"preparation_id": row.id}
                         for row in self.create_preparations(session, owner_id, payload)
@@ -326,6 +348,8 @@ class PromptGenerationService:
             return run
 
     async def recover(self, worker: QueueWorker) -> None:
+        await run_blocking(self._retire_legacy_batches)
+
         def load() -> list[PromptGenerationRun]:
             with self.container.db.session_factory() as session:
                 return list(
@@ -430,8 +454,13 @@ class PromptGenerationService:
                 status="failed",
                 error_code=error.code if isinstance(error, AppError) else "prompt_execution_failed",
                 error_message=error.message
+                if isinstance(error, AppError) and error.code != "comfyui_prompt_rejected"
+                else f"Prompt generation failed: {error.message}"
                 if isinstance(error, AppError)
                 else "Prompt generation failed.",
+                internal_diagnostics_json=prompt_rejection_diagnostics(error.details)
+                if isinstance(error, AppError) and error.code == "comfyui_prompt_rejected"
+                else {"exception_type": type(error).__name__},
             )
         finally:
             await notify_user(self.container.broker, owner_id, "prompt_generation.updated")
@@ -461,16 +490,22 @@ class PromptGenerationService:
 
                 def pending() -> list[str]:
                     with self.container.db.session_factory() as session:
-                        return list(
-                            session.scalars(
-                                select(GenerationPreparation.id)
-                                .where(GenerationPreparation.status.in_(PREPARATION_ACTIVE))
-                                .order_by(
-                                    GenerationPreparation.created_at, GenerationPreparation.position
-                                )
-                                .limit(256)
+                        rows = session.scalars(
+                            select(GenerationPreparation)
+                            .where(GenerationPreparation.status.in_(PREPARATION_ACTIVE))
+                            .order_by(
+                                GenerationPreparation.created_at, GenerationPreparation.position
                             )
-                        )
+                            .limit(256)
+                        ).all()
+                        groups: set[str] = set()
+                        identities = []
+                        for row in rows:
+                            if row.auto_cycle_id and row.group_id in groups:
+                                continue
+                            groups.add(row.group_id)
+                            identities.append(row.id)
+                        return identities
 
                 for key in await run_blocking(pending):
                     if len(self._active) >= 4:
@@ -493,11 +528,24 @@ class PromptGenerationService:
             cycle
             and auto
             and auto.enabled
+            and auto.status != "blocked"
             and auto.revision == cycle.revision
             and cycle.state != "discarded"
         )
 
     async def advance(self, identity: str) -> None:
+        def batch_identity() -> tuple[str, str] | None:
+            with self.container.db.session_factory() as session:
+                row = session.get(GenerationPreparation, identity)
+                return (row.owner_id, row.group_id) if row and row.auto_cycle_id else None
+
+        batch = await run_blocking(batch_identity)
+        if batch:
+            owner, group = batch
+            async with self._batch_locks.setdefault(owner, asyncio.Lock()):
+                await self._advance_batch(group)
+            return
+
         def load() -> tuple[GenerationPreparation, PromptGenerationRun] | None:
             with self.container.db.session_factory() as session:
                 lock_user_state(session)
@@ -620,6 +668,182 @@ class PromptGenerationService:
         if row.auto_cycle_id:
             await notify_user(self.container.broker, row.owner_id, "auto_generation.updated")
 
+    def _retire_legacy_batches(self) -> None:
+        """Discard only unfinished automatic work with pre-batch prompt semantics."""
+        with self.container.db.session_factory() as session:
+            lock_user_state(session)
+            groups = session.scalars(
+                select(GenerationPreparation.group_id)
+                .where(
+                    GenerationPreparation.auto_cycle_id.is_not(None),
+                    GenerationPreparation.status.in_(PREPARATION_ACTIVE),
+                )
+                .distinct()
+            ).all()
+            for group in groups:
+                rows = self._batch_rows(session, group)
+                text = session.get(PromptGenerationRun, rows[0].prompt_run_id)
+                seed = (text.resolved_seeds_json if text else {}).get("stablellama.dataset_seed")
+                if len({row.prompt_run_id for row in rows}) == 1 and (
+                    seed is None or 0 <= int(seed) <= 2**31 - 1
+                ):
+                    continue
+                for row in rows:
+                    self.fail_preparation(
+                        session, row, "discarded", "Automatic batch preparation was upgraded."
+                    )
+                cycle = session.get(AutoGenerationCycle, rows[0].auto_cycle_id)
+                if cycle:
+                    cycle.state = "discarded"
+            session.commit()
+
+    @staticmethod
+    def _batch_rows(session: Session, group: str) -> list[GenerationPreparation]:
+        return list(
+            session.scalars(
+                select(GenerationPreparation)
+                .where(GenerationPreparation.group_id == group)
+                .order_by(GenerationPreparation.position)
+            )
+        )
+
+    async def _advance_batch(self, group: str) -> None:
+        def load() -> tuple[GenerationPreparation, PromptGenerationRun] | None:
+            with self.container.db.session_factory() as session:
+                lock_user_state(session)
+                rows = self._batch_rows(session, group)
+                if not rows or any(row.status not in PREPARATION_ACTIVE for row in rows):
+                    return None
+                leader = rows[0]
+                if not self.valid_cycle(session, leader):
+                    for row in rows:
+                        self.fail_preparation(
+                            session,
+                            row,
+                            "discarded",
+                            "Automatic settings changed before image acceptance.",
+                        )
+                    session.commit()
+                    return None
+                text = session.get(PromptGenerationRun, leader.prompt_run_id)
+                assert text is not None
+                return leader, text
+
+        loaded = await run_blocking(load)
+        if not loaded:
+            return
+        leader, text = loaded
+        if text.status in TEXT_ACTIVE:
+            return
+        try:
+            if text.status != "succeeded":
+                raise AppError(
+                    text.error_code or "prompt_generation_failed",
+                    text.error_message or "Prompt generation failed.",
+                )
+            payload = GenerationPreparationItem.model_validate(leader.request_json)
+            if payload.assistant and not leader.assistant_run_id:
+                # compose_prompt durably saves on the leader before returning. A restart
+                # reuses that result, and siblings never consume the provenance twice.
+                await compose_prompt(
+                    self.container,
+                    leader.owner_id,
+                    payload.assistant.model_copy(update={"prompt": text.prompt}),
+                    preparation_id=leader.id,
+                )
+
+            def accept_batch() -> list[dict[str, Any]]:
+                with self.container.db.session_factory() as session:
+                    lock_user_state(session)
+                    rows = self._batch_rows(session, group)
+                    if not rows or any(row.status not in PREPARATION_ACTIVE for row in rows):
+                        return []
+                    current = rows[0]
+                    if not self.valid_cycle(session, current):
+                        return []
+                    auto = session.get(AutoGeneration, current.owner_id)
+                    user = session.get(User, current.owner_id)
+                    assert auto is not None
+                    if not user or user.state != UserState.ACTIVE:
+                        return []
+                    prompt = current.prompt or text.prompt
+                    events = []
+                    for position, row in enumerate(rows):
+                        profile = session.get(WorkflowProfile, row.profile_id)
+                        if not profile:
+                            raise AppError(
+                                "source_unavailable", "The captured workflow is unavailable."
+                            )
+                        item = GenerationPreparationItem.model_validate(row.request_json)
+                        prompt_id = next(
+                            i["id"]
+                            for i in profile.resolved_contract_json["inputs"]
+                            if i["semantic_role"] == "positive_prompt"
+                        )
+                        request = item.generation.model_copy(
+                            update={
+                                "parameters": {
+                                    **item.generation.public_parameters,
+                                    prompt_id: prompt,
+                                },
+                                "prompt_assistant_run_id": current.assistant_run_id
+                                if position == 0
+                                else None,
+                            }
+                        )
+                        generation, event = self.container.generations._prepare_accept(
+                            session,
+                            user=user,
+                            request=request,
+                            frozen_profile=profile,
+                        )
+                        if position == 0:
+                            assistant_snapshot = generation.prompt_assistant_json
+                        else:
+                            generation.prompt_assistant_json = copy.deepcopy(assistant_snapshot)
+                        generation.auto_cycle_id = row.auto_cycle_id
+                        row.status, row.generation_id, row.prompt = (
+                            "accepted",
+                            generation.id,
+                            prompt,
+                        )
+                        row.assistant_run_id = current.assistant_run_id
+                        session.add(
+                            GenerationRunMember(
+                                generation_id=generation.id, run_id=row.activity_run_id
+                            )
+                        )
+                        events.append(event_payload(event))
+                    auto.accepted_count += len(events)
+                    auto.latest_prompt, auto.status = prompt, "generating"
+                    auto.error_code, auto.message, auto.failures = None, None, 0
+                    maximum = auto.snapshot_json.get("max_generations")
+                    if maximum is not None and auto.accepted_count >= maximum:
+                        auto.enabled, auto.status = False, "completed"
+                        auto.message = "Image queue limit reached. Accepted images will finish."
+                    session.commit()
+                    return events
+
+            events = await run_blocking(accept_batch)
+            for event in events:
+                try:
+                    await self.container.broker.publish(leader.owner_id, event)
+                except Exception:
+                    logger.exception("automatic_batch_notification_failed")
+        except asyncio.CancelledError:
+            raise
+        except AppError as error:
+            if error.code == "comfyui_instance_unavailable":
+                return
+            await run_blocking(self._fail, leader.id, error.code, error.message)
+        except Exception:
+            logger.exception("automatic_batch_preparation_failed")
+            await run_blocking(
+                self._fail, leader.id, "preparation_failed", "Image batch preparation failed."
+            )
+        await notify_user(self.container.broker, leader.owner_id, "prompt_generation.updated")
+        await notify_user(self.container.broker, leader.owner_id, "auto_generation.updated")
+
     @staticmethod
     def fail_preparation(
         session: Session, row: GenerationPreparation, code: str, message: str
@@ -640,7 +864,9 @@ class PromptGenerationService:
             lock_user_state(session)
             row = session.get(GenerationPreparation, identity)
             if row:
-                self.fail_preparation(session, row, code, message)
+                rows = self._batch_rows(session, row.group_id) if row.auto_cycle_id else [row]
+                for member in rows:
+                    self.fail_preparation(session, member, code, message)
                 if row.auto_cycle_id and self.valid_cycle(session, row):
                     auto = session.get(AutoGeneration, row.owner_id)
                     assert auto is not None

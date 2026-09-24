@@ -17,6 +17,62 @@ from ..domain.publication import parse_json_object, validate_userdata_path
 from ..errors import AppError
 
 
+def prompt_rejection_diagnostics(details: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep validation structure and numeric bounds, never prompts or model paths."""
+    response = details.get("response")
+    result: dict[str, Any] = {"status": details.get("status")}
+    if not isinstance(response, dict):
+        return result
+    nodes = response.get("node_errors")
+    errors = []
+    if isinstance(nodes, dict):
+        for node in list(nodes.values())[:8]:
+            if not isinstance(node, dict) or not isinstance(node.get("errors"), list):
+                continue
+            for error in node["errors"][:8]:
+                if not isinstance(error, dict):
+                    continue
+                item: dict[str, Any] = {"type": str(error.get("type", "unknown"))[:100]}
+                extra = error.get("extra_info")
+                if isinstance(extra, dict):
+                    if extra.get("input_name") == "seed":
+                        item["input"] = "seed"
+                    value = extra.get("received_value")
+                    if (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                    ):
+                        item["value"] = value
+                    config = extra.get("input_config")
+                    if isinstance(config, list) and len(config) > 1 and isinstance(config[1], dict):
+                        for bound in ("min", "max"):
+                            value = config[1].get(bound)
+                            if (
+                                isinstance(value, (int, float))
+                                and not isinstance(value, bool)
+                                and math.isfinite(value)
+                            ):
+                                item[bound] = value
+                errors.append(item)
+    result["errors"] = errors[:8]
+    return result
+
+
+def prompt_rejection_message(response: Any) -> str:
+    diagnostics = prompt_rejection_diagnostics({"response": response})
+    for error in diagnostics.get("errors", []):
+        kind = error["type"]
+        if kind in {"value_bigger_than_max", "value_smaller_than_min"}:
+            field = "The generated seed" if error.get("input") == "seed" else "A workflow value"
+            return f"{field} is outside the range allowed by ComfyUI."
+        if kind == "value_not_in_list":
+            return "A selected model or option is unavailable in ComfyUI."
+        if kind == "required_input_missing":
+            return "The workflow is missing an input required by ComfyUI."
+    return "ComfyUI could not start the workflow. Check its settings and required models."
+
+
 @dataclass(frozen=True)
 class ComfyCapabilities:
     object_info: dict[str, Any]
@@ -311,11 +367,12 @@ class ComfyUIAdapter:
                 details={"transport": type(exc).__name__},
             ) from exc
         if 400 <= response.status_code < 500:
+            rejection = _safe_json(response)
             raise AppError(
                 "comfyui_prompt_rejected",
-                "ComfyUI rejected the compiled workflow request.",
+                prompt_rejection_message(rejection),
                 status_code=503,
-                details={"status": response.status_code, "response": _safe_json(response)},
+                details={"status": response.status_code, "response": rejection},
             )
         if not response.is_success:
             raise AppError(

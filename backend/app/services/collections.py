@@ -277,7 +277,8 @@ class CollectionService:
                         automation.status = "blocked"
                         automation.error_code = "collection_deleted"
                         automation.message = (
-                            "The destination folder was deleted. Apply a new destination."
+                            "The destination folder was deleted. Turn off auto generation, "
+                            "open another folder, and turn it on again."
                         )
                         automation.revision += 1
                 session.commit()

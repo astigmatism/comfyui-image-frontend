@@ -16,6 +16,8 @@ import {
   galleryCardMarkup,
   galleryMarkup,
   generationPanelMarkup,
+  generationSubmissionDisabled,
+  serverControlsMarkup,
   generationProgressMarkup,
   generationActivityMarkup,
   generationActivityTitle,
@@ -1047,9 +1049,9 @@ test("generation panel leaves checkpoint selection to the source picker dialog",
   assert.doesNotMatch(invalidHtml, /data-active-source-model-choice/);
 });
 
-test("auto-generate disables only manual generation while queueing", () => {
+test("auto-generate disables manual generation even between batches", () => {
   const state = {
-    submitting: true,
+    submitting: false,
     autoGenerate: true,
     autoGenerateCreativeDirection: true,
     services: [{ service: "comfyui", available: true }],
@@ -1071,6 +1073,21 @@ test("auto-generate disables only manual generation while queueing", () => {
   assert.match(creativeDirection, /checked/);
   assert.doesNotMatch(source, /disabled/);
   assert.doesNotMatch(prompt, /disabled/);
+});
+
+test("manual generation stays blocked during unknown state and toggle requests", () => {
+  for (const state of [{ automationLoaded: false }, { pendingAutoEnabled: true }, { pendingAutoEnabled: false }, { automationBusy: true }, { automation: { enabled: true } }]) {
+    assert.equal(generationSubmissionDisabled(state, publishedSource, contract), true);
+  }
+});
+
+test("auto-generation dropdown contains only the labeled queue limit", () => {
+  const html = serverControlsMarkup({ maxAutoGenerations: 200, automation: { enabled: true, latest_prompt: "private latest prompt", snapshot: { generation: { collection_id: "folder" }, quantity: 2 } } });
+  assert.match(html, /Stop after/);
+  assert.match(html, /images queued/);
+  assert.match(html, /Blank for unlimited/);
+  assert.equal((html.match(/<input/g) || []).length, 1);
+  assert.doesNotMatch(html, /<select|<details|latest.prompt|Active auto|Apply to auto|shared-settings-status/i);
 });
 
 test("auto-generate renders a persistent accessible blocked state with a retry action", () => {

@@ -35,7 +35,8 @@ def adapt_seed(profile: Any, compiled: CompileResult, compiler: WorkflowCompiler
                 "The prompt source changed; its seed adapter must be reviewed.",
                 status_code=409,
             )
-        seed = compiler.seed_resolver(0, 2**32 - 1)
+        # HFDatasetShuffle declares a signed 32-bit, nonnegative INT input.
+        seed = compiler.seed_resolver(0, 2**31 - 1)
         node["inputs"]["seed"] = seed
         compiled.resolved_seeds["stablellama.dataset_seed"] = str(seed)
     return sha256_json(compiled.compiled_graph)

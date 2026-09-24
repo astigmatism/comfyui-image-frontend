@@ -53,7 +53,7 @@ def complete(client):
         session.commit()
 
 
-def test_singleton_priority_stop_and_protocol(app_client):
+def test_singleton_blocks_manual_keeps_accepted_jobs_on_stop_and_protocol(app_client):
     user, cookie = provision_user(app_client)
     state = enable(app_client, quantity=3)
     duplicate = command(app_client, expected_revision=state["revision"], enabled=True)
@@ -62,15 +62,19 @@ def test_singleton_priority_stop_and_protocol(app_client):
     tick(app_client, user["id"])
     tick(app_client, user["id"])
     assert len(jobs(app_client)) == 3
-    manual = create_generation(app_client, "manual priority")
-    claimed = app_client.app.state.container.worker._claim_next()
-    assert claimed[0] == manual["id"]
-    auto_claimed = app_client.app.state.container.worker._claim_next()[0]
+    rejected = app_client.post(
+        "/api/generations",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json=generation_payload(app_client, "manual"),
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "auto_generation_enabled"
+    accepted = {job.id for job in jobs(app_client)}
     stopped = command(app_client, expected_revision=state["revision"], enabled=False)
     assert stopped.status_code == 200
-    assert {job.id for job in jobs(app_client)} == {manual["id"], auto_claimed}
+    assert {job.id for job in jobs(app_client)} == accepted
     tick(app_client, user["id"])
-    assert len(jobs(app_client)) == 2
+    assert len(jobs(app_client)) == 3
     stale = command(
         app_client, expected_revision=state["revision"], enabled=True, snapshot=state["snapshot"]
     )
@@ -86,21 +90,21 @@ def test_singleton_priority_stop_and_protocol(app_client):
     restore_cookie(app_client, cookie)
 
 
-def test_allowance_truncates_final_batch_and_reset_counts_future_jobs(app_client):
+def test_limit_edit_preserves_total_and_truncates_final_batch(app_client):
     user, _ = provision_user(app_client)
     state = enable(app_client, quantity=3, max_generations=4)
     tick(app_client, user["id"])
     assert len(jobs(app_client)) == 3
-    changed = command(app_client, "/limit", expected_revision=state["revision"], max_generations=2)
+    changed = command(app_client, "/limit", expected_revision=state["revision"], max_generations=5)
     assert changed.status_code == 200
-    assert changed.json()["accepted_count"] == 0
+    assert changed.json()["accepted_count"] == 3
     complete(app_client)
     tick(app_client, user["id"])
     assert len(jobs(app_client)) == 5
     ended = app_client.get("/api/auto-generation").json()
     assert not ended["enabled"]
     assert ended["remaining"] == 0
-    assert ended["accepted_count"] == 2
+    assert ended["accepted_count"] == 5
     assert ended["status"] == "completed"
     tick(app_client, user["id"])
     assert len(jobs(app_client)) == 5
@@ -358,7 +362,12 @@ def test_deleted_destination_blocks_and_other_account_cannot_control(app_client)
     assert deleted.status_code in {202, 204}
     tick(app_client, user["id"])
     assert jobs(app_client) == []
-    assert app_client.get("/api/auto-generation").json()["status"] == "blocked"
+    blocked = app_client.get("/api/auto-generation").json()
+    assert blocked["status"] == "blocked"
+    for path, update in [("/retry", {}), ("/limit", {"max_generations": 10})]:
+        rejected = command(app_client, path, expected_revision=blocked["revision"], **update)
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["code"] == "collection_deleted"
     login_ready_admin(app_client)
     assert app_client.get("/api/auto-generation").json()["enabled"] is False
     assert app_client.get("/api/preferences").json()["settings_initialized"] is False

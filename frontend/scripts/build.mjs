@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["generation-submissions.mjs", "thumbnails.mjs", "user-settings.mjs", "lora-stack.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-selection.mjs", "app.mjs"];
+const modules = ["auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "user-settings.mjs", "lora-stack.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -73,6 +73,7 @@ const productionHtml = sourceHtml
 await writeFile(join(dist, "index.html"), productionHtml);
 
 const assets = {
+  auto_generation_sync: `${assetPrefix}/auto-generation-sync.mjs`,
   generation_submissions: `${assetPrefix}/generation-submissions.mjs`,
   thumbnails: `${assetPrefix}/thumbnails.mjs`,
   user_settings: `${assetPrefix}/user-settings.mjs`,

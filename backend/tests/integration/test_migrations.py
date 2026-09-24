@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "b73a94f1c205"
+HEAD_REVISION = "c92f6e81ab30"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -554,6 +554,9 @@ def test_prompt_migration_and_runner_recovery_preserve_an_isolated_database_copy
     assert {"prompt_generation_runs", "generation_preparations"}.issubset(
         inspect(engine).get_table_names()
     )
+    assert "internal_diagnostics_json" in {
+        column["name"] for column in inspect(engine).get_columns("prompt_generation_runs")
+    }
     engine.dispose()
     # Exercise the installed runner's existing restore transaction, not a downgrade.
     runner_path = Path(__file__).resolve().parents[3] / "scripts" / "production-update.py"

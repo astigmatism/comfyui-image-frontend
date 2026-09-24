@@ -45,7 +45,10 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("Warm sunlight");
   await expect(page.locator("#prompt-pipeline-flow")).toHaveText("Prompt generation → Refine → Image");
   await page.setViewportSize({ width: 1440, height: 1100 });
-  await page.locator("#prompt-generation-source").scrollIntoViewIfNeeded();
+  await expect(async () => {
+    await page.locator("#prompt-generation-source").scrollIntoViewIfNeeded();
+    await expect(page.locator("#prompt-generation-source")).toBeInViewport();
+  }).toPass();
   await page.screenshot({ path: testInfo.outputPath("prompt-generation-desktop.png"), fullPage: true });
   await page.getByRole("textbox", { name: "Generation quantity" }).fill("2");
   await page.getByRole("button", { name: "Generate", exact: true }).click();
@@ -109,28 +112,35 @@ test("late results preserve a draft across reload and offer Use latest", async (
 });
 
 test("enabling auto generation expands controls and respects the image limit", async ({ page }) => {
+  await page.getByRole("textbox", { name: "Generation quantity" }).fill("2");
+  await page.getByRole("textbox", { name: "Generation quantity" }).blur();
   const autoSection = page.locator('[data-control-section="auto-generation"]');
   await autoSection.locator(".control-section-trigger").click();
-  await page.getByRole("spinbutton", { name: "Auto-generation limit" }).fill("2");
+  await page.getByRole("spinbutton", { name: "Images queued limit" }).fill("2");
   await autoSection.locator(".control-section-trigger").click();
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
   await expect(autoSection.locator(".control-section-trigger")).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).revision).toBeGreaterThan(0);
   await page.reload();
   await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(2);
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).status).toBe("completed");
+  const items = (await (await page.request.get("/api/generations")).json()).items;
+  const details = await Promise.all(items.map(async (item) => (await page.request.get(`/api/generations/${item.id}`)).json()));
+  expect(details).toHaveLength(2);
+  expect(details[0].final_prompt).toBe(details[1].final_prompt);
+  await expect(autoSection.locator("select, details, pre")).toHaveCount(0);
+  await expect(autoSection).not.toContainText("Latest automatic prompt");
 });
 
-test("automatic limit edits remain drafts across refresh until Apply", async ({ page }) => {
+test("automatic limit edits synchronize without Apply and survive refresh", async ({ page }) => {
   await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("slow Mira");
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).enabled).toBe(true);
-  const initial = await (await page.request.get("/api/auto-generation")).json();
-  await page.getByRole("spinbutton", { name: "Auto-generation limit" }).fill("3");
-  await page.getByRole("spinbutton", { name: "Auto-generation limit" }).blur();
+  await page.getByRole("spinbutton", { name: "Images queued limit" }).fill("3");
+  await page.getByRole("spinbutton", { name: "Images queued limit" }).blur();
   await page.reload();
-  await expect(page.getByRole("spinbutton", { name: "Auto-generation limit" })).toHaveValue("3");
-  expect((await (await page.request.get("/api/auto-generation")).json()).snapshot.max_generations).toBe(initial.snapshot.max_generations);
-  await page.getByRole("button", { name: "Apply to auto generation", exact: true }).click();
+  await expect(page.getByRole("spinbutton", { name: "Images queued limit" })).toHaveValue("3");
+  await expect(page.getByRole("button", { name: "Apply to auto generation", exact: true })).toHaveCount(0);
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).snapshot.max_generations).toBe(3);
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).enabled).toBe(false);

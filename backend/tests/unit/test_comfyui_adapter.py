@@ -8,7 +8,7 @@ import httpx
 import pytest
 from app.config import Settings
 from app.errors import AppError
-from app.services.comfyui import ComfyUIAdapter, _queue_prompt_ids
+from app.services.comfyui import ComfyUIAdapter, _queue_prompt_ids, prompt_rejection_diagnostics
 
 
 def settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -23,6 +23,61 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def test_seed_rejection_explains_range_without_exposing_response_content(tmp_path):
+    rejected = {
+        "error": {"type": "prompt_outputs_failed_validation"},
+        "node_errors": {
+            "909": {
+                "class_type": "HFDatasetShuffle",
+                "errors": [
+                    {
+                        "type": "value_bigger_than_max",
+                        "message": "private upstream content",
+                        "details": "private prompt text",
+                        "extra_info": {
+                            "input_name": "seed",
+                            "received_value": 2820056551,
+                            "input_config": [
+                                "INT",
+                                {"min": 0, "max": 2147483647, "tooltip": "private"},
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    }
+
+    async def scenario():
+        adapter = ComfyUIAdapter(
+            settings(tmp_path),
+            transport=httpx.MockTransport(lambda request: httpx.Response(400, json=rejected)),
+        )
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.submit_prompt({}, "client")
+            assert "seed" in raised.value.message
+            assert "range" in raised.value.message
+            diagnostic = prompt_rejection_diagnostics(raised.value.details)
+            assert diagnostic == {
+                "status": 400,
+                "errors": [
+                    {
+                        "type": "value_bigger_than_max",
+                        "input": "seed",
+                        "value": 2820056551,
+                        "min": 0,
+                        "max": 2147483647,
+                    }
+                ],
+            }
+            assert "private" not in json.dumps(diagnostic)
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
 
 
 def test_queue_prompt_id_parser_accepts_comfyui_list_and_object_shapes() -> None:

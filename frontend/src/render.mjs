@@ -179,6 +179,8 @@ export function generationPanelMarkup(state, profile, contract) {
             actions: featureSwitchMarkup("auto-generate", "Auto-generate", state.pendingAutoEnabled ?? state.autoGenerate, state.automationLoaded === false || state.automationBusy),
             content: `<div id="server-controls">${serverControlsMarkup(state)}</div>`,
           })}
+          <div id="automation-status-host">${automationStatusMarkup(state)}</div>
+          <div id="shared-settings-status-host">${sharedSettingsStatusMarkup(state)}</div>
           ${comfyuiInstanceSelectorMarkup(state)}
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
@@ -207,7 +209,7 @@ export function generationPanelMarkup(state, profile, contract) {
 
 export function generationSubmissionDisabled(state, profile, contract, clientErrors = {}) {
   return Boolean(
-    state.pendingSubmission || state.promptGenerationBusy || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
+    state.autoGenerate || state.automation?.enabled || state.automationLoaded === false || state.pendingAutoEnabled !== undefined || state.automationBusy || state.autoSettingsSaving || state.pendingSubmission || state.promptGenerationBusy || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
   );
 }
 
@@ -856,7 +858,7 @@ function promptGenerationMarkup(state) {
     </select></label>
     ${inputs}
     <button type="button" class="button secondary" data-action="generate-prompt" ${!source || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${state.promptGenerationBusy ? "Generating prompt…" : "Generate prompt"}</button>
-    <p class="prompt-generation-hint">Subject entry is independent of LoRAs. Each requested image gets a fresh prompt.</p>
+    <p class="prompt-generation-hint">Subject entry is independent of LoRAs. Auto-generation shares one prompt per batch.</p>
     ${state.promptGenerationMessage ? `<p class="prompt-pipeline-status" role="status">${escapeHtml(state.promptGenerationMessage)}</p>` : ""}
     ${state.promptGenerationError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError)}</p>` : ""}
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
@@ -1455,7 +1457,7 @@ function generationActivityInfo(state, now) {
     if (state.autoGenerate && state.automation?.snapshot) {
       const runtimeId = state.automation.snapshot.generation.comfyui_instance_id;
       const runtime = (state.comfyuiInstances || []).find((item) => item.id === runtimeId);
-      description += ` Runtime: ${runtime?.label || runtimeId}. Manual jobs take priority after dispatched work finishes.`;
+      description += ` Runtime: ${runtime?.label || runtimeId}.`;
     }
     if (state.autoGenerate && state.autoGeneratePinned) {
       const pinned = (Array.isArray(state.collections) ? state.collections : [])
@@ -2294,35 +2296,30 @@ export function serviceBannerMarkup(
 
 
 export function serverControlsMarkup(state) {
+  return `<div class="auto-generation-server-settings">
+    <div class="auto-limit-row"><label for="auto-generate-limit">Stop after</label>
+      <input id="auto-generate-limit" type="number" min="1" max="1000000" step="1" placeholder="Unlimited" aria-label="Images queued limit" aria-describedby="auto-limit-help" value="${state.maxAutoGenerations ?? ""}" ${state.automationBusy ? "disabled" : ""} />
+      <span>images queued</span></div>
+    <small id="auto-limit-help">Blank for unlimited.</small>
+  </div>`;
+}
+
+export function automationStatusMarkup(state) {
   const auto = state.automation;
-  const snapshot = auto?.snapshot;
-  const settingsStatus = state.sharedSettingsStatus;
   const status = state.automationLoaded === false ? "Checking auto generation…" : state.autoGenerateStatusMessage;
-  const source = (state.sources || []).find((item) => item.source_key === snapshot?.generation.source_key);
-  const runtime = (state.comfyuiInstances || []).find((item) => item.id === snapshot?.generation.comfyui_instance_id);
-  const target = state.pendingAutoDestination !== undefined ? state.pendingAutoDestination : snapshot ? snapshot.generation.collection_id : state.currentCollectionId;
-  return `
-    <div id="auto-generate-status" class="auto-generate-status ${escapeHtml(auto?.status || "idle")}" role="${auto?.status === "blocked" ? "alert" : "status"}" ${status ? "" : "hidden"}>
-      ${escapeHtml(status || "")}
-      ${auto?.status === "blocked" ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
-    </div>
-    ${`<div class="auto-generation-server-settings">
-      <div class="auto-limit-row"><label for="auto-generate-limit">Stop after</label>
-      <input id="auto-generate-limit" type="number" min="1" max="1000000" step="1" placeholder="Unlimited" aria-label="Auto-generation limit" aria-describedby="auto-limit-help" value="${state.maxAutoGenerations ?? ""}" ${state.automationBusy ? "disabled" : ""} /></div>
-      ${auto?.enabled ? `<span>${auto.remaining === null ? "Unlimited generations" : `${auto.remaining} generations remaining`}</span>` : ""}
-      <small id="auto-limit-help">Apply a changed limit to reset the count; blank for unlimited.</small>
-      <label for="auto-generation-destination">Auto-generation folder</label>
-      <select id="auto-generation-destination" aria-label="Auto-generation folder"><option value="" ${target ? "" : "selected"}>Home</option>${target && !(state.collections || []).some((item) => item.id === target) ? `<option value="${escapeHtml(target)}" selected disabled>Deleted folder — choose a destination</option>` : ""}${(state.collections || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === target ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select>
-      ${auto?.enabled ? `<button type="button" class="button low" data-action="apply-auto-generate" ${state.automationBusy || !state.autoSnapshotDirty ? "disabled" : ""}>Apply to auto generation</button>
-      <small>Edits affect future batches only after Apply. Manual jobs take priority.</small>` : ""}
-      ${snapshot ? `<details><summary>Active auto-generation settings</summary>
-        <p>${escapeHtml(auto.workflow_name || source?.display_name || snapshot.generation.source_key)} · ${escapeHtml(runtime?.label || snapshot.generation.comfyui_instance_id)} · Quantity ${snapshot.quantity}</p>
-        <pre>${escapeHtml(JSON.stringify({ parameters: snapshot.generation.parameters, checkpoints: snapshot.variants }, null, 2))}</pre>
-        ${snapshot.assistant ? `<p>Creative Direction: ${escapeHtml(snapshot.assistant.creative_direction)}</p>` : ""}
-        ${auto.latest_prompt ? `<p class="auto-latest-prompt">Latest automatic prompt: ${escapeHtml(auto.latest_prompt)}</p>` : ""}
-      </details>` : ""}
-    </div>`}
-    <div class="shared-settings-status" role="status">
+  const syncStatus = state.autoSettingsStatus;
+  return `<div id="auto-generate-status" class="auto-generate-status ${escapeHtml(auto?.status || "idle")}" role="${auto?.status === "blocked" ? "alert" : "status"}" ${status ? "" : "hidden"}>
+    ${escapeHtml(status || "")}
+    ${auto?.status === "blocked" && auto.error_code !== "collection_deleted" ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
+  </div>
+  ${state.autoSettingsMessage ? `<div class="auto-settings-status" role="${["error", "conflict"].includes(syncStatus) ? "alert" : "status"}">${escapeHtml(state.autoSettingsMessage)}
+    ${["error", "conflict"].includes(syncStatus) ? '<button class="button low" data-action="retry-auto-settings">Retry changes</button>' : ""}
+  </div>` : ""}`;
+}
+
+export function sharedSettingsStatusMarkup(state) {
+  const settingsStatus = state.sharedSettingsStatus;
+  return `<div class="shared-settings-status" role="status">
       ${settingsStatus === "loading" ? "Loading shared settings…" : settingsStatus === "saving" ? "Saving settings…" : settingsStatus === "saved" ? "Settings saved across devices" : ""}
       ${settingsStatus === "error" ? `${escapeHtml(state.sharedSettingsMessage || "Settings could not be saved.")} <button class="button low" data-action="settings-retry">Retry settings</button>` : ""}
       ${settingsStatus === "conflict" ? `Settings changed on another device. Your edits are preserved. <button class="button low" data-action="settings-use-saved">Use saved version</button><button class="button low" data-action="settings-keep-local">Keep my edit</button>` : ""}

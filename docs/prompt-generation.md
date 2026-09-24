@@ -8,13 +8,17 @@ The control panel uses independent switches and expansion buttons for Auto-gener
 - **Generate** executes enabled stages in order: prompt generation, Creative Direction, image generation. Quantity and model selections expand into independent image requests; each receives a fresh generated prompt and optional refinement.
 - While Prompt Generation is enabled, Creative Direction uses Refine. Its previous Create/Refine choice is restored when Prompt Generation is disabled.
 - Generated text follows the editor until the user edits it. Later results offer **Use latest prompt** instead of replacing that draft. Results belonging to another source or source revision cannot replace the editor.
-- Auto-generation captures a server-owned snapshot. Panel changes, including destination and limit, remain drafts until **Apply**. Applying a changed limit resets its count. Stop and Apply discard preparations not yet accepted; images already accepted from preparations continue. Refresh reconnects without issuing another start command. The existing default limit remains 200.
+- Auto-generation prepares one text prompt and at most one Creative Direction refinement for an entire batch. Every quantity/checkpoint item shares that final prompt; random image seeds resolve separately for quantity repetitions, while fixed seeds remain fixed. A new batch starts a new text run. Completed prompt/refinement work survives restart, and the image batch is accepted atomically.
+- Valid panel edits synchronize automatically to the next batch. Unsaved automatic edits are journaled per account and origin; cross-device conflicts and failed saves offer explicit retry. Reconnects never overwrite running settings with an unchanged browser's stale panel. Settings changes discard obsolete, unaccepted preparation; accepted images finish.
+- Enabling auto-generation pins the current folder until it is turned off. Navigation cannot retarget it, and the API rejects destination changes while enabled. A deleted destination blocks generation until the user turns automation off and enables it in another folder.
+- The dropdown contains only **Stop after [number] images queued**, with blank meaning unlimited. The default remains 200. Counts cover accepted image jobs since enabling, excluding text jobs. Limit edits preserve the count and can truncate the final batch; lowering a limit below the accepted count stops new work immediately. Stopping automation preserves all accepted images.
+- Both Generate buttons and new manual image/preparation API submissions are blocked while automation is enabled. Replaying an already accepted idempotency receipt remains supported. Prompt-only requests remain available.
 
 ## Browser and shared preferences
 
 `cif.control-panel.v1.<user-id>` stores a versioned local snapshot, last synchronized base, server revision, and unresolved conflict. Writes happen on input; only server synchronization is debounced. The origin and authenticated user isolate the journal. Existing local controls are imported into the shared settings format.
 
-Settings include source-specific parameters and interfaces, prompt text, model selection, quantity, image runtime, seed, resolution, LoRAs, Creative Direction, enabled stages, expansion states, and the draft limit. `cif.panel-draft.<user-id>` retains the unapplied destination and editor draft protection. The server remains authoritative for running automation.
+Settings include source-specific parameters and interfaces, prompt text, model selection, quantity, image runtime, seed, resolution, LoRAs, Creative Direction, enabled stages, expansion states, and the draft limit. `cif.panel-draft.<user-id>` retains editor draft protection. `cif.auto-settings.v1.<user-id>` retains unacknowledged automatic settings changes. The server remains authoritative for running automation.
 
 Restore the journal first. Load current interfaces before comparing local/base/remote values and reconcile all three with the existing interface migration helpers. This avoids treating newly published defaults as edits. LoRA order and strengths survive for retained items, retired items disappear, and new items use published defaults. Historical generation snapshots remain unchanged. The existing conflict controls resolve genuine cross-device conflicts explicitly. Unavailable sources and storage errors are visible; saved selections are not replaced silently. Uploaded asset references retain the existing ownership validation.
 
@@ -34,7 +38,7 @@ The supplied bundle is unchanged. The temporary compatibility adapter is restric
 | Frozen API graph | `84843b65f2c0847ae4ff5ef644d56559800bce7278ed47a27968ceffb01f3a6c` |
 | Interface manifest | `e5ae15f00a6ae252226364f71afcbfe6657ccc888644ad91461c069acb9341f5` |
 
-After cloning the graph, the adapter verifies node `909` is `HFDatasetShuffle`, resolves a fresh 32-bit seed, and records the seed and compiled graph hash. A changed bundle requires review; it is not silently patched. Future publishers should expose an ordinary seed parameter. Random sampling does not guarantee a unique caption.
+After cloning the graph, the adapter verifies node `909` is `HFDatasetShuffle`, resolves a fresh seed in the live node’s inclusive range `0–2,147,483,647`, and records the seed and compiled graph hash. A changed bundle requires review; it is not silently patched. Future publishers should expose an ordinary seed parameter. Random sampling does not guarantee a unique caption.
 
 ## Durable APIs and recovery
 
@@ -49,12 +53,12 @@ All mutation endpoints require authentication, CSRF, generation protocol `3`, an
 
 `PromptGenerationRun` freezes the text graph, parameters, publication revision, registered ComfyUI instance, and resolved seeds. `GenerationPreparation` freezes each image request and optional assistant inputs, then links the completed stages and accepted image. Text execution uses its publication's registered instance independently of the selected image runtime.
 
-Text and image work use the same scheduler, per-instance capacity, account fairness, and manual priority. A finished text job releases its slot before downstream image work. Pending preparations contribute to activity and automatic limits. The image acceptance transaction is the existing generation service transaction; failures never fall back to an older prompt.
+Text and image work use the same scheduler, per-instance capacity, account fairness, and priority for manual work already accepted before automation was enabled. A finished text job releases its slot before downstream image work. Pending preparations contribute to activity and automatic limits. The image acceptance transaction is the existing generation service transaction; failures never fall back to an older prompt.
 
 A known ComfyUI prompt ID reconnects to history after restart. Completed text and saved refinement are reused. A crash or lost response after an ambiguous ComfyUI submission fails visibly and never blindly resubmits. Browser submission recovery retains the same idempotency key; accepted jobs are persisted locally before their submission receipt is cleared.
 
 ## Migration and release
 
-Migration `b73a94f1c205`, following `a12c39e781b4`, adds the text-run and preparation tables without modifying historical image records. Test upgrades on a populated database copy. Failed-cutover recovery uses the pinned release runner's existing backup transaction: preserve the failed candidate database, restore the pre-cutover database and operational files, and verify the previous image. Keep assets, uploads, workflows, and recovery artifacts.
+Migration `b73a94f1c205`, following `a12c39e781b4`, adds the text-run and preparation tables without modifying historical image records. Migration `c92f6e81ab30` adds bounded internal prompt-rejection diagnostics. It retains only validation types and numeric bounds, not upstream prompt contents. Startup retires incompatible unaccepted legacy automatic preparations while preserving accepted images and history. Test upgrades on a populated database copy. Failed-cutover recovery uses the pinned release runner's existing backup transaction: preserve the failed candidate database, restore the pre-cutover database and operational files, and verify the previous image. Keep assets, uploads, workflows, and recovery artifacts.
 
 Deploy through Samus's supported `update_production --sha <full-reviewed-main-sha> --wait` entrypoint. Application releases do not replace the pinned runner. Verify the completed release job, application SHA/image, health, HTTPS, and fingerprinted frontend assets. Live feature acceptance is a separate verification.

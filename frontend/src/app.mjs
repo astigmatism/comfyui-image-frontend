@@ -1,6 +1,7 @@
 import { submitGeneration, setSubmissionOwner, pendingSubmission, recoverSubmission, clearSubmissionStorage, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
 import { installThumbnails } from "./thumbnails.mjs";
 import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
+import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { installLoraControls } from "./lora-stack.mjs";
 import { api, setCsrfToken, upload } from "./api.mjs";
@@ -76,6 +77,8 @@ import {
   generationRequestBlocked,
   generationSubmissionDisabled,
   serverControlsMarkup,
+  automationStatusMarkup,
+  sharedSettingsStatusMarkup,
   promptPipelineMarkup,
   loginMarkup,
   moveDialogMarkup,
@@ -93,6 +96,8 @@ import {
 const root = document.querySelector("#app");
 const galleryHover = bindGalleryCardHover(root);
 installThumbnails(root);
+
+let autoSettingsSync = null;
 
 const state = {
   session: null,
@@ -171,6 +176,9 @@ const state = {
   automation: null,
   automationLoaded: false,
   automationBusy: false,
+  autoSettingsSaving: false,
+  autoSettingsStatus: "saved",
+  autoSettingsMessage: null,
   maxAutoGenerations: 200,
   sharedSettingsStatus: "loading",
   sharedSettingsMessage: null,
@@ -345,12 +353,20 @@ function bindDelegatedEvents() {
       state.formError = null;
       persistActiveParameterState();
       syncParameterValidation(id);
+      autoSettingsSync?.stage();
     },
   });
   root.addEventListener("submit", handleSubmit);
   root.addEventListener("click", handleClick);
-  root.addEventListener("change", handleChange);
-  root.addEventListener("input", handleInput);
+  root.addEventListener("change", async (event) => {
+    const edit = event.target.closest("#generation-panel") && event.target.id !== "auto-generate";
+    await handleChange(event);
+    if (edit) autoSettingsSync?.stage();
+  });
+  root.addEventListener("input", (event) => {
+    handleInput(event);
+    if (event.target.closest("#generation-panel") && !["auto-generate", "auto-generate-limit"].includes(event.target.id)) autoSettingsSync?.stage();
+  });
   for (const eventType of ["input", "change"]) root.addEventListener(eventType, (event) => {
     if (eventType === "input" && event.target.matches('input[type="checkbox"], input[type="radio"], select')) return;
     if (event.target.closest("#generation-panel")) queueMicrotask(() => { settingsSync?.schedule(); persistBrowserDraft(); });
@@ -448,6 +464,7 @@ async function handleClick(event) {
     state.explicitParameterIds.add(id);
     persistActiveParameterState();
     renderPanel();
+    autoSettingsSync?.stage();
     return;
   }
   const target = event.target.closest("[data-action]");
@@ -498,12 +515,12 @@ async function handleClick(event) {
     else if (action === "compose-prompt") await composePrompt(target);
     else if (action === "reset-prompt-instructions") resetPromptInstructions(target);
     else if (action === "retry-auto-generate") void autoGenerationCommand("/retry");
-    else if (action === "apply-auto-generate") void applyAutoGeneration();
+    else if (action === "retry-auto-settings") await autoSettingsSync?.retry();
     else if (action === "generate-prompt") await runPromptGeneration(false);
     else if (action === "use-latest-prompt") applyLatestGeneratedPrompt();
     else if (action === "reload-prompt-generators") await loadPromptGenerators();
-    else if (action === "settings-use-saved") void settingsSync?.resolve(false);
-    else if (action === "settings-keep-local") void settingsSync?.resolve(true);
+    else if (action === "settings-use-saved") await settingsSync?.resolve(false);
+    else if (action === "settings-keep-local") await settingsSync?.resolve(true);
     else if (action === "settings-retry") void retrySharedSettings();
     else if (action === "increment-generation-quantity") applyGenerationQuantity(state.generationQuantity + 1);
     else if (action === "decrement-generation-quantity") applyGenerationQuantity(state.generationQuantity - 1);
@@ -533,6 +550,7 @@ async function handleClick(event) {
     else if (action === "delete-user") await deleteUser(target.dataset.userId, target.dataset.username);
     else if (action === "close-admin") document.querySelector("#admin-dialog")?.close();
     else if (action === "reload") window.location.reload();
+    if (["apply-generation-source-dialog", "apply-resolution-recent", "apply-prompt-editor", "paste-prompt-text", "compose-prompt", "reset-prompt-instructions", "use-latest-prompt", "settings-use-saved", "settings-keep-local", "increment-generation-quantity", "decrement-generation-quantity", "recall"].includes(action)) autoSettingsSync?.stage();
   } catch (error) {
     toast(error.message || "Action failed.", "error");
   }
@@ -592,11 +610,6 @@ async function handleClick(event) {
       if (section) setControlSectionElementOpen(section, true);
     }
     void changeAutoGeneration(enabled);
-    return;
-  }
-  if (element.id === "auto-generation-destination") {
-    state.pendingAutoDestination = element.value || null;
-    syncServerControls();
     return;
   }
   if (element.id === "auto-generate-limit") {
@@ -2261,7 +2274,6 @@ async function logout() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.maxAutoGenerations = 200;
-  state.pendingAutoDestination = undefined;
   state.pendingAutoEnabled = undefined;
   state.recentResolutionsBySource = {};
   state.sharedSettingsStatus = "loading";
@@ -2328,7 +2340,6 @@ async function enterApplication() {
   state.galleryMessage = null;
   state.autoGenerate = false;
   state.maxAutoGenerations = 200;
-  state.pendingAutoDestination = undefined;
   state.pendingAutoEnabled = undefined;
   state.recentResolutionsBySource = {};
   state.sharedSettingsStatus = "loading";
@@ -2424,6 +2435,10 @@ function stopApplicationStartup() {
   clearInterval(userStateTimer);
   userStateTimer = null;
   settingsSync = null;
+  autoSettingsSync = null;
+  state.autoSettingsSaving = false;
+  state.autoSettingsStatus = "saved";
+  state.autoSettingsMessage = null;
   automationReadToken += 1;
   applicationStartupController?.abort();
   applicationStartupController = null;
@@ -2436,6 +2451,19 @@ function requestWasAborted(error, signal) {
 
 async function loadStartupPreferences(signal = applicationStartupController?.signal) {
   settingsInterfaces.clear();
+  autoSettingsSync = createAutoGenerationSync({ api, current: () => state.automation,
+    canSave: () => !state.automationBusy,
+    read: () => {
+      if (state.sharedSettingsStatus === "conflict") throw new Error("Resolve the shared settings conflict before updating auto generation.");
+      if (!sourceInterface(state.activeSource) || state.sourceDetailLoading || state.sourceDetailError) throw new Error("Wait for the workflow settings to load.");
+      const errors = validateImageParameters(sourceInterface(state.activeSource), state.parameters);
+      if (Object.keys(errors).length || document.querySelector("#auto-generate-limit:invalid")) throw new Error("Review the highlighted controls before updating auto generation.");
+      return automationSnapshot();
+    },
+    apply: applyAutoGenerationState,
+    status: (status, message) => { state.autoSettingsStatus = status; state.autoSettingsMessage = message; syncServerControls(); },
+    saving: (saving) => { state.autoSettingsSaving = saving; automationReadToken += 1; syncServerControls(); },
+    signal, storage: localStorage, storageKey: `cif.auto-settings.v1.${sessionStorageUserId()}` });
   settingsSync = createSettingsSync({ api, read: captureSharedSettings, apply: applySharedSettings,
     storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) },
     storageKey: `cif.control-panel.v1.${sessionStorageUserId()}`, normalize: normalizePanelSettings,
@@ -3230,6 +3258,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
     if (token === state.sourceLoadToken) {
       state.sourceDetailLoading = false;
       renderPanel();
+      autoSettingsSync?.resume();
     }
   }
 }
@@ -3795,6 +3824,7 @@ function promptAssistantSnapshotPayload() {
 }
 
 async function generate() {
+  if (state.autoGenerate || state.pendingAutoEnabled !== undefined || !state.automationLoaded || state.automationBusy || state.autoSettingsSaving) return false;
   const plannedTotal = plannedGenerationTotal();
   if (plannedTotal > MAX_BATCH_GENERATION_ITEMS) {
     state.formError = `Too many planned generations: ${plannedTotal} selected checkpoints × quantity ${state.generationQuantity} exceeds the ${MAX_BATCH_GENERATION_ITEMS}-item batch limit. Lower the quantity or select fewer checkpoints.`;
@@ -6241,26 +6271,29 @@ async function refreshUserState() {
   await Promise.allSettled(requests);
 }
 
-function automationSnapshot() {
+function automationSnapshot({ enabling = false } = {}) {
   const contract = sourceInterface(state.activeSource);
   if (!contract || !state.activeSourceKey) throw new Error("Choose a workflow first.");
   const prompt = positivePromptInput(contract) || interfaceInputs(contract).find((item) => item.id === "prompt.text");
   const direction = state.promptAssistant.creativeDirection || "";
   const parameters = parametersForRequest(contract, state.parameters);
   if (state.promptGeneration.enabled && prompt) parameters[prompt.id] = "";
+  const running = !enabling && state.automation?.enabled ? state.automation.snapshot : null;
+  // Server-produced prompts are output, not a user edit to the next batch.
+  const receivedPrompt = running && prompt && state.parameters[prompt.id] === state.lastAutoPrompt;
+  if (receivedPrompt && !state.promptGeneration.enabled) parameters[prompt.id] = running.generation.parameters[prompt.id];
   return {
     prompt_generation: state.promptGeneration.enabled ? promptGenerationPayload() : null,
     generation: { source_key: state.activeSourceKey, revision: sourceRevision(state.activeSource),
       parameters,
       prompt_assistant: promptAssistantSnapshotPayload(),
       comfyui_instance_id: state.selectedComfyuiInstanceId,
-      collection_id: state.pendingAutoDestination !== undefined ? state.pendingAutoDestination
-        : state.automation?.snapshot ? state.automation.snapshot.generation.collection_id : state.currentCollectionId,
+      collection_id: running ? running.generation.collection_id : state.currentCollectionId,
     },
     variants: orderedModelParameterVariants(state.activeSource, contract, state.parameters),
     quantity: state.generationQuantity,
     assistant: state.autoGenerateCreativeDirection && direction.trim() ? {
-      mode: state.promptAssistant.mode, prompt: !state.promptGeneration.enabled && prompt ? String(state.parameters[prompt.id] || "") : "",
+      mode: state.promptAssistant.mode, prompt: receivedPrompt && running.assistant ? running.assistant.prompt : !state.promptGeneration.enabled && prompt ? String(state.parameters[prompt.id] || "") : "",
       creative_direction: direction, think: state.promptAssistant.think !== false,
       instructions: promptInstructionsForMode(state.promptAssistant) || null,
     } : null,
@@ -6270,7 +6303,7 @@ function automationSnapshot() {
 
 async function refreshAutoGeneration() {
   const controller = applicationStartupController;
-  if (!controller || state.automationBusy) return;
+  if (!controller || state.automationBusy || state.autoSettingsSaving) return;
   const token = ++automationReadToken;
   try {
     const result = await api("/api/auto-generation", { signal: controller.signal, deadlineMs: 5000 });
@@ -6285,6 +6318,7 @@ async function refreshAutoGeneration() {
 
 function applyAutoGenerationState(result) {
   state.automation = result;
+  autoSettingsSync?.observe(result);
   state.automationLoaded = true;
   if (result.latest_prompt && result.latest_prompt !== state.lastAutoPrompt) {
     state.lastAutoPrompt = result.latest_prompt;
@@ -6308,7 +6342,9 @@ function applyAutoGenerationState(result) {
 }
 
 async function autoGenerationCommand(path, payload = {}) {
-  if (!state.automationLoaded || state.automationBusy) return;
+  if (!state.automationLoaded || state.automationBusy || state.autoSettingsSaving) return;
+  if (payload.enabled === false) autoSettingsSync?.clear();
+  if (path === "/retry") await autoSettingsSync?.flush();
   const controller = applicationStartupController;
   state.automationBusy = true;
   automationReadToken += 1;
@@ -6319,7 +6355,6 @@ async function autoGenerationCommand(path, payload = {}) {
       body: JSON.stringify({ ...payload, expected_revision: state.automation.revision }),
     });
     if (controller.signal.aborted) return;
-    state.pendingAutoDestination = undefined;
     applyAutoGenerationState(result);
   } catch (error) {
     if (!controller.signal.aborted) toast(error.message, "error");
@@ -6338,31 +6373,17 @@ async function changeAutoGeneration(enabled) {
   }
   try {
     syncPromptAssistantDraftFromPanel();
-    await autoGenerationCommand("", { enabled, ...(enabled ? { snapshot: automationSnapshot() } : {}) });
+    await autoGenerationCommand("", { enabled, ...(enabled ? { snapshot: automationSnapshot({ enabling: true }) } : {}) });
   } catch (error) { toast(error.message, "error"); }
-  finally { state.pendingAutoEnabled = undefined; syncServerControls(); }
-}
-
-async function applyAutoGeneration() {
-  try {
-    syncPromptAssistantDraftFromPanel();
-    await autoGenerationCommand("/apply", { snapshot: automationSnapshot() });
-  } catch (error) { toast(error.message, "error"); }
+  finally { state.pendingAutoEnabled = undefined; syncServerControls(); if (enabled) autoSettingsSync?.stage(); }
 }
 
 function syncServerControls() {
-  try {
-    const captured = state.automation?.snapshot;
-    const current = captured ? automationSnapshot() : null;
-    const projected = captured ? { ...captured, generation: Object.fromEntries(Object.keys(current.generation)
-      .map((key) => [key, captured.generation[key]])) } : null;
-    state.autoSnapshotDirty = Boolean(current && !settingsEqual(current, projected));
-  } catch { state.autoSnapshotDirty = false; }
   const control = document.querySelector("#auto-generate");
   if (control) {
     control.checked = state.pendingAutoEnabled ?? state.autoGenerate;
-    control.disabled = !state.automationLoaded || state.automationBusy ||
-      (!state.autoGenerate && state.sharedSettingsStatus === "loading");
+    control.disabled = !state.automationLoaded || state.automationBusy || state.autoSettingsSaving ||
+      (!state.autoGenerate && (state.sharedSettingsStatus === "loading" || !sourceInterface(state.activeSource) || state.sourceDetailLoading));
     control.setAttribute("aria-busy", String(!state.automationLoaded || state.automationBusy));
   }
   const flow = document.querySelector("#prompt-pipeline-flow");
@@ -6376,9 +6397,14 @@ function syncServerControls() {
   const editingServerControl = host?.contains(document.activeElement) &&
     document.activeElement.matches("input, textarea, select");
   if (host && !editingServerControl) {
-    const detailsOpen = host.querySelector("details")?.open;
     host.innerHTML = serverControlsMarkup(state);
-    if (detailsOpen && host.querySelector("details")) host.querySelector("details").open = true;
+  }
+  const statusHost = document.querySelector("#automation-status-host");
+  if (statusHost) statusHost.innerHTML = automationStatusMarkup(state);
+  const settingsHost = document.querySelector("#shared-settings-status-host");
+  if (settingsHost) settingsHost.innerHTML = sharedSettingsStatusMarkup(state);
+  for (const button of document.querySelectorAll('#generate-button, #photo-generate-button')) {
+    button.disabled = generationSubmissionDisabled(state, state.activeSource, sourceInterface(state.activeSource), validateImageParameters(sourceInterface(state.activeSource), state.parameters));
   }
   renderGenerationActivity();
 }
@@ -6476,7 +6502,6 @@ async function prepareSettingsInterfaces(...values) {
 function persistBrowserDraft() {
   if (!state.session?.user?.id) return;
   writeStoredItem(`cif.panel-draft.${sessionStorageUserId()}`, JSON.stringify({
-    pendingAutoDestination: state.pendingAutoDestination,
     promptEditorDirty: state.promptEditorDirty,
     latestGeneratedPrompt: state.latestGeneratedPrompt,
     lastAutoPrompt: state.lastAutoPrompt,
@@ -6496,7 +6521,6 @@ function restoreBrowserDraft() {
   try {
     const saved = JSON.parse(readStoredItem(`cif.panel-draft.${sessionStorageUserId()}`) || "null");
     if (saved && typeof saved === "object") {
-      if (saved.pendingAutoDestination === null || typeof saved.pendingAutoDestination === "string") state.pendingAutoDestination = saved.pendingAutoDestination;
       state.promptEditorDirty = saved.promptEditorDirty === true;
       if (typeof saved.latestGeneratedPrompt?.prompt === "string") state.latestGeneratedPrompt = saved.latestGeneratedPrompt;
       if (typeof saved.lastAutoPrompt === "string") state.lastAutoPrompt = saved.lastAutoPrompt;
@@ -6576,6 +6600,7 @@ function promptGenerationPayload() {
 }
 
 async function runPromptGeneration(withImages) {
+  if (withImages && (state.autoGenerate || state.pendingAutoEnabled !== undefined || !state.automationLoaded || state.automationBusy || state.autoSettingsSaving)) return false;
   if (state.promptGenerationBusy || state.submitting || pendingSubmission()) return false;
   const account = state.session.user.id;
   try {

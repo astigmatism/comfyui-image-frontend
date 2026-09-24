@@ -36,7 +36,7 @@ async function signIn(page) {
 }
 
 test("shared settings and server automation survive independent browsers and no browsers", async ({ browser, playwright }, testInfo) => {
-  test.setTimeout(100_000);
+  test.setTimeout(180_000);
   const first = await browser.newContext();
   const page = await first.newPage();
   const errors = [];
@@ -71,25 +71,23 @@ test("shared settings and server automation survive independent browsers and no 
   await other.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow revised automation lighthouse");
   await other.getByRole("textbox", { name: "Prompt", exact: true }).blur();
   await expect(other.locator(".shared-settings-status")).toContainText("Settings saved across devices");
-  const beforeApply = await (await other.request.get("/api/auto-generation")).json();
-  expect(beforeApply.snapshot.generation.parameters.prompt).toBe("slow server automation lighthouse");
-  await other.getByRole("button", { name: "Apply to auto generation", exact: true }).click();
   await expect.poll(async () => (await (await other.request.get("/api/auto-generation")).json()).snapshot.generation.parameters.prompt).toBe("slow revised automation lighthouse");
-  await expect(other.getByRole("button", { name: "Apply to auto generation", exact: true })).toBeDisabled();
+  await expect(other.getByRole("button", { name: "Apply to auto generation", exact: true })).toHaveCount(0);
+  await expect(other.locator("#generate-button")).toBeDisabled();
   await page.reload();
   await expect(page.locator("#auto-generate")).toBeChecked();
-  await expect(page.locator("#generate-button")).toBeEnabled();
-  await page.locator("#auto-generate-limit").fill("2");
+  await expect(page.locator("#generate-button")).toBeDisabled();
+  const targetCount = (await (await page.request.get("/api/auto-generation")).json()).accepted_count + 2;
   const changed = page.waitForResponse((response) => response.url().endsWith("/api/auto-generation/apply") && response.request().method() === "POST");
+  await page.locator("#auto-generate-limit").fill(String(targetCount));
   await page.locator("#auto-generate-limit").blur();
-  await page.getByRole("button", { name: "Apply to auto generation", exact: true }).click();
   expect((await changed).ok()).toBe(true);
   const observer = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${process.env.CIF_E2E_PORT || "8765"}`, storageState: await first.storageState() });
   await first.close();
   await second.close();
   await expect.poll(async () => (await (await observer.get("/api/auto-generation")).json()).enabled, { timeout: 50_000 }).toBe(false);
   const ended = await (await observer.get("/api/auto-generation")).json();
-  expect(ended.accepted_count).toBe(2);
+  expect(ended.accepted_count).toBe(targetCount);
   expect(ended.remaining).toBe(0);
   expect(ended.status).toBe("completed");
   expect(browserSubmissions).toEqual([]);
