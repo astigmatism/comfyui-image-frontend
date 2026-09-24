@@ -5385,6 +5385,9 @@ tr:last-child td {
   outline: 2px solid var(--focus); outline-offset: 1px;
 }
 
+/* A missing source must never paint the browser broken-image icon or alt text. */
+img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
+
 .thumbnail-retry { position: absolute; z-index: 5; inset: 40% 10% auto; padding: 0.5rem; }
 .submission-recovery { display: grid; gap: 0.5rem; padding: 0.5rem; color: var(--text); }
 

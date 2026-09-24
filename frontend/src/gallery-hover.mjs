@@ -100,7 +100,9 @@ export function bindGalleryCardHover(root) {
       const focusedCard = cardAt(focused);
       const visible = card?.classList.contains("card-controls-visible");
       update();
-      if (card && !card.isConnected) {
+      // A retained card can move away from the pointer during reconciliation.
+      // Preserve intent only while the same logical card is still underneath it.
+      if (card) {
         const replacement = underPointer();
         if (sameCard(card, replacement)) {
           card = replacement;

@@ -1,178 +1,240 @@
 import { api } from "./api.mjs";
 
-// Gallery cards are re-rendered by live updates, so a URL's blob must survive
-// the <img> elements that reference it being replaced. Completed blobs stay in
-// the scheduler until LRU pressure evicts them, and a re-subscribed element
-// gets its URL back on a microtask — no second fetch, no blank frame.
-export function createThumbnailScheduler({ limit = 4, maxRetained = 256, load = (url, signal) => api(url, {
+async function decodeThumbnail(url, signal) {
+  const image = new Image();
+  const abort = () => image.removeAttribute("src");
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    if (signal.aborted) throw signal.reason;
+    image.src = url;
+    await image.decode();
+  } finally {
+    signal.removeEventListener("abort", abort);
+    image.removeAttribute("src");
+  }
+}
+
+export function createThumbnailScheduler({ limit = 4, load = (url, signal) => api(url, {
   responseType: "blob", signal, deadlineMs: 30_000, operation: "Thumbnail",
-}), createURL = URL.createObjectURL, revokeURL = URL.revokeObjectURL } = {}) {
+}), decode = decodeThumbnail, createURL = URL.createObjectURL, revokeURL = URL.revokeObjectURL,
+maxIdleEntries = 96, maxIdleBytes = 16 * 1024 * 1024, idleMs = 60_000,
+now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   const entries = new Map();
   const queue = [];
   let active = 0;
-  let sequence = 0;
-  const touch = (entry) => { entry.lastUsed = ++sequence; };
-  function deliver(entry, listener) {
-    if (entry.blob) {
-      if (!entry.objectURL) entry.objectURL = createURL(entry.blob);
-      listener({ url: entry.objectURL });
-    } else if (entry.error) {
-      listener({ error: entry.error });
+  let idleOrder = 0;
+  let disposed = false;
+  let drainQueued = false;
+  let expiryTimer;
+  function evict(entry) {
+    entry.controller.abort();
+    if (entry.objectURL) revokeURL(entry.objectURL);
+    entry.objectURL = null;
+    if (entries.get(entry.url) === entry) entries.delete(entry.url);
+    const index = queue.indexOf(entry);
+    if (index >= 0) queue.splice(index, 1);
+  }
+  function prune() {
+    clearTimer(expiryTimer);
+    expiryTimer = null;
+    const idle = [...entries.values()].filter((entry) => !entry.listeners.size && entry.ready)
+      .sort((a, b) => a.idleOrder - b.idleOrder);
+    let bytes = idle.reduce((sum, entry) => sum + entry.bytes, 0);
+    while (idle.length && (idle.length > maxIdleEntries || bytes > maxIdleBytes || now() - idle[0].idleAt >= idleMs)) {
+      const entry = idle.shift();
+      bytes -= entry.bytes;
+      evict(entry);
     }
+    if (idle.length) {
+      expiryTimer = setTimer(prune, Math.max(1, idleMs - (now() - idle[0].idleAt)));
+      expiryTimer?.unref?.();
+    }
+  }
+  const priority = (entry) => Math.min(...entry.listeners.values());
+  function scheduleDrain() {
+    if (drainQueued || disposed) return;
+    drainQueued = true;
+    queueMicrotask(() => { drainQueued = false; drain(); });
   }
   function drain() {
-    while (active < limit && queue.length) {
+    queue.sort((a, b) => priority(a) - priority(b));
+    while (!disposed && active < limit && queue.length) {
       const entry = queue.shift();
-      if (!entry.listeners.size) { queue.push(entry); break; }
+      if (!entry.listeners.size) continue;
       active += 1;
       entry.running = true;
-      Promise.resolve().then(() => load(entry.url, entry.controller.signal)).then((blob) => {
-        if (entry.running) {
-          entry.running = false;
-          entry.blob = blob;
-          touch(entry);
-          evict();
-        }
-        for (const listener of [...entry.listeners]) deliver(entry, listener);
+      Promise.resolve().then(() => {
+        if (entry.controller.signal.aborted) throw entry.controller.signal.reason;
+        return load(entry.url, entry.controller.signal);
+      }).then(async (blob) => {
+        if (entry.controller.signal.aborted || !entry.listeners.size) return;
+        entry.objectURL = createURL(blob);
+        entry.bytes = blob.size;
+        await decode(entry.objectURL, entry.controller.signal);
+        if (entry.controller.signal.aborted || !entry.listeners.size) return;
+        entry.ready = true;
+        for (const listener of entry.listeners.keys()) listener({ url: entry.objectURL });
       }).catch((error) => {
         if (entry.controller.signal.aborted) return;
-        if (entry.running) {
-          entry.running = false;
-          entry.error = error;
-          evict();
-        }
-        for (const listener of [...entry.listeners]) deliver(entry, listener);
-      }).finally(() => { active -= 1; drain(); });
+        if (entry.objectURL) revokeURL(entry.objectURL);
+        entry.objectURL = null;
+        entry.error = error;
+        for (const listener of entry.listeners.keys()) listener({ error });
+      }).finally(() => { entry.running = false; active -= 1; scheduleDrain(); });
     }
   }
-  function evict() {
-    while (entries.size > maxRetained) {
-      let oldest = null;
-      for (const entry of entries.values()) {
-        if (entry.listeners.size || entry.running || queue.includes(entry)) continue;
-        if (!oldest || entry.lastUsed < oldest.lastUsed) oldest = entry;
-      }
-      if (!oldest) return;
-      entries.delete(oldest.url);
-      if (oldest.objectURL) revokeURL(oldest.objectURL);
-    }
-  }
-  function subscribe(url, listener) {
+  function subscribe(url, listener, { priority: rank = 0 } = {}) {
+    if (disposed) throw new Error("Thumbnail scheduler is disposed.");
+    prune();
     let entry = entries.get(url);
     if (!entry) {
-      entry = { url, controller: new AbortController(), listeners: new Set() };
+      entry = { url, controller: new AbortController(), listeners: new Map(), ready: false };
       entries.set(url, entry);
-      touch(entry);
       queue.push(entry);
-      evict();
     }
-    entry.listeners.add(listener);
-    touch(entry);
-    if (entry.blob || entry.error) queueMicrotask(() => {
-      if (entry.listeners.has(listener)) deliver(entry, listener);
+    entry.listeners.set(listener, rank);
+    if (entry.ready || entry.error) queueMicrotask(() => {
+      if (entry.listeners.has(listener)) listener({ url: entry.objectURL, error: entry.error });
     });
-    drain();
-    return () => {
+    scheduleDrain();
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
       entry.listeners.delete(listener);
       if (entry.listeners.size) return;
-      if (entry.running) return; // Let the in-flight load finish; its blob is cached.
-      const index = queue.indexOf(entry);
-      if (index >= 0) {
-        // Never started: drop the request and the entry.
-        queue.splice(index, 1);
-        entries.delete(url);
-        entry.controller.abort();
-        return;
-      }
-      // Finished: keep the blob cached, release only the live object URL.
-      if (entry.objectURL) {
-        revokeURL(entry.objectURL);
-        entry.objectURL = null;
-      }
+      if (entry.ready) { entry.idleAt = now(); entry.idleOrder = ++idleOrder; prune(); }
+      else evict(entry);
     };
+    stop.setPriority = (value) => {
+      if (stopped) return;
+      entry.listeners.set(listener, value);
+      scheduleDrain();
+    };
+    return stop;
   }
   function retry(url) {
     const entry = entries.get(url);
-    if (!entry?.error) return;
+    if (!entry?.error || entry.running) return;
     entry.error = null;
-    touch(entry);
     queue.push(entry);
-    drain();
+    scheduleDrain();
   }
-  return { subscribe, retry, snapshot: () => ({ active, queued: queue.length, retained: entries.size }) };
+  return {
+    subscribe, retry,
+    snapshot: () => ({ active, queued: queue.length, retained: entries.size }),
+    dispose() {
+      disposed = true;
+      clearTimer(expiryTimer);
+      for (const entry of entries.values()) { entry.listeners.clear(); evict(entry); }
+    },
+  };
 }
 
-export function installThumbnails(root) {
-  const scheduler = createThumbnailScheduler();
+// Owned by the authenticated gallery shell. Both observers use its actual
+// scrolling element, rather than the browser viewport outside that element.
+export function installThumbnails(root, { scheduler = createThumbnailScheduler() } = {}) {
   const images = new Map();
+  let disposed = false;
   function release(img, item) {
+    item.revision += 1;
+    img.dataset.thumbnailState = "pending";
+    img.removeAttribute("src");
     item.stop?.();
     item.stop = null;
     item.retry?.remove();
     item.retry = null;
+  }
+  function unavailable(img, item) {
+    img.dataset.thumbnailState = "error";
     img.removeAttribute("src");
+    if (item.retry) { item.retry.disabled = false; return; }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button secondary thumbnail-retry";
+    button.dataset.thumbnailRetry = "";
+    button.textContent = "Retry thumbnail";
+    button.setAttribute("aria-label", "Retry unavailable thumbnail");
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      img.dataset.thumbnailState = "pending";
+      if (item.decodeFailed) {
+        item.decodeFailed = false;
+        item.stop?.();
+        item.stop = null;
+        start(img, item);
+      } else scheduler.retry(item.url);
+    });
+    // Keep retry controls outside the existing image/collection buttons.
+    (img.closest(".card-media-frame, .collection-tile") || img.parentElement).append(button);
+    item.retry = button;
   }
   function start(img, item) {
     if (item.stop) return;
-    item.stop = scheduler.subscribe(item.url, ({ url, error }) => {
-      if (!images.has(img) || !item.visible) return;
-      if (url) {
+    const bounds = img.getBoundingClientRect();
+    const viewport = root.getBoundingClientRect();
+    const visible = bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+    item.stop = scheduler.subscribe(item.url, async ({ url, error }) => {
+      const revision = ++item.revision;
+      const current = () => !disposed && images.get(img) === item && item.near
+        && item.revision === revision && root.contains(img) && img.dataset.thumbnailSrc === item.url;
+      if (!current()) return;
+      if (error) { unavailable(img, item); return; }
+      img.src = url;
+      try {
+        await img.decode();
+        if (!current()) return;
         item.retry?.remove();
         item.retry = null;
-        img.src = url;
-        img.alt = item.alt;
-        return;
+        img.dataset.thumbnailState = "ready";
+      } catch {
+        if (!current()) return;
+        item.decodeFailed = true;
+        unavailable(img, item);
       }
-      if (error && item.retry) item.retry.disabled = false;
-      if (error && !item.retry) {
-        img.alt = "Thumbnail unavailable";
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "button secondary thumbnail-retry";
-        button.textContent = "Retry thumbnail";
-        button.setAttribute("aria-label", "Retry unavailable thumbnail");
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          button.disabled = true;
-          scheduler.retry(item.url);
-        });
-        // Keep retry controls outside the existing image/collection buttons.
-        (img.closest(".card-media-frame, .collection-tile") || img.parentElement).append(button);
-        item.retry = button;
-      }
-    });
+    }, { priority: visible ? 0 : 1 });
   }
   const visibility = new IntersectionObserver((entries) => {
+    for (const entry of entries) images.get(entry.target)?.stop?.setPriority(entry.isIntersecting ? 0 : 1);
+  }, { root });
+  const nearby = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       const item = images.get(entry.target);
       if (!item) continue;
-      item.visible = entry.isIntersecting;
-      if (item.visible) start(entry.target, item);
-      else release(entry.target, item);
+      item.near = entry.isIntersecting;
+      if (item.near) start(entry.target, item);
+      else if (item.stop) release(entry.target, item);
     }
-  });
+  }, { root, rootMargin: "600px 0px" });
   function scan() {
     for (const [img, item] of images) {
       if (!root.contains(img) || img.dataset.thumbnailSrc !== item.url) {
         visibility.unobserve(img);
+        nearby.unobserve(img);
         release(img, item);
         images.delete(img);
       }
     }
     for (const img of root.querySelectorAll("img[data-thumbnail-src]")) {
       if (images.has(img)) continue;
-      images.set(img, { url: img.dataset.thumbnailSrc, visible: false, alt: img.alt });
+      img.dataset.thumbnailState = "pending";
+      images.set(img, { url: img.dataset.thumbnailSrc, near: false, revision: 0 });
       visibility.observe(img);
+      nearby.observe(img);
     }
   }
   const changes = new MutationObserver(scan);
   changes.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-thumbnail-src"] });
   scan();
   return () => {
+    disposed = true;
     changes.disconnect();
     visibility.disconnect();
+    nearby.disconnect();
     for (const [img, item] of images) release(img, item);
     images.clear();
+    scheduler.dispose();
   };
 }

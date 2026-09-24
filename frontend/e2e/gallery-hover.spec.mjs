@@ -11,6 +11,7 @@ async function mountCards(page) {
   await page.evaluate(async () => {
     const appUrl = document.querySelector('script[type="module"]').src;
     const { galleryMarkup } = await import(new URL("./render.mjs", appUrl));
+    const { reconcileGallery } = await import(new URL("./gallery-dom.mjs", appUrl));
     const { bindGalleryCardHover } = await import(new URL("./gallery-hover.mjs", appUrl));
     const root = document.querySelector("#app");
     root.innerHTML = '<div id="gallery-viewport" style="padding:24px"><div id="gallery" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:20px;max-width:720px"></div></div>';
@@ -28,10 +29,11 @@ async function mountCards(page) {
     }];
     window.redrawHoverFixture = (changes = {}) => hover.preserveDuring(() => {
       generation = { ...generation, ...changes };
-      gallery.innerHTML = galleryMarkup([generation], { collections });
+      reconcileGallery(gallery, galleryMarkup([generation], { collections }));
       // Put these two card types side by side for layout inspection.
       gallery.querySelector(".collection-grid").style.display = "contents";
     });
+    window.hideHoverFolder = () => hover.preserveDuring(() => reconcileGallery(gallery, galleryMarkup([generation])));
     window.redrawHoverFixture();
     window.hoverActions = [];
     root.addEventListener("click", (event) => {
@@ -190,4 +192,16 @@ test("touch controls stay available and reduced motion removes fading", async ({
     expect(duration).toBeLessThan(.001);
   }
   await context.close();
+});
+
+
+test("retained cards moving away from the pointer lose hover intent", async ({ page }) => {
+  await mountCards(page);
+  const card = page.locator(".gallery-card");
+  await center(page, card);
+  await page.clock.runFor(600);
+  await expect(card).toHaveClass(/card-controls-visible/);
+  await page.evaluate(() => { window.retainedHoverCard = document.querySelector(".gallery-card"); window.hideHoverFolder(); });
+  expect(await page.evaluate(() => retainedHoverCard === document.querySelector(".gallery-card"))).toBe(true);
+  await expect(card).not.toHaveClass(/card-controls-visible/);
 });

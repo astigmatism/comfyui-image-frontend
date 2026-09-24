@@ -35,9 +35,13 @@ use narrow database projections, and never compact active generations. Slow or
 failed housekeeping cannot prevent queued work from running. Shutdown cancels
 housekeeping while allowing its current database operation to finish.
 
-The browser shares four thumbnail fetches across visible galleries and collections,
-deduplicates URLs, cancels obsolete work, and revokes object URLs when consumers
-leave. Safe reads retry transient failures at most four times. Manual submission
+The browser shares four thumbnail fetches across galleries and collections, prioritizes
+visible images over the 600px preload margin, deduplicates URLs, and cancels obsolete
+work. Images remain behind static placeholders until decoded; gallery updates retain
+unchanged cards and image elements. Unused successful thumbnails use an LRU cache
+bounded to 96 entries, 16 MiB of blobs, and 60 seconds idle. Active consumers are never
+evicted; expired entries and shell disposal revoke their object URLs. Logout clears
+the cache and observers. Safe reads retry transient failures at most four times. Manual submission
 protocol 3 adds durable, account-scoped idempotency receipts and a status endpoint.
 Five attempts fit within a 60-second submission deadline; an unresolved submission
 retains its key and frozen payload through reloads. Logout clears pending browser

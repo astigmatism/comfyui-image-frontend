@@ -108,8 +108,8 @@ test("re-rendered gallery cards keep their loaded thumbnail without refetching",
   const count = () => Object.values(thumbnailRequests).reduce((sum, total) => sum + total, 0);
   const firstCount = count();
   expect(firstCount).toBeGreaterThan(0);
-  // Favoriting rebuilds the card from scratch. The replacement element must
-  // get its image from the scheduler cache — no blank frame, no new request.
+  // Favoriting preserves the loaded image through reconciliation, with no
+  // blank frame or new thumbnail request.
   // Click through the card's delegated handler: the favorite button lives in a
   // pointer-events hover overlay that is timing-sensitive for synthetic pointers.
   await card.getByRole("button", { name: "Add to Favorites" }).evaluate((button) => button.click());

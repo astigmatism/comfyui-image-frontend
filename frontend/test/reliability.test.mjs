@@ -142,6 +142,7 @@ test("thumbnail scheduler bounds work, deduplicates, and caches blobs across re-
   const revoked = [];
   let serial = 0;
   const scheduler = createThumbnailScheduler({
+    decode: async () => {},
     load: (url, signal) => new Promise((resolve, reject) => {
       pending.push({ url, signal, resolve });
       signal.addEventListener("abort", () => reject(signal.reason));
@@ -159,32 +160,31 @@ test("thumbnail scheduler bounds work, deduplicates, and caches blobs across re-
   await new Promise(setImmediate);
   assert.equal(results.length, 2);
   assert.equal(results[0].url, results[1].url);
-  // Re-rendering the gallery detaches <img> elements. Leaving the last
-  // listener must not cancel cached work: only the live object URL is
-  // released, and re-subscribing the same URL reuses the blob without a
-  // second load.
-  stop[0]();
-  duplicate();
-  assert.deepEqual(revoked, ["blob:1"]);
+  // Completed images keep their object URLs within the idle cache budget.
+  stop[0](); duplicate();
+  assert.deepEqual(revoked, []);
   const resubscribed = [];
   stop[0] = scheduler.subscribe("/0", (value) => resubscribed.push(value));
   await new Promise(setImmediate);
   assert.equal(pending.length, 5); // /4 drained after /0 finished; no /0 refetch
   assert.equal(resubscribed.length, 1);
-  assert.match(resubscribed[0].url, /^blob:\d+$/);
-  assert.notEqual(resubscribed[0].url, "blob:1");
-  // Queued entries that lost all listeners are still dropped without fetching.
+  assert.equal(resubscribed[0].url, "blob:1");
+  // Reconciliation retains unchanged consumers. Work with no remaining
+  // consumer is genuinely obsolete and should release its concurrency slot.
   for (const release of stop.slice(1)) release();
   await new Promise(setImmediate);
-  assert.deepEqual(scheduler.snapshot(), { active: 4, queued: 0, retained: 5 });
-  assert.ok(pending.slice(1).every((request) => !request.signal.aborted));
+  assert.deepEqual(scheduler.snapshot(), { active: 0, queued: 0, retained: 1 });
+  assert.ok(pending.slice(1).every((request) => request.signal.aborted));
+  stop[0](); scheduler.dispose();
+  assert.deepEqual(revoked, ["blob:1"]);
 });
 
-test("thumbnail scheduler completes in-flight loads after the only listener detaches", async () => {
+test("thumbnail scheduler cancels obsolete in-flight loads and a later subscriber can retry", async () => {
   const pending = [];
   const revoked = [];
   let serial = 0;
   const scheduler = createThumbnailScheduler({
+    decode: async () => {},
     load: (url, signal) => new Promise((resolve, reject) => {
       pending.push({ url, signal, resolve });
       signal.addEventListener("abort", () => reject(signal.reason));
@@ -194,68 +194,65 @@ test("thumbnail scheduler completes in-flight loads after the only listener deta
   const results = [];
   const stop = scheduler.subscribe("/image", (value) => results.push(value));
   await new Promise(setImmediate);
-  assert.equal(pending.length, 1);
-  // Simulates a card re-render: the old element is released before the fetch lands.
   stop();
-  assert.equal(revoked.length, 0);
-  pending[0].resolve(new Blob(["image"]));
+  assert.equal(pending[0].signal.aborted, true);
+  pending[0].resolve(new Blob(["obsolete"]));
   await new Promise(setImmediate);
   assert.equal(results.length, 0);
-  assert.equal(serial, 0); // No object URL is created for a blob with no listeners.
+  assert.equal(serial, 0);
   const resubscribed = [];
   scheduler.subscribe("/image", (value) => resubscribed.push(value));
   await new Promise(setImmediate);
-  assert.equal(pending.length, 1);
+  assert.equal(pending.length, 2);
+  pending[1].resolve(new Blob(["image"]));
+  await new Promise(setImmediate);
   assert.equal(resubscribed.length, 1);
   assert.equal(resubscribed[0].url, "blob:1");
   assert.deepEqual(revoked, []);
+  scheduler.dispose();
 });
 
 test("thumbnail scheduler evicts least recently used cached blobs", async () => {
   const pending = [];
   const revoked = [];
   let serial = 0;
-  let loads = 0;
   const scheduler = createThumbnailScheduler({
-    maxRetained: 3,
-    load: (url, signal) => {
-      loads += 1;
-      return new Promise((resolve, reject) => {
-        pending.push({ url, signal, resolve });
-        signal.addEventListener("abort", () => reject(signal.reason));
-      });
-    },
+    maxIdleEntries: 3, decode: async () => {},
+    load: (url, signal) => new Promise((resolve, reject) => {
+      pending.push({ url, signal, resolve });
+      signal.addEventListener("abort", () => reject(signal.reason));
+    }),
     createURL: () => `blob:${++serial}`, revokeURL: (url) => revoked.push(url),
   });
   const stop = [];
   for (let index = 0; index < 3; index += 1) stop.push(scheduler.subscribe(`/${index}`, () => {}));
   await new Promise(setImmediate);
-  assert.equal(loads, 3);
   pending.forEach((item) => item.resolve(new Blob(["image"])));
   await new Promise(setImmediate);
   for (const release of stop) release();
-  assert.deepEqual(revoked, ["blob:1", "blob:2", "blob:3"]);
-  // Touch /1 so it is the most recently used, then overflow with a fourth URL.
+  assert.deepEqual(revoked, []);
   const touch = scheduler.subscribe("/1", () => {});
   touch();
   const fourth = scheduler.subscribe("/3", () => {});
   await new Promise(setImmediate);
-  assert.deepEqual(scheduler.snapshot(), { active: 1, queued: 0, retained: 3 });
-  // /0 (least recently used) was evicted; /1 and /2 are still cached.
+  assert.deepEqual(scheduler.snapshot(), { active: 1, queued: 0, retained: 4 });
+  pending[3].resolve(new Blob(["image"]));
+  await new Promise(setImmediate);
+  fourth();
+  assert.deepEqual(revoked, ["blob:1"]); // /0 is the least recently used idle entry.
   const revived = [];
   const resub = scheduler.subscribe("/2", (value) => revived.push(value));
   await new Promise(setImmediate);
-  assert.equal(loads, 4);
-  assert.equal(revived.length, 1);
-  assert.match(revived[0].url, /^blob:\d+$/);
+  assert.equal(pending.length, 4);
+  assert.equal(revived[0].url, "blob:3");
   resub();
-  fourth();
   const reloaded = [];
   scheduler.subscribe("/0", (value) => reloaded.push(value));
   await new Promise(setImmediate);
-  assert.equal(loads, 5); // Evicted /0 is fetched again.
+  assert.equal(pending.length, 5);
   assert.equal(reloaded.length, 0);
   pending.at(-1).resolve(new Blob(["image"]));
   await new Promise(setImmediate);
   assert.equal(reloaded.length, 1);
+  scheduler.dispose();
 });
