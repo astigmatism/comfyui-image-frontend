@@ -212,6 +212,33 @@ class PromptGenerationService:
             )
         return profile, captured
 
+    @staticmethod
+    def _validate_shared_items(payload: GenerationPreparationCreate) -> None:
+        """A group produces one prompt, so every item must request the same one."""
+        first = payload.items[0]
+
+        def digest(value: Any) -> str:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+        base_prompt = digest(first.prompt_generation.model_dump(mode="json"))
+        base_assistant = (
+            digest(first.assistant.model_dump(mode="json")) if first.assistant else None
+        )
+        for item in payload.items[1:]:
+            if digest(item.prompt_generation.model_dump(mode="json")) != base_prompt:
+                raise AppError(
+                    "preparation_items_mismatch",
+                    "All items in a batch must request the same prompt.",
+                    status_code=422,
+                )
+            assistant = digest(item.assistant.model_dump(mode="json")) if item.assistant else None
+            if assistant != base_assistant:
+                raise AppError(
+                    "preparation_items_mismatch",
+                    "All items in a batch must use the same Creative Direction refinement.",
+                    status_code=422,
+                )
+
     def create_preparations(
         self,
         session: Session,
@@ -221,13 +248,14 @@ class PromptGenerationService:
         cycle: AutoGenerationCycle | None = None,
         profile: WorkflowProfile | None = None,
     ) -> list[GenerationPreparation]:
+        self._validate_shared_items(payload)
         group = str(uuid.uuid4())
         activity = begin_run(session, owner_id, len(payload.items))
         rows = []
-        shared_text = (
-            self.create_text(session, owner_id, payload.items[0].prompt_generation, automatic=True)
-            if cycle
-            else None
+        # One text run per group: every item, manual or automatic, shares the
+        # prompt generated for it (at most one refinement when the leader has one).
+        shared_text = self.create_text(
+            session, owner_id, payload.items[0].prompt_generation, automatic=cycle is not None
         )
         automation = session.get(AutoGeneration, owner_id) if cycle else None
         compare_checkpoints = bool(automation and automation.snapshot_json.get("quantity") == 1)
@@ -246,14 +274,11 @@ class PromptGenerationService:
                         **captured.generation.public_parameters,
                         **shared_image_seeds,
                     }
-            text_run = shared_text or self.create_text(
-                session, owner_id, item.prompt_generation, automatic=cycle is not None
-            )
             row = GenerationPreparation(
                 group_id=group,
                 owner_id=owner_id,
                 profile_id=image_profile.id,
-                prompt_run_id=text_run.id,
+                prompt_run_id=shared_text.id,
                 auto_cycle_id=cycle.id if cycle else None,
                 activity_run_id=activity.id,
                 position=position,
@@ -498,13 +523,17 @@ class PromptGenerationService:
                             )
                             .limit(256)
                         ).all()
-                        groups: set[str] = set()
-                        identities = []
+                        grouped: dict[str, list[GenerationPreparation]] = {}
                         for row in rows:
-                            if row.auto_cycle_id and row.group_id in groups:
-                                continue
-                            groups.add(row.group_id)
-                            identities.append(row.id)
+                            grouped.setdefault(row.group_id, []).append(row)
+                        identities = []
+                        for members in grouped.values():
+                            if len({row.prompt_run_id for row in members}) == 1:
+                                # One shared text run: advance the whole group at once.
+                                identities.append(members[0].id)
+                            else:
+                                # Legacy manual batch predating shared prompts: per-row advance.
+                                identities.extend(row.id for row in members)
                         return identities
 
                 for key in await run_blocking(pending):
@@ -537,7 +566,14 @@ class PromptGenerationService:
         def batch_identity() -> tuple[str, str] | None:
             with self.container.db.session_factory() as session:
                 row = session.get(GenerationPreparation, identity)
-                return (row.owner_id, row.group_id) if row and row.auto_cycle_id else None
+                if not row:
+                    return None
+                # Homogeneity is a group property across every row: new batches
+                # share one text run, legacy manual batches never do.
+                rows = self._batch_rows(session, row.group_id)
+                if len({member.prompt_run_id for member in rows}) == 1:
+                    return row.owner_id, row.group_id
+                return None
 
         batch = await run_blocking(batch_identity)
         if batch:
@@ -708,6 +744,8 @@ class PromptGenerationService:
         )
 
     async def _advance_batch(self, group: str) -> None:
+        """Advance one batch that shares a single text run (manual or automatic)."""
+
         def load() -> tuple[GenerationPreparation, PromptGenerationRun] | None:
             with self.container.db.session_factory() as session:
                 lock_user_state(session)
@@ -761,9 +799,15 @@ class PromptGenerationService:
                     current = rows[0]
                     if not self.valid_cycle(session, current):
                         return []
-                    auto = session.get(AutoGeneration, current.owner_id)
+                    # Manual batches have no AutoGeneration controller of their own.
+                    auto = (
+                        session.get(AutoGeneration, current.owner_id)
+                        if current.auto_cycle_id
+                        else None
+                    )
                     user = session.get(User, current.owner_id)
-                    assert auto is not None
+                    if current.auto_cycle_id:
+                        assert auto is not None
                     if not user or user.state != UserState.ACTIVE:
                         return []
                     prompt = current.prompt or text.prompt
@@ -814,13 +858,14 @@ class PromptGenerationService:
                             )
                         )
                         events.append(event_payload(event))
-                    auto.accepted_count += len(events)
-                    auto.latest_prompt, auto.status = prompt, "generating"
-                    auto.error_code, auto.message, auto.failures = None, None, 0
-                    maximum = auto.snapshot_json.get("max_generations")
-                    if maximum is not None and auto.accepted_count >= maximum:
-                        auto.enabled, auto.status = False, "completed"
-                        auto.message = "Image queue limit reached. Accepted images will finish."
+                    if auto is not None:
+                        auto.accepted_count += len(events)
+                        auto.latest_prompt, auto.status = prompt, "generating"
+                        auto.error_code, auto.message, auto.failures = None, None, 0
+                        maximum = auto.snapshot_json.get("max_generations")
+                        if maximum is not None and auto.accepted_count >= maximum:
+                            auto.enabled, auto.status = False, "completed"
+                            auto.message = "Image queue limit reached. Accepted images will finish."
                     session.commit()
                     return events
 
@@ -842,7 +887,8 @@ class PromptGenerationService:
                 self._fail, leader.id, "preparation_failed", "Image batch preparation failed."
             )
         await notify_user(self.container.broker, leader.owner_id, "prompt_generation.updated")
-        await notify_user(self.container.broker, leader.owner_id, "auto_generation.updated")
+        if leader.auto_cycle_id:
+            await notify_user(self.container.broker, leader.owner_id, "auto_generation.updated")
 
     @staticmethod
     def fail_preparation(
@@ -864,7 +910,13 @@ class PromptGenerationService:
             lock_user_state(session)
             row = session.get(GenerationPreparation, identity)
             if row:
-                rows = self._batch_rows(session, row.group_id) if row.auto_cycle_id else [row]
+                # A shared text run is all-or-nothing: fail every row that
+                # consumes it (the whole batch); legacy rows keep per-row scope.
+                rows = [
+                    member
+                    for member in self._batch_rows(session, row.group_id)
+                    if member.prompt_run_id == row.prompt_run_id
+                ]
                 for member in rows:
                     self.fail_preparation(session, member, code, message)
                 if row.auto_cycle_id and self.valid_cycle(session, row):

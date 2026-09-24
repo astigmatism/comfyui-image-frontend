@@ -5,7 +5,7 @@ Prompt Generation is an optional preparation stage. It starts off for accounts w
 The control panel uses independent switches and expansion buttons for Auto-generation, Prompt Generation, and Creative Direction. Enabling a section expands it. The process indicator reflects enabled stages; execution status is separate. The existing Generate button, quantity selector, model controls, and image runtime remain in place.
 
 - **Generate prompt** executes only the selected text publication and places the result in the prompt editor.
-- **Generate** executes enabled stages in order: prompt generation, Creative Direction, image generation. Quantity and model selections expand into independent image requests; each receives a fresh generated prompt and optional refinement.
+- **Generate** executes enabled stages in order: prompt generation, Creative Direction, image generation. Quantity and model selections expand into independent image requests, but the entire batch shares one generated prompt and at most one Creative Direction refinement; images resolve separate random seeds. A failed prompt or refinement fails the whole batch.
 - While Prompt Generation is enabled, Creative Direction uses Refine. Its previous Create/Refine choice is restored when Prompt Generation is disabled.
 - Generated text follows the editor until the user edits it. Later results offer **Use latest prompt** instead of replacing that draft. Results belonging to another source or source revision cannot replace the editor.
 - Auto-generation prepares one text prompt and at most one Creative Direction refinement for an entire batch. Every quantity/checkpoint item shares that final prompt; random image seeds resolve separately for quantity repetitions, while fixed seeds remain fixed. A new batch starts a new text run. Completed prompt/refinement work survives restart, and the image batch is accepted atomically.
@@ -48,7 +48,7 @@ All mutation endpoints require authentication, CSRF, generation protocol `3`, an
 | --- | --- |
 | `POST /api/prompt-generations` | Accept a source key, revision, and parameters; return a durable run with HTTP 202. |
 | `GET /api/prompt-generations/{id}` | Read status, text, revision, resolved seeds, compiled hash, and any error. |
-| `POST /api/generation-preparations` | Accept an expanded `items` list; each item has an image `generation`, `prompt_generation`, and optional Refine `assistant`. Return a durable group with HTTP 202. |
+| `POST /api/generation-preparations` | Accept an expanded `items` list; each item has an image `generation`, `prompt_generation`, and optional Refine `assistant`. All items must request the same prompt and refinement — the group produces one text run shared by every item. Return a durable group with HTTP 202. |
 | `GET /api/generation-preparations/{id}` | Read each item's stage, raw/final text, linked text run and image, and any error. |
 
 `PromptGenerationRun` freezes the text graph, parameters, publication revision, registered ComfyUI instance, and resolved seeds. `GenerationPreparation` freezes each image request and optional assistant inputs, then links the completed stages and accepted image. Text execution uses its publication's registered instance independently of the selected image runtime.

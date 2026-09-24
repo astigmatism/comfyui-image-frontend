@@ -858,7 +858,7 @@ function promptGenerationMarkup(state) {
     </select></label>
     ${inputs}
     <button type="button" class="button secondary" data-action="generate-prompt" ${!source || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${state.promptGenerationBusy ? "Generating prompt…" : "Generate prompt"}</button>
-    <p class="prompt-generation-hint">Subject entry is independent of LoRAs. Auto-generation shares one prompt per batch.</p>
+    <p class="prompt-generation-hint">Subject entry is independent of LoRAs. Each batch shares one generated prompt, manual or automatic.</p>
     ${state.promptGenerationMessage ? `<p class="prompt-pipeline-status" role="status">${escapeHtml(state.promptGenerationMessage)}</p>` : ""}
     ${state.promptGenerationError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError)}</p>` : ""}
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}

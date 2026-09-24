@@ -74,7 +74,7 @@ test("local edits survive refresh before remote saving", async ({ page }) => {
   await expect(page.getByRole("textbox", { name: "Prompt seed value" })).toHaveValue("123");
 });
 
-test("quantity and model selections each receive a fresh generated prompt", async ({ page }) => {
+test("quantity and model selections share one generated prompt", async ({ page }) => {
   test.setTimeout(60_000);
   await page.locator("#workflow-source").click();
   const dialog = page.locator("#source-picker-dialog");
@@ -96,8 +96,10 @@ test("quantity and model selections each receive a fresh generated prompt", asyn
   const group = (await response.json()).id;
   await expect.poll(async () => (await (await page.request.get(`/api/generation-preparations/${group}`)).json()).items.filter((item) => item.status === "accepted").length).toBe(4);
   const result = await (await page.request.get(`/api/generation-preparations/${group}`)).json();
-  expect(new Set(result.items.map((item) => item.prompt_run_id)).size).toBe(4);
-  expect(new Set(result.items.map((item) => item.raw_prompt)).size).toBe(4);
+  expect(result.items.filter((item) => item.status === "accepted")).toHaveLength(4);
+  expect(new Set(result.items.map((item) => item.prompt_run_id)).size).toBe(1);
+  expect(new Set(result.items.map((item) => item.raw_prompt)).size).toBe(1);
+  expect(new Set(result.items.map((item) => item.generation?.checkpoint_label)).size).toBe(2);
 });
 
 test("late results preserve a draft across reload and offer Use latest", async ({ page }) => {

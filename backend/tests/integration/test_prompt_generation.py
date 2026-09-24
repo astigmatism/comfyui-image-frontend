@@ -1,4 +1,5 @@
 import copy
+import json
 import time
 from uuid import uuid4
 
@@ -82,7 +83,7 @@ def test_prompt_roundtrip_empty_subject_receipt_and_no_images(app_client, fake_s
     assert app_client.get(f"/api/prompt-generations/{uuid4()}").status_code == 404
 
 
-def test_each_image_gets_a_durable_fresh_refined_prompt(app_client, fake_state):
+def test_manual_batch_shares_one_durable_refined_prompt(app_client, fake_state):
     provision_user(app_client)
     prompt = register(app_client, fake_state)
     image = generation_payload(app_client, "")
@@ -108,12 +109,83 @@ def test_each_image_gets_a_durable_fresh_refined_prompt(app_client, fake_state):
         lambda value: all(i["status"] in {"accepted", "failed"} for i in value["items"]),
     )
     assert all(item["status"] == "accepted" for item in result["items"]), result
-    assert len({item["raw_prompt"] for item in result["items"]}) == 3
-    assert len(fake_state.ollama_calls) == 3
+    # One generated prompt and one refinement are shared by the whole batch.
+    assert len({item["raw_prompt"] for item in result["items"]}) == 1
+    assert len(fake_state.ollama_calls) == 1
     with app_client.app.state.container.db.session_factory() as session:
         rows = list(session.scalars(select(GenerationPreparation)))
         assert all(row.assistant_run_id and row.generation_id for row in rows)
-        assert session.scalar(select(func.count()).select_from(PromptGenerationRun)) == 3
+        assert len({row.prompt_run_id for row in rows}) == 1
+        assert session.scalar(select(func.count()).select_from(PromptGenerationRun)) == 1
+        assert session.scalar(select(func.count()).select_from(Generation)) == 3
+        generations = list(session.scalars(select(Generation)))
+        assert len({generation.final_prompt for generation in generations}) == 1
+        seeds = [
+            json.dumps(generation.resolved_seeds_json, sort_keys=True) for generation in generations
+        ]
+        assert len(set(seeds)) == 3
+
+
+def test_shared_text_failure_fails_the_whole_batch(app_client, fake_state):
+    provision_user(app_client)
+    prompt = register(app_client, fake_state)
+    image = generation_payload(app_client, "original")
+    payload = {"items": [{"generation": image, "prompt_generation": prompt} for _ in range(3)]}
+    response = post(app_client, "/api/generation-preparations", payload)
+    assert response.status_code == 202, response.text
+    container = app_client.app.state.container
+    with container.db.session_factory() as session:
+        rows = list(session.scalars(select(GenerationPreparation)))
+        text = session.get(PromptGenerationRun, rows[0].prompt_run_id)
+        text.status, text.error_code, text.error_message = (
+            "failed",
+            "prompt_output_invalid",
+            "Invalid result",
+        )
+        session.commit()
+    app_client.portal.call(container.prompt_generation.advance, rows[0].id)
+    with container.db.session_factory() as session:
+        rows = list(session.scalars(select(GenerationPreparation)))
+        assert all(row.status == "failed" for row in rows)
+        assert all(row.error_code == "prompt_output_invalid" for row in rows), [
+            row.error_code for row in rows
+        ]
+        assert session.scalar(select(func.count()).select_from(Generation)) == 0
+
+
+def test_items_must_request_the_same_prompt_and_refinement(app_client, fake_state):
+    provision_user(app_client)
+    prompt = register(app_client, fake_state)
+    image = generation_payload(app_client, "original")
+    different = dict(prompt)
+    different["parameters"] = {"subject_name": "Someone else", "seed": "random"}
+    assert (
+        post(
+            app_client,
+            "/api/generation-preparations",
+            {
+                "items": [
+                    {"generation": image, "prompt_generation": prompt},
+                    {"generation": image, "prompt_generation": different},
+                ]
+            },
+        ).status_code
+        == 422
+    )
+    refined = {"mode": "refine", "creative_direction": "Soft morning light"}
+    assert (
+        post(
+            app_client,
+            "/api/generation-preparations",
+            {
+                "items": [
+                    {"generation": image, "prompt_generation": prompt, "assistant": refined},
+                    {"generation": image, "prompt_generation": prompt},
+                ]
+            },
+        ).status_code
+        == 422
+    )
 
 
 def test_invalid_generator_and_create_mode_are_rejected(app_client, fake_state):

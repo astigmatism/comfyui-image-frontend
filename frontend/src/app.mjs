@@ -6637,7 +6637,7 @@ async function runPromptGeneration(withImages) {
     renderPanel();
     await submitGeneration(path, payload, context);
     if (state.session?.user?.id !== account) return false;
-    state.promptGenerationMessage = withImages ? "Preparing prompts and images on the server…" : "Generating a prompt…";
+    state.promptGenerationMessage = withImages ? "Preparing the prompt and images on the server…" : "Generating a prompt…";
     await refreshPromptJobs();
     return true;
   } catch (error) {
@@ -6719,7 +6719,7 @@ async function refreshPromptJobs() {
       } else {
         busy = true;
         state.promptGenerationMessage = items.some((item) => item.status === "refining")
-          ? "Refining the generated prompt…" : "Generating fresh prompts on the server…";
+          ? "Refining the generated prompt…" : "Generating a prompt on the server…";
       }
     }
     if (state.promptGenerationBusy !== busy || previousMessage !== state.promptGenerationMessage || previousError !== state.promptGenerationError) { state.promptGenerationBusy = busy; renderPanel(); }
