@@ -16,8 +16,10 @@ from ..dependencies import (
 from ..schemas import (
     GalleryDeleteResult,
     GallerySelection,
+    GallerySelectionScope,
     GalleryTransfer,
     GalleryTransferResult,
+    GalleryViewItems,
     GenerationPage,
     PromptChanges,
     PromptGroupLookup,
@@ -27,6 +29,23 @@ from ..services.gallery import GalleryService
 from ..services.prompt_groups import changes_for_group, lookup_groups, member_page
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
+
+
+@router.get("/items", response_model=GalleryViewItems)
+@database_handler
+def view_items(
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+    collection_id: str | None = None,
+    favorites_only: bool = False,
+) -> GalleryViewItems:
+    container = get_container(request)
+    return GalleryService(container.generations, container.collections).view_items(
+        session,
+        context.user.id,
+        GallerySelectionScope(collection_id=collection_id or None, favorites_only=favorites_only),
+    )
 
 
 @router.post("/prompt-groups/lookup", response_model=list[PromptGroupMembership])

@@ -8,7 +8,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 from zipfile import ZIP_STORED, ZipFile
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -31,8 +31,11 @@ from ..schemas import (
     GalleryDeleteItem,
     GalleryDeleteResult,
     GallerySelection,
+    GallerySelectionGeneration,
+    GallerySelectionScope,
     GalleryTransfer,
     GalleryTransferResult,
+    GalleryViewItems,
 )
 from .collections import MAX_COLLECTION_DEPTH, CollectionService
 from .generations import GenerationService
@@ -55,15 +58,112 @@ class GalleryService:
         self.collections = collections
         self.assets = generations.assets
 
+    def view_items(
+        self, session: Session, owner_id: str, scope: GallerySelectionScope
+    ) -> GalleryViewItems:
+        if scope.collection_id is not None:
+            self.collections.get_owned(session, owner_id, scope.collection_id)
+        favorite = (
+            select(Favorite.id)
+            .where(Favorite.owner_id == owner_id, Favorite.generation_id == Generation.id)
+            .exists()
+        )
+        image_count = (
+            select(func.count(Artifact.id))
+            .where(
+                Artifact.owner_id == owner_id,
+                Artifact.generation_id == Generation.id,
+                Artifact.kind == "image",
+            )
+            .scalar_subquery()
+        )
+        query = select(
+            Generation.id,
+            Generation.collection_id,
+            Generation.status,
+            image_count.label("image_count"),
+            favorite.label("is_favorite"),
+        ).where(
+            Generation.owner_id == owner_id,
+            Generation.collection_id == scope.collection_id,
+            Generation.pending_delete.is_(False),
+        )
+        folders = select(Collection.id).where(
+            Collection.owner_id == owner_id, Collection.parent_id == scope.collection_id
+        )
+        if scope.favorites_only:
+            query = query.where(favorite)
+            folders = folders.where(
+                select(CollectionFavorite.id)
+                .where(
+                    CollectionFavorite.owner_id == owner_id,
+                    CollectionFavorite.collection_id == Collection.id,
+                )
+                .exists()
+            )
+        return GalleryViewItems(
+            generations=[
+                GallerySelectionGeneration.model_validate(row) for row in session.execute(query)
+            ],
+            collection_ids=list(session.scalars(folders)),
+        )
+
+    def _selected_items(
+        self, session: Session, owner_id: str, payload: GallerySelection
+    ) -> tuple[list[Generation], list[Collection]]:
+        # Validate the entire selection before mutation, in bounded SQL batches.
+        def owned_items[Item: (Generation, Collection)](
+            model: type[Item], ids: list[str]
+        ) -> list[Item]:
+            result: list[Item] = []
+            for offset in range(0, len(ids), 500):
+                batch = ids[offset : offset + 500]
+                rows = list(
+                    session.scalars(
+                        select(model).where(model.owner_id == owner_id, model.id.in_(batch))
+                    )
+                )
+                if len(rows) != len(batch):
+                    raise AppError("not_found", "A selected item was not found.", status_code=404)
+                result.extend(rows)
+            return result
+
+        generations = owned_items(Generation, payload.generation_ids)
+        collections = owned_items(Collection, payload.collection_ids)
+        if payload.scope is not None:
+            scope = payload.scope
+            if scope.collection_id is not None:
+                self.collections.get_owned(session, owner_id, scope.collection_id)
+            changed = any(
+                item.collection_id != scope.collection_id or item.pending_delete
+                for item in generations
+            ) or any(item.parent_id != scope.collection_id for item in collections)
+            if scope.favorites_only:
+                for model, column, ids in (
+                    (Favorite, Favorite.generation_id, payload.generation_ids),
+                    (CollectionFavorite, CollectionFavorite.collection_id, payload.collection_ids),
+                ):
+                    for offset in range(0, len(ids), 500):
+                        batch = ids[offset : offset + 500]
+                        favorites = set(
+                            session.scalars(
+                                select(column).where(model.owner_id == owner_id, column.in_(batch))
+                            )
+                        )
+                        changed = changed or not set(batch) <= favorites
+            if changed:
+                raise AppError(
+                    "selection_changed",
+                    "Selected items changed location or filter membership. "
+                    "Clear the selection and select again.",
+                    status_code=409,
+                )
+        return generations, collections
+
     def selection(self, session: Session, owner_id: str, payload: GallerySelection) -> Selection:
         # Resolve every explicitly selected ID before making any change. A selected
         # folder subsumes descendants, including separately selected favorite cards.
-        generations = [
-            self.generations.get_owned(session, owner_id, item) for item in payload.generation_ids
-        ]
-        collections = [
-            self.collections.get_owned(session, owner_id, item) for item in payload.collection_ids
-        ]
+        generations, collections = self._selected_items(session, owner_id, payload)
         levels = {
             item.id: self.collections._subtree_levels(session, owner_id=owner_id, root_id=item.id)
             for item in collections
@@ -83,10 +183,7 @@ class GalleryService:
     ) -> GallerySelection:
         # Favorites bookmark the explicitly selected cards, including a child
         # selected alongside its parent. They do not recurse into folder contents.
-        for item in payload.generation_ids:
-            self.generations.get_owned(session, owner_id, item)
-        for item in payload.collection_ids:
-            self.collections.get_owned(session, owner_id, item)
+        self._selected_items(session, owner_id, payload)
         for attempt in range(2):
             additions: list[Favorite | CollectionFavorite] = []
             for model, column, ids in (

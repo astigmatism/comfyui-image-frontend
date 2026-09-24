@@ -22,12 +22,21 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
 
 ## Try the interaction
 
+Use **Grouped / Classic** between Favorites and Gallery scale to change the gallery layout.
+Grouped is the default; the choice is saved with your account settings. Classic keeps the existing
+thumbnail proportions and scale in one continuous grid, with folder tiles above it. Its **All items**
+header counts the entire current view. **Select all** includes unloaded generations and matching
+folder tiles, including collections with more than 500 items. Favorites restricts this selection to
+matching cards and folders. Individual deselection produces a mixed checkbox. Switching layouts
+preserves selection, while new arrivals stay unselected. Classic also resumes any history skipped
+by collapsed prompt groups. Changing location or the Favorites filter clears selection.
+
 Prompt groups have neutral headers with a generation count, collapse arrow, **Prompt changes**,
 and **Select group**. Hover or focus Prompt changes to compare with the immediately older group;
 click to keep the preview open. The first group has no earlier comparison. Groups follow the exact
 positive prompt and the gallery's chronological order, so A → B → A remains three groups. Changing
 resolution, seed, or model alone does not start another group. Grouping applies within Home or the
-current collection; Favorites keeps its existing layout.
+current collection. The layout choice also applies with Favorites enabled.
 
 Collapse keeps the header and selection available. **Select group** resolves the complete group,
 including unloaded cards, before using the toolbar below. Individual deselection produces a mixed
@@ -62,9 +71,12 @@ expand it and use **Load more in group** to retrieve its remaining cards.
    appear once. Both Favorites and Download keep the selection so you can use another action next.
 
 Blue checks and outlines identify selected cards; existing gold favorite indicators remain
-distinct. **Select loaded** applies to loaded cards, while **Select group** includes unloaded members.
-The API accepts up to 500 explicit IDs per request; oversized groups show a limit message without
-selecting a partial group. Ordinary card controls for
+distinct. In Grouped view, **Select loaded** applies to loaded cards, while **Select group** includes
+unloaded members. Classic's toolbar and Cmd/Ctrl+A use the full view. The API accepts up to 500
+unscoped explicit IDs per request; oversized groups show a limit message without selecting a partial
+group. Classic sends a fixed list of selected IDs with a collection scope, allowing larger selections
+without including later arrivals. The server validates ownership and current scope before bulk actions.
+Ordinary card controls for
 details, download, favorite, recall, preview preference and rename remain available outside
 selection mode; individual card Move/Delete controls have been replaced by selection.
 
@@ -94,6 +106,11 @@ Prompt grouping has additional coverage in `backend/tests/integration/test_promp
 `frontend/e2e/gallery-groups.spec.mjs`, including page boundaries, reused prompts, complete membership,
 owner isolation, group selection, compact diffs, collapse, and responsive sizing. The fingerprint
 migration backfills existing generations without putting full prompts in gallery summaries.
+
+Classic layout and whole-view selection are covered by `backend/tests/integration/test_gallery_view.py`,
+`frontend/test/gallery-view.test.mjs`, and `frontend/e2e/gallery-view.spec.mjs`. These include unloaded
+membership, exclusions, bulk operations over 500 cards, scoped downloads, Favorites, ownership,
+saved layout and scale, pagination after collapse, new arrivals, keyboard controls, and toolbar bounds.
 
 For a native preview, configure `CIF_DATA_DIR`, `CIF_DATABASE_PATH`, `CIF_FRONTEND_DIST`,
 `CIF_PREVIEW_ASSETS`, `CIF_PREVIEW_HOST=127.0.0.1`, and `CIF_PREVIEW_PORT`, then run

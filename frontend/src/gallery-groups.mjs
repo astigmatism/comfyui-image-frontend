@@ -156,6 +156,10 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
     if (active && !active.isConnected) closePreview();
     const state = getState();
     if (!state.session?.authenticated) return;
+    if (state.galleryLayout === "classic") {
+      controller?.abort(); closePreview(); clearTimeout(retryTimer); signature = null;
+      return;
+    }
     for (const button of root.querySelectorAll("[data-prompt-group-select], [data-group-more]")) {
       if (pending.has(button.dataset.promptGroupSelect || button.dataset.groupMore)) button.disabled = true;
     }

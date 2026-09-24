@@ -85,6 +85,7 @@ class PromptGenerationSettings(APIModel):
 
 
 class SharedSettings(APIModel):
+    gallery_layout: Literal["grouped", "classic"] = "grouped"
     prompt_generation: PromptGenerationSettings = Field(default_factory=PromptGenerationSettings)
     active_source: str | None = None
     runtime_id: str | None = None
@@ -609,9 +610,30 @@ class GenerationMove(APIModel):
     collection_id: str | None = None
 
 
+class GallerySelectionScope(APIModel):
+    collection_id: str | None = None
+    favorites_only: bool = False
+
+
+class GallerySelectionGeneration(APIModel):
+    id: str
+    collection_id: str | None
+    status: str
+    image_count: int
+    is_favorite: bool
+
+
+class GalleryViewItems(APIModel):
+    generations: list[GallerySelectionGeneration]
+    collection_ids: list[str]
+
+
 class GallerySelection(APIModel):
-    generation_ids: list[str] = Field(default_factory=list, max_length=500)
-    collection_ids: list[str] = Field(default_factory=list, max_length=500)
+    # Whole-view selections carry an explicit snapshot of IDs. Removing an ID
+    # excludes it; later arrivals can never be picked up by a bulk operation.
+    scope: GallerySelectionScope | None = None
+    generation_ids: list[str] = Field(default_factory=list)
+    collection_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_selection(self) -> GallerySelection:
@@ -619,7 +641,7 @@ class GallerySelection(APIModel):
         self.collection_ids = list(dict.fromkeys(self.collection_ids))
         if not self.generation_ids and not self.collection_ids:
             raise ValueError("Select at least one image card or collection.")
-        if len(self.generation_ids) + len(self.collection_ids) > 500:
+        if self.scope is None and len(self.generation_ids) + len(self.collection_ids) > 500:
             raise ValueError("Select at most 500 items at a time.")
         return self
 

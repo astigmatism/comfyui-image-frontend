@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-selection.mjs", "app.mjs"];
+const modules = ["auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -87,6 +87,7 @@ const assets = {
   render: `${assetPrefix}/render.mjs`,
   gallery_hover: `${assetPrefix}/gallery-hover.mjs`,
   gallery_groups: `${assetPrefix}/gallery-groups.mjs`,
+  gallery_view: `${assetPrefix}/gallery-view.mjs`,
   gallery_selection: `${assetPrefix}/gallery-selection.mjs`,
   styles: `${assetPrefix}/styles.css`,
   font: `${assetPrefix}/syncopate-latin.woff2`,

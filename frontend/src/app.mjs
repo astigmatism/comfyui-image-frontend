@@ -164,6 +164,8 @@ const state = {
   favoritesFilter: false,
   photoViewerDetachedGeneration: null,
   galleryScale: 45,
+  galleryLayout: "grouped",
+  gallerySkippedCursor: null,
   services: [],
   servicesStatus: "idle",
   servicesMessage: null,
@@ -548,6 +550,7 @@ async function handleClick(event) {
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
     else if (action === "load-more") await loadMore();
     else if (action === "retry-gallery") await loadStartupGallery();
+    else if (action === "set-gallery-layout") updateGalleryLayout(target.dataset.galleryLayout, true);
     else if (action === "retry-generation-sources") await loadSources();
     else if (action === "open-admin") await openAdmin();
     else if (action === "refresh-workflows") await refreshWorkflows();
@@ -2337,6 +2340,7 @@ async function enterApplication() {
   state.collectionsStatus = "loading";
   state.collectionsMessage = null;
   setGalleryRoute(collectionIdFromHash());
+  state.galleryLayout = "grouped";
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
@@ -2664,6 +2668,7 @@ function currentGalleryRoute() {
 
 function setGalleryRoute(route) {
   state.currentCollectionId = route;
+  state.gallerySkippedCursor = null;
 }
 
 function galleryNextCursor() {
@@ -4685,7 +4690,8 @@ function renderGallery() {
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
   state.generations = sortGenerationsNewestFirst(state.generations);
-  gallery.classList.add("has-prompt-groups");
+  gallery.classList.toggle("has-prompt-groups", state.galleryLayout !== "classic");
+  gallery.classList.toggle("has-classic-gallery", state.galleryLayout === "classic");
   const groupFocus = document.activeElement?.closest(".prompt-group-header") ? { ...document.activeElement.dataset } : null;
   const focused = gallery.contains(document.activeElement) ? document.activeElement : null;
   const focusedCard = focused?.closest("[data-gallery-card]");
@@ -4699,7 +4705,8 @@ function renderGallery() {
         : state.collections,
       currentCollectionId: state.currentCollectionId,
       favoritesFilter: state.favoritesFilter,
-      promptGroups: galleryGroups?.options(),
+      promptGroups: state.galleryLayout === "classic" ? null : galleryGroups?.options(),
+      galleryLayout: state.galleryLayout,
     }));
   });
   applyCollectionActivity({ counts: false });
@@ -4988,9 +4995,12 @@ async function loadMore() {
   const { controller, unlink } = galleryReadController();
   galleryPageController = controller;
   try {
-    const cursor = galleryGroups?.paginationCursor(galleryNextCursor()) || galleryNextCursor();
+    const requestedLayout = state.galleryLayout;
+    const originalCursor = galleryNextCursor();
+    const cursor = requestedLayout === "classic" ? originalCursor : galleryGroups?.paginationCursor(originalCursor) || originalCursor;
     const page = await api(galleryPageUrl(cursor, requestRoute), { signal: controller.signal });
-    if (controller.signal.aborted || navigationToken !== collectionNavigationToken || requestRoute !== currentGalleryRoute()) return;
+    if (controller.signal.aborted || navigationToken !== collectionNavigationToken || requestRoute !== currentGalleryRoute() || requestedLayout !== state.galleryLayout) return;
+    if (cursor !== originalCursor && !state.gallerySkippedCursor) state.gallerySkippedCursor = originalCursor;
     const known = new Set(state.generations.map((item) => item.id));
     state.generations.push(...page.items.filter((item) => !known.has(item.id)));
     state.nextCursor = page.next_cursor;
@@ -4998,8 +5008,10 @@ async function loadMore() {
     setupPaginationObserver();
   } finally {
     unlink();
-    if (galleryPageController === controller) galleryPageController = null;
-    if (navigationToken === collectionNavigationToken) state.loadingMore = false;
+    if (galleryPageController === controller) {
+      galleryPageController = null;
+      if (navigationToken === collectionNavigationToken) state.loadingMore = false;
+    }
   }
 }
 
@@ -6075,6 +6087,29 @@ function renderServiceBanner() {
   }
 }
 
+function updateGalleryLayout(value, persist = false) {
+  const layout = value === "classic" ? "classic" : "grouped";
+  const changed = layout !== state.galleryLayout;
+  const viewport = document.querySelector("#gallery-viewport");
+  const top = viewport?.getBoundingClientRect().top || 0;
+  const anchor = [...document.querySelectorAll('#gallery [data-gallery-card="generation"]')].find((card) => card.getBoundingClientRect().bottom > top);
+  const previousTop = anchor?.getBoundingClientRect().top;
+  state.galleryLayout = layout;
+  document.querySelectorAll("[data-gallery-layout]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.galleryLayout === layout)));
+  if (changed) {
+    galleryPageController?.abort();
+    state.loadingMore = false;
+    if (layout === "classic" && state.gallerySkippedCursor) {
+      state.nextCursor = state.gallerySkippedCursor;
+      state.gallerySkippedCursor = null;
+    }
+    renderGallery();
+    if (viewport && anchor?.isConnected) viewport.scrollTop += anchor.getBoundingClientRect().top - previousTop;
+    setupPaginationObserver();
+  }
+  if (persist) settingsSync?.schedule();
+}
+
 function updateGalleryScale(value, persist) {
   state.galleryScale = Number(value);
   applyGalleryScale();
@@ -6235,6 +6270,7 @@ function captureSharedSettings() {
     }
   }
   return { gallery_scale: state.galleryScale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
+    gallery_layout: state.galleryLayout,
     prompt_generation: structuredClone(state.promptGeneration),
     active_source: state.activeSourceKey, runtime_id: state.selectedComfyuiInstanceId,
     sources, model_selections: Object.fromEntries(state.modelSelectionsBySourceRevision),
@@ -6253,6 +6289,7 @@ async function applySharedSettings(preferences) {
   const previousSource = state.activeSourceKey;
   const changed = !settingsEqual(captureSharedSettings(), preferences);
   state.galleryScale = preferences.gallery_scale;
+  updateGalleryLayout(saved.gallery_layout);
   state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
   state.parameterStateBySource = normalizeStoredParameterState(JSON.stringify(saved.sources));
   state.activeSourceKey = saved.active_source;
@@ -6488,6 +6525,7 @@ function validateImageParameters(contract, parameters) {
 function normalizePanelSettings(value) {
   if (!value?.settings) return value;
   const normalized = structuredClone(value);
+  normalized.settings.gallery_layout = normalized.settings.gallery_layout === "classic" ? "classic" : "grouped";
   const reconcile = (entries, source) => {
     const saved = entries?.[source?.source_key];
     if (!saved || !source?.interface) return;

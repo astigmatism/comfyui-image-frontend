@@ -1,4 +1,5 @@
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
+import { classicGalleryHeaderMarkup, galleryLayoutMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
@@ -92,6 +93,7 @@ export function shellMarkup(state) {
           <div id="gallery-selection-toolbar" class="gallery-selection-toolbar" role="group" aria-label="Selection actions" hidden></div>
           <div class="topbar-spacer"></div>
           <button type="button" class="button low favorites-launch-button" data-action="toggle-favorites-filter" aria-label="Favorites" title="Show only favorites" aria-pressed="${Boolean(state.favoritesFilter)}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /></svg><span class="favorites-launch-label">Favorites</span></button>
+          ${galleryLayoutMarkup(state.galleryLayout)}
           <label class="scale-control">
             <span>Gallery scale</span>
             <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-label="Gallery scale" aria-valuetext="${state.galleryScale}%" />
@@ -1411,15 +1413,18 @@ export function galleryMarkup(
     currentCollectionId = null,
     favoritesFilter = false,
     promptGroups = null,
+    galleryLayout = "grouped",
   } = {},
 ) {
   const tiles = collections
     .filter((collection) => (collection.parent_id ?? null) === currentCollectionId)
     .map((collection) => collectionTileMarkup(collection))
     .join("");
-  const tileGrid = tiles ? `<div class="collection-grid">${tiles}</div>` : "";
-  const cards = promptGroups ? promptGroupsMarkup(generations, galleryCardMarkup, promptGroups)
-    : sortGenerationsNewestFirst(generations).map((generation) => galleryCardMarkup(generation)).join("");
+  const classic = galleryLayout === "classic";
+  const tileGrid = `${classic ? classicGalleryHeaderMarkup() : ""}${tiles ? `<div class="collection-grid">${tiles}</div>` : ""}`;
+  const flatCards = () => sortGenerationsNewestFirst(generations).map((generation) => galleryCardMarkup(generation)).join("");
+  const cards = classic ? `<div class="classic-gallery-grid">${flatCards()}</div>`
+    : promptGroups ? promptGroupsMarkup(generations, galleryCardMarkup, promptGroups) : flatCards();
   if (status === "loading") {
     return `${tileGrid}<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
   }
@@ -1428,12 +1433,12 @@ export function galleryMarkup(
   }
   if (!generations.length && !tiles) {
     if (favoritesFilter) {
-      return `<section class="empty-gallery empty-favorites"><h2>No favorites in this view</h2><p>Tap the heart on any card or folder to add it here, or turn off the favorites filter.</p></section>`;
+      return `${tileGrid}<section class="empty-gallery empty-favorites"><h2>No favorites in this view</h2><p>Tap the heart on any card or folder to add it here, or turn off the favorites filter.</p></section>`;
     }
     if (currentCollectionId) {
-      return `<section class="empty-gallery empty-collection"><h2>This collection is empty</h2><p>Generate images here, or move cards in.</p></section>`;
+      return `${tileGrid}<section class="empty-gallery empty-collection"><h2>This collection is empty</h2><p>Generate images here, or move cards in.</p></section>`;
     }
-    return `<section class="empty-gallery"><h2>No generations yet</h2><p>Choose a source, set a prompt, and queue the first image.</p></section>`;
+    return `${tileGrid}<section class="empty-gallery"><h2>No generations yet</h2><p>Choose a source, set a prompt, and queue the first image.</p></section>`;
   }
   return `${tileGrid}${cards}`;
 }

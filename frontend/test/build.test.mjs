@@ -49,7 +49,8 @@ test("production build emits one content-addressed frontend module graph", async
     thumbnails: new Set([first.assets.api]),
     gallery_dom: new Set(),
     generation_submissions: new Set([first.assets.api]),
-    gallery_selection: new Set([first.assets.api, first.assets.lib]),
+    gallery_selection: new Set([first.assets.api, first.assets.lib, first.assets.gallery_view]),
+    gallery_view: new Set(),
     gallery_hover: new Set(),
     gallery_groups: new Set([first.assets.api, first.assets.lib]),
     api: new Set([first.assets.server_clock]),
@@ -59,9 +60,9 @@ test("production build emits one content-addressed frontend module graph", async
     generation_countdown: new Set([first.assets.render]),
     lib: new Set([first.assets.lora_stack]),
     lora_stack: new Set(),
-    render: new Set([first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups]),
+    render: new Set([first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view]),
   };
-  for (const name of ["auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
+  for (const name of ["auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

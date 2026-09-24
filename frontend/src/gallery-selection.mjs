@@ -1,5 +1,6 @@
 import { api } from "./api.mjs";
 import { collectionSubtree, collectionTreeRows, escapeHtml } from "./lib.mjs";
+import { galleryViewChecked, galleryViewKeys, galleryViewScope } from "./gallery-view.mjs";
 
 const terminal = new Set(["succeeded", "cancelled_with_artifacts", "cancelled_without_artifacts", "failed_with_artifacts", "failed_without_artifacts", "interrupted"]);
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -80,27 +81,107 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   let operationPlan = null;
   let returnFocusKey = null;
   let syncQueued = false;
+  let selectedScope = null;
+  let inventory = null;
+  let inventorySignature = null;
+  let inventoryController = null;
+  let inventoryError = false;
+  let viewBusy = false;
+  let viewRequest = 0;
   const extraGenerations = new Map();
   const groupMembers = new Map();
   const selectionState = () => ({ ...getState(), selectionGenerations: [...extraGenerations.values()] });
   const cards = () => [...root.querySelectorAll("#gallery [data-gallery-card]")];
   const dialogs = () => [...root.querySelectorAll(".gallery-bulk-dialog")];
   const activeDialog = () => dialogs().find((dialog) => dialog.open);
-  const requestBody = () => ({ generation_ids: operationPlan.generation_ids, collection_ids: operationPlan.collection_ids });
+  const requestBody = (plan = operationPlan) => ({ generation_ids: plan.generation_ids, collection_ids: plan.collection_ids, ...(selectedScope ? { scope: selectedScope } : {}) });
+  const viewRoute = () => JSON.stringify([getState().session?.user?.id || getState().session?.user?.username, galleryViewScope(getState())]);
+
+  function viewSignature() {
+    const state = getState();
+    return JSON.stringify([viewRoute(), state.generations.map((item) => [item.id, item.status, item.is_favorite, item.image_count]), state.collections.map((item) => [item.id, item.parent_id, item.is_favorite, item.generation_count])]);
+  }
+
+  async function loadInventory() {
+    const requestedRoute = viewRoute();
+    inventorySignature = viewSignature();
+    inventoryController?.abort();
+    const controller = new AbortController();
+    inventoryController = controller;
+    inventoryError = false;
+    const scope = galleryViewScope(getState());
+    try {
+      const result = await api(`/api/gallery/items?${new URLSearchParams({ collection_id: scope.collection_id || "", favorites_only: String(scope.favorites_only) })}`, { signal: controller.signal });
+      if (controller.signal.aborted || requestedRoute !== viewRoute()) return null;
+      inventory = result;
+      if (selectedScope) {
+        const keys = new Set(galleryViewKeys(result));
+        selected = new Set([...selected].filter((key) => keys.has(key)));
+        for (const item of result.generations) if (selected.has(`generation:${item.id}`)) extraGenerations.set(item.id, item);
+      }
+      return result;
+    } catch (error) {
+      if (!controller.signal.aborted && requestedRoute === viewRoute()) inventoryError = true;
+      return null;
+    } finally {
+      if (inventoryController === controller) {
+        inventoryController = null;
+        sync();
+      }
+    }
+  }
+
+  function syncView() {
+    const classic = getState().galleryLayout === "classic";
+    if ((classic || selectedScope) && getState().session && inventorySignature !== viewSignature()) void loadInventory();
+    const header = root.querySelector(".classic-gallery-header");
+    if (!header) return;
+    const count = header.querySelector(".classic-gallery-count");
+    const label = inventoryError ? "Count unavailable" : inventory ? [plural(inventory.generations.length, "generation"), inventory.collection_ids.length ? plural(inventory.collection_ids.length, "folder") : ""].filter(Boolean).join(" · ") : "Loading count…";
+    if (count.textContent !== label) count.textContent = label;
+    const control = header.querySelector("[data-select-view]");
+    control.setAttribute("aria-checked", galleryViewChecked(inventory, selected));
+    control.setAttribute("aria-busy", String(viewBusy));
+    control.disabled = busy || viewBusy || (!inventoryError && inventory && !galleryViewKeys(inventory).length);
+  }
+
+  async function selectView(toggle = true) {
+    if (busy || viewBusy) return;
+    if (toggle && galleryViewChecked(inventory, selected) === "true") { finish(); return; }
+    const focusHeader = document.activeElement?.matches("[data-select-view]");
+    const restoreFocus = () => { if (focusHeader) root.querySelector("[data-select-view]")?.focus({ preventScroll: true }); };
+    const request = ++viewRequest;
+    const requestedRoute = viewRoute();
+    viewBusy = true;
+    sync();
+    const result = await loadInventory();
+    if (request !== viewRequest || requestedRoute !== viewRoute()) return;
+    viewBusy = false;
+    if (!result) { notify("Could not select all items. Try again.", "error"); sync(); restoreFocus(); return; }
+    selectedScope = galleryViewScope(getState());
+    for (const item of result.generations) extraGenerations.set(item.id, item);
+    selected = new Set(galleryViewKeys(result));
+    selecting = selected.size > 0;
+    sync();
+    restoreFocus();
+  }
 
   function sync() {
     const state = getState();
-    const currentRoute = state.currentCollectionId || "home";
+    const currentRoute = viewRoute();
     if (!state.session || route !== currentRoute) {
       selected.clear(); extraGenerations.clear(); groupMembers.clear(); selecting = false; anchor = null; route = currentRoute;
+      inventoryController?.abort(); inventoryController = null;
+      inventory = null; inventorySignature = null; selectedScope = null; inventoryError = false;
+      viewBusy = false; viewRequest += 1;
       if (!busy) activeDialog()?.close();
     }
     const visibleCards = cards();
     const visibleKeys = new Set(visibleCards.map(keyFor));
-    for (const id of extraGenerations.keys()) if (visibleKeys.has(`generation:${id}`)) extraGenerations.delete(id);
+    for (const id of extraGenerations.keys()) if (!selectedScope && visibleKeys.has(`generation:${id}`)) extraGenerations.delete(id);
     selected = new Set([...selected].filter((key) => visibleKeys.has(key) || extraGenerations.has(key.slice("generation:".length))));
     for (const [id] of extraGenerations) if (!selected.has(`generation:${id}`)) extraGenerations.delete(id);
-    if (state.favoritesFilter) {
+    if (state.favoritesFilter && !selectedScope) {
       for (const id of [...extraGenerations.keys()]) {
         if (!visibleKeys.has(`generation:${id}`)) {
           extraGenerations.delete(id);
@@ -112,7 +193,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
       }
       for (const [id, members] of [...groupMembers]) if (!members.size) groupMembers.delete(id);
     }
-    if (!selected.size) selecting = false;
+    selecting = selected.size > 0;
     for (const card of visibleCards) {
       const checked = selected.has(keyFor(card));
       card.classList.toggle("is-selected", checked);
@@ -126,6 +207,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
       const count = [...ids].filter((id) => selected.has(`generation:${id}`)).length;
       group.querySelector("[data-prompt-group-select]")?.setAttribute("aria-checked", count === 0 ? "false" : count === Number(group.dataset.groupCount) ? "true" : "mixed");
     }
+    syncView();
     root.querySelector(".app-shell")?.classList.toggle("gallery-selection-mode", selecting);
     const host = root.querySelector("#gallery-selection-toolbar");
     if (!host) return;
@@ -133,9 +215,10 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     host.setAttribute("aria-busy", String(busy));
     const focusedAction = host.contains(document.activeElement) ? document.activeElement.dataset.bulkAction : null;
     const plan = selectionPlan(selected, selectionState());
-    const all = visibleCards.length > 0 && visibleCards.every((card) => selected.has(keyFor(card)));
+    const classic = state.galleryLayout === "classic";
+    const all = classic ? galleryViewChecked(inventory, selected) === "true" : visibleCards.length > 0 && visibleCards.every((card) => selected.has(keyFor(card)));
     host.innerHTML = `<span class="selection-count" role="status" aria-label="${selected.size} selected" title="${escapeHtml(plan.summary)}">${selected.size}<span class="selection-count-label"> selected</span></span>
-      <button type="button" class="button low selection-tool" data-bulk-action="all" aria-label="Select loaded (${visibleCards.length})" title="Select all ${visibleCards.length} loaded items" ${all || !visibleCards.length || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="14" height="14" rx="2" /><path d="M16 3H5a2 2 0 0 0-2 2v11m8-2 2 2 4-4" /></svg></button>
+      <button type="button" class="button low selection-tool" data-bulk-action="all" aria-label="${classic ? "Select all items in this view" : `Select loaded (${visibleCards.length})`}" title="${classic ? "Select the entire current view, including unloaded items" : `Select all ${visibleCards.length} loaded items`}" ${all || (!classic && !visibleCards.length) || busy || viewBusy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="14" height="14" rx="2" /><path d="M16 3H5a2 2 0 0 0-2 2v11m8-2 2 2 4-4" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="favorite" aria-label="Add to Favorites" title="${plan.favorites.allFavorited ? "All selected items are already favorites" : "Add selected image and folder cards to Favorites"}" ${!plan.favorites.count || plan.favorites.allFavorited || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="download" aria-label="Download selection" title="Download all available images, including folder contents, as a ZIP" ${!plan.downloadable || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5" /></svg></button>
       <button type="button" class="button low selection-tool" data-bulk-action="transfer" aria-label="Move / Copy…" title="Move or copy selected items" ${!plan.count || busy ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v11H3Z" /><path d="M13 17v-5m-3 3 3-3 3 3" /></svg></button>
@@ -148,7 +231,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   }
 
   function choose(card, range) {
-    if (busy) return;
+    if (busy || viewBusy) return;
     const key = keyFor(card);
     const order = cards().map(keyFor);
     if (range && selecting && order.includes(anchor)) {
@@ -156,7 +239,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
       addKeys(order.slice(start, end + 1));
     } else {
       if (selected.has(key)) selected.delete(key);
-      else if (selected.size < 500) selected.add(key);
+      else if (selectedScope || selected.size < 500) selected.add(key);
       else notify("Select at most 500 items at a time.", "error");
       anchor = key;
     }
@@ -167,13 +250,14 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
 
   function addKeys(keys) {
     const next = new Set([...selected, ...keys]);
-    if (next.size > 500) { notify("Select at most 500 items at a time.", "error"); return; }
+    if (!selectedScope && next.size > 500) { notify("Select at most 500 items at a time, or use Select all in Classic view.", "error"); return; }
     selected = next;
   }
 
   function finish() {
     if (busy) return;
-    selecting = false; selected.clear(); sync();
+    viewRequest += 1; viewBusy = false;
+    selecting = false; selected.clear(); selectedScope = null; extraGenerations.clear(); sync();
     const card = cards().find((item) => keyFor(item) === anchor) || cards()[0];
     card?.querySelector(".card-select-button")?.focus({ preventScroll: true });
   }
@@ -257,7 +341,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     const plan = selectionPlan(selected, selectionState());
     if (operation === "favorite" ? !plan.favorites.count || plan.favorites.allFavorited : !plan.downloadable) return;
     const selection = operation === "favorite" ? plan.favorites : plan;
-    const body = JSON.stringify({ generation_ids: selection.generation_ids, collection_ids: selection.collection_ids });
+    const body = JSON.stringify(requestBody(selection));
     busy = true;
     sync();
     let succeeded = false;
@@ -305,13 +389,16 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     const all = ids.length && ids.every((item) => selected.has(`generation:${item}`));
     const next = new Set(selected);
     for (const item of ids) { if (all) next.delete(`generation:${item}`); else next.add(`generation:${item}`); }
-    if (next.size > 500) { notify("Select at most 500 items at a time. Clear some selections first.", "error"); return; }
+    if (!selectedScope && next.size > 500) { notify("Select at most 500 items at a time. Clear some selections first.", "error"); return; }
     groupMembers.set(id, new Set(ids));
     for (const item of visibleGenerations) extraGenerations.set(item.id, item);
     selected = next; selecting = selected.size > 0;
     sync();
   });
   root.addEventListener("click", (event) => {
+    if (event.target.closest("[data-select-view]")) {
+      event.preventDefault(); event.stopImmediatePropagation(); void selectView(); return;
+    }
     const action = event.target.closest("[data-bulk-action]")?.dataset.bulkAction;
     const card = event.target.closest("#gallery [data-gallery-card]");
     if (card && (selecting || event.target.closest(".card-select-button"))) {
@@ -320,7 +407,10 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     if (!action) return;
     event.preventDefault(); event.stopImmediatePropagation();
     if (busy) return;
-    if (action === "all") { addKeys(cards().map(keyFor)); sync(); }
+    if (action === "all") {
+      if (getState().galleryLayout === "classic") void selectView(false);
+      else { addKeys(cards().map(keyFor)); sync(); }
+    }
     else if (action === "clear") finish();
     else if (action === "transfer" || action === "delete") openDialog(action);
     else if (action === "favorite" || action === "download") void performToolbarAction(action);
@@ -331,10 +421,12 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     if (event.target.name === "bulk_collection_id") updateTransferControls();
   });
   root.addEventListener("keydown", (event) => {
-    if (!selecting || busy || activeDialog() || event.target.closest("input, textarea, select, [contenteditable=true]")) return;
+    if ((!selecting && getState().galleryLayout !== "classic") || busy || activeDialog() || event.target.closest("input, textarea, select, [contenteditable=true]")) return;
     if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finish(); }
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
-      event.preventDefault(); addKeys(cards().map(keyFor)); sync();
+      event.preventDefault();
+      if (getState().galleryLayout === "classic") void selectView(false);
+      else { addKeys(cards().map(keyFor)); sync(); }
     }
   }, true);
   root.addEventListener("dragstart", (event) => { if (selecting && event.target.closest("#gallery")) event.preventDefault(); }, true);
