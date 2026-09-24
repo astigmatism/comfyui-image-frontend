@@ -173,7 +173,7 @@ export function generationPanelMarkup(state, profile, contract) {
               </div>
             </div>
           </div>
-          <p id="prompt-pipeline-flow" class="prompt-pipeline-flow">${promptPipelineMarkup(state)}</p>
+          <p id="prompt-pipeline-flow" class="prompt-pipeline-flow" role="status" aria-live="polite" aria-atomic="true">${promptPipelineMarkup(state)}</p>
           ${controlSectionMarkup({ key: "auto-generation", title: "Auto-generation",
             open: controlSectionIsOpen(state.controlSectionOpen, "auto-generation", false),
             className: "auto-generation-section",
@@ -855,11 +855,19 @@ function controlSectionStatus(section, values) {
 
 export function promptPipelineMarkup(state) {
   const stages = [];
-  if (state.promptGeneration?.enabled) stages.push("Prompt generation");
-  if (state.autoGenerateCreativeDirection) stages.push(state.promptAssistant?.mode === "create" && !state.promptGeneration?.enabled ? "Create" : "Refine");
-  if (!stages.length) stages.push("Current prompt");
-  stages.push("Image");
-  return `${state.autoGenerate ? "Repeat · " : ""}${stages.join(" → ")}`;
+  // During automation the captured configuration describes the work in progress.
+  const snapshot = state.autoGenerate ? state.automation?.snapshot : null;
+  const promptGeneration = snapshot ? Boolean(snapshot.prompt_generation) : state.promptGeneration?.enabled;
+  const assistant = snapshot ? snapshot.assistant : state.autoGenerateCreativeDirection ? state.promptAssistant : null;
+  if (promptGeneration) stages.push(["prompt_generation", "Prompt generation"]);
+  if (assistant) stages.push(["creative_direction", assistant.mode === "create" && !promptGeneration ? "Create" : "Refine"]);
+  if (!stages.length) stages.push(["current_prompt", "Current prompt"]);
+  stages.push(["image", "Image"]);
+  const active = state.autoGenerate && !state.automationUnavailable &&
+    !["blocked", "paused", "retrying", "completed", "off"].includes(state.autoGenerateStatus)
+    ? state.automation?.progress?.active_stages || [] : [];
+  return `${state.autoGenerate ? "Repeat · " : ""}${stages.map(([id, label]) =>
+    `<span data-pipeline-stage="${id}" class="pipeline-stage${active.includes(id) ? " is-active" : ""}" role="group" aria-label="${label}${active.includes(id) ? " (active)" : ""}">${label}</span>`).join(" → ")}`;
 }
 
 function featureSwitchMarkup(id, label, enabled, disabled = false) {

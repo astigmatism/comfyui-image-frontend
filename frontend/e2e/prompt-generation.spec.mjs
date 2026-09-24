@@ -68,6 +68,130 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   expect(errors).toEqual([]);
 });
 
+async function controlledAutomaticPipeline(page) {
+  // Keep stage boundaries deterministic while exercising the real app and SSE handlers.
+  // Backend integration tests separately hold the real composition/acceptance boundary.
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) { super(...args); window.automaticEvents = this; }
+    };
+  });
+  let auto = { enabled: false, status: "off", revision: 0 };
+  const edits = [];
+  await page.route("**/api/auto-generation", async (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON();
+      auto = { ...auto, enabled: payload.enabled, snapshot: payload.snapshot || auto.snapshot,
+        revision: auto.revision + 1, status: payload.enabled ? "preparing" : "off",
+        progress: payload.enabled ? { revision: auto.revision + 1, cycle_id: "controlled-cycle",
+          cycle_created_at: "2026-09-24T01:00:00Z", active_stages: ["prompt_generation"],
+          raw_prompt: null, refined_prompt: null } : null };
+    }
+    await route.fulfill({ json: auto });
+  });
+  await page.route("**/api/auto-generation/apply", async (route) => {
+    edits.push(route.request().postDataJSON());
+    await route.fulfill({ json: auto });
+  });
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toBeVisible();
+  await page.getByRole("switch", { name: "Use Creative Direction" }).check();
+  await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("Warm sunlight");
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
+  await expect(page.locator('[data-pipeline-stage="prompt_generation"]')).toHaveClass(/is-active/);
+  return {
+    edits,
+    async deliver(progress) {
+      auto = { ...auto, progress: { ...auto.progress, ...progress } };
+      await page.evaluate(() => window.automaticEvents.dispatchEvent(new Event("auto_generation.updated")));
+    },
+  };
+}
+
+test("automatic pipeline displays raw then refined prompts and highlights each stage", async ({ page }, testInfo) => {
+  const pipeline = await controlledAutomaticPipeline(page);
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const flow = page.locator("#prompt-pipeline-flow");
+  await expect(flow).toHaveText("Repeat · Prompt generation → Refine → Image");
+  await pipeline.deliver({ raw_prompt: "A lighthouse above a quiet sea.", active_stages: ["creative_direction"] });
+  await expect(prompt).toHaveValue("A lighthouse above a quiet sea.");
+  const refine = page.locator('[data-pipeline-stage="creative_direction"]');
+  await expect(refine).toHaveClass(/is-active/);
+  await expect(refine).toHaveAttribute("aria-label", "Refine (active)");
+  await expect(refine).toHaveCSS("color", "rgb(91, 156, 245)");
+  await expect(refine).toHaveCSS("text-decoration-line", "underline");
+  await prompt.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("automatic-refining-preview.png"), fullPage: true });
+  await pipeline.deliver({ refined_prompt: "A lighthouse above a quiet sea, in warm sunlight.", active_stages: ["image"] });
+  await expect(prompt).toHaveValue("A lighthouse above a quiet sea, in warm sunlight.");
+  await expect(page.locator('[data-pipeline-stage="image"]')).toHaveClass(/is-active/);
+  await expect(refine).not.toHaveClass(/is-active/);
+  expect(pipeline.edits).toEqual([]);
+  await page.evaluate(() => window.automaticEvents.onerror(new Event("error")));
+  await expect(flow.locator(".is-active")).toHaveCount(0);
+  await pipeline.deliver({});
+  await expect(page.locator('[data-pipeline-stage="image"]')).toHaveClass(/is-active/);
+  await prompt.fill("Preserve this draft when stopped");
+  await pipeline.deliver({ cycle_id: "next-cycle", cycle_created_at: "2026-09-24T02:00:00Z",
+    raw_prompt: "Next generated prompt", refined_prompt: null, active_stages: ["creative_direction"] });
+  await expect(page.getByRole("button", { name: "Use latest prompt" })).toBeVisible();
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
+  await expect(flow.locator(".is-active")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Use latest prompt" })).toHaveCount(0);
+  await expect(prompt).toHaveValue("Preserve this draft when stopped");
+});
+
+test("automatic preview survives delayed startup and protects edited drafts across reload", async ({ page }) => {
+  const pipeline = await controlledAutomaticPipeline(page);
+  await pipeline.deliver({ raw_prompt: "The complete generated lighthouse prompt.", active_stages: ["creative_direction"] });
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  await expect(prompt).toHaveValue("The complete generated lighthouse prompt.");
+  let releaseSources;
+  const held = new Promise((resolve) => { releaseSources = resolve; });
+  await page.route("**/api/workflows/*", async (route) => { await held; await route.continue(); });
+  const progressRead = page.waitForResponse("**/api/auto-generation");
+  await page.reload();
+  await progressRead;
+  releaseSources();
+  await expect(prompt).toHaveValue("The complete generated lighthouse prompt.");
+  await expect(page.locator('[data-pipeline-stage="creative_direction"]')).toHaveClass(/is-active/);
+  await prompt.fill("Keep my own draft");
+  await pipeline.deliver({ refined_prompt: "The refined lighthouse prompt.", active_stages: ["image"] });
+  await expect(page.getByRole("button", { name: "Use latest prompt" })).toBeVisible();
+  await expect(prompt).toHaveValue("Keep my own draft");
+  await page.reload();
+  await expect(prompt).toHaveValue("Keep my own draft");
+  await page.getByRole("button", { name: "Use latest prompt" }).click();
+  await expect(prompt).toHaveValue("The refined lighthouse prompt.");
+  expect(pipeline.edits).toEqual([]);
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
+});
+
+test("automatic generated prompts are refined once and shared by the accepted images", async ({ page }) => {
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Beacon keeper");
+  await page.getByRole("switch", { name: "Use Creative Direction" }).check();
+  await page.getByRole("textbox", { name: "Creative Direction", exact: true }).fill("Warm sunlight");
+  await page.getByRole("textbox", { name: "Generation quantity" }).fill("2");
+  await page.locator('[data-control-section="auto-generation"] .control-section-trigger').click();
+  await page.getByRole("spinbutton", { name: "Images queued limit" }).fill("2");
+  await page.getByRole("spinbutton", { name: "Images queued limit" }).blur();
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
+  await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).status).toBe("completed");
+  const auto = await (await page.request.get("/api/auto-generation")).json();
+  expect(auto.progress.raw_prompt).toContain("Beacon keeper explores");
+  expect(auto.progress.refined_prompt).toBe(`${auto.progress.raw_prompt}, Warm sunlight`);
+  expect(auto.latest_prompt).toBe(auto.progress.refined_prompt);
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(auto.latest_prompt);
+  const { items } = await (await page.request.get("/api/generations")).json();
+  expect(items).toHaveLength(2);
+  for (const item of items) {
+    const detail = await (await page.request.get(`/api/generations/${item.id}`)).json();
+    expect(detail.final_prompt).toBe(auto.latest_prompt);
+  }
+  await waitForAcceptedImages(page);
+});
+
 test("local edits survive refresh before remote saving", async ({ page }) => {
   await page.route("**/api/preferences", async (route) => {
     if (route.request().method() === "PUT") return route.abort("failed");

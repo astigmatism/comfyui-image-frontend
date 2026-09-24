@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 from uuid import uuid4
 
 import pytest
@@ -18,7 +19,7 @@ from app.schemas import GenerationCreate
 from app.services.prompt_generation import PromptGenerationService
 from sqlalchemy import func, select
 from tests.conftest import csrf
-from tests.helpers import generation_payload, provision_user
+from tests.helpers import generation_payload, login_ready_admin, provision_user
 from tests.integration.test_auto_generation import command, complete, enable, tick
 from tests.integration.test_prompt_generation import post, register
 
@@ -98,6 +99,166 @@ def test_batch_refines_once_reuses_saved_work_and_accepts_once(app_client, fake_
     tick(app_client, user["id"])
     with container.db.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(PromptGenerationRun)) == 2
+
+
+def test_progress_publishes_raw_before_refining_and_final_before_image_acceptance(
+    app_client, fake_state, monkeypatch
+):
+    from app.services import prompt_generation
+    from app.services.auto_generation import response
+
+    user, state, identities = prepare(
+        app_client, fake_state, assistant={"mode": "refine", "creative_direction": "add mist"}
+    )
+    container = app_client.app.state.container
+    compose = prompt_generation.compose_prompt
+    notify = prompt_generation.notify_user
+    entered = threading.Event()
+    release = asyncio.Event()
+    notifications = []
+
+    async def record_notification(broker, owner, event):
+        if event == "auto_generation.updated":
+            with container.db.session_factory() as session:
+                notifications.append(response(session.get(AutoGeneration, owner), session).progress)
+        await notify(broker, owner, event)
+
+    async def held_refinement(container, owner, payload, **kwargs):
+        assert payload.mode == "refine"
+        assert payload.prompt == "A lighthouse at night"
+        assert notifications[-1].active_stages == ["creative_direction"]
+        entered.set()
+        await release.wait()
+        return await compose(container, owner, payload, **kwargs)
+
+    accept = container.generations._prepare_accept
+
+    def unavailable(*args, **kwargs):
+        assert notifications[-1].refined_prompt == "A lighthouse at night, add mist"
+        assert notifications[-1].active_stages == ["image"]
+        raise AppError("comfyui_instance_unavailable", "offline")
+
+    monkeypatch.setattr(prompt_generation, "notify_user", record_notification)
+    monkeypatch.setattr(prompt_generation, "compose_prompt", held_refinement)
+    monkeypatch.setattr(container.generations, "_prepare_accept", unavailable)
+    task = app_client.portal.start_task_soon(container.prompt_generation.advance, identities[0])
+    try:
+        assert entered.wait(10)
+        during = app_client.get("/api/auto-generation").json()
+        assert during["progress"]["raw_prompt"] == "A lighthouse at night"
+        assert during["progress"]["refined_prompt"] is None
+        assert during["progress"]["active_stages"] == ["creative_direction"]
+        assert during["latest_prompt"] == state["latest_prompt"]
+        with container.db.session_factory() as session:
+            assert set(session.scalars(select(GenerationPreparation.status))) == {"refining"}
+            assert session.scalar(select(func.count()).select_from(Generation)) == 0
+    finally:
+        app_client.portal.call(release.set)
+        task.result(timeout=10)
+    waiting = app_client.get("/api/auto-generation").json()
+    assert waiting["progress"]["refined_prompt"] == "A lighthouse at night, add mist"
+    assert waiting["progress"]["active_stages"] == ["image"]
+    assert waiting["latest_prompt"] == state["latest_prompt"]
+    # A restart and repeated advance reuse the completed prompt/refinement.
+    monkeypatch.setattr(container.generations, "_prepare_accept", accept)
+    restarted = PromptGenerationService(container)
+    for identity in identities:
+        app_client.portal.call(restarted.advance, identity)
+    after = app_client.get("/api/auto-generation").json()
+    assert after["latest_prompt"] == waiting["progress"]["refined_prompt"]
+    assert after["progress"]["cycle_id"] == during["progress"]["cycle_id"]
+    assert len(fake_state.ollama_calls) == 1
+    with container.db.session_factory() as session:
+        assert set(session.scalars(select(Generation.final_prompt))) == {after["latest_prompt"]}
+        assert session.scalar(select(func.count()).select_from(Generation)) == 2
+    complete(app_client)
+    tick(app_client, user["id"])
+    next_batch = app_client.get("/api/auto-generation").json()["progress"]
+    assert next_batch["cycle_id"] != after["progress"]["cycle_id"]
+    assert next_batch["active_stages"] == ["prompt_generation"]
+    assert next_batch["raw_prompt"] is None
+
+
+@pytest.mark.parametrize("failure", ["text", "refinement"])
+def test_failed_stage_blocks_images_and_clears_activity(
+    app_client, fake_state, monkeypatch, failure
+):
+    from app.services import prompt_generation
+
+    _, _, identities = prepare(
+        app_client, fake_state, assistant={"mode": "refine", "creative_direction": "mist"}
+    )
+    container = app_client.app.state.container
+    calls = []
+
+    async def rejected(*args, **kwargs):
+        calls.append(1)
+        raise AppError("prompt_refinement_unchanged", "Try another direction.")
+
+    monkeypatch.setattr(prompt_generation, "compose_prompt", rejected)
+    if failure == "text":
+        with container.db.session_factory() as session:
+            row = session.get(GenerationPreparation, identities[0])
+            session.get(PromptGenerationRun, row.prompt_run_id).status = "failed"
+            session.commit()
+    app_client.portal.call(container.prompt_generation.advance, identities[0])
+    result = app_client.get("/api/auto-generation").json()
+    assert result["status"] == "blocked"
+    assert result["progress"]["active_stages"] == []
+    assert len(calls) == (1 if failure == "refinement" else 0)
+    with container.db.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Generation)) == 0
+
+
+@pytest.mark.parametrize("operation", ["stop", "edit"])
+def test_late_refinement_cannot_restore_invalidated_progress(
+    app_client, fake_state, monkeypatch, operation
+):
+    from app.schemas import AutoGenerationSnapshot
+    from app.services import prompt_generation
+
+    user, state, identities = prepare(
+        app_client, fake_state, assistant={"mode": "refine", "creative_direction": "mist"}
+    )
+    container = app_client.app.state.container
+    compose = prompt_generation.compose_prompt
+
+    async def change_during_refinement(*args, **kwargs):
+        change = (
+            {"enabled": False}
+            if operation == "stop"
+            else {
+                "snapshot": AutoGenerationSnapshot.model_validate(
+                    {**state["snapshot"], "quantity": 3}
+                )
+            }
+        )
+        await container.automation.change(user["id"], state["revision"], **change)
+        return await compose(*args, **kwargs)
+
+    monkeypatch.setattr(prompt_generation, "compose_prompt", change_during_refinement)
+    app_client.portal.call(container.prompt_generation.advance, identities[0])
+    result = app_client.get("/api/auto-generation").json()
+    assert result["progress"]["cycle_id"] is None
+    assert result["progress"]["raw_prompt"] is None
+    assert result["progress"]["refined_prompt"] is None
+    assert result["progress"]["active_stages"] == []
+    with container.db.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Generation)) == 0
+
+
+def test_progress_excludes_standalone_prompt_requests_and_other_owners(app_client, fake_state):
+    user, _ = provision_user(app_client)
+    prompt = register(app_client, fake_state)
+    manual = post(app_client, "/api/prompt-generations", prompt)
+    assert manual.status_code == 202
+    enable(app_client)
+    tick(app_client, user["id"])
+    result = app_client.get("/api/auto-generation").json()["progress"]
+    assert result["active_stages"] == ["image"]
+    assert result["raw_prompt"] is None
+    login_ready_admin(app_client)
+    assert app_client.get("/api/auto-generation").json()["progress"] is None
 
 
 def test_batch_acceptance_rolls_back_all_images_and_blocks_once(

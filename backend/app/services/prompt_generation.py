@@ -746,7 +746,7 @@ class PromptGenerationService:
     async def _advance_batch(self, group: str) -> None:
         """Advance one batch that shares a single text run (manual or automatic)."""
 
-        def load() -> tuple[GenerationPreparation, PromptGenerationRun] | None:
+        def load() -> tuple[GenerationPreparation, PromptGenerationRun, bool] | None:
             with self.container.db.session_factory() as session:
                 lock_user_state(session)
                 rows = self._batch_rows(session, group)
@@ -765,12 +765,23 @@ class PromptGenerationService:
                     return None
                 text = session.get(PromptGenerationRun, leader.prompt_run_id)
                 assert text is not None
-                return leader, text
+                changed = False
+                if text.status == "succeeded":
+                    status = (
+                        "refining"
+                        if leader.request_json.get("assistant") and not leader.assistant_run_id
+                        else "ready"
+                    )
+                    changed = any(row.status != status for row in rows)
+                    for row in rows:
+                        row.status = status
+                    session.commit()
+                return leader, text, changed
 
         loaded = await run_blocking(load)
         if not loaded:
             return
-        leader, text = loaded
+        leader, text, changed = loaded
         if text.status in TEXT_ACTIVE:
             return
         try:
@@ -780,6 +791,15 @@ class PromptGenerationService:
                     text.error_message or "Prompt generation failed.",
                 )
             payload = GenerationPreparationItem.model_validate(leader.request_json)
+            # Publish the raw prompt and durable phase before starting refinement.
+            if changed:
+                await notify_user(
+                    self.container.broker, leader.owner_id, "prompt_generation.updated"
+                )
+                if leader.auto_cycle_id:
+                    await notify_user(
+                        self.container.broker, leader.owner_id, "auto_generation.updated"
+                    )
             if payload.assistant and not leader.assistant_run_id:
                 # compose_prompt durably saves on the leader before returning. A restart
                 # reuses that result, and siblings never consume the provenance twice.
@@ -789,6 +809,14 @@ class PromptGenerationService:
                     payload.assistant.model_copy(update={"prompt": text.prompt}),
                     preparation_id=leader.id,
                 )
+                # The saved output is visible even when image acceptance must wait.
+                await notify_user(
+                    self.container.broker, leader.owner_id, "prompt_generation.updated"
+                )
+                if leader.auto_cycle_id:
+                    await notify_user(
+                        self.container.broker, leader.owner_id, "auto_generation.updated"
+                    )
 
             def accept_batch() -> list[dict[str, Any]]:
                 with self.container.db.session_factory() as session:

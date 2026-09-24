@@ -22,6 +22,7 @@ from ..models import (
     GenerationPreparation,
     GenerationRunMember,
     GenerationStatus,
+    PromptGenerationRun,
     User,
     UserState,
     WorkflowProfile,
@@ -33,6 +34,7 @@ from ..schemas import (
     GenerationPreparationItem,
     PromptAssistantSnapshot,
 )
+from .auto_generation_progress import project_progress
 from .events import event_payload
 from .generation_activity import begin_run
 from .prompt_assistant import compose_prompt
@@ -75,7 +77,43 @@ def response(row: AutoGeneration | None, session: Session | None = None) -> Auto
         else None
     )
     profile = session.get(WorkflowProfile, row.profile_id) if session and row.profile_id else None
+    progress = None
+    if session:
+        cycle = session.scalar(
+            select(AutoGenerationCycle)
+            .where(
+                AutoGenerationCycle.user_id == row.user_id,
+                AutoGenerationCycle.revision == row.revision,
+                AutoGenerationCycle.state != "discarded",
+            )
+            .order_by(AutoGenerationCycle.created_at.desc(), AutoGenerationCycle.id.desc())
+            .limit(1)
+        )
+        preparation = (
+            session.scalar(
+                select(GenerationPreparation)
+                .where(GenerationPreparation.auto_cycle_id == cycle.id)
+                .order_by(GenerationPreparation.position)
+                .limit(1)
+            )
+            if cycle
+            else None
+        )
+        text = session.get(PromptGenerationRun, preparation.prompt_run_id) if preparation else None
+        images_active = session.scalar(
+            select(Generation.id)
+            .where(
+                Generation.owner_id == row.user_id,
+                Generation.auto_cycle_id.is_not(None),
+                Generation.status.in_(ACTIVE_STATUSES),
+            )
+            .limit(1)
+        )
+        progress = project_progress(
+            row, cycle, preparation, text, images_active=images_active is not None
+        )
     return AutoGenerationResponse(
+        progress=progress,
         prompt_ready=bool(ready),
         workflow_name=profile.display_name if profile else None,
         enabled=row.enabled,
@@ -385,6 +423,8 @@ class AutoGenerationService:
                 )
                 if not completed:
                     return
+                if prepared["assistant"]:
+                    await notify_user(self.container.broker, user_id, "auto_generation.updated")
             events = await _run_blocking(
                 self._accept_ready, user_id, revision, prepared["cycle_id"]
             )

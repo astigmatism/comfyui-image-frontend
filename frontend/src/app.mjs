@@ -3,6 +3,7 @@ import { installThumbnails } from "./thumbnails.mjs";
 import { reconcileGallery, reconcileGalleryCard } from "./gallery-dom.mjs";
 import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
+import { automaticPromptUpdate, olderAutomaticProgress } from "./auto-generation-progress.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { installLoraControls } from "./lora-stack.mjs";
 import { api, isTransientError, setCsrfToken, upload } from "./api.mjs";
@@ -3372,6 +3373,7 @@ function applyPreset(presetId) {
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
+  applyAutomaticPromptPreview({ render: false });
   syncSubmissionSnapshot();
   state.selectedGenerationTargetCount = plannedGenerationTotal();
   const panelView = capturePanelView(panel);
@@ -5904,7 +5906,11 @@ function startLiveUpdates({ paused = false } = {}) {
       else applyLiveUpdate(update);
     });
   }
-  source.onerror = () => {};
+  source.onerror = () => {
+    if (state.eventSource !== source) return;
+    state.automationUnavailable = true;
+    syncServerControls();
+  };
   source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); submissionRecovery?.start({ immediate: true }); };
   state.eventSource = source;
   startGenerationEtaTimer();
@@ -6410,21 +6416,32 @@ async function refreshAutoGeneration() {
     applyAutoGenerationState(result);
   } catch (error) {
     if (controller.signal.aborted || token !== automationReadToken) return;
+    state.automationUnavailable = true;
     state.autoGenerateStatusMessage = "Auto-generation status unavailable. Reconnecting…";
     syncServerControls();
   }
 }
 
 function applyAutoGenerationState(result) {
+  if (olderAutomaticProgress(state.automation, result)) return;
   state.automation = result;
+  state.automationUnavailable = false;
   autoSettingsSync?.observe(result);
   state.automationLoaded = true;
-  if (result.latest_prompt && result.latest_prompt !== state.lastAutoPrompt) {
+  const latest = state.latestGeneratedPrompt;
+  const discardedPreview = latest?.autoCycleId && (latest.autoRevision !== result.revision || latest.autoCycleId !== result.progress?.cycle_id);
+  if (discardedPreview) {
+    state.latestGeneratedPrompt = null;
+    persistBrowserDraft();
+  }
+  if (!result.progress && result.latest_prompt && result.latest_prompt !== state.lastAutoPrompt) {
     state.lastAutoPrompt = result.latest_prompt;
     receiveGeneratedPrompt(result.latest_prompt, { source: result.snapshot?.generation.source_key, revision: result.snapshot?.generation.revision, generator: result.snapshot?.prompt_generation?.source_key });
   }
   state.autoGenerate = result.enabled;
   state.autoGenerateStatus = result.status;
+  applyAutomaticPromptPreview();
+  if (discardedPreview) renderPanel();
   const messages = {
     waiting: "Auto generation is on. It continues with the browser closed.",
     preparing: "Preparing the next automatic prompt.",
@@ -6438,6 +6455,20 @@ function applyAutoGenerationState(result) {
   syncServerControls();
   syncGenerationSubmissionState();
   updatePhotoViewerNextIn();
+}
+
+function applyAutomaticPromptPreview({ render = true } = {}) {
+  const input = positivePromptInput(sourceInterface(state.activeSource));
+  const update = automaticPromptUpdate(state.automation, {
+    ready: Boolean(input && !state.sourceDetailLoading && state.sharedSettingsStatus !== "loading"),
+    source: state.activeSourceKey, revision: sourceRevision(state.activeSource),
+    generator: state.promptGeneration.active_source, dirty: state.promptEditorDirty,
+    editorOpen: Boolean(document.querySelector("#prompt-editor-dialog[open]")),
+  }, state.autoPromptReceipt);
+  if (!["apply", "offer"].includes(update.action)) return;
+  state.autoPromptReceipt = update.receipt;
+  state.lastAutoPrompt = update.prompt;
+  receiveGeneratedPrompt(update.prompt, update, { render });
 }
 
 async function autoGenerationCommand(path, payload = {}) {
@@ -6486,7 +6517,10 @@ function syncServerControls() {
     control.setAttribute("aria-busy", String(!state.automationLoaded || state.automationBusy));
   }
   const flow = document.querySelector("#prompt-pipeline-flow");
-  if (flow) flow.textContent = promptPipelineMarkup(state);
+  if (flow) {
+    const markup = promptPipelineMarkup(state);
+    if (flow.innerHTML !== markup) flow.innerHTML = markup;
+  }
   for (const id of ["auto-generate", "auto-generate-creative-direction", "prompt-generation-enabled"]) {
     const toggle = document.getElementById(id);
     const label = toggle?.closest("label")?.querySelector("em");
@@ -6605,6 +6639,8 @@ function restoreBrowserDraft() {
   state.latestGeneratedPrompt = null;
   state.promptEditorDirty = false;
   state.lastAutoPrompt = null;
+  state.autoPromptReceipt = null;
+  state.automationUnavailable = false;
   try {
     const saved = JSON.parse(readStoredItem(`cif.panel-draft.${sessionStorageUserId()}`) || "null");
     if (saved && typeof saved === "object") {
@@ -6745,27 +6781,38 @@ async function runPromptGeneration(withImages) {
   }
 }
 
-function receiveGeneratedPrompt(prompt, context) {
+function receiveGeneratedPrompt(prompt, context, { render = true } = {}) {
   if (!prompt || context.source !== state.activeSourceKey) return;
   if (context.generator && context.generator !== state.promptGeneration.active_source) return;
   if (context.revision && !revisionsMatch({ revision: context.revision }, state.activeSource)) return;
   const input = positivePromptInput(sourceInterface(state.activeSource));
-  if (!input || state.parameters[input.id] === prompt) return;
+  if (!input) return;
+  if (state.parameters[input.id] === prompt) {
+    if (context.autoCycleId && state.latestGeneratedPrompt?.autoCycleId === context.autoCycleId) {
+      state.latestGeneratedPrompt = null;
+      persistBrowserDraft();
+      if (render) renderPanel();
+    }
+    return;
+  }
   if (state.promptEditorDirty || document.querySelector("#prompt-editor-dialog[open]")) {
-    state.latestGeneratedPrompt = { prompt, source: context.source, revision: context.revision, generator: context.generator };
+    state.latestGeneratedPrompt = { prompt, source: context.source, revision: context.revision, generator: context.generator,
+      autoRevision: context.autoRevision, autoCycleId: context.autoCycleId };
   } else {
+    state.latestGeneratedPrompt = null;
     state.parameters[input.id] = prompt;
     state.explicitParameterIds.add(input.id);
     state.compositionId = null;
     persistActiveParameterState();
   }
   persistBrowserDraft();
-  renderPanel();
+  if (render) renderPanel();
 }
 
 function applyLatestGeneratedPrompt() {
   const latest = state.latestGeneratedPrompt;
   if (!latest || latest.source !== state.activeSourceKey) return;
+  if (latest.autoCycleId && (latest.autoRevision !== state.automation?.revision || latest.autoCycleId !== state.automation?.progress?.cycle_id)) return;
   if (latest.revision && !revisionsMatch({ revision: latest.revision }, state.activeSource)) return;
   if (latest.generator && latest.generator !== state.promptGeneration.active_source) return;
   state.latestGeneratedPrompt = null;

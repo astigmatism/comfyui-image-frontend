@@ -856,7 +856,19 @@ class AutoGenerationRetry(APIModel):
     expected_revision: int = Field(ge=0)
 
 
+class AutoGenerationProgress(APIModel):
+    revision: int
+    cycle_id: str | None = None
+    cycle_created_at: datetime | None = None
+    active_stages: list[Literal["prompt_generation", "creative_direction", "image"]] = Field(
+        default_factory=list
+    )
+    raw_prompt: str | None = None
+    refined_prompt: str | None = None
+
+
 class AutoGenerationResponse(APIModel):
+    progress: AutoGenerationProgress | None = None
     prompt_ready: bool = False
     workflow_name: str | None = None
     enabled: bool = False
