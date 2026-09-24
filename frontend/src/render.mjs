@@ -180,7 +180,6 @@ export function generationPanelMarkup(state, profile, contract) {
             content: `<div id="server-controls">${serverControlsMarkup(state)}</div>`,
           })}
           <div id="automation-status-host">${automationStatusMarkup(state)}</div>
-          <div id="shared-settings-status-host">${sharedSettingsStatusMarkup(state)}</div>
           ${comfyuiInstanceSelectorMarkup(state)}
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
@@ -204,6 +203,7 @@ export function generationPanelMarkup(state, profile, contract) {
         }
         ${controlEmptyStateMarkup(state, profile, contract)}
       </div>
+      <div id="shared-settings-status-host" class="panel-footer">${sharedSettingsStatusMarkup(state)}</div>
     </div>`;
 }
 
