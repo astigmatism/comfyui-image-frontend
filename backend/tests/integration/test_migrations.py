@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "a12c39e781b4"
+HEAD_REVISION = "b73a94f1c205"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -523,3 +523,55 @@ def test_populated_legacy_database_survives_publication_migration_round_trip(
     engine = create_engine(f"sqlite:///{settings.database_path}")
     _assert_populated_head_rows(engine)
     engine.dispose()
+
+
+def test_prompt_migration_and_runner_recovery_preserve_an_isolated_database_copy(tmp_path):
+    import importlib.util
+    import sqlite3
+    import tarfile
+
+    original = tmp_path / "original.db"
+    command.upgrade(_config(original), LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{original}")
+    _insert_populated_legacy_rows(engine)
+    engine.dispose()
+    command.upgrade(_config(original), "a12c39e781b4")
+    root = tmp_path / "deployment"
+    data = root / "data"
+    data.mkdir(parents=True)
+    candidate = data / "app.db"
+    with sqlite3.connect(original) as source, sqlite3.connect(candidate) as target:
+        source.backup(target)
+    assets = data / "assets"
+    assets.mkdir()
+    (assets / "keep.txt").write_text("retained artifact")
+    archive = tmp_path / "before.tar"
+    with tarfile.open(archive, "w") as stream:
+        stream.add(data, arcname=".")
+    command.upgrade(_config(candidate), "head")
+    engine = create_engine(f"sqlite:///{candidate}")
+    _assert_populated_head_rows(engine)
+    assert {"prompt_generation_runs", "generation_preparations"}.issubset(
+        inspect(engine).get_table_names()
+    )
+    engine.dispose()
+    # Exercise the installed runner's existing restore transaction, not a downgrade.
+    runner_path = Path(__file__).resolve().parents[3] / "scripts" / "production-update.py"
+    spec = importlib.util.spec_from_file_location("prompt_migration_recovery", runner_path)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    recovery = tmp_path / "recovery"
+    recovery.mkdir()
+    runner.restore_database(root, archive, recovery)
+    with sqlite3.connect(candidate) as restored:
+        assert (
+            restored.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+            == "a12c39e781b4"
+        )
+        assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert restored.execute("SELECT id FROM generations").fetchone()[0] == LEGACY_GENERATION_ID
+    with sqlite3.connect(recovery / "database.after-cutover" / "app.db") as failed:
+        assert (
+            failed.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+        )
+    assert (assets / "keep.txt").read_text() == "retained artifact"

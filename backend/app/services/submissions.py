@@ -58,6 +58,14 @@ def lookup(service: GenerationService, owner_id: str, key: str) -> dict[str, Any
             raise AppError(
                 "submission_not_found", "No accepted submission is recorded yet.", status_code=404
             )
+        if receipt.endpoint in {"prompt", "preparation"}:
+            from .prompt_generation import project_receipt as project_prompt_receipt
+
+            return {
+                "key": key,
+                "endpoint": receipt.endpoint,
+                "result": project_prompt_receipt(service, session, receipt),
+            }
         return {
             "key": key,
             "endpoint": receipt.endpoint,

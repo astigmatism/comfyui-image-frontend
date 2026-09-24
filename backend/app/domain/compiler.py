@@ -12,7 +12,7 @@ from typing import Any
 
 from ..errors import AppError, ContractError
 from .lora_stack import validate_lora_stack
-from .publication import canonical_json_bytes, sha256_json
+from .publication import canonical_json_bytes, publication_kind, sha256_json
 
 CANONICAL_INTEGER_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 MAX_PUBLIC_STRING_LENGTH = 100_000
@@ -74,6 +74,7 @@ class WorkflowCompiler:
                     ),
                 },
             )
+        text_publication = publication_kind(contract) == "text"
         raw_inputs = contract.get("inputs")
         if not isinstance(raw_inputs, list):
             raise ContractError("manifest_invalid", "Accepted source interface is unavailable.")
@@ -106,7 +107,13 @@ class WorkflowCompiler:
             required = bool(declaration.get("required"))
             input_type = declaration.get("type")
             missing_value = (
-                value is _MISSING or value is None or (value == "" and input_type != "choice")
+                value is _MISSING
+                or value is None
+                or (
+                    value == ""
+                    and input_type != "choice"
+                    and not (text_publication and input_type == "string")
+                )
             )
             if required and (not supplied or missing_value):
                 errors[input_id] = "This published parameter is required."
@@ -226,7 +233,9 @@ class WorkflowCompiler:
             ),
             None,
         )
-        if positive is None or not isinstance(effective.get(positive), str):
+        if not text_publication and (
+            positive is None or not isinstance(effective.get(positive), str)
+        ):
             raise ContractError(
                 "manifest_invalid", "Accepted source has no effective positive prompt."
             )
@@ -238,7 +247,7 @@ class WorkflowCompiler:
             compiled_graph_hash=sha256_json(graph),
             selected_uploads=selected_uploads,
             requested_outputs=[],
-            final_prompt=str(effective[positive]),
+            final_prompt=str(effective[positive]) if positive is not None else "",
             selected_preset=None,
         )
 

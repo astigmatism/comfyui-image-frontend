@@ -17,6 +17,7 @@ from ..blocking import run_blocking
 from ..config import ComfyUIInstanceConfig
 from ..domain.compiler import CompileResult, WorkflowCompiler
 from ..domain.lora_stack import validate_lora_runtime
+from ..domain.publication import publication_kind
 from ..domain.results import project_public_declared_outputs, project_public_result
 from ..errors import AppError
 from ..models import (
@@ -189,6 +190,10 @@ class GenerationService:
         instance = self._instance_for_request(session, request, require_available=True)
         collection = self._collection_for_owner(session, user.id, request.collection_id)
         profile = frozen_profile or self._profile_for_request(session, request)
+        if publication_kind(profile.resolved_contract_json) != "image":
+            raise AppError(
+                "source_kind_invalid", "Choose an image generation source.", status_code=422
+            )
         if (
             frozen_profile is not None
             and not self.comfyui_instances.get(instance.id).cached_object_info()

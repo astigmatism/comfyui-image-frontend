@@ -5384,3 +5384,19 @@ tr:last-child td {
 
 .thumbnail-retry { position: absolute; z-index: 5; inset: 40% 10% auto; padding: 0.5rem; }
 .submission-recovery { display: grid; gap: 0.5rem; padding: 0.5rem; color: var(--text); }
+
+/* Optional stages share the application's existing expandable control sections. */
+.feature-section-switch .switch { gap: 6px; }
+.feature-section-switch .switch em { width: 20px; color: var(--muted); font-size: .7rem; font-weight: 400; }
+.feature-section-switch .switch > span { flex: 0 0 auto; }
+.prompt-generation-body { display: grid; gap: 12px; }
+.prompt-generation-body .field { margin: 0; }
+.prompt-generation-hint, .prompt-pipeline-status { margin: 0; color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.prompt-pipeline-flow { margin: 0; color: var(--text-soft); font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
+.prompt-draft-result { display: grid; gap: 8px; padding-top: 10px; }
+.generation-actions > .auto-generation-section { margin-top: 0; }
+.auto-generation-section .control-section-trigger,
+.auto-generation-section .control-section-actions { background: #0e151f; }
+.auto-generation-section .control-section-header { min-height: 38px; }
+.auto-generation-section .control-section-content { padding-top: 4px; padding-bottom: 2px; }
+.auto-generation-section .auto-generation-server-settings { margin: 0; gap: 9px; }

@@ -17,6 +17,7 @@ from ..models import (
     Generation,
     GenerationStatus,
     GenerationUpload,
+    PromptGenerationRun,
     Upload,
     User,
     UserRole,
@@ -89,6 +90,13 @@ class UserDeletionService:
                                     generation.comfyui_prompt_id,
                                 )
                             )
+                for text in session.scalars(
+                    select(PromptGenerationRun).where(PromptGenerationRun.owner_id == target.id)
+                ):
+                    if text.comfyui_prompt_id and text.status in {"running", "submitting"}:
+                        prompt_targets.append((text.instance_id, text.comfyui_prompt_id))
+                    elif text.status in {"queued", "dispatching"}:
+                        text.status = "discarded"
                 session.commit()
 
         await _run_blocking(mark_deleting)

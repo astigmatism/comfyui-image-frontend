@@ -807,7 +807,7 @@ test("runtime selector is a borderless single-line two-instance control", async 
   await expect(row).toBeVisible();
   const actionOrder = await page.locator(".generation-actions").evaluate((element) =>
     Array.from(element.children).map((child) =>
-      child.id ||
+      child.id || child.dataset.controlSection ||
       (child.classList.contains("generate-row")
         ? "generate-row"
         : child.classList.contains("auto-generation-options")
@@ -819,8 +819,8 @@ test("runtime selector is a borderless single-line two-instance control", async 
   );
   expect(actionOrder).toEqual([
     "generate-row",
-    "auto-generation-options",
-    "server-controls",
+    "prompt-pipeline-flow",
+    "auto-generation",
     "comfyui-instance-field",
   ]);
   const generateRowOrder = await page.locator(".generate-row").evaluate((element) =>
@@ -1044,7 +1044,9 @@ test("photo viewer slideshow shows a next-in countdown while auto-generate is on
   await expect(nextIn).toBeHidden();
   await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
   await expect(photoViewer).not.toHaveAttribute("open", "");
+  const stopped = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/auto-generation" && response.request().method() === "PUT");
   await page.getByRole("switch", { name: "Auto-generate" }).uncheck();
+  expect((await stopped).ok()).toBe(true);
 });
 
 test("photo viewer favorite toggle syncs with the gallery card and persists across viewer opens", async ({
@@ -3447,6 +3449,8 @@ test("toolbar and nested folder activity survive reload and reflect auto mode", 
   await expect(progress.locator(".activity-tooltip")).toBeVisible();
   await expect(progress.locator(".activity-tooltip")).toContainText("6 of 10 resolved");
   await page.locator("#gallery-scale").focus();
+  await expect(page.locator('[data-prompt-generator-id="subject_name"]')).toHaveCount(1);
+  await expect(page.locator(".shared-settings-status")).toContainText("Settings saved across devices");
   await page.screenshot({ path: testInfo.outputPath("generation-progress-desktop.png") });
   await page.locator("#auto-generate").check();
   await expect(progress).toContainText("Auto active");

@@ -58,6 +58,7 @@ async def test_worker_stop_cancels_and_joins_all_owned_tasks() -> None:
     worker._main_task = asyncio.create_task(wait_forever(), name="test-worker-main")
     worker._dispatcher_task = asyncio.create_task(wait_forever(), name="test-dispatcher")
     worker._health_task = asyncio.create_task(wait_forever(), name="test-worker-health")
+    worker._maintenance_task = asyncio.create_task(wait_forever(), name="test-worker-maintenance")
     worker._dispatcher_state = "running"
     worker._consecutive_failures = 0
     worker._active = {
@@ -67,6 +68,7 @@ async def test_worker_stop_cancels_and_joins_all_owned_tasks() -> None:
         worker._main_task,
         worker._dispatcher_task,
         worker._health_task,
+        worker._maintenance_task,
         *worker._active.values(),
     ]
     await asyncio.sleep(0)

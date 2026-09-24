@@ -19,13 +19,20 @@ from ..models import (
     AutoGenerationCycle,
     Generation,
     GenerationEvent,
+    GenerationPreparation,
     GenerationRunMember,
     GenerationStatus,
     User,
     UserState,
     WorkflowProfile,
 )
-from ..schemas import AutoGenerationResponse, AutoGenerationSnapshot, PromptAssistantSnapshot
+from ..schemas import (
+    AutoGenerationResponse,
+    AutoGenerationSnapshot,
+    GenerationPreparationCreate,
+    GenerationPreparationItem,
+    PromptAssistantSnapshot,
+)
 from .events import event_payload
 from .generation_activity import begin_run, retain_deleted_outcome
 from .prompt_assistant import compose_prompt
@@ -140,15 +147,33 @@ class AutoGenerationService:
         profile = service._profile_for_request(session, request)
         runtime = service._instance_for_request(session, request, require_available=False)
         service._collection_for_owner(session, user_id, request.collection_id)
+        if snapshot.prompt_generation:
+            self.container.prompt_generation.validate_source(session, snapshot.prompt_generation)
         # Validate every variant, without freezing resolved random seeds.
         for variant in snapshot.variants:
             item = request.model_copy(
                 update={"parameters": {**request.public_parameters, **variant}, "controls": None}
             )
-            service._compile(session, user=user, profile=profile, request=item)
+            if snapshot.prompt_generation:
+                self.container.prompt_generation.capture_image(
+                    session,
+                    user_id,
+                    GenerationPreparationItem(
+                        generation=item,
+                        prompt_generation=snapshot.prompt_generation,
+                        assistant=snapshot.assistant,
+                    ),
+                    profile=profile,
+                )
+            else:
+                service._compile(session, user=user, profile=profile, request=item)
         assistant = snapshot.assistant
         if assistant:
-            if assistant.mode == "refine" and not assistant.prompt.strip():
+            if (
+                assistant.mode == "refine"
+                and not assistant.prompt.strip()
+                and not snapshot.prompt_generation
+            ):
                 raise AppError("prompt_required", "Refine mode requires a starting prompt.")
             if not assistant.creative_direction.strip():
                 raise AppError("direction_required", "Enter Creative Direction before enabling it.")
@@ -175,6 +200,21 @@ class AutoGenerationService:
             )
             .values(state="discarded", claim=None)
         )
+        from .prompt_generation import PREPARATION_ACTIVE, PromptGenerationService
+
+        for prepared in session.scalars(
+            select(GenerationPreparation).where(
+                GenerationPreparation.owner_id == row.user_id,
+                GenerationPreparation.auto_cycle_id.is_not(None),
+                GenerationPreparation.status.in_(PREPARATION_ACTIVE),
+            )
+        ):
+            PromptGenerationService.fail_preparation(
+                session,
+                prepared,
+                "discarded",
+                "Automatic settings changed before image acceptance.",
+            )
         row.revision += 1
         row.failures = 0
         row.error_code = None
@@ -204,7 +244,10 @@ class AutoGenerationService:
                         raise AppError(
                             "snapshot_required", "Capture settings before enabling auto generation."
                         )
+                    previous_limit = (row.snapshot_json or {}).get("max_generations")
                     row.snapshot_json, row.profile_id = self._capture(session, user_id, snapshot)
+                    if previous_limit != snapshot.max_generations:
+                        row.accepted_count = 0
                     row.latest_prompt = snapshot.assistant.prompt if snapshot.assistant else None
                 if (retry or reset_limit) and not row.snapshot_json:
                     raise AppError("snapshot_required", "Enable auto generation first.")
@@ -224,6 +267,11 @@ class AutoGenerationService:
                             Generation.owner_id == user_id,
                             Generation.auto_cycle_id.is_not(None),
                             Generation.status == GenerationStatus.QUEUED,
+                            Generation.id.not_in(
+                                select(GenerationPreparation.generation_id).where(
+                                    GenerationPreparation.generation_id.is_not(None)
+                                )
+                            ),
                         )
                     ).all()
                     for job in queued:
@@ -383,6 +431,15 @@ class AutoGenerationService:
                 )
             ).all()
             for previous in accepted:
+                if session.scalar(
+                    select(GenerationPreparation.id)
+                    .where(
+                        GenerationPreparation.auto_cycle_id == previous.id,
+                        GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+                    )
+                    .limit(1)
+                ):
+                    continue
                 jobs = session.scalars(
                     select(Generation).where(Generation.auto_cycle_id == previous.id)
                 ).all()
@@ -411,6 +468,8 @@ class AutoGenerationService:
                     )
                     session.commit()
                     return {"action": "changed", "revision": revision}
+            if snapshot.prompt_generation:
+                return self._prepare_prompt_cycle(session, row, snapshot)
             cycle = session.scalar(
                 select(AutoGenerationCycle).where(
                     AutoGenerationCycle.user_id == user_id,
@@ -442,6 +501,66 @@ class AutoGenerationService:
                     "assistant": assistant,
                 }
             return {"action": "ready", "revision": revision, "cycle_id": cycle.id}
+
+    def _prepare_prompt_cycle(
+        self, session: Session, row: AutoGeneration, snapshot: AutoGenerationSnapshot
+    ) -> dict[str, Any] | None:
+        from .prompt_generation import PREPARATION_ACTIVE
+
+        pending = session.scalar(
+            select(GenerationPreparation.id)
+            .where(
+                GenerationPreparation.owner_id == row.user_id,
+                GenerationPreparation.status.in_(PREPARATION_ACTIVE),
+            )
+            .limit(1)
+        )
+        images = session.scalar(
+            select(Generation.id)
+            .where(Generation.owner_id == row.user_id, Generation.status.in_(ACTIVE_STATUSES))
+            .limit(1)
+        )
+        if pending or images:
+            return None
+        limit = snapshot.max_generations
+        budget = (
+            min(len(snapshot.variants) * snapshot.quantity, limit - row.accepted_count)
+            if limit is not None
+            else len(snapshot.variants) * snapshot.quantity
+        )
+        if budget <= 0:
+            row.enabled, row.status, row.message = False, "completed", "Generation limit reached."
+            session.commit()
+            return {"action": "changed", "revision": row.revision}
+        cycle = AutoGenerationCycle(user_id=row.user_id, revision=row.revision, state="accepted")
+        session.add(cycle)
+        session.flush()
+        assert snapshot.prompt_generation is not None
+        items = [
+            GenerationPreparationItem(
+                generation=snapshot.generation.model_copy(
+                    update={
+                        "parameters": {**snapshot.generation.public_parameters, **variant},
+                        "controls": None,
+                    }
+                ),
+                prompt_generation=snapshot.prompt_generation,
+                assistant=snapshot.assistant,
+            )
+            for variant in snapshot.variants
+            for _ in range(snapshot.quantity)
+        ][:budget]
+        profile = session.get(WorkflowProfile, row.profile_id)
+        self.container.prompt_generation.create_preparations(
+            session,
+            row.user_id,
+            GenerationPreparationCreate(items=items),
+            cycle=cycle,
+            profile=profile,
+        )
+        row.status = "preparing"
+        session.commit()
+        return {"action": "changed", "revision": row.revision}
 
     def _complete_composition(self, user_id: str, prepared: dict[str, Any], composed: Any) -> bool:
         with self.container.db.session_factory() as session:

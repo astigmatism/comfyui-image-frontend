@@ -13,6 +13,7 @@ from ..models import (
     AppLock,
     Collection,
     Generation,
+    GenerationPreparation,
     GenerationRun,
     GenerationRunMember,
     GenerationStatus,
@@ -46,6 +47,15 @@ def begin_run(session: Session, owner_id: str, total: int) -> GenerationRun:
         .where(GenerationRunMember.run_id == run.id, Generation.status.in_(ACTIVE_STATUSES))
         .limit(1)
     )
+    if not active and run is not None:
+        active = session.scalar(
+            select(GenerationPreparation.id)
+            .where(
+                GenerationPreparation.activity_run_id == run.id,
+                GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+            )
+            .limit(1)
+        )
     if not active:
         run = GenerationRun(owner_id=owner_id, total_count=0)
         session.add(run)
@@ -150,7 +160,18 @@ def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
             .group_by(Generation.status)
         ).all()
         counts = {status: count for status, count, _ in rows}
-        remaining = sum(counts.get(status, 0) for status in ACTIVE_STATUSES)
+        preparing = (
+            session.scalar(
+                select(func.count())
+                .select_from(GenerationPreparation)
+                .where(
+                    GenerationPreparation.activity_run_id == run.id,
+                    GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+                )
+            )
+            or 0
+        )
+        remaining = sum(counts.get(status, 0) for status in ACTIVE_STATUSES) + preparing
         succeeded = counts.get(GenerationStatus.SUCCEEDED, 0) + run.deleted_succeeded_count
         cancelled = (
             sum(
@@ -206,6 +227,19 @@ def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
             collection_counts[collection_id] += count
             collection_id = parents[collection_id]
 
+    for request in session.scalars(
+        select(GenerationPreparation.request_json).where(
+            GenerationPreparation.owner_id == owner_id,
+            GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+        )
+    ):
+        remaining_count += 1
+        collection_id = request["generation"].get("collection_id")
+        visited = set()
+        while collection_id in parents and collection_id not in visited:
+            visited.add(collection_id)
+            collection_counts[collection_id] += 1
+            collection_id = parents[collection_id]
     return GenerationActivity(
         run=progress,
         remaining_count=remaining_count,

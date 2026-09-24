@@ -77,7 +77,15 @@ class SourceSettings(APIModel):
     interface: dict[str, Any] | None = None
 
 
+class PromptGenerationSettings(APIModel):
+    previous_assistant_mode: Literal["create", "refine"] | None = None
+    enabled: bool = False
+    active_source: str | None = None
+    sources: dict[str, SourceSettings] = Field(default_factory=dict)
+
+
 class SharedSettings(APIModel):
+    prompt_generation: PromptGenerationSettings = Field(default_factory=PromptGenerationSettings)
     active_source: str | None = None
     runtime_id: str | None = None
     sources: dict[str, SourceSettings] = Field(default_factory=dict)
@@ -255,6 +263,7 @@ class ModelSelector(APIModel):
 
 
 class WorkflowSummary(APIModel):
+    output_kind: Literal["image", "text"] = "image"
     source_key: str
     display_name: str
     instance_id: str
@@ -765,7 +774,32 @@ class ServiceStatus(APIModel):
     checked_at: datetime | None
 
 
+class PromptGenerationCreate(APIModel):
+    source_key: str
+    revision: SourceRevision
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerationPreparationItem(APIModel):
+    generation: GenerationCreate
+    prompt_generation: PromptGenerationCreate
+    assistant: PromptComposeRequest | None = None
+
+    @model_validator(mode="after")
+    def refinement_only(self) -> GenerationPreparationItem:
+        if self.assistant and self.assistant.mode != "refine":
+            raise ValueError("Prompt generation supports Creative Direction in Refine mode only")
+        if self.generation.prompt_assistant_run_id:
+            raise ValueError("Preparation composes its own prompt")
+        return self
+
+
+class GenerationPreparationCreate(APIModel):
+    items: list[GenerationPreparationItem] = Field(min_length=1, max_length=256)
+
+
 class AutoGenerationSnapshot(APIModel):
+    prompt_generation: PromptGenerationCreate | None = None
     generation: GenerationCreate
     variants: list[dict[str, str]] = Field(
         default_factory=lambda: [dict[str, str]()], min_length=1, max_length=256
@@ -776,6 +810,8 @@ class AutoGenerationSnapshot(APIModel):
 
     @model_validator(mode="after")
     def validate_size(self) -> AutoGenerationSnapshot:
+        if self.prompt_generation and self.assistant and self.assistant.mode != "refine":
+            raise ValueError("Prompt generation supports Refine mode only")
         if len(self.variants) * self.quantity > 256:
             raise ValueError("An automatic batch cannot exceed 256 generations")
         if self.generation.prompt_assistant_run_id:

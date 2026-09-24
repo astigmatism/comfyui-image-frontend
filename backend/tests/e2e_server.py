@@ -17,6 +17,7 @@ def main() -> None:
     primary = LiveFakeServer()
     worker = LiveFakeServer()
     primary.state.workflow_files.update(build_publication_bundle("image").files)
+    primary.state.workflow_files.update(build_publication_bundle("text").files)
     primary.state.workflow_files.update(
         build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
     )

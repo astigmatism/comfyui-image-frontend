@@ -40,7 +40,7 @@ SUPPORTED_INPUT_TYPES = {
 }
 SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 OUTPUT_ROLES = {"final", "preview", "comparison", "auxiliary"}
-OUTPUT_KINDS = {"image"}
+OUTPUT_KINDS = {"image", "text"}
 PUBLIC_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SEMANTIC_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -493,6 +493,18 @@ def _validate_api_graph(graph: Mapping[str, Any]) -> None:
             raise ContractError("manifest_invalid", f"API node {node_id} has no inputs object.")
 
 
+def publication_kind(contract: Mapping[str, Any]) -> str:
+    """Classify from the final declaration, including stored resolved interfaces."""
+    return next(
+        (
+            str(item.get("kind", item.get("type", "image")))
+            for item in contract.get("outputs", [])
+            if isinstance(item, Mapping) and item.get("role") == "final"
+        ),
+        "image",
+    )
+
+
 def _validate_interface(
     interface: Mapping[str, Any],
     api_document: Mapping[str, Any],
@@ -520,10 +532,24 @@ def _validate_interface(
             positive_prompts += 1
         private_inputs.append(private_input)
         public_inputs.append(public_input)
-    if positive_prompts != 1:
+    text_publication = publication_kind(interface) == "text"
+    if not text_publication and positive_prompts != 1:
         raise ContractError(
             "manifest_invalid",
             f"Publication v1 requires exactly one positive_prompt input; found {positive_prompts}.",
+        )
+
+    if text_publication and sum(bool(item["required"]) for item in private_inputs) != 1:
+        raise ContractError(
+            "manifest_invalid", "Text publications require exactly one required input."
+        )
+    if text_publication and any(
+        item["type"] not in {"string", "integer", "number", "boolean", "choice", "seed"}
+        for item in private_inputs
+    ):
+        raise ContractError(
+            "manifest_invalid",
+            "Text publications support string, numeric, boolean, choice, and seed inputs.",
         )
 
     raw_outputs = interface.get("outputs")
@@ -537,6 +563,12 @@ def _validate_interface(
     publisher_node_ids: set[str] = set()
     final_images = 0
     for index, raw_output in enumerate(raw_outputs):
+        if isinstance(raw_output, Mapping) and raw_output.get("type") != (
+            "text" if text_publication else "image"
+        ):
+            raise ContractError(
+                "manifest_invalid", f"interface.outputs[{index}] has an unsupported role or kind."
+            )
         private_output, public_output = _validate_output(raw_output, index, api_document)
         output_id = private_output["id"]
         if output_id in output_ids:
@@ -1013,9 +1045,11 @@ def _validate_output(
     if role not in OUTPUT_ROLES or kind not in OUTPUT_KINDS:
         raise ContractError("manifest_invalid", f"{context} has an unsupported role or kind.")
     cardinality = _required_string(raw_output, "cardinality", context)
-    if cardinality != "many":
+    expected_cardinality = "one" if kind == "text" else "many"
+    if cardinality != expected_cardinality:
         raise ContractError(
-            "manifest_invalid", f"{context}.cardinality must be 'many' for publication v1."
+            "manifest_invalid",
+            f"{context}.cardinality must be {expected_cardinality!r} for publication v1.",
         )
     label = _bounded_string(raw_output.get("label", output_id), f"{context}.label", 1, 200)
     description = _bounded_string(
@@ -1039,14 +1073,14 @@ def _validate_output(
     node = api_document.get(node_id)
     if not isinstance(node, Mapping):
         raise ContractError("manifest_invalid", f"{context}.node_id targets a missing API node.")
-    if node.get("class_type") != "CIFPublishImage":
+    if node.get("class_type") != ("CIFPublishText" if kind == "text" else "CIFPublishImage"):
         raise ContractError(
             "manifest_invalid", f"{context}.node_id targets the wrong publisher type."
         )
     node_inputs = node.get("inputs")
     if not isinstance(node_inputs, Mapping):
         raise ContractError("manifest_invalid", f"{context}.node_id has no publisher inputs.")
-    image_connection = node_inputs.get("images")
+    image_connection = node_inputs.get("text" if kind == "text" else "images")
     if not isinstance(image_connection, list) or len(image_connection) != 2:
         raise ContractError(
             "manifest_invalid", f"{context}.node_id is not connected to an image source."

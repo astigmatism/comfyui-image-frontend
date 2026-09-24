@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
-from ..models import AppLock, AutoGeneration, UserPreference
+from ..models import AppLock, AutoGeneration, GenerationPreparation, UserPreference
 from .event_broker import EventBroker
 
 
@@ -41,4 +42,13 @@ def asset_is_saved(session: Session, owner_id: str, asset_id: str) -> bool:
     return bool(
         (preferences and references_asset(preferences.settings_json, asset_id))
         or (automation and references_asset(automation.snapshot_json, asset_id))
+        or any(
+            references_asset(value, asset_id)
+            for value in session.scalars(
+                select(GenerationPreparation.request_json).where(
+                    GenerationPreparation.owner_id == owner_id,
+                    GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+                )
+            )
+        )
     )

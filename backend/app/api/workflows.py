@@ -3,12 +3,13 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Mapping
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
+from ..domain.publication import publication_kind
 from ..domain.source_metadata import TIMELINE_MONTH_PATTERN, recognize_source_metadata
 from ..models import ServiceHealth
 from ..schemas import (
@@ -32,6 +33,7 @@ def list_workflows(
     request: Request,
     session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
+    output_kind: Literal["image", "text"] = "image",
 ) -> list[WorkflowSummary]:
     container = get_container(request)
     health = session.get(ServiceHealth, "comfyui")
@@ -47,6 +49,7 @@ def list_workflows(
         generation_source = raw.get("generation_source")
         result.append(
             WorkflowSummary(
+                output_kind=publication_kind(raw.get("interface") or {}),
                 source_key=source_key,
                 display_name=str(raw.get("display_name", "Unavailable source")),
                 instance_id=str(raw.get("instance_id", "default")),
@@ -66,7 +69,10 @@ def list_workflows(
                 model_selectors=_model_selectors(raw.get("interface"), generation_source),
             )
         )
-    return sorted(result, key=lambda item: (item.display_name.casefold(), item.source_key))
+    return sorted(
+        (item for item in result if item.output_kind == output_kind),
+        key=lambda item: (item.display_name.casefold(), item.source_key),
+    )
 
 
 @router.get("/workflows/{source_key}", response_model=WorkflowDetail)
@@ -136,6 +142,7 @@ def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
         ),
     )
     return WorkflowSummary(
+        output_kind=publication_kind(profile.resolved_contract_json),
         source_key=str(profile.source_key),
         display_name=profile.display_name,
         instance_id=profile.instance_id or "default",

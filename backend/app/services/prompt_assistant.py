@@ -7,9 +7,10 @@ from sqlalchemy import select
 from ..blocking import run_blocking as _run_blocking
 from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
-from ..models import PromptAssistantRun
+from ..models import GenerationPreparation, PromptAssistantRun
 from ..schemas import PromptComposeRequest, PromptComposeResponse
 from .ollama import MAX_CREATE_EXCLUSIONS
+from .user_state import lock_user_state
 
 if TYPE_CHECKING:
     from ..container import AppContainer
@@ -18,7 +19,11 @@ PROMPT_HISTORY_SCAN_LIMIT = 64
 
 
 async def compose_prompt(
-    container: AppContainer, owner_id: str, payload: PromptComposeRequest
+    container: AppContainer,
+    owner_id: str,
+    payload: PromptComposeRequest,
+    *,
+    preparation_id: str | None = None,
 ) -> PromptComposeResponse:
     if payload.mode == "refine" and not payload.prompt.strip():
         raise AppError(
@@ -99,7 +104,7 @@ async def compose_prompt(
         raw_response_json=result.raw_response,
         duration_ms=result.duration_ms,
     )
-    await _run_blocking(_save_run, container, run)
+    await _run_blocking(_save_run, container, run, preparation_id)
     return PromptComposeResponse(
         composition_id=run.id,
         prompt=result.prompt,
@@ -108,7 +113,21 @@ async def compose_prompt(
     )
 
 
-def _save_run(container: AppContainer, run: PromptAssistantRun) -> None:
+def _save_run(
+    container: AppContainer, run: PromptAssistantRun, preparation_id: str | None = None
+) -> None:
     with container.db.session_factory() as session:
+        lock_user_state(session)
         session.add(run)
+        session.flush()
+        if preparation_id:
+            prepared = session.get(GenerationPreparation, preparation_id)
+            if (
+                prepared
+                and prepared.owner_id == run.owner_id
+                and prepared.status in {"preparing", "refining"}
+            ):
+                prepared.assistant_run_id = run.id
+                prepared.prompt = run.ollama_output
+                prepared.status = "ready"
         session.commit()

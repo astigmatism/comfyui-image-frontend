@@ -172,18 +172,13 @@ export function generationPanelMarkup(state, profile, contract) {
               </div>
             </div>
           </div>
-          <div class="auto-generation-options">
-            <label class="switch auto-generation-switch" for="auto-generate">
-              <input id="auto-generate" type="checkbox" role="switch" ${(state.pendingAutoEnabled ?? state.autoGenerate) ? "checked" : ""} ${state.automationLoaded === false || state.automationBusy ? "disabled" : ""} />
-              <span aria-hidden="true"></span>
-              <em>Auto-generate</em>
-            </label>
-            <label class="auto-generation-checkbox" for="auto-generate-creative-direction">
-              <input id="auto-generate-creative-direction" type="checkbox" aria-label="Use Creative Direction" ${state.autoGenerateCreativeDirection ? "checked" : ""} />
-              <em>Creative Direction</em>
-            </label>
-          </div>
-          <div id="server-controls">${serverControlsMarkup(state)}</div>
+          <p id="prompt-pipeline-flow" class="prompt-pipeline-flow">${promptPipelineMarkup(state)}</p>
+          ${controlSectionMarkup({ key: "auto-generation", title: "Auto-generation",
+            open: controlSectionIsOpen(state.controlSectionOpen, "auto-generation", false),
+            className: "auto-generation-section",
+            actions: featureSwitchMarkup("auto-generate", "Auto-generate", state.pendingAutoEnabled ?? state.autoGenerate, state.automationLoaded === false || state.automationBusy),
+            content: `<div id="server-controls">${serverControlsMarkup(state)}</div>`,
+          })}
           ${comfyuiInstanceSelectorMarkup(state)}
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
@@ -193,7 +188,7 @@ export function generationPanelMarkup(state, profile, contract) {
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
-        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions)}
+        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions, state)}
         ${
           advanced.length
             ? controlSectionMarkup({
@@ -212,7 +207,7 @@ export function generationPanelMarkup(state, profile, contract) {
 
 export function generationSubmissionDisabled(state, profile, contract, clientErrors = {}) {
   return Boolean(
-    state.pendingSubmission || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
+    state.pendingSubmission || state.promptGenerationBusy || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
   );
 }
 
@@ -663,7 +658,7 @@ function controlEmptyStateMarkup(state, source, contract) {
   return '<p class="empty-copy">Choose an available generation source to load its controls.</p>';
 }
 
-function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = []) {
+function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = [], state = {}) {
   const resolutionPair = pairedResolutionInputs(inputs, values, contract);
   const firstResolutionInput = resolutionPair
     ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
@@ -706,7 +701,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
       const first = section.controls[0];
       const content =
         section.kind === "creative-direction"
-          ? promptAssistantMarkup()
+          ? promptAssistantMarkup(state)
           : section.resolutionPair
             ? pairedResolutionMarkup(
                 section.resolutionPair.width,
@@ -729,11 +724,11 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                 )
                 .join("");
       const sectionHasError = section.controls.some((input) => errors[input.id]);
-      return controlSectionMarkup({
+      return (section.kind === "prompt" ? promptGenerationMarkup(state) : "") + controlSectionMarkup({
         key: section.key,
         title: section.title,
         required: section.controls.some((input) => input.required),
-        content,
+        content: content + (section.kind === "prompt" && state.latestGeneratedPrompt ? `<div class="prompt-draft-result"><small>A newer generated prompt is available. Your draft is preserved.</small><button type="button" class="button low" data-action="use-latest-prompt">Use latest prompt</button></div>` : ""),
         status: controlSectionStatus(section, values),
         // A minimal set of sections (prompt, seed, resolution) opens by
         // default; everything else stays collapsed until the user expands
@@ -749,7 +744,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
         actions:
           section.kind === "prompt"
             ? promptSectionActionsMarkup(first, values, contract)
-            : "",
+            : section.kind === "creative-direction" ? featureSwitchMarkup("auto-generate-creative-direction", "Use Creative Direction", state.autoGenerateCreativeDirection) : "",
       });
     })
     .join("");
@@ -821,6 +816,55 @@ function controlSectionStatus(section, values) {
     return seedFormValue(control, values[control.id]).mode === "random" ? "Random" : "Fixed";
   }
   return "";
+}
+
+export function promptPipelineMarkup(state) {
+  const stages = [];
+  if (state.promptGeneration?.enabled) stages.push("Prompt generation");
+  if (state.autoGenerateCreativeDirection) stages.push(state.promptAssistant?.mode === "create" && !state.promptGeneration?.enabled ? "Create" : "Refine");
+  if (!stages.length) stages.push("Current prompt");
+  stages.push("Image");
+  return `${state.autoGenerate ? "Repeat · " : ""}${stages.join(" → ")}`;
+}
+
+function featureSwitchMarkup(id, label, enabled, disabled = false) {
+  return `<div class="control-section-actions feature-section-switch"><label class="switch"><input id="${id}" type="checkbox" role="switch" aria-label="${label}" ${enabled ? "checked" : ""} ${disabled ? "disabled" : ""} /><span aria-hidden="true"></span><em>${enabled ? "On" : "Off"}</em></label></div>`;
+}
+
+function promptGenerationMarkup(state) {
+  const selection = state.promptGeneration || {};
+  const source = state.promptGeneratorSource;
+  const saved = selection.sources?.[selection.active_source];
+  const values = saved?.values || {};
+  const sources = state.promptGeneratorSources || [];
+  const missing = selection.active_source && !sources.some((item) => item.source_key === selection.active_source);
+  const inputs = sortInterfaceInputs(interfaceInputs(source?.interface)).map((input) =>
+    controlMarkup(input, values, source.interface, {})
+      .replaceAll("data-control-id=", "data-prompt-generator-id=")
+      .replaceAll("data-control-block=", "data-prompt-generator-block=")
+      .replaceAll("data-control-group=", "data-prompt-generator-group=")
+      .replaceAll('aria-label="Random seed"', 'aria-label="Random prompt seed"')
+      .replaceAll("data-seed-mode=", "data-prompt-generator-seed-mode=")
+      .replaceAll('id="control-', 'id="prompt-generator-control-')
+      .replaceAll('for="control-', 'for="prompt-generator-control-'),
+  ).join("");
+  const content = `<div class="prompt-generation-body">
+    <label class="field"><span>Prompt source</span><select id="prompt-generation-source" ${state.promptGenerationBusy ? "disabled" : ""}>
+      <option value="" ${!selection.active_source ? "selected" : ""}>Choose a prompt source</option>
+      ${missing ? `<option value="${escapeHtml(selection.active_source)}" selected disabled>Saved source unavailable</option>` : ""}
+      ${sources.map((item) => `<option value="${escapeHtml(item.source_key)}" ${item.source_key === selection.active_source ? "selected" : ""} ${item.available === false ? "disabled" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}
+    </select></label>
+    ${inputs}
+    <button type="button" class="button secondary" data-action="generate-prompt" ${!source || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${state.promptGenerationBusy ? "Generating prompt…" : "Generate prompt"}</button>
+    <p class="prompt-generation-hint">Subject entry is independent of LoRAs. Each requested image gets a fresh prompt.</p>
+    ${state.promptGenerationMessage ? `<p class="prompt-pipeline-status" role="status">${escapeHtml(state.promptGenerationMessage)}</p>` : ""}
+    ${state.promptGenerationError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError)}</p>` : ""}
+    ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
+  </div>`;
+  return controlSectionMarkup({ key: "prompt-generation", title: "Prompt Generation", content,
+    open: controlSectionIsOpen(state.controlSectionOpen, "prompt-generation", false),
+    actions: featureSwitchMarkup("prompt-generation-enabled", "Use Prompt Generation", selection.enabled),
+    className: "control-section-prompt-generation" });
 }
 
 function controlSectionMarkup({
@@ -1277,12 +1321,13 @@ function promptInstructionsMarkup(id, assistant = {}) {
   </details>`;
 }
 
-function promptAssistantMarkup() {
+function promptAssistantMarkup(state = {}) {
   return `<section class="prompt-assistant" id="prompt-assistant" aria-label="Creative Direction">
     <div class="assistant-body">
       ${promptInstructionsMarkup("prompt-assistant-instructions")}
       ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
-      <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" /> New Prompt from Creative Direction</label></div>
+      <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
+      ${state.promptGeneration?.enabled ? '<p class="prompt-generation-hint">Prompt Generation supplies the starting prompt; Creative Direction refines it.</p>' : ""}
       <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
       <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
@@ -1316,7 +1361,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
           ${promptInstructionsMarkup("prompt-editor-instructions", promptAssistant)}
           ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative Direction", creativeDirection, 3)}
           <div class="prompt-editor-assistant-action-row">
-            <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
+            <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
           <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
@@ -2255,28 +2300,28 @@ export function serverControlsMarkup(state) {
   const status = state.automationLoaded === false ? "Checking auto generation…" : state.autoGenerateStatusMessage;
   const source = (state.sources || []).find((item) => item.source_key === snapshot?.generation.source_key);
   const runtime = (state.comfyuiInstances || []).find((item) => item.id === snapshot?.generation.comfyui_instance_id);
-  const target = state.pendingAutoDestination !== undefined ? state.pendingAutoDestination : snapshot?.generation.collection_id;
+  const target = state.pendingAutoDestination !== undefined ? state.pendingAutoDestination : snapshot ? snapshot.generation.collection_id : state.currentCollectionId;
   return `
     <div id="auto-generate-status" class="auto-generate-status ${escapeHtml(auto?.status || "idle")}" role="${auto?.status === "blocked" ? "alert" : "status"}" ${status ? "" : "hidden"}>
       ${escapeHtml(status || "")}
       ${auto?.status === "blocked" ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
     </div>
-    ${auto?.enabled && snapshot ? `<div class="auto-generation-server-settings">
+    ${`<div class="auto-generation-server-settings">
       <div class="auto-limit-row"><label for="auto-generate-limit">Stop after</label>
-      <input id="auto-generate-limit" type="number" min="1" max="1000000" step="1" placeholder="Unlimited" aria-label="Auto-generation limit" aria-describedby="auto-limit-help" value="${snapshot.max_generations ?? ""}" ${state.automationBusy ? "disabled" : ""} /></div>
-      <span>${auto.remaining === null ? "Unlimited generations" : `${auto.remaining} generations remaining`}</span>
-      <small id="auto-limit-help">Change to reset the count; blank for unlimited.</small>
+      <input id="auto-generate-limit" type="number" min="1" max="1000000" step="1" placeholder="Unlimited" aria-label="Auto-generation limit" aria-describedby="auto-limit-help" value="${state.maxAutoGenerations ?? ""}" ${state.automationBusy ? "disabled" : ""} /></div>
+      ${auto?.enabled ? `<span>${auto.remaining === null ? "Unlimited generations" : `${auto.remaining} generations remaining`}</span>` : ""}
+      <small id="auto-limit-help">Apply a changed limit to reset the count; blank for unlimited.</small>
       <label for="auto-generation-destination">Auto-generation folder</label>
       <select id="auto-generation-destination" aria-label="Auto-generation folder"><option value="" ${target ? "" : "selected"}>Home</option>${target && !(state.collections || []).some((item) => item.id === target) ? `<option value="${escapeHtml(target)}" selected disabled>Deleted folder — choose a destination</option>` : ""}${(state.collections || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === target ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select>
-      <button type="button" class="button low" data-action="apply-auto-generate" ${state.automationBusy || !state.autoSnapshotDirty ? "disabled" : ""}>Apply to auto generation</button>
-      <small>Edits affect future batches only after Apply. Manual jobs take priority.</small>
-      <details><summary>Active auto-generation settings</summary>
+      ${auto?.enabled ? `<button type="button" class="button low" data-action="apply-auto-generate" ${state.automationBusy || !state.autoSnapshotDirty ? "disabled" : ""}>Apply to auto generation</button>
+      <small>Edits affect future batches only after Apply. Manual jobs take priority.</small>` : ""}
+      ${snapshot ? `<details><summary>Active auto-generation settings</summary>
         <p>${escapeHtml(auto.workflow_name || source?.display_name || snapshot.generation.source_key)} · ${escapeHtml(runtime?.label || snapshot.generation.comfyui_instance_id)} · Quantity ${snapshot.quantity}</p>
         <pre>${escapeHtml(JSON.stringify({ parameters: snapshot.generation.parameters, checkpoints: snapshot.variants }, null, 2))}</pre>
         ${snapshot.assistant ? `<p>Creative Direction: ${escapeHtml(snapshot.assistant.creative_direction)}</p>` : ""}
         ${auto.latest_prompt ? `<p class="auto-latest-prompt">Latest automatic prompt: ${escapeHtml(auto.latest_prompt)}</p>` : ""}
-      </details>
-    </div>` : ""}
+      </details>` : ""}
+    </div>`}
     <div class="shared-settings-status" role="status">
       ${settingsStatus === "loading" ? "Loading shared settings…" : settingsStatus === "saving" ? "Saving settings…" : settingsStatus === "saved" ? "Settings saved across devices" : ""}
       ${settingsStatus === "error" ? `${escapeHtml(state.sharedSettingsMessage || "Settings could not be saved.")} <button class="button low" data-action="settings-retry">Retry settings</button>` : ""}

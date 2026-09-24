@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
 
+const automationUser = `automation.${Date.now()}`;
+let automationUserCreated = false;
+
 async function signIn(page) {
   const anonymous = await (await page.request.get("/api/auth/session")).json();
   for (const password of ["E2EAdminPermanent123!", "E2EAdminTemporary123!"]) {
@@ -10,7 +13,20 @@ async function signIn(page) {
     let session = await result.json();
     if (session.user.must_change_password) {
       await page.request.post("/api/auth/password", { headers: { "X-CSRF-Token": session.csrf_token }, data: { new_password: "E2EAdminPermanent123!" } });
+      session = await (await page.request.get("/api/auth/session")).json();
     }
+    if (!automationUserCreated) {
+      const created = await page.request.post("/api/admin/users", { headers: { "X-CSRF-Token": session.csrf_token }, data: { username: automationUser, temporary_password: "AutomationTemporary123!" } });
+      expect(created.ok()).toBe(true);
+      automationUserCreated = true;
+    }
+    await page.request.post("/api/auth/logout", { headers: { "X-CSRF-Token": session.csrf_token } });
+    const fresh = await (await page.request.get("/api/auth/session")).json();
+    let userLogin = await page.request.post("/api/auth/login", { headers: { "X-CSRF-Token": fresh.csrf_token }, data: { username: automationUser, password: "AutomationPermanent123!" } });
+    if (!userLogin.ok()) userLogin = await page.request.post("/api/auth/login", { headers: { "X-CSRF-Token": fresh.csrf_token }, data: { username: automationUser, password: "AutomationTemporary123!" } });
+    expect(userLogin.ok()).toBe(true);
+    const userSession = await userLogin.json();
+    if (userSession.user.must_change_password) await page.request.post("/api/auth/password", { headers: { "X-CSRF-Token": userSession.csrf_token }, data: { new_password: "AutomationPermanent123!" } });
     await page.goto("/");
     await expect(page.locator("#workflow-source")).toBeEnabled();
     await expect(page.locator("#auto-generate")).toBeEnabled();
@@ -36,7 +52,8 @@ test("shared settings and server automation survive independent browsers and no 
   other.on("pageerror", (error) => errors.push(error.message));
   await signIn(other);
   await expect(other.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("slow server automation lighthouse");
-  await expect(page.locator("#auto-generate-limit")).toHaveCount(0);
+  await expect(page.locator('[data-control-section="auto-generation"] .control-section-body')).toHaveAttribute("inert", "");
+  await expect(page.locator('[data-control-section="auto-generation"] .control-section-body')).toHaveCSS("opacity", "0");
   const browserSubmissions = [];
   page.on("request", (request) => {
     if (request.method() === "POST" && /\/api\/generations(?:\/batch)?$/.test(request.url())) browserSubmissions.push(request.url());
@@ -63,8 +80,9 @@ test("shared settings and server automation survive independent browsers and no 
   await expect(page.locator("#auto-generate")).toBeChecked();
   await expect(page.locator("#generate-button")).toBeEnabled();
   await page.locator("#auto-generate-limit").fill("2");
-  const changed = page.waitForResponse((response) => response.url().endsWith("/api/auto-generation/limit") && response.request().method() === "POST");
+  const changed = page.waitForResponse((response) => response.url().endsWith("/api/auto-generation/apply") && response.request().method() === "POST");
   await page.locator("#auto-generate-limit").blur();
+  await page.getByRole("button", { name: "Apply to auto generation", exact: true }).click();
   expect((await changed).ok()).toBe(true);
   const observer = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${process.env.CIF_E2E_PORT || "8765"}`, storageState: await first.storageState() });
   await first.close();

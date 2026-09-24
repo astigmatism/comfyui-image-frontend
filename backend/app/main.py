@@ -35,6 +35,7 @@ from .api import (
     generations,
     preferences,
     prompt_assistant,
+    prompt_generation,
     speech_to_text,
     uploads,
     workflows,
@@ -258,6 +259,7 @@ def create_app(
             container.start_workflow_discovery()
             if settings.enable_background_worker:
                 await container.worker.start()
+                await container.prompt_generation.start()
                 await container.automation.start()
             yield
         finally:
@@ -406,6 +408,7 @@ def create_app(
     app.include_router(workflows.router)
     app.include_router(uploads.router)
     app.include_router(prompt_assistant.router)
+    app.include_router(prompt_generation.router)
     app.include_router(speech_to_text.router)
     app.include_router(preferences.router)
     app.include_router(collections.router)

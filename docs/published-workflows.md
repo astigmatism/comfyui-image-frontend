@@ -173,11 +173,13 @@ The application surfaces the first validated model choice as checkboxes immediat
 
 One ComfyUI prompt still receives exactly one scalar public choice. If a user checks several checkpoint options for one source, the application fans the selection out into one independently validated generation request per checked value. Every request clones the same remaining effective inputs; when Seed is Random, the client resolves it once and sends that same concrete seed to every fan-out member. Only the checkpoint value differs. The client must not submit an array, patch several model files into one graph, or reinterpret `model_variants` as executable choices.
 
-Exactly one input must have semantic role `positive_prompt`. The frontend orders non-advanced inputs before advanced inputs, then uses `order`, `group`, and `id` as deterministic fallbacks. The backend remains authoritative for all types, ranges, steps, defaults, and required fields.
+For image publications, exactly one input must have semantic role `positive_prompt`. The frontend orders non-advanced inputs before advanced inputs, then uses `order`, `group`, and `id` as deterministic fallbacks. The backend remains authoritative for all types, ranges, steps, defaults, and required fields.
 
 Seed integers are serialized to the browser as canonical decimal strings where precision matters. Omitted, `null`, empty, or explicit random seed input resolves to one concrete request-local value when `default_mode` is `random`; a fixed decimal string is validated and preserved exactly. The effective seed is persisted and returned for recall.
 
 ### Outputs
+
+The single final output classifies the publication. Image publications retain the contract below. Text publications use `CIFPublishText`, a `text` binding, and cardinality `one`; their input and execution contract is documented in [Prompt generation](prompt-generation.md). The default workflow listing remains image-only, with `output_kind=text` selecting prompt sources.
 
 Every output declaration has a stable public ID, unique publisher instance UUID, private publisher node binding, optional label, description, role (`final`, `preview`, `comparison`, or `auxiliary`), manifest `type: "image"`, and cardinality `many`. Its API node must be a connected `CIFPublishImage`. Each publication must declare at least one output and exactly one output with role `final`; IDs, instance UUIDs, and publisher node bindings are unique. Published `.interface.json` manifests use `type: "image"`; the validated private contract, public workflow interface, CIF publisher metadata, and generation results normalize that field to `kind: "image"`. The only v1 unmapped-output policy is the explicit value `collect`.
 

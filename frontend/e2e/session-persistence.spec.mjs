@@ -46,6 +46,12 @@ async function selectPublishedSource(page, name) {
   const value = await option.getAttribute("value");
   expect(value).toBeTruthy();
   await workflow.selectOption(value);
+  // These journeys exercise one image request; other specs persist model fan-out.
+  const checkpoints = dialog.locator('[data-checkpoint-card] input[type="checkbox"]');
+  if (await checkpoints.count()) {
+    await dialog.getByRole("button", { name: "Clear all", exact: true }).click();
+    await checkpoints.first().check();
+  }
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
   await expect(selector).toBeFocused();
@@ -233,8 +239,9 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
   await selectPublishedSource(page, "Generic Landscape");
   await expect(page.locator('.lora-row[data-lora-id="c"]')).toHaveCount(1);
   await card.scrollIntoViewIfNeeded();
-  await card.hover();
-  await card.getByRole("button", { name: "Recall settings", exact: true }).click();
+  const recall = card.getByRole("button", { name: "Recall settings", exact: true });
+  await recall.focus();
+  await recall.press("Enter");
   await expect(page.locator("#workflow-source")).toHaveAttribute("data-source-key", sourceKey);
   await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
   expect(await page.locator(".lora-row").evaluateAll((rows) => rows.map((row) => ({

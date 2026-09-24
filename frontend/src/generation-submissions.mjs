@@ -14,7 +14,7 @@ export function pendingSubmission() {
   if (!saved) return null;
   const pending = JSON.parse(saved);
   if (pending.ownerId !== ownerId || !pending.key || typeof pending.body !== "string"
-      || !["/api/generations", "/api/generations/batch"].includes(pending.path)) {
+      || !["/api/generations", "/api/generations/batch", "/api/prompt-generations", "/api/generation-preparations"].includes(pending.path)) {
     throw new Error("The saved submission cannot be resumed. Keep this tab open and check generation history.");
   }
   return pending;
@@ -33,7 +33,28 @@ function unknown(cause) {
   });
 }
 
-function finish(pending) {
+export function pendingPromptJobs() {
+  if (!ownerId) return [];
+  const saved = JSON.parse(localStorage.getItem("cif.prompt-jobs." + ownerId) || "[]");
+  if (!Array.isArray(saved)) throw new Error("Saved prompt requests could not be read.");
+  return saved;
+}
+
+export function finishPromptJob(id) {
+  localStorage.setItem("cif.prompt-jobs." + ownerId, JSON.stringify(pendingPromptJobs().filter((job) => job.id !== id)));
+}
+
+function finish(pending, result) {
+  if (result && ["/api/prompt-generations", "/api/generation-preparations"].includes(pending.path)) {
+    const storageKey = "cif.prompt-jobs." + pending.ownerId;
+    try {
+      const jobs = JSON.parse(localStorage.getItem(storageKey) || "[]");
+      const payload = JSON.parse(pending.body);
+      const context = pending.context || { source: payload.items?.[0]?.generation.source_key };
+      if (!jobs.some((job) => job.id === result.id)) jobs.push({ ...context, id: result.id, path: pending.path, seen: [] });
+      localStorage.setItem(storageKey, JSON.stringify(jobs));
+    } catch (error) { throw unknown(error); }
+  }
   // A response from the previous account must never clear another account's receipt.
   sessionStorage.removeItem(prefix + pending.ownerId);
 }
@@ -45,10 +66,10 @@ async function send(pending, deadlineMs = 60_000, previouslyUncertain = false) {
       operation: "Generation submission",
     });
     validateResult(pending, result);
-    finish(pending);
+    finish(pending, result);
     return result;
   } catch (error) {
-    if (previouslyUncertain || error.submissionUncertain || isTransientError(error)
+    if (error.code === "submission_status_unknown" || previouslyUncertain || error.submissionUncertain || isTransientError(error)
         || error.code === "request_timeout" || error.name === "AbortError") {
       throw unknown(error);
     }
@@ -57,10 +78,10 @@ async function send(pending, deadlineMs = 60_000, previouslyUncertain = false) {
   }
 }
 
-export async function submitGeneration(path, payload) {
+export async function submitGeneration(path, payload, context = null) {
   if (!ownerId) throw new Error("Sign in before submitting a generation.");
   if (active || pendingSubmission()) throw unknown();
-  const pending = { ownerId, key: crypto.randomUUID(), path, body: JSON.stringify(payload) };
+  const pending = { ownerId, key: crypto.randomUUID(), path, body: JSON.stringify(payload), context };
   // Persist before sending; inability to persist must prevent an uncertain acceptance.
   sessionStorage.setItem(prefix + ownerId, JSON.stringify(pending));
   active = true;
@@ -83,7 +104,7 @@ export async function recoverSubmission({ resume = false } = {}) {
         deadlineMs: 10_000, operation: "Submission status",
       });
       validateResult(pending, receipt?.result);
-      finish(pending);
+      finish(pending, receipt.result);
       return { pending, result: receipt.result };
     } catch (error) {
       if (error.status === 410) { finish(pending); throw error; }
@@ -97,7 +118,9 @@ export async function recoverSubmission({ resume = false } = {}) {
 }
 
 function validateResult(pending, result) {
-  const valid = pending.path.endsWith("/batch")
+  const valid = pending.path === "/api/generation-preparations"
+    ? typeof result?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item.id && item.status)
+    : pending.path.endsWith("/batch")
     ? Array.isArray(result?.items) && result.items.every((item) => item?.generation?.id || item?.error?.code)
     : typeof result?.id === "string";
   if (!valid) throw new TypeError("The submission response was incomplete.");

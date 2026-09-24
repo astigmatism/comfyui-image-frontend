@@ -119,6 +119,7 @@ def object_info_fixture() -> JsonObject:
             "output": ["IMAGE", "MASK"],
         },
         "CIFPublishImage": {"input": {"required": {"images": ["IMAGE"]}}},
+        "CIFPublishText": {"input": {"required": {"text": ["STRING"]}}},
         "FakeImageOutput": {
             "input": {
                 "required": {
@@ -816,6 +817,69 @@ def _image_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, 
     return stem, workflow, api, manifest
 
 
+def _prompt_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
+    _, workflow, api, manifest = _generic_documents(publication_id)
+    stem = "workflows/comfyui-image-frontend/prompt-generation/Fixture Prompt Generator"
+    manifest["source_id"] = f"{stem}.json"
+    for key, extension in (
+        ("workflow", ".json"),
+        ("api", ".api.json"),
+        ("manifest", ".interface.json"),
+    ):
+        manifest[key]["path"] = stem + extension
+    subject, seed = manifest["interface"]["inputs"]
+    subject.update(
+        id="subject_name",
+        label="Subject name",
+        description="Manual subject.",
+        semantic_role="custom",
+        default="Mira",
+    )
+    seed.update(
+        id="seed",
+        type="seed",
+        label="Prompt seed",
+        semantic_role="seed",
+        minimum=0,
+        maximum=4294967295,
+        default_mode="random",
+        default=1,
+    )
+    seed["bindings"] = _binding("111", "CIFSeedParameter")
+    api["110"]["inputs"]["value"] = "Mira"
+    api["111"]["class_type"] = "CIFSeedParameter"
+    del api["120"]
+    final = manifest["interface"]["outputs"][0]
+    final.update(
+        id="prompt",
+        type="text",
+        cardinality="one",
+        label="Generated prompt",
+        description="Declared text prompt.",
+    )
+    api["130"] = {
+        "class_type": "CIFPublishText",
+        "inputs": {
+            "text": ["110", 0],
+            "output_id": "prompt",
+            "instance_uuid": final["instance_uuid"],
+            "role": "final",
+            "kind": "text",
+            "cardinality": "one",
+            "description": final["description"],
+        },
+    }
+    manifest["interface"]["native_outputs"] = [{"node_id": "130", "class_type": "CIFPublishText"}]
+    manifest["dependencies"] = {
+        "class_types": sorted({node["class_type"] for node in api.values()})
+    }
+    workflow["nodes"] = [
+        {"id": int(key), "type": node["class_type"], "widgets_values": []}
+        for key, node in api.items()
+    ]
+    return stem, workflow, api, manifest
+
+
 def build_publication_bundle(
     kind: str = "krea",
     *,
@@ -831,7 +895,11 @@ def build_publication_bundle(
     ``api`` and changes exact bytes without making the JSON syntactically invalid.
     """
 
-    if kind == "krea":
+    if kind == "text":
+        stem, workflow, api, manifest = _prompt_documents(
+            publication_id or "55555555-5555-4555-8555-555555555555"
+        )
+    elif kind == "krea":
         stem, workflow, api, manifest = _krea_documents(publication_id or KREA_PUBLICATION_ID)
     elif kind == "generic":
         stem, workflow, api, manifest = _generic_documents(publication_id or GENERIC_PUBLICATION_ID)

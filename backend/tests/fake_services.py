@@ -223,6 +223,34 @@ class FakeServiceState:
             "extra_data": copy.deepcopy(record.get("extra_data")),
         }
         await asyncio.sleep(self.initial_event_delay)
+        text_publishers = _nodes(graph, "CIFPublishText")
+        if text_publishers:
+            await asyncio.sleep(delay)
+            seed = _node_value(graph, "CIFSeedParameter", 1)
+            text = f"{prompt_text or 'the woman'} explores a quiet forest, variation {seed}."
+            for node_id, node in text_publishers:
+                inputs = node["inputs"]
+                self.histories[prompt_id]["outputs"][node_id] = {
+                    "text": [text],
+                    "comfyui_image_frontend": [
+                        {
+                            "schema_version": "comfyui-image-frontend.output/v1",
+                            "output_id": inputs["output_id"],
+                            "instance_uuid": inputs["instance_uuid"],
+                            "role": "final",
+                            "kind": "text",
+                            "cardinality": "one",
+                            "value": text,
+                        }
+                    ],
+                }
+            self.histories[prompt_id]["status"] = {
+                "status_str": "success",
+                "completed": True,
+                "messages": [],
+            }
+            self.running_prompt_ids.discard(prompt_id)
+            return
 
         base_ref = self._record_image(prompt_id, "base", "base")
         base_output = {

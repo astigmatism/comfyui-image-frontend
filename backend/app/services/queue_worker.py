@@ -39,6 +39,7 @@ from ..models import (
     GenerationRunMember,
     GenerationStatus,
     GenerationUpload,
+    PromptGenerationRun,
     SchedulerState,
     ServiceHealth,
     Upload,
@@ -134,6 +135,7 @@ class QueueWorker:
         self.ollama = ollama
         self.assets = assets
         self.broker = broker
+        self.prompt_generation: Any = None
         self.generations = generations
         self.generation_eta = generation_eta
         self._stop = asyncio.Event()
@@ -218,6 +220,8 @@ class QueueWorker:
             self._mark_dispatcher_heartbeat()
             try:
                 await self._reconcile_startup()
+                if getattr(self, "prompt_generation", None):
+                    await self.prompt_generation.recover(self)
                 self._consecutive_failures = 0
                 break
             except asyncio.CancelledError:
@@ -360,7 +364,11 @@ class QueueWorker:
                 if claim is None:
                     break
                 generation_id, event = claim
-                execution = self._execute(generation_id)
+                execution = (
+                    self.prompt_generation.execute(generation_id[5:])
+                    if generation_id.startswith("text:")
+                    else self._execute(generation_id)
+                )
                 try:
                     self._start_generation_task(
                         generation_id,
@@ -371,7 +379,8 @@ class QueueWorker:
                 except BaseException:
                     await self._requeue_unstarted_claim(generation_id)
                     raise
-                await self._publish_event_best_effort(event, generation_id=generation_id)
+                if event is not None:
+                    await self._publish_event_best_effort(event, generation_id=generation_id)
 
     def _start_generation_task(
         self,
@@ -433,6 +442,11 @@ class QueueWorker:
         return self.comfyui_instances.get(instance_id)
 
     async def _requeue_unstarted_claim(self, generation_id: str) -> None:
+        if generation_id.startswith("text:"):
+            await _run_blocking(
+                self.prompt_generation._text_state, generation_id[5:], status="queued"
+            )
+            return
         event = None
 
         def requeue_unstarted_claim_transaction(event: Any = event) -> Any:
@@ -617,9 +631,25 @@ class QueueWorker:
                 .group_by(Generation.owner_id)
                 .order_by("first_seq", Generation.owner_id)
             ).all()
-            if not rows:
+            text_rows = session.execute(
+                select(
+                    PromptGenerationRun.owner_id,
+                    func.min(PromptGenerationRun.queue_seq).label("first_seq"),
+                )
+                .where(
+                    PromptGenerationRun.status == "queued",
+                    PromptGenerationRun.instance_id == target_id,
+                )
+                .group_by(PromptGenerationRun.owner_id)
+            ).all()
+            first_by_owner = {str(row.owner_id): row.first_seq for row in rows}
+            for row in text_rows:
+                first_by_owner[str(row.owner_id)] = min(
+                    first_by_owner.get(str(row.owner_id), row.first_seq), row.first_seq
+                )
+            if not first_by_owner:
                 return None
-            owner_ids = [str(row.owner_id) for row in rows]
+            owner_ids = sorted(first_by_owner, key=lambda owner: (first_by_owner[owner], owner))
             scheduler_key = "instance:" + hashlib.sha256(target_id.encode()).hexdigest()[:40]
             state = session.get(SchedulerState, scheduler_key)
             if state is None:
@@ -641,6 +671,25 @@ class QueueWorker:
                 .order_by(Generation.auto_cycle_id.is_not(None), Generation.queue_seq)
                 .limit(1)
             )
+            text_run = session.scalar(
+                select(PromptGenerationRun)
+                .where(
+                    PromptGenerationRun.owner_id == owner_id,
+                    PromptGenerationRun.status == "queued",
+                    PromptGenerationRun.instance_id == target_id,
+                )
+                .order_by(PromptGenerationRun.automatic, PromptGenerationRun.queue_seq)
+                .limit(1)
+            )
+            if text_run and (
+                generation is None
+                or (text_run.automatic, text_run.queue_seq)
+                < (generation.auto_cycle_id is not None, generation.queue_seq)
+            ):
+                text_run.status = "dispatching"
+                state.last_user_id = owner_id
+                session.commit()
+                return "text:" + text_run.id, None
             if generation is None:
                 return None
             generation.status = GenerationStatus.DISPATCHING

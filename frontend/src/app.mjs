@@ -1,4 +1,4 @@
-import { submitGeneration, setSubmissionOwner, pendingSubmission, recoverSubmission, clearSubmissionStorage } from "./generation-submissions.mjs";
+import { submitGeneration, setSubmissionOwner, pendingSubmission, recoverSubmission, clearSubmissionStorage, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
 import { installThumbnails } from "./thumbnails.mjs";
 import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
@@ -76,6 +76,7 @@ import {
   generationRequestBlocked,
   generationSubmissionDisabled,
   serverControlsMarkup,
+  promptPipelineMarkup,
   loginMarkup,
   moveDialogMarkup,
   passwordChangeMarkup,
@@ -174,6 +175,14 @@ const state = {
   sharedSettingsStatus: "loading",
   sharedSettingsMessage: null,
   recentResolutionsBySource: {},
+  promptGeneration: { enabled: false, active_source: null, sources: {}, previous_assistant_mode: null },
+  promptGeneratorSources: [],
+  promptGeneratorSource: null,
+  promptGenerationBusy: false,
+  promptGenerationMessage: null,
+  promptGenerationError: null,
+  latestGeneratedPrompt: null,
+  promptEditorDirty: false,
   autoGenerateCreativeDirection: false,
   autoGenerateStatus: "idle",
   autoGenerateStatusMessage: null,
@@ -224,7 +233,12 @@ let activityRefreshTimer = null;
 let activityRequestToken = 0;
 let activityRefreshRequest = null;
 let settingsSync = null;
+const settingsInterfaces = new Map();
 let userStateTimer = null;
+let promptJobTimer = null;
+let promptGeneratorLoadToken = 0;
+let promptJobsRefreshing = false;
+const promptJobSeen = new Map();
 let automationReadToken = 0;
 let autoGeneratePinned = false;
 let autoGeneratePinnedCollectionId = null;
@@ -337,6 +351,10 @@ function bindDelegatedEvents() {
   root.addEventListener("click", handleClick);
   root.addEventListener("change", handleChange);
   root.addEventListener("input", handleInput);
+  for (const eventType of ["input", "change"]) root.addEventListener(eventType, (event) => {
+    if (eventType === "input" && event.target.matches('input[type="checkbox"], input[type="radio"], select')) return;
+    if (event.target.closest("#generation-panel")) queueMicrotask(() => { settingsSync?.schedule(); persistBrowserDraft(); });
+  });
   root.addEventListener("keydown", handleKeyDown);
   document.addEventListener("keydown", handlePhotoViewerKeyDown, true);
   root.addEventListener("keyup", handleKeyUp);
@@ -481,6 +499,9 @@ async function handleClick(event) {
     else if (action === "reset-prompt-instructions") resetPromptInstructions(target);
     else if (action === "retry-auto-generate") void autoGenerationCommand("/retry");
     else if (action === "apply-auto-generate") void applyAutoGeneration();
+    else if (action === "generate-prompt") await runPromptGeneration(false);
+    else if (action === "use-latest-prompt") applyLatestGeneratedPrompt();
+    else if (action === "reload-prompt-generators") await loadPromptGenerators();
     else if (action === "settings-use-saved") void settingsSync?.resolve(false);
     else if (action === "settings-keep-local") void settingsSync?.resolve(true);
     else if (action === "settings-retry") void retrySharedSettings();
@@ -539,8 +560,38 @@ async function handleClick(event) {
     syncServerControls();
     return;
   }
+  if (element.id === "prompt-generation-enabled") {
+    state.promptGeneration.enabled = element.checked;
+    if (element.checked) {
+      state.promptGeneration.previous_assistant_mode = state.promptAssistant.mode;
+      state.promptAssistant.mode = "refine";
+      state.controlSectionOpen["prompt-generation"] = true;
+    } else {
+      state.promptAssistant.mode = state.promptGeneration.previous_assistant_mode || "refine";
+      state.controlSectionOpen["prompt-generation"] = false;
+    }
+    settingsSync?.schedule();
+    renderPanel();
+    return;
+  }
+  if (element.id === "prompt-generation-source") {
+    await selectPromptGenerator(element.value || null);
+    return;
+  }
+  if (element.matches("[data-prompt-generator-id], [data-prompt-generator-seed-mode]")) {
+    updatePromptGeneratorControl(element);
+    return;
+  }
   if (element.id === "auto-generate") {
-    void changeAutoGeneration(element.checked);
+    const enabled = element.checked;
+    state.pendingAutoEnabled = enabled;
+    if (enabled) {
+      state.controlSectionOpen["auto-generation"] = true;
+      persistControlSections();
+      const section = element.closest("[data-control-section]");
+      if (section) setControlSectionElementOpen(section, true);
+    }
+    void changeAutoGeneration(enabled);
     return;
   }
   if (element.id === "auto-generation-destination") {
@@ -559,7 +610,7 @@ async function handleClick(event) {
     element.setCustomValidity("");
     state.maxAutoGenerations = limit;
     settingsSync?.schedule();
-    void autoGenerationCommand("/limit", { max_generations: limit });
+    syncServerControls();
     return;
   }
   if (element.id === "generation-quantity") {
@@ -568,7 +619,9 @@ async function handleClick(event) {
   }
   if (element.id === "auto-generate-creative-direction") {
     state.autoGenerateCreativeDirection = element.checked;
+    state.controlSectionOpen["creative-direction"] = element.checked;
     settingsSync?.schedule();
+    renderPanel();
     syncServerControls();
     return;
   }
@@ -958,6 +1011,13 @@ function setControlSectionElementOpen(section, open) {
 
 function handleInput(event) {
   const element = event.target;
+  if (element.matches("[data-prompt-generator-id]")) { updatePromptGeneratorControl(element); return; }
+  if (element.id === "auto-generate-limit") {
+    const value = element.value.trim() === "" ? null : Number(element.value);
+    if (value === null || (Number.isInteger(value) && value >= 1 && value <= 1_000_000)) state.maxAutoGenerations = value;
+    return;
+  }
+
   if (element.matches("[data-checkpoint-search]")) {
     updateSourcePickerSearch(element.value);
     return;
@@ -1001,6 +1061,7 @@ function handleInput(event) {
   if (element.id === "generation-quantity") {
     const filtered = element.value.replace(/[^0-9]/g, "").slice(0, 3);
     if (filtered !== element.value) element.value = filtered;
+    if (filtered) { state.generationQuantity = Math.max(1, Math.min(MAX_GENERATION_QUANTITY, Number(filtered))); persistGenerationQuantity(); }
     return;
   }
   if (element.id === "creative-direction") {
@@ -1013,7 +1074,7 @@ function handleInput(event) {
   if (element.name === "assistant-mode") {
     const assistant = element.closest("#prompt-assistant");
     capturePromptInstructions(assistant, state.promptAssistant.instructionOverrides);
-    state.promptAssistant.mode = element.value;
+    state.promptAssistant.mode = state.promptGeneration.enabled ? "refine" : element.value;
     syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, element.value);
     setPromptAssistantError(null);
     persistCreativeDirectionDraft();
@@ -1077,7 +1138,7 @@ function openPromptEditor(button) {
   dialog.returnValue = "";
   state.promptEditorDirectionStatus = "idle";
   state.promptEditorDirectionAppliedValue = null;
-  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, state.promptAssistant);
+  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, { ...state.promptAssistant, promptGenerationEnabled: state.promptGeneration.enabled });
   syncPromptInstructions(dialog, promptEditorInstructionOverrides, state.promptAssistant.mode);
   dialog.showModal();
   syncSpeechControls();
@@ -1110,11 +1171,13 @@ function applyPromptEditor() {
   if (!dialog?.open || !editor || !controlId || !control) return;
 
   state.parameters[controlId] = normalizeInputValue(control, editor.value);
+  state.promptEditorDirty = true;
+  persistBrowserDraft();
   state.explicitParameterIds.add(controlId);
   delete state.serverFieldErrors[controlId];
   state.formError = null;
   state.promptAssistant.creativeDirection = creativeDirection?.value || "";
-  state.promptAssistant.mode = assistantMode?.value === "create" ? "create" : "refine";
+  state.promptAssistant.mode = !state.promptGeneration.enabled && assistantMode?.value === "create" ? "create" : "refine";
   state.promptAssistant.think = assistantThinking?.checked !== false;
   capturePromptInstructions(dialog, promptEditorInstructionOverrides);
   state.promptAssistant.instructionOverrides = structuredClone(promptEditorInstructionOverrides);
@@ -1947,6 +2010,7 @@ function renderPanelWithResolutionFocus(grid, handle) {
 
 function updateControlFromElement(element) {
   const id = element.dataset.controlId;
+  if (id === positivePromptInput(sourceInterface(state.activeSource))?.id) state.promptEditorDirty = true;
   const control = interfaceInputs(state.activeSource?.interface).find((item) => item.id === id);
   if (!id || !control) return null;
   if (element.dataset.resolutionPart) {
@@ -2010,7 +2074,7 @@ function syncChoiceStrengthControl(control) {
 
 function syncNumberControlPair(element) {
   if (!element.matches("[data-number-entry], [data-number-slider]")) return;
-  const block = element.closest("[data-control-block]");
+  const block = element.closest("[data-control-block], [data-prompt-generator-block]");
   if (!block) return;
   if (element.matches("[data-number-slider]")) {
     const exact = block.querySelector("[data-number-entry]");
@@ -2033,7 +2097,7 @@ function syncNumberControlPair(element) {
 function syncParameterValidation(controlId) {
   const contract = sourceInterface(state.activeSource);
   const errors = {
-    ...clientValidate(contract, state.parameters),
+    ...validateImageParameters(contract, state.parameters),
     ...withoutNulls(state.serverFieldErrors),
   };
   state.fieldErrors = errors;
@@ -2302,6 +2366,7 @@ async function enterApplication() {
     available: false,
     message: "Checking voice input availability…",
   };
+  restoreBrowserDraft();
   root.innerHTML = shellMarkup(state);
   document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
   document.querySelector("#prompt-editor-dialog")?.addEventListener("close", handlePromptEditorClose);
@@ -2346,12 +2411,16 @@ async function enterApplication() {
     loadStartupPromptAssistant(controller.signal),
     loadStartupSpeechToText(controller.signal),
     preferencesRequest.then(() => loadSources({ signal: controller.signal, diagnostic: true })),
+    preferencesRequest.then(() => loadPromptGenerators(controller.signal)),
   ];
   void Promise.allSettled(requests);
   userStateTimer = window.setInterval(() => void refreshUserState(), 15_000);
+  promptJobTimer = window.setInterval(() => void refreshPromptJobs(), 1500);
 }
 
 function stopApplicationStartup() {
+  clearInterval(promptJobTimer);
+  promptJobTimer = null;
   clearInterval(userStateTimer);
   userStateTimer = null;
   settingsSync = null;
@@ -2366,7 +2435,11 @@ function requestWasAborted(error, signal) {
 }
 
 async function loadStartupPreferences(signal = applicationStartupController?.signal) {
+  settingsInterfaces.clear();
   settingsSync = createSettingsSync({ api, read: captureSharedSettings, apply: applySharedSettings,
+    storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) },
+    storageKey: `cif.control-panel.v1.${sessionStorageUserId()}`, normalize: normalizePanelSettings,
+    prepareMerge: prepareSettingsInterfaces,
     status: (status, message = null) => {
       state.sharedSettingsStatus = status;
       state.sharedSettingsMessage = message;
@@ -3119,6 +3192,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
     const contract = sourceInterface(detail);
     if (!contract) throw new Error("The selected source has no public interface.");
     state.activeSource = { ...(resolvedSummary || {}), ...detail, interface: contract };
+    settingsInterfaces.set(key, state.activeSource);
     const baseValues = reconcileInterfaceValues(
       contract,
       saved?.values || {},
@@ -3194,7 +3268,7 @@ function renderPanel() {
   state.selectedGenerationTargetCount = plannedGenerationTotal();
   const panelView = capturePanelView(panel);
   const contract = sourceInterface(state.activeSource);
-  const clientErrors = clientValidate(contract, state.parameters);
+  const clientErrors = validateImageParameters(contract, state.parameters);
   state.fieldErrors = { ...clientErrors, ...withoutNulls(state.serverFieldErrors) };
   for (const key of controlSectionKeysWithErrors(contract, state.fieldErrors)) {
     if (state.controlSectionOpen[key] !== true) {
@@ -3208,6 +3282,7 @@ function renderPanel() {
   if (assistant) {
     const direction = assistant.querySelector("#creative-direction");
     direction.value = state.promptAssistant.creativeDirection || "";
+    if (state.promptGeneration.enabled) state.promptAssistant.mode = "refine";
     const mode = assistant.querySelector(`[name=assistant-mode][value=${state.promptAssistant.mode}]`);
     if (mode) mode.checked = true;
     const thinkingMode = assistant.querySelector("#prompt-assistant-thinking-mode");
@@ -3446,7 +3521,7 @@ function syncGenerationQuantityControl() {
 }
 
 function promptEditorMode(dialog) {
-  return dialog?.querySelector('[name="prompt-editor-assistant-mode"]:checked')?.value === "create"
+  return !state.promptGeneration.enabled && dialog?.querySelector('[name="prompt-editor-assistant-mode"]:checked')?.value === "create"
     ? "create" : "refine";
 }
 
@@ -3535,7 +3610,7 @@ function syncPromptAssistantDraftFromPanel() {
     syncServerControls();
   }
   state.promptAssistant.creativeDirection = nextDirection;
-  state.promptAssistant.mode = nextMode;
+  state.promptAssistant.mode = state.promptGeneration.enabled ? "refine" : nextMode;
   state.promptAssistant.think = nextThinkingMode;
   state.autoGenerateCreativeDirection = nextAutomaticCreativeDirection;
   syncPromptInstructions(assistant, state.promptAssistant.instructionOverrides, nextMode);
@@ -3625,7 +3700,7 @@ function syncGenerationSubmissionState() {
   if (!panel) return;
   const contract = sourceInterface(state.activeSource);
   const errors = {
-    ...clientValidate(contract, state.parameters),
+    ...validateImageParameters(contract, state.parameters),
     ...withoutNulls(state.serverFieldErrors),
   };
   state.fieldErrors = errors;
@@ -3727,6 +3802,8 @@ async function generate() {
     toast(state.formError, "error");
     return false;
   }
+  if (state.promptGeneration.enabled) return runPromptGeneration(true);
+  if (state.autoGenerateCreativeDirection && !await composePrompt()) return false;
   if (plannedTotal > 1) {
     return generateSelectedCheckpoints();
   }
@@ -3752,7 +3829,7 @@ async function generateSingleSource() {
     requestComfyuiInstance?.available !== true
   )
     return false;
-  const errors = clientValidate(contract, state.parameters);
+  const errors = validateImageParameters(contract, state.parameters);
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted controls.";
@@ -3868,7 +3945,7 @@ async function generateSelectedCheckpoints() {
     return false;
   }
 
-  const errors = clientValidate(contract, requestParameters);
+  const errors = validateImageParameters(contract, requestParameters);
   if (Object.keys(errors).length) {
     state.serverFieldErrors = errors;
     state.formError = "Review the highlighted generation controls.";
@@ -4953,6 +5030,8 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
+  state.promptEditorDirty = true;
+  persistBrowserDraft();
   syncServerControls();
   const runtimeWarning = applyRecalledComfyuiInstance(recalled);
   state.modelSelectionsBySourceRevision = new Map();
@@ -5142,7 +5221,7 @@ function photoViewerNavigation(id) {
 function photoViewerGenerationDock() {
   const contract = sourceInterface(state.activeSource);
   const errors = {
-    ...clientValidate(contract, state.parameters),
+    ...validateImageParameters(contract, state.parameters),
     ...withoutNulls(state.serverFieldErrors),
   };
   const selected =
@@ -6100,6 +6179,7 @@ function captureSharedSettings() {
     }
   }
   return { gallery_scale: state.galleryScale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
+    prompt_generation: structuredClone(state.promptGeneration),
     active_source: state.activeSourceKey, runtime_id: state.selectedComfyuiInstanceId,
     sources, model_selections: Object.fromEntries(state.modelSelectionsBySourceRevision),
     quantity: state.generationQuantity, control_sections: structuredClone(state.controlSectionOpen),
@@ -6112,6 +6192,8 @@ function captureSharedSettings() {
 
 async function applySharedSettings(preferences) {
   const saved = preferences.settings;
+  const oldPromptSource = state.promptGeneration.active_source;
+  state.promptGeneration = structuredClone(saved.prompt_generation || { enabled: false, active_source: null, sources: {}, previous_assistant_mode: null });
   const previousSource = state.activeSourceKey;
   const changed = !settingsEqual(captureSharedSettings(), preferences);
   state.galleryScale = preferences.gallery_scale;
@@ -6134,6 +6216,8 @@ async function applySharedSettings(preferences) {
     state.explicitParameterIds = new Set(parameters.explicitInputIds);
     state.selectedPreset = parameters.selectedPreset;
   }
+  if (state.promptGeneration.enabled) state.promptAssistant.mode = "refine";
+  if (state.promptGeneratorSources.length && oldPromptSource !== state.promptGeneration.active_source) await selectPromptGenerator(state.promptGeneration.active_source);
   loadRecentResolutionsForActiveSource();
   if (state.sources.length && previousSource !== state.activeSourceKey) {
     // Avoid carrying the previous source's live values into a remote source change.
@@ -6151,33 +6235,36 @@ async function retrySharedSettings() {
 
 async function refreshUserState() {
   if (!applicationStartupController || applicationStartupController.signal.aborted) return;
-  const requests = [refreshAutoGeneration()];
+  const requests = [refreshAutoGeneration(), refreshPromptJobs()];
   if (!document.activeElement?.matches("input, textarea, select") && !state.sourcePickerDialogOpen &&
       !document.querySelector("#prompt-editor-dialog[open]")) requests.push(settingsSync?.refresh());
   await Promise.allSettled(requests);
 }
 
-function automationSnapshot({ starting = false } = {}) {
+function automationSnapshot() {
   const contract = sourceInterface(state.activeSource);
   if (!contract || !state.activeSourceKey) throw new Error("Choose a workflow first.");
   const prompt = positivePromptInput(contract) || interfaceInputs(contract).find((item) => item.id === "prompt.text");
   const direction = state.promptAssistant.creativeDirection || "";
+  const parameters = parametersForRequest(contract, state.parameters);
+  if (state.promptGeneration.enabled && prompt) parameters[prompt.id] = "";
   return {
+    prompt_generation: state.promptGeneration.enabled ? promptGenerationPayload() : null,
     generation: { source_key: state.activeSourceKey, revision: sourceRevision(state.activeSource),
-      parameters: parametersForRequest(contract, state.parameters),
+      parameters,
       prompt_assistant: promptAssistantSnapshotPayload(),
       comfyui_instance_id: state.selectedComfyuiInstanceId,
-      collection_id: starting ? state.currentCollectionId : state.pendingAutoDestination !== undefined
-        ? state.pendingAutoDestination : state.automation?.snapshot?.generation.collection_id ?? null,
+      collection_id: state.pendingAutoDestination !== undefined ? state.pendingAutoDestination
+        : state.automation?.snapshot ? state.automation.snapshot.generation.collection_id : state.currentCollectionId,
     },
     variants: orderedModelParameterVariants(state.activeSource, contract, state.parameters),
     quantity: state.generationQuantity,
     assistant: state.autoGenerateCreativeDirection && direction.trim() ? {
-      mode: state.promptAssistant.mode, prompt: prompt ? String(state.parameters[prompt.id] || "") : "",
+      mode: state.promptAssistant.mode, prompt: !state.promptGeneration.enabled && prompt ? String(state.parameters[prompt.id] || "") : "",
       creative_direction: direction, think: state.promptAssistant.think !== false,
       instructions: promptInstructionsForMode(state.promptAssistant) || null,
     } : null,
-    max_generations: starting ? state.maxAutoGenerations : state.automation?.snapshot?.max_generations ?? null,
+    max_generations: state.maxAutoGenerations,
   };
 }
 
@@ -6199,6 +6286,10 @@ async function refreshAutoGeneration() {
 function applyAutoGenerationState(result) {
   state.automation = result;
   state.automationLoaded = true;
+  if (result.latest_prompt && result.latest_prompt !== state.lastAutoPrompt) {
+    state.lastAutoPrompt = result.latest_prompt;
+    receiveGeneratedPrompt(result.latest_prompt, { source: result.snapshot?.generation.source_key, revision: result.snapshot?.generation.revision, generator: result.snapshot?.prompt_generation?.source_key });
+  }
   state.autoGenerate = result.enabled;
   state.autoGenerateStatus = result.status;
   const messages = {
@@ -6240,9 +6331,14 @@ async function autoGenerationCommand(path, payload = {}) {
 
 async function changeAutoGeneration(enabled) {
   state.pendingAutoEnabled = enabled;
+  if (enabled) {
+    state.promptEditorDirty = false;
+    state.latestGeneratedPrompt = null;
+    persistBrowserDraft();
+  }
   try {
     syncPromptAssistantDraftFromPanel();
-    await autoGenerationCommand("", { enabled, ...(enabled ? { snapshot: automationSnapshot({ starting: true }) } : {}) });
+    await autoGenerationCommand("", { enabled, ...(enabled ? { snapshot: automationSnapshot() } : {}) });
   } catch (error) { toast(error.message, "error"); }
   finally { state.pendingAutoEnabled = undefined; syncServerControls(); }
 }
@@ -6269,10 +6365,17 @@ function syncServerControls() {
       (!state.autoGenerate && state.sharedSettingsStatus === "loading");
     control.setAttribute("aria-busy", String(!state.automationLoaded || state.automationBusy));
   }
+  const flow = document.querySelector("#prompt-pipeline-flow");
+  if (flow) flow.textContent = promptPipelineMarkup(state);
+  for (const id of ["auto-generate", "auto-generate-creative-direction", "prompt-generation-enabled"]) {
+    const toggle = document.getElementById(id);
+    const label = toggle?.closest("label")?.querySelector("em");
+    if (label) label.textContent = toggle.checked ? "On" : "Off";
+  }
   const host = document.querySelector("#server-controls");
   const editingServerControl = host?.contains(document.activeElement) &&
     document.activeElement.matches("input, textarea, select");
-  if (host && (!editingServerControl || !state.autoGenerate)) {
+  if (host && !editingServerControl) {
     const detailsOpen = host.querySelector("details")?.open;
     host.innerHTML = serverControlsMarkup(state);
     if (detailsOpen && host.querySelector("details")) host.querySelector("details").open = true;
@@ -6288,6 +6391,10 @@ async function resumeGenerationSubmission(resume) {
   try {
     const recovered = await recoverSubmission({ resume });
     if (state.session?.user?.id !== account || !recovered?.result) return;
+    if (["/api/prompt-generations", "/api/generation-preparations"].includes(recovered.pending.path)) {
+      await refreshPromptJobs();
+      return;
+    }
     const items = recovered.pending.path.endsWith("/batch")
       ? recovered.result.items : [{ generation: recovered.result }];
     for (const { generation } of items) {
@@ -6318,4 +6425,280 @@ async function resumeGenerationSubmission(resume) {
       syncGenerationSubmissionState();
     }
   }
+}
+
+function validateImageParameters(contract, parameters) {
+  if (!state.promptGeneration.enabled && !(state.autoGenerateCreativeDirection && state.promptAssistant.mode === "create")) return clientValidate(contract, parameters);
+  const prompt = positivePromptInput(contract);
+  return clientValidate(contract, prompt ? { ...parameters, [prompt.id]: "Prompt preparation pending." } : parameters);
+}
+
+function normalizePanelSettings(value) {
+  if (!value?.settings) return value;
+  const normalized = structuredClone(value);
+  const reconcile = (entries, source) => {
+    const saved = entries?.[source?.source_key];
+    if (!saved || !source?.interface) return;
+    saved.values = reconcileInterfaceValues(source.interface, saved.values, saved.interface, saved.explicitInputIds || []);
+    saved.interface = structuredClone(source.interface);
+    saved.revision = structuredClone(sourceRevision(source));
+  };
+  const interfaces = new Map(settingsInterfaces);
+  if (state.activeSource?.interface && !interfaces.has(state.activeSourceKey)) interfaces.set(state.activeSourceKey, state.activeSource);
+  if (state.promptGeneratorSource?.interface && !interfaces.has(state.promptGeneration.active_source)) interfaces.set(state.promptGeneration.active_source, state.promptGeneratorSource);
+  for (const source of interfaces.values()) {
+    reconcile(normalized.settings.sources, source);
+    reconcile(normalized.settings.prompt_generation?.sources, source);
+  }
+  return normalized;
+}
+
+async function prepareSettingsInterfaces(...values) {
+  const signal = applicationStartupController?.signal;
+  const keys = new Set(values.flatMap((value) => [
+    ...Object.keys(value?.settings?.sources || {}),
+    ...Object.keys(value?.settings?.prompt_generation?.sources || {}),
+  ]));
+  for (const key of keys) {
+    try {
+      const source = await api(`/api/workflows/${encodeURIComponent(key)}`, { signal, deadlineMs: 5000 });
+      if (signal?.aborted) return;
+      settingsInterfaces.set(key, source);
+      if (state.activeSourceKey === key && state.activeSource) state.activeSource = source;
+      if (state.promptGeneration.active_source === key && state.promptGeneratorSource) state.promptGeneratorSource = source;
+    } catch {
+      if (signal?.aborted) return;
+      // Retain unavailable sources for the existing source-error UI and explicit retry.
+    }
+  }
+}
+
+function persistBrowserDraft() {
+  if (!state.session?.user?.id) return;
+  writeStoredItem(`cif.panel-draft.${sessionStorageUserId()}`, JSON.stringify({
+    pendingAutoDestination: state.pendingAutoDestination,
+    promptEditorDirty: state.promptEditorDirty,
+    latestGeneratedPrompt: state.latestGeneratedPrompt,
+    lastAutoPrompt: state.lastAutoPrompt,
+  }));
+}
+
+function restoreBrowserDraft() {
+  state.promptGeneration = { enabled: false, active_source: null, sources: {}, previous_assistant_mode: null };
+  state.promptGeneratorSources = [];
+  state.promptGeneratorSource = null;
+  state.promptGenerationBusy = false;
+  state.promptGenerationError = null;
+  state.promptGenerationMessage = null;
+  state.latestGeneratedPrompt = null;
+  state.promptEditorDirty = false;
+  state.lastAutoPrompt = null;
+  try {
+    const saved = JSON.parse(readStoredItem(`cif.panel-draft.${sessionStorageUserId()}`) || "null");
+    if (saved && typeof saved === "object") {
+      if (saved.pendingAutoDestination === null || typeof saved.pendingAutoDestination === "string") state.pendingAutoDestination = saved.pendingAutoDestination;
+      state.promptEditorDirty = saved.promptEditorDirty === true;
+      if (typeof saved.latestGeneratedPrompt?.prompt === "string") state.latestGeneratedPrompt = saved.latestGeneratedPrompt;
+      if (typeof saved.lastAutoPrompt === "string") state.lastAutoPrompt = saved.lastAutoPrompt;
+    }
+  } catch { state.promptGenerationError = "Saved prompt draft could not be restored."; }
+}
+
+async function loadPromptGenerators(signal = applicationStartupController?.signal) {
+  try {
+    const sources = await api("/api/workflows?output_kind=text", { signal });
+    if (signal?.aborted) return;
+    state.promptGeneratorSources = sources;
+    state.promptGeneratorLoadError = false;
+    if (!state.promptGeneration.active_source && sources.length === 1 && sources[0].available !== false) state.promptGeneration.active_source = sources[0].source_key;
+    await selectPromptGenerator(state.promptGeneration.active_source, signal);
+  } catch (error) {
+    if (signal?.aborted) return;
+    state.promptGeneratorLoadError = true;
+    state.promptGenerationError = error.message;
+    renderPanel();
+  }
+}
+
+async function selectPromptGenerator(key, signal = applicationStartupController?.signal) {
+  state.promptGeneration.active_source = key;
+  state.promptGeneratorSource = null;
+  state.promptGenerationError = null;
+  settingsSync?.schedule();
+  renderPanel();
+  if (!key) return;
+  const token = ++promptGeneratorLoadToken;
+  try {
+    const source = await api(`/api/workflows/${encodeURIComponent(key)}`, { signal });
+    if (signal?.aborted || token !== promptGeneratorLoadToken || key !== state.promptGeneration.active_source) return;
+    if (source.output_kind !== "text") throw new Error("The saved prompt source is not a text generator.");
+    const saved = state.promptGeneration.sources[key];
+    state.promptGeneratorSource = source;
+    settingsInterfaces.set(key, source);
+    state.promptGeneration.sources[key] = {
+      interface: source.interface, revision: sourceRevision(source),
+      values: reconcileInterfaceValues(source.interface, saved?.values || {}, saved?.interface, saved?.explicitInputIds || []),
+      explicitInputIds: saved?.explicitInputIds || [], selectedPreset: null,
+    };
+    settingsSync?.schedule();
+  } catch (error) {
+    if (signal?.aborted || token !== promptGeneratorLoadToken) return;
+    state.promptGenerationError = error.message;
+    state.promptGeneratorLoadError = true;
+  }
+  renderPanel();
+}
+
+function updatePromptGeneratorControl(element) {
+  const source = state.promptGeneratorSource;
+  const id = element.dataset.promptGeneratorId || element.dataset.promptGeneratorSeedMode;
+  const input = interfaceInputs(source?.interface).find((item) => item.id === id);
+  const saved = state.promptGeneration.sources[source?.source_key];
+  if (!input || !saved) return;
+  if (element.dataset.promptGeneratorSeedMode) {
+    const current = seedFormValue(input, saved.values[id]);
+    saved.values[id] = { ...current, mode: element.checked ? "random" : "fixed" };
+  } else if (input.type === "boolean") saved.values[id] = element.checked;
+  else if (input.type === "seed") saved.values[id] = { mode: "fixed", value: element.value };
+  else saved.values[id] = normalizeInputValue(input, element.value);
+  if (!saved.explicitInputIds.includes(id)) saved.explicitInputIds.push(id);
+  state.promptGenerationError = null;
+  settingsSync?.schedule();
+  syncNumberControlPair(element);
+  if (element.dataset.promptGeneratorSeedMode) renderPanel();
+}
+
+function promptGenerationPayload() {
+  const source = state.promptGeneratorSource;
+  if (!source || source.available === false) throw new Error("Choose an available prompt source.");
+  const saved = state.promptGeneration.sources[source.source_key];
+  return { source_key: source.source_key, revision: sourceRevision(source), parameters: parametersForRequest(source.interface, saved.values) };
+}
+
+async function runPromptGeneration(withImages) {
+  if (state.promptGenerationBusy || state.submitting || pendingSubmission()) return false;
+  const account = state.session.user.id;
+  try {
+    syncPromptAssistantDraftFromPanel();
+    const generator = promptGenerationPayload();
+    const contract = sourceInterface(state.activeSource);
+    const prompt = positivePromptInput(contract);
+    const context = { source: state.activeSourceKey, revision: sourceRevision(state.activeSource), generator: generator.source_key, original: state.parameters[prompt?.id] || "" };
+    state.promptGenerationBusy = true;
+    state.promptGenerationError = null;
+    state.promptEditorDirty = false;
+    state.latestGeneratedPrompt = null;
+    persistBrowserDraft();
+    let payload = generator;
+    let path = "/api/prompt-generations";
+    if (withImages) {
+      const errors = validateImageParameters(contract, state.parameters);
+      if (Object.keys(errors).length) throw new Error("Review the highlighted image controls.");
+      const assistant = state.autoGenerateCreativeDirection ? {
+        mode: "refine", prompt: "", creative_direction: state.promptAssistant.creativeDirection || "",
+        think: state.promptAssistant.think !== false, instructions: promptInstructionsForMode(state.promptAssistant, "refine") || null,
+      } : null;
+      const parameters = parametersForRequest(contract, state.parameters);
+      const variants = orderedModelParameterVariants(state.activeSource, contract, state.parameters);
+      payload = { items: variants.flatMap((variant) => Array.from({ length: state.generationQuantity }, () => ({
+        generation: { source_key: state.activeSourceKey, revision: sourceRevision(state.activeSource),
+          parameters: { ...parameters, ...variant }, collection_id: state.currentCollectionId,
+          comfyui_instance_id: state.selectedComfyuiInstanceId, prompt_assistant: promptAssistantSnapshotPayload() },
+        prompt_generation: generator, assistant,
+      }))) };
+      path = "/api/generation-preparations";
+    }
+    state.submitting = true;
+    renderPanel();
+    await submitGeneration(path, payload, context);
+    if (state.session?.user?.id !== account) return false;
+    state.promptGenerationMessage = withImages ? "Preparing prompts and images on the server…" : "Generating a prompt…";
+    await refreshPromptJobs();
+    return true;
+  } catch (error) {
+    if (state.session?.user?.id === account) {
+      state.promptGenerationError = error.message;
+      state.promptGenerationBusy = false;
+    }
+    return false;
+  } finally {
+    if (state.session?.user?.id === account) { state.submitting = false; renderPanel(); }
+  }
+}
+
+function receiveGeneratedPrompt(prompt, context) {
+  if (!prompt || context.source !== state.activeSourceKey) return;
+  if (context.generator && context.generator !== state.promptGeneration.active_source) return;
+  if (context.revision && !revisionsMatch({ revision: context.revision }, state.activeSource)) return;
+  const input = positivePromptInput(sourceInterface(state.activeSource));
+  if (!input || state.parameters[input.id] === prompt) return;
+  if (state.promptEditorDirty || document.querySelector("#prompt-editor-dialog[open]")) {
+    state.latestGeneratedPrompt = { prompt, source: context.source, revision: context.revision, generator: context.generator };
+  } else {
+    state.parameters[input.id] = prompt;
+    state.explicitParameterIds.add(input.id);
+    state.compositionId = null;
+    persistActiveParameterState();
+  }
+  persistBrowserDraft();
+  renderPanel();
+}
+
+function applyLatestGeneratedPrompt() {
+  const latest = state.latestGeneratedPrompt;
+  if (!latest || latest.source !== state.activeSourceKey) return;
+  if (latest.revision && !revisionsMatch({ revision: latest.revision }, state.activeSource)) return;
+  if (latest.generator && latest.generator !== state.promptGeneration.active_source) return;
+  state.latestGeneratedPrompt = null;
+  state.promptEditorDirty = false;
+  receiveGeneratedPrompt(latest.prompt, { source: latest.source });
+  persistBrowserDraft();
+  renderPanel();
+}
+
+async function refreshPromptJobs() {
+  if (promptJobsRefreshing || !applicationStartupController || !state.session?.user?.id) return;
+  const account = state.session.user.id;
+  const signal = applicationStartupController.signal;
+  const previousMessage = state.promptGenerationMessage;
+  const previousError = state.promptGenerationError;
+  promptJobsRefreshing = true;
+  try {
+    const jobs = pendingPromptJobs();
+    let busy = false;
+    for (const job of jobs) {
+      const result = await api(`${job.path}/${encodeURIComponent(job.id)}`, { signal });
+      if (signal.aborted || state.session?.user?.id !== account) return;
+      const items = job.path === "/api/prompt-generations" ? [result] : result.items;
+      for (const item of items) {
+        const text = item.prompt || item.raw_prompt;
+        const mark = `${item.id}:${item.status}:${text || ""}`;
+        if (promptJobSeen.get(item.id) !== mark) {
+          promptJobSeen.set(item.id, mark);
+          if (text) receiveGeneratedPrompt(text, job);
+          if (item.error) state.promptGenerationError = item.error.message;
+          if (item.generation && generationBelongsToView(item.generation)) {
+            if (!state.generations.some((existing) => existing.id === item.generation.id)) {
+              state.generations = sortGenerationsNewestFirst([item.generation, ...state.generations]);
+              renderGallery();
+            }
+            liveGenerationRefreshQueue.enqueue(item.generation.id);
+          }
+        }
+      }
+      const complete = items.every((item) => ["succeeded", "accepted", "failed", "discarded"].includes(item.status));
+      if (complete) {
+        finishPromptJob(job.id);
+        state.promptGenerationMessage = items.some((item) => item.error) ? "Prompt preparation needs attention." : job.path === "/api/prompt-generations" ? "Prompt ready." : "Image requests queued.";
+        await refreshGenerationActivity();
+      } else {
+        busy = true;
+        state.promptGenerationMessage = items.some((item) => item.status === "refining")
+          ? "Refining the generated prompt…" : "Generating fresh prompts on the server…";
+      }
+    }
+    if (state.promptGenerationBusy !== busy || previousMessage !== state.promptGenerationMessage || previousError !== state.promptGenerationError) { state.promptGenerationBusy = busy; renderPanel(); }
+  } catch (error) {
+    if (!signal.aborted) { state.promptGenerationError = error.message; if (previousError !== error.message) renderPanel(); }
+  } finally { promptJobsRefreshing = false; }
 }

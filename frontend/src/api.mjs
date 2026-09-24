@@ -36,7 +36,7 @@ export async function api(path, options = {}) {
   const method = requestedMethod.toUpperCase();
   const headers = new Headers(fetchOptions.headers || {});
   headers.set("X-CIF-Generation-Protocol", "3");
-  const submission = Boolean(submissionKey && method === "POST" && /^\/api\/generations(?:\/batch)?$/.test(path));
+  const submission = Boolean(submissionKey && method === "POST" && /^\/api\/(?:generations(?:\/batch)?|prompt-generations|generation-preparations)$/.test(path));
   if (submission) headers.set("Idempotency-Key", submissionKey);
   const deadlineMs = submission ? Math.min(requestedDeadline || 60_000, 60_000) : requestedDeadline;
   const attempts = submission ? 5 : SAFE_METHODS.has(method) ? 4 : 1;

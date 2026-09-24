@@ -713,3 +713,68 @@ class AppLock(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class PromptGenerationRun(Base):
+    __tablename__ = "prompt_generation_runs"
+    __table_args__ = (Index("ix_prompt_runs_queue", "status", "instance_id", "queue_seq"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
+    profile_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workflow_profiles.id", ondelete="RESTRICT")
+    )
+    instance_id: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    queue_seq: Mapped[int] = mapped_column(Integer)
+    automatic: Mapped[bool] = mapped_column(Boolean, default=False)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    contract_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    compiled_graph_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    compiled_graph_sha256: Mapped[str] = mapped_column(String(64))
+    resolved_seeds_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    comfyui_prompt_id: Mapped[str | None] = mapped_column(String(255))
+    prompt: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class GenerationPreparation(Base):
+    __tablename__ = "generation_preparations"
+    __table_args__ = (
+        Index("ix_preparation_owner_group", "owner_id", "group_id"),
+        Index("ix_preparation_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    group_id: Mapped[str] = mapped_column(String(36))
+    owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
+    profile_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workflow_profiles.id", ondelete="RESTRICT")
+    )
+    prompt_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("prompt_generation_runs.id", ondelete="CASCADE")
+    )
+    auto_cycle_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("auto_generation_cycles.id", ondelete="SET NULL")
+    )
+    activity_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generation_runs.id", ondelete="CASCADE")
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="preparing")
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    assistant_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("prompt_assistant_runs.id", ondelete="SET NULL")
+    )
+    generation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("generations.id", ondelete="SET NULL")
+    )
+    prompt: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

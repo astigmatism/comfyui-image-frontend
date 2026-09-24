@@ -809,8 +809,8 @@ test("generation panel places the configured ComfyUI runtime below generation co
   assert.ok(
     generateIndex >= 0 &&
       generateIndex < autoGenerateIndex &&
-      autoGenerateIndex < creativeDirectionIndex &&
-      creativeDirectionIndex < runtimeIndex &&
+      autoGenerateIndex < runtimeIndex &&
+      promptIndex < creativeDirectionIndex &&
       runtimeIndex < sourceIndex &&
       sourceIndex < promptIndex,
   );
@@ -831,9 +831,9 @@ test("generation panel places the configured ComfyUI runtime below generation co
     html.match(/<input id="auto-generate-creative-direction"[^>]*>/)?.[0] || "";
   assert.match(creativeDirectionControl, /type="checkbox"/);
   assert.match(creativeDirectionControl, /aria-label="Use Creative Direction"/);
-  assert.doesNotMatch(creativeDirectionControl, /role="switch"/);
-  assert.match(html, /<em>Auto-generate<\/em>/);
-  assert.match(html, /<em>Creative Direction<\/em>/);
+  assert.match(creativeDirectionControl, /role="switch"/);
+  assert.match(html, /control-section-title">Auto-generation<\/span>/);
+  assert.match(html, /control-section-title">Creative Direction<\/span>/);
   assert.match(html.match(/<button id="workflow-source"[^>]*>/)?.[0] || "", /aria-haspopup="dialog"/);
   assert.match(html, /data-action="open-generation-source-dialog"/);
   assert.doesNotMatch(html, /<select id="workflow-source"/);

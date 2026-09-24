@@ -50,3 +50,7 @@ Temporary `profile_id` / `controls` request aliases and legacy identity/control 
 5. Confirm source controls/warnings and perform one low-cost history-reconciled generation before retiring an older deployment.
 
 No ComfyUI workflow, model, custom-node installation, credential, or server file is mutated by this migration.
+
+## Optional prompt sources
+
+Text-output publications can now be registered alongside image sources. Existing image publication identities and compilation are unchanged. The additive text preparation migration and pinned-runner recovery procedure are described in [Prompt generation](prompt-generation.md).

@@ -20,6 +20,7 @@ from .services.event_broker import EventBroker
 from .services.generation_eta import GenerationEtaEstimator
 from .services.generations import GenerationService
 from .services.ollama import OllamaAdapter
+from .services.prompt_generation import PromptGenerationService
 from .services.queue_worker import QueueWorker
 from .services.speech_to_text import SpeechToTextAdapter
 from .services.user_deletion import UserDeletionService
@@ -81,6 +82,8 @@ class AppContainer:
             generations=self.generations,
             generation_eta=self.generation_eta,
         )
+        self.prompt_generation = PromptGenerationService(self)
+        self.worker.prompt_generation = self.prompt_generation
         self.automation = AutoGenerationService(self)
         self._startup_discovery_task: asyncio.Task[None] | None = None
         self._observed_startup_discovery_tasks: set[asyncio.Future[None]] = set()
@@ -161,6 +164,7 @@ class AppContainer:
         started_at = time.monotonic()
         logger.info("application_shutdown_started")
         await self.automation.stop()
+        await self.prompt_generation.stop()
         await self.worker.stop()
         logger.info("worker_cancellation_complete")
         await self.generation_eta.stop()
