@@ -293,6 +293,11 @@ code {
   animation: spin 1.25s linear infinite;
 }
 
+.button-spinner {
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+
 .activity-auto {
   color: #9cdac3;
   border-color: #365c50;
@@ -5359,7 +5364,6 @@ tr:last-child td {
 img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 
 .thumbnail-retry { position: absolute; z-index: 5; inset: 40% 10% auto; padding: 0.5rem; }
-.submission-recovery { display: grid; gap: 0.5rem; padding: 0.5rem; color: var(--text); }
 
 /* Optional stages share the application's existing expandable control sections. */
 .feature-section-switch .switch { gap: 6px; }
@@ -5367,7 +5371,7 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .feature-section-switch .switch > span { flex: 0 0 auto; }
 .prompt-generation-body { display: grid; gap: 12px; }
 .prompt-generation-body .field { margin: 0; }
-.prompt-pipeline-status { margin: 0; color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.prompt-generation-inputs > .control-block:last-child { border-bottom: 0; padding-bottom: 0; margin-bottom: 0; }
 .prompt-pipeline-flow { margin: 0; color: var(--text-soft); font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
 .prompt-draft-result { display: grid; gap: 8px; padding-top: 10px; }
 .generation-actions > .auto-generation-section { margin-top: 0; }

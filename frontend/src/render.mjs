@@ -136,7 +136,6 @@ export function generationPanelMarkup(state, profile, contract) {
   const clientErrors = state.fieldErrors || {};
   const sources = state.sources || state.workflows || [];
   const activeKey = state.activeSourceKey || state.activeProfileId;
-  const selectedTargetCount = Number(state.selectedGenerationTargetCount) || (activeKey ? 1 : 0);
   const values = state.parameters || state.controls || {};
   const declaredInputs = sortInterfaceInputs(interfaceInputs(contract));
   const modelSource = contract
@@ -165,7 +164,7 @@ export function generationPanelMarkup(state, profile, contract) {
       <div class="panel-fixed">
         <div class="generation-actions">
           <div class="generate-row">
-            <button id="generate-button" class="button primary" data-action="generate" ${disabled ? "disabled" : ""}>${state.submitting ? (selectedTargetCount > 1 ? `Queueing ${selectedTargetCount}…` : "Queueing…") : "Generate"}</button>
+            <button id="generate-button" class="button primary" data-action="generate" aria-live="polite" aria-atomic="true" aria-busy="${generationButtonPresentation(state).busy}" ${disabled ? "disabled" : ""}>${generationButtonContentMarkup(generationButtonPresentation(state))}</button>
             <div class="generation-quantity" role="group" aria-label="Generation quantity">
               <input id="generation-quantity" class="quantity-value" type="text" inputmode="numeric" autocomplete="off" value="${state.generationQuantity ?? MIN_GENERATION_QUANTITY}" aria-label="Generation quantity" aria-live="polite" ${state.submitting ? "disabled" : ""} />
               <div class="quantity-spinner">
@@ -187,7 +186,6 @@ export function generationPanelMarkup(state, profile, contract) {
         ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
         ${sourceStateMarkup(state, profile)}
-        ${state.pendingSubmission ? `<div class="submission-recovery" role="status">Submission status unknown. <button type="button" class="button secondary" data-action="resume-submission" ${state.submitting ? "disabled" : ""}>Check status / resume</button></div>` : ""}
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
@@ -213,6 +211,35 @@ export function generationSubmissionDisabled(state, profile, contract, clientErr
   return Boolean(
     state.autoGenerate || state.automation?.enabled || state.automationLoaded === false || state.pendingAutoEnabled !== undefined || state.automationBusy || state.autoSettingsSaving || state.pendingSubmission || state.promptGenerationBusy || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
   );
+}
+
+export function promptGenerationButtonPresentation(state) {
+  const busy = Boolean(state.promptGenerationBusy);
+  if (!busy) return { label: "Generate prompt", busy: false };
+  const promptPending = ["/api/prompt-generations", "/api/generation-preparations"].includes(state.pendingSubmission?.path);
+  const label = (promptPending && state.submissionRecoveryPending) || state.promptJobsUnavailable
+    ? "Reconnecting…"
+    : state.promptGenerationRequest ? "Submitting…"
+      : state.promptGenerationPhase === "queued" ? "Waiting for ComfyUI…"
+        : state.promptGenerationPhase === "refining" ? "Refining prompt…" : "Generating prompt…";
+  return { label, busy };
+}
+
+export function generationButtonPresentation(state) {
+  if (state.autoGenerate || state.automation?.enabled) return { label: "Auto Generating", busy: true };
+  if (state.submissionRecoveryPending && state.pendingSubmission?.path !== "/api/prompt-generations") {
+    return { label: "Reconnecting…", busy: true };
+  }
+  if (state.promptPreparationBusy) return promptGenerationButtonPresentation(state);
+  if (state.submitting && !state.promptGenerationRequest) {
+    const count = Number(state.selectedGenerationTargetCount) || 1;
+    return { label: count > 1 ? `Queueing ${count}…` : "Queueing…", busy: true };
+  }
+  return { label: "Generate", busy: false };
+}
+
+export function generationButtonContentMarkup({ label, busy }) {
+  return `${busy ? '<span class="activity-spinner button-spinner" aria-hidden="true"></span>' : ""}${escapeHtml(label)}`;
 }
 
 export function generationRequestBlocked(state, profile, contract, clientErrors = {}) {
@@ -862,10 +889,9 @@ function promptGenerationMarkup(state) {
       ${missing ? `<option value="${escapeHtml(selection.active_source)}" selected disabled>Saved source unavailable</option>` : ""}
       ${sources.map((item) => `<option value="${escapeHtml(item.source_key)}" ${item.source_key === selection.active_source ? "selected" : ""} ${item.available === false ? "disabled" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}
     </select></label>
-    ${inputs}
-    <button type="button" class="button secondary" data-action="generate-prompt" ${!source || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${state.promptGenerationBusy ? "Generating prompt…" : "Generate prompt"}</button>
-    ${state.promptGenerationMessage ? `<p class="prompt-pipeline-status" role="status">${escapeHtml(state.promptGenerationMessage)}</p>` : ""}
-    ${state.promptGenerationError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError)}</p>` : ""}
+    <div class="prompt-generation-inputs">${inputs}</div>
+    <button type="button" class="button secondary" data-action="generate-prompt" aria-live="polite" aria-atomic="true" aria-busy="${promptGenerationButtonPresentation(state).busy}" ${!source || state.submitting || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${generationButtonContentMarkup(promptGenerationButtonPresentation(state))}</button>
+    ${state.promptGenerationError || state.promptGenerationReadError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError || state.promptGenerationReadError)}</p>` : ""}
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
   </div>`;
   return controlSectionMarkup({ key: "prompt-generation", title: "Prompt Generation", content,
@@ -1659,9 +1685,9 @@ export function galleryCardMarkup(generation) {
       <div class="card-hover-scrim" aria-hidden="true"></div>
       ${checkpoint}${count}
       <div class="card-bottom-overlay">
-        ${statusOverlay}
         <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
         ${cardActionsMarkup(generation)}
+        ${statusOverlay}
       </div>
       ${cancel}
     </div>
@@ -1930,7 +1956,7 @@ export function photoViewerMarkup(
   navigation = {},
   requestedViewMode = "fill",
   requestedPlaybackMode = "hold",
-  { activity = "", generateDisabled = false, generateLabel = "Generate" } = {},
+  { activity = "", generateDisabled = false, generateLabel = "Generate", generateBusy = false } = {},
 ) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
@@ -1950,7 +1976,7 @@ export function photoViewerMarkup(
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
     <div class="photo-viewer-generation-dock">
-      <button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate"${generateDisabled ? " disabled" : ""}>${escapeHtml(generateLabel)}</button>
+      <button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate" aria-live="polite" aria-atomic="true" aria-busy="${generateBusy}"${generateDisabled ? " disabled" : ""}>${generationButtonContentMarkup({ label: generateLabel, busy: generateBusy })}</button>
       <div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true">${activity}</div>
     </div>
     <div class="photo-viewer-toolbar">
@@ -2323,10 +2349,11 @@ export function serverControlsMarkup(state) {
 export function automationStatusMarkup(state) {
   const auto = state.automation;
   const syncStatus = state.autoSettingsStatus;
-  return `${auto?.status === "blocked" && auto.error_code !== "collection_deleted" ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : ""}
-  ${state.autoSettingsMessage ? `<div class="auto-settings-status" role="${["error", "conflict"].includes(syncStatus) ? "alert" : "status"}">${escapeHtml(state.autoSettingsMessage)}
-    ${["error", "conflict"].includes(syncStatus) ? '<button class="button low" data-action="retry-auto-settings">Retry changes</button>' : ""}
-  </div>` : ""}`;
+  const retry = auto?.status === "blocked" && auto.error_code !== "collection_deleted"
+    ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : "";
+  const error = ["error", "conflict"].includes(syncStatus) && state.autoSettingsMessage
+    ? `<div class="auto-settings-status" role="alert">${escapeHtml(state.autoSettingsMessage)}<button class="button low" data-action="retry-auto-settings">Retry changes</button></div>` : "";
+  return retry + error;
 }
 
 export function sharedSettingsStatusMarkup(state) {

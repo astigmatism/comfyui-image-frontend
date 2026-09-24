@@ -246,7 +246,9 @@ right. A dark gradient scrim fades in with the overlays over 120 ms; leaving for
 them. Scrolling, dragging, and leaving before the delay cancel pending hover intent. Keyboard
 focus reveals controls immediately, while touch/non-hover devices keep them visible with larger
 targets. Small image cards wrap their actions into two rows; very short frames reserve enough
-height for the overlays while fitting the original image without cropping. Active progress, errors, and cancel
+height for the overlays while fitting the original image without cropping. Status pills sit 10 px
+from the image frame's left and bottom edges, with actions stacked above them when present.
+Active progress, errors, and cancel
 remain visible, and an Info button opens details containing generation duration. Gallery redraws
 preserve hover intent and keyboard focus for the same card.
 

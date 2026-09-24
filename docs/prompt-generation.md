@@ -2,9 +2,10 @@
 
 Prompt Generation is an optional preparation stage. It starts off for accounts without a saved preference. Its source selector lists text publications from the existing workflow registry, even when only one exists. Subject entry is manual and independent of LoRAs.
 
-The control panel uses independent switches and expansion buttons for Auto-generation, Prompt Generation, and Creative Direction. Enabling a section expands it. The process indicator reflects enabled stages; execution status is separate. The existing Generate button, quantity selector, model controls, and image runtime remain in place.
+The control panel uses independent switches and expansion buttons for Auto-generation, Prompt Generation, and Creative Direction. Enabling Prompt Generation or Creative Direction expands its section; Auto-generation preserves its expansion state. The process indicator reflects enabled stages; execution status is separate. The existing Generate button, quantity selector, model controls, and image runtime remain in place.
 
 - **Generate prompt** executes only the selected text publication and places the result in the prompt editor.
+- The button animates while submitting, waiting for ComfyUI capacity, generating, or reconnecting. Prompt-only requests can queue while images run, including during auto-generation; routine progress and completion do not add helper rows.
 - **Generate** executes enabled stages in order: prompt generation, Creative Direction, image generation. Quantity and model selections expand into independent image requests, but the entire batch shares one generated prompt and at most one Creative Direction refinement; images resolve separate random seeds. A failed prompt or refinement fails the whole batch.
 - While Prompt Generation is enabled, Creative Direction uses Refine. Its previous Create/Refine choice is restored when Prompt Generation is disabled.
 - Generated text follows the editor until the user edits it. Later results offer **Use latest prompt** instead of replacing that draft. Results belonging to another source or source revision cannot replace the editor.
@@ -13,6 +14,7 @@ The control panel uses independent switches and expansion buttons for Auto-gener
 - Enabling auto-generation pins the current folder until it is turned off. Navigation cannot retarget it, and the API rejects destination changes while enabled. A deleted destination blocks generation until the user turns automation off and enables it in another folder.
 - The dropdown contains only **Stop after [number] images queued**, with blank meaning unlimited. The default remains 200. Counts cover accepted image jobs since enabling, excluding text jobs. Limit edits preserve the count and can truncate the final batch; lowering a limit below the accepted count stops new work immediately. Stopping automation preserves all accepted images.
 - Both Generate buttons and new manual image/preparation API submissions are blocked while automation is enabled. Replaying an already accepted idempotency receipt remains supported. Prompt-only requests remain available.
+- Disabled image Generate buttons show **Auto Generating** with the same spinner while automation is enabled. Normal automatic-settings saves are silent; errors and conflicts retain their recovery controls.
 
 ## Browser and shared preferences
 
@@ -55,7 +57,7 @@ All mutation endpoints require authentication, CSRF, generation protocol `3`, an
 
 Text and image work use the same scheduler, per-instance capacity, account fairness, and priority for manual work already accepted before automation was enabled. A finished text job releases its slot before downstream image work. Pending preparations contribute to activity and automatic limits. The image acceptance transaction is the existing generation service transaction; failures never fall back to an older prompt.
 
-A known ComfyUI prompt ID reconnects to history after restart. Completed text and saved refinement are reused. A crash or lost response after an ambiguous ComfyUI submission fails visibly and never blindly resubmits. Browser submission recovery retains the same idempotency key; accepted jobs are persisted locally before their submission receipt is cleared.
+A known ComfyUI prompt ID reconnects to history after restart. Completed text and saved refinement are reused. A crash or lost response after an ambiguous ComfyUI submission fails visibly and never blindly resubmits. Browser-to-application submission recovery automatically checks the receipt, replaying a missing request with its original body and idempotency key. Recovery runs one request at a time with backoff capped at 30 seconds and stops on logout; unresolved account-scoped receipts remain available on the next sign-in in that tab. Accepted jobs are persisted locally before their submission receipt is cleared. Restored results wait for the source controls to load before being applied to the editor.
 
 ## Migration and release
 

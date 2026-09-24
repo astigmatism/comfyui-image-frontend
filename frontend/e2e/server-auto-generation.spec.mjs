@@ -65,6 +65,8 @@ test("shared settings and server automation survive independent browsers and no 
   await page.setViewportSize({ width: 390, height: 844 });
   const panelToggle = page.getByRole("button", { name: "Open generation controls", exact: true });
   if (await panelToggle.getAttribute("aria-expanded") === "false") await panelToggle.click();
+  // Enabling automation preserves the user's collapsed section preference.
+  await page.locator('[data-control-section="auto-generation"] .control-section-trigger').click();
   await expect(page.locator("#auto-generate-limit")).toBeInViewport();
   await page.screenshot({ path: testInfo.outputPath("auto-generation-mobile.png"), fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 900 });

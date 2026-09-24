@@ -1,11 +1,11 @@
-import { submitGeneration, setSubmissionOwner, pendingSubmission, recoverSubmission, clearSubmissionStorage, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
+import { submitGeneration, setSubmissionOwner, pendingSubmission, createSubmissionRecovery, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
 import { installThumbnails } from "./thumbnails.mjs";
 import { reconcileGallery, reconcileGalleryCard } from "./gallery-dom.mjs";
 import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { installLoraControls } from "./lora-stack.mjs";
-import { api, setCsrfToken, upload } from "./api.mjs";
+import { api, isTransientError, setCsrfToken, upload } from "./api.mjs";
 import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
@@ -77,6 +77,9 @@ import {
   generationPanelMarkup,
   generationRequestBlocked,
   generationSubmissionDisabled,
+  generationButtonPresentation,
+  promptGenerationButtonPresentation,
+  generationButtonContentMarkup,
   serverControlsMarkup,
   automationStatusMarkup,
   sharedSettingsStatusMarkup,
@@ -190,8 +193,13 @@ const state = {
   promptGeneratorSources: [],
   promptGeneratorSource: null,
   promptGenerationBusy: false,
-  promptGenerationMessage: null,
+  promptGenerationRequest: null,
+  promptPreparationBusy: false,
+  promptGenerationPhase: null,
+  promptJobsUnavailable: false,
+  submissionRecoveryPending: false,
   promptGenerationError: null,
+  promptGenerationReadError: null,
   latestGeneratedPrompt: null,
   promptEditorDirty: false,
   autoGenerateCreativeDirection: false,
@@ -249,7 +257,10 @@ let userStateTimer = null;
 let promptJobTimer = null;
 let promptGeneratorLoadToken = 0;
 let promptJobsRefreshing = false;
+let promptJobsReady = false;
 const promptJobSeen = new Map();
+const promptJobPhases = new Map();
+let submissionRecovery = null;
 let automationReadToken = 0;
 let autoGeneratePinned = false;
 let autoGeneratePinnedCollectionId = null;
@@ -497,7 +508,6 @@ async function handleClick(event) {
     else if (action === "select-all-checkpoints") updateAllSourcePickerCheckpoints(true);
     else if (action === "clear-all-checkpoints") updateAllSourcePickerCheckpoints(false);
     else if (action === "logout") await logout();
-    else if (action === "resume-submission") await resumeGenerationSubmission(true);
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
       renderPasswordChange(false);
@@ -2228,7 +2238,8 @@ async function submitPassword(form) {
 
 async function logout() {
   await api("/api/auth/logout", { method: "POST" });
-  clearSubmissionStorage();
+  // Keep unresolved account-scoped receipts for recovery on the next sign-in.
+  setSubmissionOwner(null);
   state.pendingSubmission = null;
   stopLiveUpdates();
   stopApplicationStartup();
@@ -2383,6 +2394,20 @@ async function enterApplication() {
     message: "Checking voice input availability…",
   };
   restoreBrowserDraft();
+  submissionRecovery = createSubmissionRecovery({
+    signal: controller.signal,
+    onRecovered: applyRecoveredSubmission,
+    onError: (error, pending) => {
+      if (["/api/prompt-generations", "/api/generation-preparations"].includes(pending.path)) state.promptGenerationError = error.message;
+      else state.formError = error.message;
+      renderPanel();
+    },
+    onChange: (pending) => {
+      state.submissionRecoveryPending = pending;
+      syncGenerationSubmissionState();
+    },
+  });
+  window.addEventListener("online", () => submissionRecovery?.start({ immediate: true }), { signal: controller.signal });
   root.innerHTML = shellMarkup(state);
   disposeThumbnails = installThumbnails(document.querySelector("#gallery-viewport"));
   document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
@@ -2416,8 +2441,15 @@ async function enterApplication() {
     }
   });
   const preferencesRequest = loadStartupPreferences(controller.signal);
+  const promptContextReady = preferencesRequest.then(async () => {
+    await Promise.allSettled([
+      loadSources({ signal: controller.signal, diagnostic: true }),
+      loadPromptGenerators(controller.signal),
+    ]);
+    if (!controller.signal.aborted) { promptJobsReady = true; await refreshPromptJobs(); }
+  });
   const requests = [
-    resumeGenerationSubmission(false),
+    submissionRecovery.start(),
     preferencesRequest,
     refreshAutoGeneration(),
     loadCollections(controller.signal),
@@ -2427,8 +2459,7 @@ async function enterApplication() {
     galleryRequest,
     loadStartupPromptAssistant(controller.signal),
     loadStartupSpeechToText(controller.signal),
-    preferencesRequest.then(() => loadSources({ signal: controller.signal, diagnostic: true })),
-    preferencesRequest.then(() => loadPromptGenerators(controller.signal)),
+    promptContextReady,
   ];
   void Promise.allSettled(requests);
   userStateTimer = window.setInterval(() => void refreshUserState(), 15_000);
@@ -2452,6 +2483,13 @@ function stopApplicationStartup() {
   automationReadToken += 1;
   applicationStartupController?.abort();
   applicationStartupController = null;
+  submissionRecovery = null;
+  promptJobsReady = false;
+  state.submitting = false;
+  state.promptGenerationRequest = null;
+  state.submissionRecoveryPending = false;
+  promptJobPhases.clear();
+  promptJobSeen.clear();
   syncServerControls();
 }
 
@@ -3334,6 +3372,7 @@ function applyPreset(presetId) {
 function renderPanel() {
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
+  syncSubmissionSnapshot();
   state.selectedGenerationTargetCount = plannedGenerationTotal();
   const panelView = capturePanelView(panel);
   const contract = sourceInterface(state.activeSource);
@@ -3762,8 +3801,44 @@ function restorePanelView(panel, view) {
   }
 }
 
-function syncGenerationSubmissionState() {
+function syncSubmissionSnapshot() {
   state.pendingSubmission = pendingSubmission();
+  const jobs = pendingPromptJobs();
+  const pendingPath = state.pendingSubmission?.path;
+  state.promptGenerationBusy = Boolean(state.promptGenerationRequest || jobs.length ||
+    ["/api/prompt-generations", "/api/generation-preparations"].includes(pendingPath));
+  state.promptPreparationBusy = state.promptGenerationRequest === "images" ||
+    pendingPath === "/api/generation-preparations" || jobs.some((job) => job.path === "/api/generation-preparations");
+  const phases = jobs.map((job) => promptJobPhases.get(job.id) || "generating");
+  state.promptGenerationPhase = phases.includes("refining") ? "refining"
+    : phases.length && phases.every((phase) => phase === "queued") ? "queued" : "generating";
+}
+
+function syncGenerationButtons() {
+  syncSubmissionSnapshot();
+  const contract = sourceInterface(state.activeSource);
+  const disabled = generationSubmissionDisabled(state, state.activeSource, contract, {
+    ...validateImageParameters(contract, state.parameters), ...withoutNulls(state.serverFieldErrors),
+  });
+  const sync = (button, presentation, disabled) => {
+    if (!button) return;
+    button.disabled = disabled;
+    button.setAttribute("aria-busy", String(presentation.busy));
+    const markup = generationButtonContentMarkup(presentation);
+    // Preserve the spinner node/animation during polling and settings updates.
+    if (button.innerHTML !== markup) button.innerHTML = markup;
+  };
+  for (const button of document.querySelectorAll("#generate-button, #photo-generate-button")) {
+    sync(button, generationButtonPresentation(state), disabled);
+  }
+  sync(document.querySelector('[data-action="generate-prompt"]'), promptGenerationButtonPresentation(state),
+    !state.promptGeneratorSource || state.submitting || state.promptGenerationBusy || Boolean(state.pendingSubmission));
+  const promptSource = document.querySelector("#prompt-generation-source");
+  if (promptSource) promptSource.disabled = state.promptGenerationBusy;
+}
+
+function syncGenerationSubmissionState() {
+  syncSubmissionSnapshot();
   renderGenerationActivity();
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
@@ -3787,22 +3862,6 @@ function syncGenerationSubmissionState() {
     }
   }
 
-  panel.querySelector(".submission-recovery")?.remove();
-  if (state.pendingSubmission) {
-    const recovery = document.createElement("div");
-    recovery.className = "submission-recovery";
-    recovery.setAttribute("role", "status");
-    recovery.textContent = "Submission status unknown. ";
-    const resume = document.createElement("button");
-    resume.type = "button";
-    resume.className = "button secondary";
-    resume.dataset.action = "resume-submission";
-    resume.textContent = "Check status / resume";
-    resume.disabled = state.submitting;
-    recovery.append(resume);
-    panel.querySelector(".panel-fixed")?.append(recovery);
-  }
-
   let summary = panel.querySelector(".form-error.summary");
   if (state.formError) {
     if (!summary) {
@@ -3816,32 +3875,7 @@ function syncGenerationSubmissionState() {
     summary?.remove();
   }
 
-  const selected =
-    state.activeSource ||
-    state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
-  const generateButton = panel.querySelector("#generate-button");
-  const submissionDisabled = generationSubmissionDisabled(
-    state,
-    selected,
-    contract,
-    errors,
-  );
-  const generateLabel = state.submitting
-    ? state.selectedGenerationTargetCount > 1
-      ? `Queueing ${state.selectedGenerationTargetCount}…`
-      : "Queueing…"
-    : "Generate";
-  if (generateButton) {
-    generateButton.disabled = submissionDisabled;
-    generateButton.textContent = generateLabel;
-  }
-  const viewerGenerateButton = document.querySelector(
-    "#photo-viewer[open] #photo-generate-button",
-  );
-  if (viewerGenerateButton) {
-    viewerGenerateButton.disabled = submissionDisabled;
-    viewerGenerateButton.textContent = generateLabel;
-  }
+  syncGenerationButtons();
   const sourcePicker = panel.querySelector("#workflow-source");
   if (sourcePicker) {
     sourcePicker.disabled =
@@ -3882,6 +3916,7 @@ async function generate() {
 
 async function generateSingleSource() {
   const requestOwnerId = state.session.user.id;
+  const signal = applicationStartupController.signal;
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -3931,7 +3966,7 @@ async function generateSingleSource() {
     };
     if (requestCompositionId) payload.prompt_assistant_run_id = requestCompositionId;
     payload.prompt_assistant = promptAssistantSnapshotPayload();
-    const generation = await submitGeneration("/api/generations", payload);
+    const generation = await submitGeneration("/api/generations", payload, null, { signal });
     if (state.session?.user?.id !== requestOwnerId) return false;
     if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
     const belongsToCurrentView = generationBelongsToView(generation);
@@ -3953,7 +3988,8 @@ async function generateSingleSource() {
     toast("Generation queued.", "success");
     return true;
   } catch (error) {
-    if (state.session?.user?.id !== requestOwnerId) return false;
+    if (signal.aborted || state.session?.user?.id !== requestOwnerId) return false;
+    if (error.code === "submission_status_unknown") { submissionRecovery?.start(); return false; }
     if (
       !generationContextIsCurrent(
         requestSourceKey,
@@ -3983,7 +4019,7 @@ async function generateSingleSource() {
     }
     return false;
   } finally {
-    if (state.session?.user?.id === requestOwnerId) {
+    if (!signal.aborted && state.session?.user?.id === requestOwnerId) {
       await refreshGenerationActivity();
       state.generationSubmissionProgress = null;
       state.submitting = false;
@@ -3995,6 +4031,7 @@ async function generateSingleSource() {
 
 async function generateSelectedCheckpoints() {
   const requestOwnerId = state.session.user.id;
+  const signal = applicationStartupController.signal;
   const contract = sourceInterface(state.activeSource);
   const requestSourceKey = state.activeSourceKey;
   const requestRevision = structuredClone(sourceRevision(state.activeSource));
@@ -4084,7 +4121,7 @@ async function generateSelectedCheckpoints() {
         queueTargets.push({ payload, usesPromptAssistant });
       }
     }
-    const batch = await submitGeneration("/api/generations/batch", { items: queueTargets.map(({ payload }) => payload) });
+    const batch = await submitGeneration("/api/generations/batch", { items: queueTargets.map(({ payload }) => payload) }, null, { signal });
     if (state.session?.user?.id !== requestOwnerId) return false;
     const queueResults = batch.items.map((item) => item.generation
       ? { status: "fulfilled", value: item.generation }
@@ -4180,7 +4217,8 @@ async function generateSelectedCheckpoints() {
       queued.length === queueTargets.length
     );
   } catch (error) {
-    if (state.session?.user?.id !== requestOwnerId) return false;
+    if (signal.aborted || state.session?.user?.id !== requestOwnerId) return false;
+    if (error.code === "submission_status_unknown") { submissionRecovery?.start(); return false; }
     if (
       !generationContextIsCurrent(
         requestSourceKey,
@@ -4210,7 +4248,7 @@ async function generateSelectedCheckpoints() {
     }
     return false;
   } finally {
-    if (state.session?.user?.id === requestOwnerId) {
+    if (!signal.aborted && state.session?.user?.id === requestOwnerId) {
       await refreshGenerationActivity();
       state.generationSubmissionProgress = null;
       state.submitting = false;
@@ -5287,6 +5325,7 @@ function photoViewerNavigation(id) {
 }
 
 function photoViewerGenerationDock() {
+  syncSubmissionSnapshot();
   const contract = sourceInterface(state.activeSource);
   const errors = {
     ...validateImageParameters(contract, state.parameters),
@@ -5298,11 +5337,8 @@ function photoViewerGenerationDock() {
   return {
     activity: generationActivityMarkup(generationActivitySnapshot()),
     generateDisabled: generationSubmissionDisabled(state, selected, contract, errors),
-    generateLabel: state.submitting
-      ? Number(state.selectedGenerationTargetCount) > 1
-        ? `Queueing ${state.selectedGenerationTargetCount}…`
-        : "Queueing…"
-      : "Generate",
+    generateLabel: generationButtonPresentation(state).label,
+    generateBusy: generationButtonPresentation(state).busy,
   };
 }
 
@@ -5869,7 +5905,7 @@ function startLiveUpdates({ paused = false } = {}) {
     });
   }
   source.onerror = () => {};
-  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); };
+  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); submissionRecovery?.start({ immediate: true }); };
   state.eventSource = source;
   startGenerationEtaTimer();
 }
@@ -6466,54 +6502,38 @@ function syncServerControls() {
   if (statusHost) statusHost.innerHTML = automationStatusMarkup(state);
   const settingsHost = document.querySelector("#shared-settings-status-host");
   if (settingsHost) settingsHost.innerHTML = sharedSettingsStatusMarkup(state);
-  for (const button of document.querySelectorAll('#generate-button, #photo-generate-button')) {
-    button.disabled = generationSubmissionDisabled(state, state.activeSource, sourceInterface(state.activeSource), validateImageParameters(sourceInterface(state.activeSource), state.parameters));
-  }
+  syncGenerationButtons();
   renderGenerationActivity();
 }
 
-async function resumeGenerationSubmission(resume) {
-  if (!pendingSubmission()) return;
-  const account = state.session.user.id;
-  state.submitting = true;
-  syncGenerationSubmissionState();
-  try {
-    const recovered = await recoverSubmission({ resume });
-    if (state.session?.user?.id !== account || !recovered?.result) return;
-    if (["/api/prompt-generations", "/api/generation-preparations"].includes(recovered.pending.path)) {
-      await refreshPromptJobs();
-      return;
-    }
-    const items = recovered.pending.path.endsWith("/batch")
-      ? recovered.result.items : [{ generation: recovered.result }];
-    for (const { generation } of items) {
-      if (!generation) continue;
-      if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
-      if (generationBelongsToView(generation)) {
-        state.generations = sortGenerationsNewestFirst([
-          generation, ...state.generations.filter((item) => item.id !== generation.id),
-        ]);
-      }
-    }
-    const payload = JSON.parse(recovered.pending.body);
-    const inputs = payload.items || [payload];
-    if (items.some((item, index) => item.generation && inputs[index]?.prompt_assistant_run_id === state.compositionId)) {
-      state.compositionId = null;
-    }
-    const failures = items.filter((item) => item.error);
-    state.formError = failures.length
-      ? `${failures.length} submission item(s) failed. ${failures.map((item) => item.error.message).slice(0, 3).join(" ")}` : null;
-    renderGallery();
-    toast("Original submission resolved.", "success");
-    await refreshGenerationActivity();
-  } catch (error) {
-    if (state.session?.user?.id === account) state.formError = error.message;
-  } finally {
-    if (state.session?.user?.id === account) {
-      state.submitting = false;
-      syncGenerationSubmissionState();
+async function applyRecoveredSubmission(recovered) {
+  state.submissionRecoveryPending = false;
+  if (["/api/prompt-generations", "/api/generation-preparations"].includes(recovered.pending.path)) {
+    state.promptGenerationError = null;
+    await refreshPromptJobs();
+    return;
+  }
+  const items = recovered.pending.path.endsWith("/batch")
+    ? recovered.result.items : [{ generation: recovered.result }];
+  for (const { generation } of items) {
+    if (!generation) continue;
+    if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
+    if (generationBelongsToView(generation)) {
+      state.generations = sortGenerationsNewestFirst([
+        generation, ...state.generations.filter((item) => item.id !== generation.id),
+      ]);
     }
   }
+  const payload = JSON.parse(recovered.pending.body);
+  const inputs = payload.items || [payload];
+  if (items.some((item, index) => item.generation && inputs[index]?.prompt_assistant_run_id === state.compositionId)) {
+    state.compositionId = null;
+  }
+  const failures = items.filter((item) => item.error);
+  state.formError = failures.length
+    ? `${failures.length} submission item(s) failed. ${failures.map((item) => item.error.message).slice(0, 3).join(" ")}` : null;
+  renderGallery();
+  await refreshGenerationActivity();
 }
 
 function validateImageParameters(contract, parameters) {
@@ -6577,8 +6597,11 @@ function restoreBrowserDraft() {
   state.promptGeneratorSources = [];
   state.promptGeneratorSource = null;
   state.promptGenerationBusy = false;
+  state.promptGenerationRequest = null;
+  state.promptPreparationBusy = false;
+  state.promptJobsUnavailable = false;
   state.promptGenerationError = null;
-  state.promptGenerationMessage = null;
+  state.promptGenerationReadError = null;
   state.latestGeneratedPrompt = null;
   state.promptEditorDirty = false;
   state.lastAutoPrompt = null;
@@ -6667,13 +6690,14 @@ async function runPromptGeneration(withImages) {
   if (withImages && (state.autoGenerate || state.pendingAutoEnabled !== undefined || !state.automationLoaded || state.automationBusy || state.autoSettingsSaving)) return false;
   if (state.promptGenerationBusy || state.submitting || pendingSubmission()) return false;
   const account = state.session.user.id;
+  const signal = applicationStartupController.signal;
   try {
     syncPromptAssistantDraftFromPanel();
     const generator = promptGenerationPayload();
     const contract = sourceInterface(state.activeSource);
     const prompt = positivePromptInput(contract);
     const context = { source: state.activeSourceKey, revision: sourceRevision(state.activeSource), generator: generator.source_key, original: state.parameters[prompt?.id] || "" };
-    state.promptGenerationBusy = true;
+    state.promptGenerationRequest = withImages ? "images" : "prompt";
     state.promptGenerationError = null;
     state.promptEditorDirty = false;
     state.latestGeneratedPrompt = null;
@@ -6699,19 +6723,25 @@ async function runPromptGeneration(withImages) {
     }
     state.submitting = true;
     renderPanel();
-    await submitGeneration(path, payload, context);
+    await submitGeneration(path, payload, context, { signal });
     if (state.session?.user?.id !== account) return false;
-    state.promptGenerationMessage = withImages ? "Preparing the prompt and images on the server…" : "Generating a prompt…";
+    state.promptGenerationRequest = null;
+    state.submitting = false;
+    syncGenerationButtons();
     await refreshPromptJobs();
     return true;
   } catch (error) {
-    if (state.session?.user?.id === account) {
-      state.promptGenerationError = error.message;
-      state.promptGenerationBusy = false;
+    if (!signal.aborted && state.session?.user?.id === account) {
+      if (error.code === "submission_status_unknown") submissionRecovery?.start();
+      else state.promptGenerationError = error.message;
     }
     return false;
   } finally {
-    if (state.session?.user?.id === account) { state.submitting = false; renderPanel(); }
+    if (!signal.aborted && state.session?.user?.id === account) {
+      state.promptGenerationRequest = null;
+      state.submitting = false;
+      renderPanel();
+    }
   }
 }
 
@@ -6746,17 +6776,31 @@ function applyLatestGeneratedPrompt() {
 }
 
 async function refreshPromptJobs() {
-  if (promptJobsRefreshing || !applicationStartupController || !state.session?.user?.id) return;
+  if (promptJobsRefreshing || !promptJobsReady || !applicationStartupController || !state.session?.user?.id) return;
   const account = state.session.user.id;
   const signal = applicationStartupController.signal;
-  const previousMessage = state.promptGenerationMessage;
-  const previousError = state.promptGenerationError;
+  const previousError = state.promptGenerationError || state.promptGenerationReadError;
   promptJobsRefreshing = true;
   try {
     const jobs = pendingPromptJobs();
-    let busy = false;
+    let unavailable = false;
+    let readError = null;
     for (const job of jobs) {
-      const result = await api(`${job.path}/${encodeURIComponent(job.id)}`, { signal });
+      let result;
+      try {
+        result = await api(`${job.path}/${encodeURIComponent(job.id)}`, { signal, deadlineMs: 10_000, operation: "Prompt progress" });
+      } catch (error) {
+        if (signal.aborted || state.session?.user?.id !== account) return;
+        if ([404, 410].includes(error.status)) {
+          finishPromptJob(job.id);
+          promptJobPhases.delete(job.id);
+          state.promptGenerationError = "This prompt request is no longer available. Generate a new prompt to try again.";
+        } else {
+          unavailable = true;
+          if (!isTransientError(error) && error.code !== "request_timeout") readError = error.message;
+        }
+        continue;
+      }
       if (signal.aborted || state.session?.user?.id !== account) return;
       const items = job.path === "/api/prompt-generations" ? [result] : result.items;
       for (const item of items) {
@@ -6778,16 +6822,23 @@ async function refreshPromptJobs() {
       const complete = items.every((item) => ["succeeded", "accepted", "failed", "discarded"].includes(item.status));
       if (complete) {
         finishPromptJob(job.id);
-        state.promptGenerationMessage = items.some((item) => item.error) ? "Prompt preparation needs attention." : job.path === "/api/prompt-generations" ? "Prompt ready." : "Image requests queued.";
+        promptJobPhases.delete(job.id);
         await refreshGenerationActivity();
       } else {
-        busy = true;
-        state.promptGenerationMessage = items.some((item) => item.status === "refining")
-          ? "Refining the generated prompt…" : "Generating a prompt on the server…";
+        promptJobPhases.set(job.id, items.some((item) => item.status === "refining") ? "refining"
+          : items.every((item) => item.status === "queued") ? "queued" : "generating");
       }
     }
-    if (state.promptGenerationBusy !== busy || previousMessage !== state.promptGenerationMessage || previousError !== state.promptGenerationError) { state.promptGenerationBusy = busy; renderPanel(); }
+    if (signal.aborted || state.session?.user?.id !== account) return;
+    state.promptJobsUnavailable = unavailable;
+    state.promptGenerationReadError = readError;
   } catch (error) {
-    if (!signal.aborted) { state.promptGenerationError = error.message; if (previousError !== error.message) renderPanel(); }
-  } finally { promptJobsRefreshing = false; }
+    if (!signal.aborted) state.promptGenerationReadError = error.message;
+  } finally {
+    promptJobsRefreshing = false;
+    if (!signal.aborted && state.session?.user?.id === account) {
+      if (previousError !== (state.promptGenerationError || state.promptGenerationReadError)) renderPanel();
+      else syncGenerationButtons();
+    }
+  }
 }

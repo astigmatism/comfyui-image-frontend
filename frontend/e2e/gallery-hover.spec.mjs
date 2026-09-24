@@ -27,9 +27,9 @@ async function mountCards(page) {
       id: "hover-folder", name: "Landscapes", generation_count: 12,
       previews: Array.from({ length: 4 }, () => ({ thumbnail_url: image })),
     }];
-    window.redrawHoverFixture = (changes = {}) => hover.preserveDuring(() => {
+    window.redrawHoverFixture = (changes = {}, galleryLayout = "grouped") => hover.preserveDuring(() => {
       generation = { ...generation, ...changes };
-      reconcileGallery(gallery, galleryMarkup([generation], { collections }));
+      reconcileGallery(gallery, galleryMarkup([generation], { collections, galleryLayout }));
       // Put these two card types side by side for layout inspection.
       gallery.querySelector(".collection-grid").style.display = "contents";
     });
@@ -204,4 +204,50 @@ test("retained cards moving away from the pointer lose hover intent", async ({ p
   await page.evaluate(() => { window.retainedHoverCard = document.querySelector(".gallery-card"); window.hideHoverFolder(); });
   expect(await page.evaluate(() => retainedHoverCard === document.querySelector(".gallery-card"))).toBe(true);
   await expect(card).not.toHaveClass(/card-controls-visible/);
+});
+
+for (const touch of [false, true]) test(`status pills keep their original bottom inset with ${touch ? "touch" : "pointer"} controls`, async ({ browser }) => {
+  test.setTimeout(90_000);
+  const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
+  const page = await context.newPage();
+  try {
+    await mountCards(page);
+    for (const galleryLayout of ["grouped", "classic"]) {
+      for (const width of [170, 340, 900]) {
+        for (const status of ["queued", "cancelled_without_artifacts", "failed_with_artifacts"]) {
+          await page.evaluate(({ width, status, galleryLayout }) => {
+            window.redrawHoverFixture({
+              status, cancel_allowed: status === "queued", progress: null,
+              expected_width: 2048, expected_height: width === 900 ? 256 : 2048,
+              display_artifact: status === "failed_with_artifacts"
+                ? { kind: "image", content_url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" } : null,
+            }, galleryLayout);
+            document.querySelector(".gallery-card").style.width = `${width}px`;
+          }, { width, status, galleryLayout });
+          const card = page.locator(".gallery-card");
+          const measure = async () => {
+            const { frame, pill, actions } = await card.evaluate((card) => ({
+              frame: card.querySelector(".card-media-frame").getBoundingClientRect().toJSON(),
+              pill: card.querySelector(".media-status").getBoundingClientRect().toJSON(),
+              actions: card.querySelector(".card-actions").getBoundingClientRect().toJSON(),
+            }));
+            expect(pill.x - frame.x).toBeCloseTo(10, 1);
+            expect(frame.y + frame.height - pill.y - pill.height).toBeCloseTo(10, 1);
+            expect(actions.y + actions.height).toBeLessThanOrEqual(pill.y - 7);
+            expect(pill.x + pill.width).toBeLessThanOrEqual(frame.x + frame.width - 9);
+            return pill;
+          };
+          const before = await measure();
+          await center(page, card);
+          await page.clock.runFor(600);
+          expect(await measure()).toEqual(before);
+          await page.locator("#app").evaluate((root) => root.classList.add("gallery-selection-mode"));
+          expect(await measure()).toEqual(before);
+          await page.locator("#app").evaluate((root) => root.classList.remove("gallery-selection-mode"));
+          await page.mouse.move(2, 2);
+          await page.clock.runFor(280);
+        }
+      }
+    }
+  } finally { await context.close(); }
 });

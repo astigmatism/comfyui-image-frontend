@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+async function waitForAcceptedImages(page) {
+  // Stopping automation preserves accepted work on the shared fake runtime.
+  await expect.poll(async () => {
+    const { items } = await (await page.request.get("/api/generations")).json();
+    return items.every((item) => !["queued", "dispatching", "running", "cancel_requested"].includes(item.status));
+  }, { timeout: 30_000 }).toBe(true);
+}
+
 test.beforeEach(async ({ page }) => {
   let loginSession = await (await page.request.get("/api/auth/session")).json();
   let response = await page.request.post("/api/auth/login", { headers: { "X-CSRF-Token": loginSession.csrf_token }, data: { username: "admin", password: "E2EAdminPermanent123!" } });
@@ -131,6 +139,8 @@ test("auto-generation toggles preserve expansion and respect the image limit", a
   await page.reload();
   await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(2);
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).status).toBe("completed");
+  await expect(page.locator("#generate-button")).toHaveText("Generate");
+  await expect(page.locator("#generate-button .button-spinner")).toHaveCount(0);
   const items = (await (await page.request.get("/api/generations")).json()).items;
   const details = await Promise.all(items.map(async (item) => (await page.request.get(`/api/generations/${item.id}`)).json()));
   expect(details).toHaveLength(2);
@@ -155,4 +165,153 @@ test("automatic limit edits synchronize without Apply and survive refresh", asyn
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
   await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).enabled).toBe(false);
   await expect(autoTrigger).toHaveAttribute("aria-expanded", "true");
+});
+
+test("prompt submission keeps its spinner across polling and removes helper rows", async ({ page }) => {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/prompt-generations", async (route) => {
+    const response = await route.fetch();
+    await held;
+    await route.fulfill({ response });
+  });
+  const button = page.locator('[data-action="generate-prompt"]');
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Patient Mira");
+  await button.click();
+  await expect(button).toHaveText("Submitting…");
+  await expect(button).toHaveAttribute("aria-busy", "true");
+  // Cross the 1.5-second prompt polling interval before the POST resolves.
+  await page.waitForTimeout(1800);
+  await expect(button).toHaveText("Submitting…");
+  await expect(button).toBeDisabled();
+  await expect(button.locator(".button-spinner")).toBeVisible();
+  await expect(page.locator(".submission-recovery, .prompt-pipeline-status")).toHaveCount(0);
+  await expect(page.locator(".prompt-generation-inputs > .control-block").last()).toHaveCSS("border-bottom-width", "0px");
+  release();
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/Patient Mira explores/);
+  await expect(button).toHaveText("Generate prompt");
+  await expect(button).toBeEnabled();
+  await expect(button.locator(".button-spinner")).toHaveCount(0);
+});
+
+for (const automatic of [false, true]) test(`prompt queues behind an image with auto-generation ${automatic ? "on" : "off"}`, async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
+  await page.locator('[data-control-section="prompt-generation"] .control-section-trigger').click();
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow image before manual prompt");
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("slow manual Mira");
+  const main = page.locator("#generate-button");
+  if (automatic) await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
+  else await main.click();
+  await expect(page.locator(".gallery-card.status-running").first()).toBeVisible();
+  const button = page.locator('[data-action="generate-prompt"]');
+  await button.click();
+  await expect(button).toHaveText("Waiting for ComfyUI…");
+  await expect(button.locator(".button-spinner")).toBeVisible();
+  if (automatic) {
+    await expect(main).toHaveText("Auto Generating");
+    await expect(main).toBeDisabled();
+    await expect(main.locator(".button-spinner")).toBeVisible();
+    await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
+  }
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/slow manual Mira explores/);
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveText("Generate prompt");
+  await expect(main).toHaveText("Generate");
+  await waitForAcceptedImages(page);
+});
+
+test("automatic batch edits stay silent and preserve Generate feedback across reload", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow automatic layout check");
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
+  const main = page.locator("#generate-button");
+  await expect(main).toHaveText("Auto Generating");
+  await page.locator('.gallery-card .card-media[data-action="open-photo"]').first().click();
+  await expect(page.locator("#photo-generate-button")).toHaveText("Auto Generating");
+  await expect(page.locator("#photo-generate-button")).toBeDisabled();
+  await expect(page.locator("#photo-generate-button .button-spinner")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await expect(main).toHaveText("Auto Generating");
+  await expect(main).toBeDisabled();
+  const source = page.locator("#workflow-source");
+  await expect(source).toBeEnabled();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/auto-generation/apply", async (route) => {
+    await held;
+    await route.continue();
+  });
+  const before = await source.boundingBox();
+  const saving = page.waitForRequest("**/api/auto-generation/apply");
+  await page.locator("#generation-quantity").fill("2");
+  await page.locator("#generation-quantity").blur();
+  await expect(page.locator("#automation-status-host")).toBeHidden();
+  expect((await source.boundingBox()).y).toBe(before.y);
+  await saving;
+  await expect(page.locator("#automation-status-host")).toBeEmpty();
+  expect((await source.boundingBox()).y).toBe(before.y);
+  await expect(main).toHaveText("Auto Generating");
+  await expect(main.locator(".button-spinner")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("auto-generating-button.png"), fullPage: true });
+  release();
+  await expect.poll(async () => (await (await page.request.get("/api/auto-generation")).json()).snapshot.quantity).toBe(2);
+  expect((await source.boundingBox()).y).toBe(before.y);
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).uncheck();
+  await expect(main).toHaveText("Generate");
+  await expect(main).toBeEnabled();
+  await expect(main.locator(".button-spinner")).toHaveCount(0);
+  await waitForAcceptedImages(page);
+});
+
+test("rejected prompt requests show the real error and restore the button", async ({ page }) => {
+  await page.route("**/api/prompt-generations", (route) => route.fulfill({ status: 422,
+    json: { error: { code: "invalid_subject", message: "Choose a valid subject." } },
+  }));
+  const button = page.locator('[data-action="generate-prompt"]');
+  await button.click();
+  await expect(page.locator(".prompt-generation-body [role=alert]")).toHaveText("Choose a valid subject.");
+  await expect(button).toHaveText("Generate prompt");
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveAttribute("aria-busy", "false");
+});
+
+test("lost prompt replies recover automatically after reload without losing the result during source loading", async ({ page }) => {
+  test.setTimeout(60_000);
+  const posts = [];
+  let receiptsAvailable = false;
+  await page.route("**/api/generation-submissions/*", async (route) => {
+    if (receiptsAvailable) return route.continue();
+    await route.fulfill({ status: 503, json: { error: { code: "service_busy", message: "Temporary connection failure" } } });
+  });
+  await page.route("**/api/prompt-generations", async (route) => {
+    posts.push({ key: route.request().headers()["idempotency-key"], body: route.request().postData() });
+    await route.fetch();
+    await route.abort("failed");
+  });
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Recovered Mira");
+  await page.locator('[data-action="generate-prompt"]').click();
+  await expect(page.locator('[data-action="generate-prompt"]')).toHaveText("Reconnecting…");
+  expect(posts).toHaveLength(5);
+  let releaseSources;
+  const sourcesHeld = new Promise((resolve) => { releaseSources = resolve; });
+  await page.route("**/api/workflows/*", async (route) => { await sourcesHeld; await route.continue(); });
+  const recovered = page.waitForResponse((response) => response.url().includes("/api/generation-submissions/") && response.ok());
+  receiptsAvailable = true;
+  await page.reload();
+  await recovered;
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
+    .filter((key) => key.startsWith("cif.prompt-jobs."))
+    .flatMap((key) => JSON.parse(localStorage.getItem(key))).length)).toBe(1);
+  releaseSources();
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/Recovered Mira explores/);
+  await expect(page.locator('[data-action="generate-prompt"]')).toHaveText("Generate prompt");
+  await expect(page.locator('[data-action="generate-prompt"]')).toBeEnabled();
+  await expect(page.locator("#prompt-generation-source")).toBeEnabled();
+  expect(posts).toHaveLength(5);
+  expect(new Set(posts.map((post) => post.key)).size).toBe(1);
+  expect(new Set(posts.map((post) => post.body)).size).toBe(1);
+  await expect(page.locator(".submission-recovery, .prompt-pipeline-status")).toHaveCount(0);
 });

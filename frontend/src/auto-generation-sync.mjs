@@ -70,7 +70,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
     if (!busy && settingsEqual(automationConfiguration(snapshot), automationConfiguration(auto.snapshot))) { clear(); return; }
     pending = { snapshot: structuredClone(snapshot), revision: pending?.revision ?? auto.revision };
     persist();
-    if (!conflict) status("pending", "Updating the next automatic batch…");
+    if (!conflict) status("pending", null);
     schedule();
   };
   const flush = async () => {
@@ -82,7 +82,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
     const sent = structuredClone(pending);
     busy = true;
     saving(true);
-    status("saving", "Updating the next automatic batch…");
+    status("saving", null);
     let succeeded = false;
     try {
       const result = await api("/api/auto-generation/apply", { method: "POST", signal,

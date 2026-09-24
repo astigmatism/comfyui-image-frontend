@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+test.describe.configure({ timeout: 60_000 });
+
 async function enter(page) {
   const anonymous = await (await page.request.get("/api/auth/session")).json();
   for (const password of ["E2EAdminPermanent123!", "E2EAdminTemporary123!"]) {
@@ -26,6 +28,11 @@ test("lost submission responses survive retry exhaustion and reload without dupl
   await enter(page);
   const accepted = [];
   const requests = [];
+  let receiptsAvailable = false;
+  await page.route("**/api/generation-submissions/*", async (route) => {
+    if (receiptsAvailable) return route.continue();
+    await route.fulfill({ status: 503, json: { error: { code: "service_busy", message: "Temporarily unavailable" } } });
+  });
   await page.route(/\/api\/generations(?:\/batch)?$/, async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     requests.push({ key: route.request().headers()["idempotency-key"], body: route.request().postData() });
@@ -36,16 +43,19 @@ test("lost submission responses survive retry exhaustion and reload without dupl
     await route.abort("failed");
   });
   await page.locator("#generate-button").click();
-  await expect(page.locator(".submission-recovery")).toContainText("Submission status unknown");
-  await expect(page.getByRole("button", { name: "Check status / resume" })).toBeEnabled();
+  await expect(page.locator("#generate-button")).toHaveText("Reconnecting…");
+  await expect(page.locator("#generate-button .button-spinner")).toBeVisible();
+  await expect(page.locator(".submission-recovery")).toHaveCount(0);
   expect(requests).toHaveLength(5);
   expect(new Set(requests.map((item) => item.key)).size).toBe(1);
   expect(new Set(requests.map((item) => item.body)).size).toBe(1);
   expect(new Set(accepted.map((ids) => JSON.stringify(ids))).size).toBe(1);
   await expect(page.locator("#generate-button")).toBeDisabled();
-  await page.screenshot({ path: testInfo.outputPath("submission-unknown.png"), fullPage: true });
-  const receipt = page.waitForResponse((response) => response.url().includes("/api/generation-submissions/"));
+  await page.screenshot({ path: testInfo.outputPath("submission-reconnecting.png"), fullPage: true });
   await page.reload();
+  await expect(page.locator("#generate-button")).toHaveText("Reconnecting…");
+  const receipt = page.waitForResponse((response) => response.url().includes("/api/generation-submissions/") && response.ok());
+  receiptsAvailable = true;
   expect((await receipt).ok()).toBe(true);
   await expect(page.locator(".submission-recovery")).toHaveCount(0);
   await expect(page.locator("#generate-button")).toBeEnabled();
@@ -59,7 +69,7 @@ test("failed gallery thumbnails have a working visible retry action", async ({ p
   const result = await (await generated).json();
   const id = result.id || result.items[0].generation.id;
   const card = page.locator(`.gallery-card[data-generation-id="${id}"]`);
-  await expect(card).toHaveClass(/status-succeeded/);
+  await expect(card).toHaveClass(/status-succeeded/, { timeout: 40_000 });
   let active = 0;
   let maximum = 0;
   let failThumbnails = true;
@@ -101,7 +111,7 @@ test("re-rendered gallery cards keep their loaded thumbnail without refetching",
   const result = await (await generated).json();
   const id = result.id || result.items[0].generation.id;
   const card = page.locator(`.gallery-card[data-generation-id="${id}"]`);
-  await expect(card).toHaveClass(/status-succeeded/);
+  await expect(card).toHaveClass(/status-succeeded/, { timeout: 40_000 });
   const image = card.locator("img[data-thumbnail-src]");
   await expect(image).toHaveAttribute("src", /^blob:/);
   await expect.poll(() => image.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);

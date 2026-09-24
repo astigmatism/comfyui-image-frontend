@@ -28,7 +28,7 @@ export function clearSubmissionStorage() {
 }
 
 function unknown(cause) {
-  return Object.assign(new Error("Submission status unknown. Check status or resume the original submission."), {
+  return Object.assign(new Error("Reconnecting to your generation request…"), {
     code: "submission_status_unknown", cause,
   });
 }
@@ -59,17 +59,24 @@ function finish(pending, result) {
   sessionStorage.removeItem(prefix + pending.ownerId);
 }
 
-async function send(pending, deadlineMs = 60_000, previouslyUncertain = false) {
+function checkOwner(pending, signal) {
+  signal?.throwIfAborted();
+  if (pending.ownerId !== ownerId) throw new DOMException("Account changed.", "AbortError");
+}
+
+async function send(pending, deadlineMs = 60_000, previouslyUncertain = false, signal) {
   try {
+    checkOwner(pending, signal);
     const result = await api(pending.path, {
       method: "POST", body: pending.body, submissionKey: pending.key, deadlineMs,
-      operation: "Generation submission",
+      operation: "Generation submission", signal,
     });
+    checkOwner(pending, signal);
     validateResult(pending, result);
     finish(pending, result);
     return result;
   } catch (error) {
-    if (error.code === "submission_status_unknown" || previouslyUncertain || error.submissionUncertain || isTransientError(error)
+    if (signal?.aborted || pending.ownerId !== ownerId || error.code === "submission_status_unknown" || previouslyUncertain || error.submissionUncertain || isTransientError(error)
         || error.code === "request_timeout" || error.name === "AbortError") {
       throw unknown(error);
     }
@@ -78,43 +85,95 @@ async function send(pending, deadlineMs = 60_000, previouslyUncertain = false) {
   }
 }
 
-export async function submitGeneration(path, payload, context = null) {
+export async function submitGeneration(path, payload, context = null, { signal } = {}) {
   if (!ownerId) throw new Error("Sign in before submitting a generation.");
+  signal?.throwIfAborted();
   if (active || pendingSubmission()) throw unknown();
   const pending = { ownerId, key: crypto.randomUUID(), path, body: JSON.stringify(payload), context };
   // Persist before sending; inability to persist must prevent an uncertain acceptance.
   sessionStorage.setItem(prefix + ownerId, JSON.stringify(pending));
   active = true;
   try {
-    return await send(pending);
+    return await send(pending, 60_000, false, signal);
   } finally {
     active = false;
   }
 }
 
-export async function recoverSubmission({ resume = false } = {}) {
+export async function recoverSubmission({ resume = false, signal } = {}) {
   const pending = pendingSubmission();
   if (!pending) return null;
   if (active) throw unknown();
   active = true;
   const deadline = Date.now() + 60_000;
   try {
+    checkOwner(pending, signal);
     try {
       const receipt = await api(`/api/generation-submissions/${encodeURIComponent(pending.key)}`, {
-        deadlineMs: 10_000, operation: "Submission status",
+        deadlineMs: 10_000, operation: "Submission status", signal,
       });
+      checkOwner(pending, signal);
       validateResult(pending, receipt?.result);
       finish(pending, receipt.result);
       return { pending, result: receipt.result };
     } catch (error) {
+      checkOwner(pending, signal);
       if (error.status === 410) { finish(pending); throw error; }
       if (error.status !== 404) throw unknown(error);
     }
     if (!resume) return { pending, result: null };
-    return { pending, result: await send(pending, Math.max(1, deadline - Date.now()), true) };
+    return { pending, result: await send(pending, Math.max(1, deadline - Date.now()), true, signal) };
   } finally {
     active = false;
   }
+}
+
+// Recovery has its own backoff, beyond an individual request's bounded retries.
+// Callbacks belong to this account/session and never run after it is stopped.
+export function createSubmissionRecovery({ signal, onRecovered, onError, onChange,
+  setTimer = setTimeout, clearTimer = clearTimeout }) {
+  const owner = ownerId;
+  let timer = null;
+  let busy = false;
+  let delay = 1000;
+  const stopped = () => signal.aborted || owner !== ownerId;
+  const schedule = (wait) => {
+    if (!stopped() && timer === null) timer = setTimer(() => run(), wait);
+  };
+  const run = async () => {
+    timer = null;
+    if (stopped() || busy) return;
+    // An original POST may still be finishing as the application reconnects.
+    if (active) { schedule(1000); return; }
+    const pending = pendingSubmission();
+    if (!pending) { onChange(false); return; }
+    busy = true;
+    onChange(true);
+    try {
+      const recovered = await recoverSubmission({ resume: true, signal });
+      if (!stopped() && recovered?.result) await onRecovered(recovered);
+    } catch (error) {
+      if (!stopped() && error.code !== "submission_status_unknown") onError(error, pending);
+    } finally {
+      busy = false;
+      if (!stopped()) {
+        const pending = pendingSubmission();
+        onChange(Boolean(pending));
+        if (pending) { schedule(delay); delay = Math.min(delay * 2, 30_000); }
+        else delay = 1000;
+      }
+    }
+  };
+  signal.addEventListener("abort", () => { clearTimer(timer); timer = null; }, { once: true });
+  return {
+    start({ immediate = false } = {}) {
+      if (stopped() || busy || !pendingSubmission()) return;
+      if (active) { schedule(1000); return; }
+      if (immediate) { clearTimer(timer); timer = null; }
+      schedule(0);
+      onChange(true);
+    },
+  };
 }
 
 function validateResult(pending, result) {

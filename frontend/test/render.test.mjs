@@ -17,6 +17,10 @@ import {
   galleryMarkup,
   generationPanelMarkup,
   generationSubmissionDisabled,
+  generationButtonPresentation,
+  promptGenerationButtonPresentation,
+  generationButtonContentMarkup,
+  automationStatusMarkup,
   serverControlsMarkup,
   generationProgressMarkup,
   generationActivityMarkup,
@@ -1511,7 +1515,7 @@ test("generation quantity stepper renders beside the generate button and tracks 
   assert.match(atOne, /class="generate-row"/);
   assert.match(
     atOne,
-    /<button id="generate-button" class="button primary" data-action="generate"\s*>Generate<\/button>/,
+    /<button id="generate-button" class="button primary" data-action="generate"[^>]*aria-busy="false"\s*>Generate<\/button>/,
   );
   assert.ok(atOne.indexOf('id="generate-button"') < atOne.indexOf('id="generation-quantity"'));
   assert.match(
@@ -1873,7 +1877,7 @@ test("photo viewer generation dock exposes the generate control and the top-bar 
   assert.match(html, /<div class="photo-viewer-generation-dock">/);
   assert.match(
     html,
-    /<button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate">Generate<\/button>/,
+    /<button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate"[^>]*aria-busy="false">Generate<\/button>/,
   );
   assert.match(
     html,
@@ -1886,13 +1890,13 @@ test("photo viewer generation dock exposes the generate control and the top-bar 
     {},
     "fill",
     "hold",
-    { generateDisabled: true, generateLabel: "Queueing 3…" },
+    { generateDisabled: true, generateLabel: "Queueing 3…", generateBusy: true },
   );
-  assert.match(queued, /data-action="generate" disabled>Queueing 3…<\/button>/);
+  assert.match(queued, /data-action="generate"[^>]*aria-busy="true" disabled><span class="activity-spinner button-spinner" aria-hidden="true"><\/span>Queueing 3…<\/button>/);
   assert.match(queued, /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><\/div>/);
 
   const defaulted = photoViewerMarkup(generation, {});
-  assert.match(defaulted, /data-action="generate">Generate<\/button>/);
+  assert.match(defaulted, /data-action="generate"[^>]*>Generate<\/button>/);
   assert.match(defaulted, /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><\/div>/);
 });
 
@@ -2805,4 +2809,39 @@ test("folder activity extends the direct count and labels descendant work explic
   const shell = shellMarkup({ session: { user: { role: "user", username: "artist" } }, collections: [] });
   assert.ok(shell.indexOf('id="gallery-scale"') < shell.indexOf('id="generation-activity-host"'));
   assert.ok(shell.indexOf('id="generation-activity-host"') < shell.indexOf('class="account-menu"'));
+});
+
+test("normal automatic settings saves render no status host content", () => {
+  for (const autoSettingsStatus of ["pending", "saving", "saved"]) {
+    assert.equal(automationStatusMarkup({ autoSettingsStatus, autoSettingsMessage: "Updating the next automatic batch…" }), "");
+  }
+  for (const autoSettingsStatus of ["error", "conflict"]) {
+    assert.match(automationStatusMarkup({ autoSettingsStatus, autoSettingsMessage: "Edits need attention" }), /role="alert".*Edits need attention.*retry-auto-settings/);
+  }
+});
+
+test("automatic Generate presentation survives concurrent prompt submission and recovery", () => {
+  for (const busyState of [{}, { submitting: true }, { autoSettingsSaving: true }, {
+    promptGenerationRequest: "prompt", promptGenerationBusy: true, submitting: true,
+  }, { submissionRecoveryPending: true, pendingSubmission: { path: "/api/generations" } }]) {
+    const automatic = generationButtonPresentation({ ...busyState, automation: { enabled: true } });
+    assert.deepEqual(automatic, { label: "Auto Generating", busy: true });
+    assert.match(generationButtonContentMarkup(automatic), /activity-spinner button-spinner.*Auto Generating/);
+  }
+  assert.deepEqual(generationButtonPresentation({ automation: { enabled: false } }), { label: "Generate", busy: false });
+  assert.deepEqual(promptGenerationButtonPresentation({ autoGenerate: true }), { label: "Generate prompt", busy: false });
+});
+
+test("prompt button distinguishes submission, queueing, execution, and recovery", () => {
+  const states = [
+    [{ promptGenerationRequest: "prompt" }, "Submitting…"],
+    [{ promptGenerationPhase: "queued" }, "Waiting for ComfyUI…"],
+    [{ promptGenerationPhase: "generating" }, "Generating prompt…"],
+    [{ promptJobsUnavailable: true }, "Reconnecting…"],
+    [{ submissionRecoveryPending: true, pendingSubmission: { path: "/api/prompt-generations" } }, "Reconnecting…"],
+  ];
+  for (const [state, label] of states) {
+    assert.deepEqual(promptGenerationButtonPresentation({ ...state, promptGenerationBusy: true }), { label, busy: true });
+  }
+  assert.deepEqual(promptGenerationButtonPresentation({}), { label: "Generate prompt", busy: false });
 });
