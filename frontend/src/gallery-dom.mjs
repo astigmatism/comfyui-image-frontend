@@ -10,7 +10,7 @@ function localKey(node) {
   if (cardKey(node)) return `card:${cardKey(node)}`;
   if (node.hasAttribute("data-prompt-group")) return `group:${node.dataset.promptGroup}`;
   if (node.matches("img[data-thumbnail-src]")) return `image:${node.dataset.galleryArtifactId || ""}:${node.dataset.thumbnailSrc}`;
-  if (node.dataset.action) return `action:${node.dataset.action}`;
+  if (node.dataset.action) return `action:${node.dataset.action}:${node.dataset.direction || node.dataset.photoViewMode || node.dataset.photoPlaybackMode || ""}`;
   for (const attribute of ["data-group-toggle", "data-group-changes", "data-prompt-group-select", "data-group-more"]) {
     if (node.hasAttribute(attribute)) return attribute;
   }
@@ -68,7 +68,7 @@ function reconcile(parent, desiredParent, context) {
     if (current !== position) parent.insertBefore(current, position);
     if (current.nodeType === 1) {
       patchAttributes(current, desired);
-      reconcile(current, desired, context);
+      if (!(context.preserveMedia && current.matches(".photo-viewer-media"))) reconcile(current, desired, context);
     } else if (current.nodeValue !== desired.nodeValue) current.nodeValue = desired.nodeValue;
     position = current.nextSibling;
   }
@@ -99,4 +99,14 @@ export function reconcileGalleryCard(card, markup) {
   if (cardKey(card) !== cardKey(desired)) throw new Error("Cannot reconcile different gallery cards.");
   patchAttributes(card, desired);
   reconcile(card, desired, contextFor(card));
+}
+
+export function reconcilePhotoViewer(root, markup, image) {
+  const template = root.ownerDocument.createElement("template");
+  template.innerHTML = markup;
+  reconcile(root, template.content, { ...contextFor(root), preserveMedia: true });
+  const media = root.querySelector(".photo-viewer-media");
+  if (image && media.firstChild !== image) media.replaceChildren(image);
+  const description = template.content.querySelector(".photo-viewer-media img");
+  if (image && description) image.alt = description.alt;
 }

@@ -32,6 +32,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("approved sections, standalone prompt, and every image in a batch", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await expect(page.locator('[data-control-section="prompt-generation"] .control-section-trigger')).toHaveAttribute("aria-expanded", "true");
@@ -64,6 +65,9 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   await page.screenshot({ path: testInfo.outputPath("prompt-generation-desktop.png"), fullPage: true });
   await page.getByRole("textbox", { name: "Generation quantity" }).fill("2");
   await page.getByRole("button", { name: "Generate", exact: true }).click();
+  // The fake runtime completes the two images serially. Give each completion
+  // its own assertion window after prompt generation/preparation.
+  await expect(page.locator(".gallery-card.status-succeeded").first()).toBeAttached();
   await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(2);
   expect(errors).toEqual([]);
 });

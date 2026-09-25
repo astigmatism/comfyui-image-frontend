@@ -1,0 +1,231 @@
+{
+  "date": "2026-09-24",
+  "baselineCommit": "bff60db",
+  "notes": "Synthetic 2048x1536 PNG/JPEG fixture, 500 gallery records, 100 ms uncached response delay. Separate headed Chrome launches. Host load varied: timings and absolute RSS are diagnostic, not production guarantees.",
+  "baseline": {
+    "chrome": "153.0.8010.53",
+    "fixtureBytes": {
+      "png": 7947802,
+      "jpeg": 1610406
+    },
+    "coldOpenMs": 1416.3551250000019,
+    "idleTaskMs": 209.9289999999998,
+    "progressTaskMs": 5455.776,
+    "progress": {
+      "replacements": 100,
+      "thumbnailScans": 101,
+      "selectionScans": 100
+    },
+    "navigationMs": {
+      "median": 892.1719589999993,
+      "p95": 1519.4210409999941
+    },
+    "warmNavigationMs": {
+      "median": 1029.9783749999988,
+      "p95": 2777.335374999995
+    },
+    "requests": {
+      "originals": 39,
+      "thumbnails": 8
+    },
+    "retainedImages": 1,
+    "cycles": 50,
+    "memorySamples": [
+      {
+        "heapMiB": 3.774341583251953,
+        "browserRssMiB": 975.75,
+        "domNodes": 71981,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 3.9018325805664062,
+        "browserRssMiB": 1044.984375,
+        "domNodes": 72008,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 3.9121360778808594,
+        "browserRssMiB": 1075.1875,
+        "domNodes": 72008,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 3.9243545532226562,
+        "browserRssMiB": 1062.75,
+        "domNodes": 72008,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 3.920787811279297,
+        "browserRssMiB": 1058.359375,
+        "domNodes": 71982,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 3.955699920654297,
+        "browserRssMiB": 1061.890625,
+        "domNodes": 72008,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      }
+    ],
+    "settledMemorySamples": [
+      {
+        "heapMiB": 3.9361114501953125,
+        "browserRssMiB": 991.875,
+        "domNodes": 71981,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 3.939319610595703,
+        "browserRssMiB": 978.03125,
+        "domNodes": 71982,
+        "documents": 2,
+        "loaderImages": {
+          "live": 8,
+          "withSource": 0
+        }
+      }
+    ]
+  },
+  "after": {
+    "chrome": "153.0.8010.53",
+    "fixtureBytes": {
+      "png": 7947802,
+      "jpeg": 1610406
+    },
+    "coldOpenMs": 612.2492919999968,
+    "idleTaskMs": 276.70499999999976,
+    "progressTaskMs": 1470.379,
+    "progress": {
+      "replacements": 0,
+      "thumbnailScans": 0,
+      "selectionScans": 0
+    },
+    "navigationMs": {
+      "median": 101.56070800000089,
+      "p95": 751.1964999999982
+    },
+    "warmNavigationMs": {
+      "median": 61.50616600000285,
+      "p95": 107.52029200000106
+    },
+    "requests": {
+      "originals": 53,
+      "thumbnails": 8
+    },
+    "retainedImages": 0,
+    "cycles": 50,
+    "memorySamples": [
+      {
+        "heapMiB": 3.7607688903808594,
+        "browserRssMiB": 1305.03125,
+        "domNodes": 71880,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 4.089653015136719,
+        "browserRssMiB": 1411.5625,
+        "domNodes": 71886,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 4.087554931640625,
+        "browserRssMiB": 1464.96875,
+        "domNodes": 71879,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 4.1033172607421875,
+        "browserRssMiB": 1458.171875,
+        "domNodes": 71880,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 4.123565673828125,
+        "browserRssMiB": 1462.734375,
+        "domNodes": 71880,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 4.142524719238281,
+        "browserRssMiB": 1468.46875,
+        "domNodes": 71879,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      }
+    ],
+    "settledMemorySamples": [
+      {
+        "heapMiB": 4.134124755859375,
+        "browserRssMiB": 1397.25,
+        "domNodes": 71854,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      },
+      {
+        "heapMiB": 4.1309356689453125,
+        "browserRssMiB": 1397.171875,
+        "domNodes": 71853,
+        "documents": 2,
+        "loaderImages": {
+          "live": 0,
+          "withSource": 0
+        }
+      }
+    ]
+  }
+}

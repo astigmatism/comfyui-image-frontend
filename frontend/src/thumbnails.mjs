@@ -1,8 +1,9 @@
 import { api } from "./api.mjs";
+import { releaseImage } from "./image-cleanup.mjs";
 
 async function decodeThumbnail(url, signal) {
   const image = new Image();
-  const abort = () => image.removeAttribute("src");
+  const abort = () => releaseImage(image);
   signal.addEventListener("abort", abort, { once: true });
   try {
     if (signal.aborted) throw signal.reason;
@@ -10,7 +11,7 @@ async function decodeThumbnail(url, signal) {
     await image.decode();
   } finally {
     signal.removeEventListener("abort", abort);
-    image.removeAttribute("src");
+    releaseImage(image);
   }
 }
 
@@ -139,7 +140,8 @@ export function installThumbnails(root, { scheduler = createThumbnailScheduler()
   function release(img, item) {
     item.revision += 1;
     img.dataset.thumbnailState = "pending";
-    img.removeAttribute("src");
+    if (root.contains(img)) img.removeAttribute("src");
+    else releaseImage(img);
     item.stop?.();
     item.stop = null;
     item.retry?.remove();
@@ -225,7 +227,12 @@ export function installThumbnails(root, { scheduler = createThumbnailScheduler()
       nearby.observe(img);
     }
   }
-  const changes = new MutationObserver(scan);
+  const hasImage = (node) => node.nodeType === 1 &&
+    (node.matches("img[data-thumbnail-src]") || node.querySelector("img[data-thumbnail-src]"));
+  const changes = new MutationObserver((records) => {
+    if (records.some((record) => record.type === "attributes" ||
+      [...record.addedNodes, ...record.removedNodes].some(hasImage))) scan();
+  });
   changes.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-thumbnail-src"] });
   scan();
   return () => {

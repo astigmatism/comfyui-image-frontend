@@ -1964,7 +1964,7 @@ export function photoViewerMarkup(
   navigation = {},
   requestedViewMode = "fill",
   requestedPlaybackMode = "hold",
-  { activity = "", generateDisabled = false, generateLabel = "Generate", generateBusy = false } = {},
+  { activity = "", generateDisabled = false, generateLabel = "Generate", generateBusy = false, loading = false, loadError = null } = {},
 ) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
@@ -1983,6 +1983,7 @@ export function photoViewerMarkup(
     : `<div class="photo-viewer-placeholder"><strong>No image is available.</strong></div>`;
   return `<div class="photo-viewer-frame" data-photo-generation-id="${escapeHtml(generation?.id || "")}">
     <div class="photo-viewer-media" data-photo-view-mode="${viewMode}">${media}</div>
+    <div class="photo-viewer-load-status" role="status" ${loading || loadError ? "" : "hidden"}>${loadError ? `${escapeHtml(loadError)} <button type="button" class="button secondary" data-action="retry-photo">Retry</button>` : "Loading image…"}</div>
     <div class="photo-viewer-generation-dock">
       <button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate" aria-live="polite" aria-atomic="true" aria-busy="${generateBusy}"${generateDisabled ? " disabled" : ""}>${generationButtonContentMarkup({ label: generateLabel, busy: generateBusy })}</button>
       <div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true">${activity}</div>

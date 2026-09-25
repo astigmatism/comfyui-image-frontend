@@ -3033,6 +3033,18 @@ dialog::backdrop {
   color: var(--muted);
 }
 
+.photo-viewer-load-status {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: 5rem;
+  transform: translateX(-50%);
+  padding: 0.65rem 1rem;
+  border-radius: 0.6rem;
+  background: #151b24;
+  color: #fff;
+}
+
 .photo-viewer-control {
   position: absolute;
   display: grid;

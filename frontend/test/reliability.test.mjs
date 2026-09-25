@@ -11,19 +11,20 @@ function json(value, status = 200, headers = {}) {
 function setup(context) {
   const fetch = globalThis.fetch;
   const storage = globalThis.sessionStorage;
-  const crypto = globalThis.crypto;
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
   const values = {};
   globalThis.sessionStorage = Object.assign(values, {
     getItem: (key) => values[key] || null,
     setItem: (key, value) => { values[key] = value; },
     removeItem: (key) => { delete values[key]; },
   });
-  globalThis.crypto = webcrypto;
+  Object.defineProperty(globalThis, "crypto", { configurable: true, value: webcrypto });
   context.after(() => {
     clearSubmissionStorage();
     globalThis.fetch = fetch;
     globalThis.sessionStorage = storage;
-    globalThis.crypto = crypto;
+    if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+    else delete globalThis.crypto;
   });
   setSubmissionOwner("account-one");
 }

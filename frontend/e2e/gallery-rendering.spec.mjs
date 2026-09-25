@@ -46,7 +46,8 @@ async function galleryFixture(page, options = {}) {
     let result = {};
     if (path.endsWith("/thumbnail")) {
       fixture.thumbnails.push(path);
-      await delay(fixture.thumbnailDelay);
+      if (fixture.thumbnailGate) await fixture.thumbnailGate;
+      else await delay(fixture.thumbnailDelay);
       if (fixture.fail === "http") return route.fulfill({ status: 404, json: { error: { message: "Missing thumbnail" } } });
       return route.fulfill({ contentType: "image/svg+xml", body: fixture.fail === "decode" ? "invalid image" : image });
     }
@@ -164,12 +165,15 @@ test("rapid A to B to A navigation cannot apply stale history or group responses
 
 for (const failure of ["http", "decode"]) test(`${failure} thumbnail failures remain quiet and retry successfully`, async ({ page }, testInfo) => {
   const fixture = await galleryFixture(page);
-  fixture.fail = failure; fixture.thumbnailDelay = 250;
+  fixture.fail = failure;
+  let releaseThumbnails;
+  fixture.thumbnailGate = new Promise((resolve) => { releaseThumbnails = resolve; });
   await page.evaluate(() => { location.hash = "#/c/a"; });
   const first = card(page, "a-0");
   await expect(first.locator("img")).toHaveAttribute("data-thumbnail-state", "pending");
   await expect(first.locator("img")).toHaveCSS("opacity", "0");
   await page.screenshot({ path: testInfo.outputPath(`${failure}-pending.png`) });
+  releaseThumbnails(); fixture.thumbnailGate = null;
   const retry = first.getByRole("button", { name: "Retry unavailable thumbnail" });
   await expect(retry).toBeVisible();
   await expect(first.locator("img")).toHaveCSS("opacity", "0");

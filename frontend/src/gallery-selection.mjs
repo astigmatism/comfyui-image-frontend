@@ -431,7 +431,10 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   }, true);
   root.addEventListener("dragstart", (event) => { if (selecting && event.target.closest("#gallery")) event.preventDefault(); }, true);
   const observer = new MutationObserver((records) => {
-    if (syncQueued || !records.some((record) => record.target === root || record.target.closest?.("#gallery"))) return;
+    const relevant = (node) => node.nodeType === 1 && (node.matches("#gallery, [data-gallery-card], [data-prompt-group], .classic-gallery-header, .card-select-button, [data-prompt-group-select]") ||
+      node.querySelector("#gallery, [data-gallery-card], [data-prompt-group], .classic-gallery-header, .card-select-button, [data-prompt-group-select]"));
+    if (syncQueued || !records.some((record) =>
+      (record.target === root || record.target.closest?.("#gallery")) && [...record.addedNodes, ...record.removedNodes].some(relevant))) return;
     syncQueued = true;
     queueMicrotask(() => { syncQueued = false; sync(); });
   });

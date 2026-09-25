@@ -1,6 +1,8 @@
+import { photoViewerPreloadArtifact, createPhotoViewerPreloader } from "./photo-viewer-preload.mjs";
+import { createPhotoViewerImages, photoKey } from "./photo-viewer-images.mjs";
 import { submitGeneration, setSubmissionOwner, pendingSubmission, createSubmissionRecovery, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
 import { installThumbnails } from "./thumbnails.mjs";
-import { reconcileGallery, reconcileGalleryCard } from "./gallery-dom.mjs";
+import { reconcileGallery, reconcileGalleryCard, reconcilePhotoViewer } from "./gallery-dom.mjs";
 import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
 import { automaticPromptUpdate, olderAutomaticProgress } from "./auto-generation-progress.mjs";
@@ -237,6 +239,20 @@ const liveGenerationRefreshQueue = createCoalescedTaskQueue((id, options) => ref
 let activeResolutionDrag = null;
 let recentResolutionsRecordTimer = null;
 let activePhotoViewerDrag = null;
+let photoViewerImages = null;
+const photoViewerPreloader = createPhotoViewerPreloader((artifact) => photoViewerImages?.preload(artifact));
+let photoViewerImage = null;
+let photoViewerDisplayed = null;
+let photoViewerLoadKey = null;
+let photoViewerLoadRevision = 0;
+let photoViewerNavigationRevision = 0;
+let photoViewerLoading = false;
+let photoViewerPaging = false;
+let photoViewerLoadError = null;
+let photoViewerRetryDirection = null;
+let photoViewerFrame = null;
+let photoViewerLayoutPending = false;
+let photoViewerDirection = "older";
 let promptEditorReturnFocus = null;
 let promptEditorInstructionOverrides = {};
 let sourcePickerReturnFocus = null;
@@ -275,6 +291,7 @@ let collectionNavigationToken = 0;
 let collectionsRequestToken = 0;
 let galleryHistoryController = null;
 let galleryPageController = null;
+let galleryPageRequest = null;
 const pendingGenerationIds = new Set();
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
@@ -405,6 +422,7 @@ function bindDelegatedEvents() {
   root.addEventListener("dragleave", handleDragLeave);
   root.addEventListener("drop", handleDrop);
   document.addEventListener("fullscreenchange", handlePhotoViewerFullscreenChange);
+  document.addEventListener("visibilitychange", syncPhotoViewerPreload);
   window.addEventListener("resize", handlePhotoViewerResize);
   window.addEventListener("focus", () => void refreshUserState());
   root.addEventListener("focusout", () => setTimeout(() => void refreshUserState(), 0));
@@ -428,6 +446,7 @@ async function refreshAfterGalleryOperation({ operation, plan, result, destinati
   }
   if (operation === "move") {
     const ids = new Set(result.generation_ids);
+    for (const id of ids) generationRefreshGate.invalidate(id);
     state.generations = state.generations.map((item) => ids.has(item.id) ? { ...item, collection_id: destination } : item);
     state.generations = state.generations.filter(generationBelongsToView);
   } else if (operation === "confirm-delete") {
@@ -549,6 +568,7 @@ async function handleClick(event) {
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
+    else if (action === "retry-photo") retryPhotoViewer();
     else if (action === "toggle-photo-fullscreen") togglePhotoViewerFullscreen();
     else if (action === "toggle-photo-view") togglePhotoViewerMode();
     else if (action === "set-photo-view") setPhotoViewerMode(target.dataset.photoViewMode);
@@ -1606,7 +1626,7 @@ function handlePointerMove(event) {
     event.preventDefault();
     state.photoViewerPanX = activePhotoViewerDrag.startPanX + event.clientX - activePhotoViewerDrag.startX;
     state.photoViewerPanY = activePhotoViewerDrag.startPanY + event.clientY - activePhotoViewerDrag.startY;
-    applyPhotoViewerTransform();
+    schedulePhotoViewerFrame();
     return;
   }
   if (!activeResolutionDrag || event.pointerId !== activeResolutionDrag.pointerId) return;
@@ -1646,7 +1666,7 @@ function handlePhotoViewerWheel(event) {
   if (!event.ctrlKey || !deltaY) {
     state.photoViewerPanX -= deltaX;
     state.photoViewerPanY -= deltaY;
-    applyPhotoViewerTransform();
+    schedulePhotoViewerFrame();
     return;
   }
 
@@ -1659,7 +1679,7 @@ function handlePhotoViewerWheel(event) {
   state.photoViewerPanX = pointerX - (pointerX - state.photoViewerPanX) * zoomFactor;
   state.photoViewerPanY = pointerY - (pointerY - state.photoViewerPanY) * zoomFactor;
   state.photoViewerZoom *= zoomFactor;
-  applyPhotoViewerTransform();
+  schedulePhotoViewerFrame();
 }
 
 function handleKeyDown(event) {
@@ -2411,7 +2431,15 @@ async function enterApplication() {
   window.addEventListener("online", () => submissionRecovery?.start({ immediate: true }), { signal: controller.signal });
   root.innerHTML = shellMarkup(state);
   disposeThumbnails = installThumbnails(document.querySelector("#gallery-viewport"));
-  document.querySelector("#photo-viewer")?.addEventListener("close", resetPhotoViewerState);
+  document.querySelector("#photo-viewer")?.addEventListener("close", () => {
+    if (!document.querySelector("#photo-viewer")?.open) resetPhotoViewerState();
+  });
+  document.querySelector("#detail-dialog")?.addEventListener("close", (event) => {
+    if (event.target.open) return;
+    for (const image of event.target.querySelectorAll("img")) image.removeAttribute("src");
+    event.target.replaceChildren();
+    delete event.target.dataset.generationId;
+  });
   document.querySelector("#prompt-editor-dialog")?.addEventListener("close", handlePromptEditorClose);
   document
     .querySelector("#source-picker-dialog")
@@ -2468,6 +2496,7 @@ async function enterApplication() {
 }
 
 function stopApplicationStartup() {
+  closePhotoViewer();
   disposeThumbnails?.();
   disposeThumbnails = null;
   cancelGalleryReads();
@@ -2744,6 +2773,7 @@ function handleCollectionHashChange() {
 }
 
 async function navigateCollectionView(collectionId) {
+  closePhotoViewer();
   const token = ++collectionNavigationToken;
   cancelGalleryReads();
   state.observer?.disconnect();
@@ -2832,6 +2862,7 @@ function cancelGalleryReads() {
   galleryPageController?.abort();
   galleryHistoryController = null;
   galleryPageController = null;
+  galleryPageRequest = null;
 }
 
 function galleryReadController(parentSignal = applicationStartupController?.signal) {
@@ -5027,32 +5058,40 @@ function upsertGalleryCard(generation) {
   gallerySelection?.sync();
 }
 
-async function loadMore() {
-  if (!galleryNextCursor() || state.loadingMore) return;
+function loadMore() {
+  if (galleryPageRequest && galleryPageController && !galleryPageController.signal.aborted) return galleryPageRequest;
+  if (!galleryNextCursor()) return Promise.resolve();
   state.loadingMore = true;
   const navigationToken = collectionNavigationToken;
   const requestRoute = currentGalleryRoute();
+  const requestedLayout = state.galleryLayout;
+  const originalCursor = galleryNextCursor();
+  const cursor = requestedLayout === "classic" ? originalCursor : galleryGroups?.paginationCursor(originalCursor) || originalCursor;
   const { controller, unlink } = galleryReadController();
   galleryPageController = controller;
-  try {
-    const requestedLayout = state.galleryLayout;
-    const originalCursor = galleryNextCursor();
-    const cursor = requestedLayout === "classic" ? originalCursor : galleryGroups?.paginationCursor(originalCursor) || originalCursor;
-    const page = await api(galleryPageUrl(cursor, requestRoute), { signal: controller.signal });
-    if (controller.signal.aborted || navigationToken !== collectionNavigationToken || requestRoute !== currentGalleryRoute() || requestedLayout !== state.galleryLayout) return;
-    if (cursor !== originalCursor && !state.gallerySkippedCursor) state.gallerySkippedCursor = originalCursor;
-    const known = new Set(state.generations.map((item) => item.id));
-    state.generations.push(...page.items.filter((item) => !known.has(item.id)));
-    state.nextCursor = page.next_cursor;
-    renderGallery();
-    setupPaginationObserver();
-  } finally {
-    unlink();
-    if (galleryPageController === controller) {
-      galleryPageController = null;
-      if (navigationToken === collectionNavigationToken) state.loadingMore = false;
+  const request = (async () => {
+    try {
+      const page = await api(galleryPageUrl(cursor, requestRoute), { signal: controller.signal, deadlineMs: 15_000, operation: "Gallery page" });
+      if (controller.signal.aborted || navigationToken !== collectionNavigationToken || requestRoute !== currentGalleryRoute() || requestedLayout !== state.galleryLayout) return;
+      if (page.next_cursor && [cursor, originalCursor].includes(page.next_cursor)) throw new Error("The gallery page did not advance. Try again.");
+      if (cursor !== originalCursor && !state.gallerySkippedCursor) state.gallerySkippedCursor = originalCursor;
+      const known = new Set(state.generations.map((item) => item.id));
+      state.generations.push(...page.items.filter((item) => !known.has(item.id)));
+      state.nextCursor = page.next_cursor;
+      renderGallery();
+      setupPaginationObserver();
+      return page;
+    } finally {
+      unlink();
+      if (galleryPageController === controller) {
+        galleryPageController = null;
+        galleryPageRequest = null;
+        if (navigationToken === collectionNavigationToken) state.loadingMore = false;
+      }
     }
-  }
+  })();
+  galleryPageRequest = request;
+  return request;
 }
 
 function setupPaginationObserver() {
@@ -5346,31 +5385,57 @@ function photoViewerGenerationDock() {
 
 function renderPhotoViewer() {
   const dialog = document.querySelector("#photo-viewer");
-  if (!dialog || !state.photoViewerGenerationId) return;
-  if (activePhotoViewerDrag) {
-    activePhotoViewerDrag.renderPending = true;
-    return;
-  }
+  if (!dialog?.open || !state.photoViewerGenerationId) return;
   const generation = photoViewerGeneration(state.photoViewerGenerationId);
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") {
     closePhotoViewer();
     return;
   }
+  const key = photoKey(generation.display_artifact);
+  if (photoViewerLoadKey !== key) {
+    photoViewerLoadKey = key;
+    photoViewerLoading = true;
+    photoViewerLoadError = null;
+    const revision = ++photoViewerLoadRevision;
+    photoViewerImages ||= createPhotoViewerImages();
+    photoViewerImages.show(generation.display_artifact, (image) => {
+      if (revision !== photoViewerLoadRevision || !dialog.open) return false;
+      const latest = photoViewerGeneration(state.photoViewerGenerationId);
+      if (photoKey(latest?.display_artifact) !== key) { renderPhotoViewer(); return false; }
+      const changed = photoKey(photoViewerDisplayed?.display_artifact) !== key;
+      photoViewerImage = image;
+      photoViewerDisplayed = { ...latest };
+      photoViewerLoading = false;
+      if (changed) resetPhotoViewerView(state.photoViewerMode);
+      renderPhotoViewer();
+      schedulePhotoViewerFrame(true);
+    }).catch((error) => {
+      if (revision !== photoViewerLoadRevision || !dialog.open || error.name === "AbortError") return;
+      photoViewerLoading = false;
+      photoViewerLoadError = "Could not load image. Try again.";
+      renderPhotoViewer();
+    });
+  }
+  // Metadata can change during a load. The displayed artifact and action targets
+  // remain together until the requested original has finished decoding.
+  const displayed = photoViewerDisplayed
+    ? { ...(photoViewerGeneration(photoViewerDisplayed.id) || photoViewerDisplayed), display_artifact: photoViewerDisplayed.display_artifact }
+    : { ...generation, display_artifact: null };
+  const dock = { ...photoViewerGenerationDock(), loading: photoViewerLoading || photoViewerPaging, loadError: photoViewerLoadError };
   const host = dialog.querySelector(".photo-viewer-host");
-  if (!host) return;
-  const dock = photoViewerGenerationDock();
-  host.innerHTML = photoViewerMarkup(
-    generation,
-    photoViewerNavigation(generation.id),
-    state.photoViewerMode,
-    state.photoViewerPlaybackMode,
-    dock,
-  );
+  reconcilePhotoViewer(host, photoViewerMarkup(displayed, photoViewerNavigation(generation.id), state.photoViewerMode, state.photoViewerPlaybackMode, dock), photoViewerImage);
   const activityHost = host.querySelector(".photo-viewer-activity-host");
   if (activityHost) activityHost.dataset.markup = dock.activity;
-  preparePhotoViewerImage();
   updatePhotoViewerFullscreenControl();
   updatePhotoViewerNextIn();
+  syncPhotoViewerPreload();
+}
+
+function syncPhotoViewerPreload() {
+  const eligible = document.querySelector("#photo-viewer")?.open && !document.hidden &&
+    state.photoViewerPlaybackMode === "hold" && !photoViewerLoading && !photoViewerPaging && !photoViewerLoadError &&
+    photoViewerDisplayed?.id === state.photoViewerGenerationId;
+  photoViewerPreloader.update(eligible ? photoViewerPreloadArtifact(visibleGenerations(), photoViewerDisplayed.id, photoViewerDirection) : null);
 }
 
 function openPhotoViewer(id) {
@@ -5378,8 +5443,9 @@ function openPhotoViewer(id) {
   if (!generation?.display_artifact || generation.display_artifact.kind !== "image") return;
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog) return;
+  photoViewerNavigationRevision++;
   state.photoViewerPlaybackMode = "hold";
-  resetPhotoViewerView();
+  if (!dialog.open) resetPhotoViewerView();
   state.photoViewerGenerationId = id;
   if (!dialog.open) dialog.showModal();
   renderPhotoViewer();
@@ -5389,26 +5455,54 @@ function openPhotoViewer(id) {
 
 async function navigatePhotoViewer(direction) {
   if (!state.photoViewerGenerationId || !["older", "newer"].includes(direction)) return;
-  if (state.photoViewerPlaybackMode === "slideshow") {
-    state.photoViewerPlaybackMode = "hold";
+  photoViewerDirection = direction;
+  const revision = ++photoViewerNavigationRevision;
+  const origin = state.photoViewerGenerationId;
+  const route = collectionNavigationToken;
+  const layout = state.galleryLayout;
+  const current = () => revision === photoViewerNavigationRevision && route === collectionNavigationToken && layout === state.galleryLayout && document.querySelector("#photo-viewer")?.open;
+  state.photoViewerPlaybackMode = "hold";
+  photoViewerRetryDirection = null;
+  photoViewerLoadError = null;
+  photoViewerPaging = false;
+  try {
+    let generations = photoViewerGenerations();
+    let index = generations.findIndex((generation) => generation.id === origin);
+    let target = index < 0 ? null : generations[index + (direction === "older" ? 1 : -1)];
+    const cursors = new Set();
+    while (!target && index >= 0 && direction === "older" && galleryNextCursor()) {
+      const cursor = galleryNextCursor();
+      if (cursors.has(cursor)) throw new Error("The gallery page did not advance.");
+      cursors.add(cursor);
+      photoViewerPaging = true;
+      renderPhotoViewer();
+      const page = await loadMore();
+      if (!current()) return;
+      if (!page) break;
+      generations = photoViewerGenerations();
+      index = generations.findIndex((generation) => generation.id === origin);
+      target = index < 0 ? null : generations[index + 1];
+    }
+    if (!current()) return;
+    if (target) state.photoViewerGenerationId = target.id;
+  } catch (error) {
+    if (!current() || error.name === "AbortError") return;
+    photoViewerRetryDirection = direction;
+    photoViewerLoadError = "Could not load the next gallery page. Try again.";
+  } finally {
+    if (current()) {
+      photoViewerPaging = false;
+      renderPhotoViewer();
+      notePhotoViewerActivity();
+    }
   }
-  let generations = photoViewerGenerations();
-  let index = generations.findIndex((generation) => generation.id === state.photoViewerGenerationId);
-  let target = generations[index + (direction === "older" ? 1 : -1)];
-  while (!target && direction === "older" && galleryNextCursor()) {
-    await loadMore();
-    generations = photoViewerGenerations();
-    index = generations.findIndex((generation) => generation.id === state.photoViewerGenerationId);
-    target = generations[index + 1];
-  }
-  if (!target) {
-    renderPhotoViewer();
-    return;
-  }
-  state.photoViewerGenerationId = target.id;
-  resetPhotoViewerView(state.photoViewerMode);
+}
+
+function retryPhotoViewer() {
+  if (photoViewerRetryDirection) { void navigatePhotoViewer(photoViewerRetryDirection); return; }
+  photoViewerLoadKey = null;
+  photoViewerLoadError = null;
   renderPhotoViewer();
-  notePhotoViewerActivity();
 }
 
 function togglePhotoViewerMode() {
@@ -5436,6 +5530,7 @@ function setPhotoViewerPlaybackMode(mode) {
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog?.open) return;
   state.photoViewerPlaybackMode = mode;
+  syncPhotoViewerPreload();
   if (mode === "hold") {
     updatePhotoViewerPlaybackControl();
     updatePhotoViewerNextIn();
@@ -5464,17 +5559,24 @@ function showLatestCompletedSlideshowGeneration({
   if (!force && latest.id === state.photoViewerGenerationId && !currentIsNewlyComplete) {
     return false;
   }
+  photoViewerNavigationRevision++;
+  photoViewerPaging = false;
   state.photoViewerGenerationId = latest.id;
-  resetPhotoViewerView(state.photoViewerMode);
   renderPhotoViewer();
   return true;
 }
 
-function preparePhotoViewerImage() {
-  const photo = document.querySelector("#photo-viewer .photo-viewer-media img");
-  if (!photo) return;
-  photo.addEventListener("load", layoutPhotoViewerImage, { once: true });
-  if (photo.complete) layoutPhotoViewerImage();
+function schedulePhotoViewerFrame(layout = false) {
+  photoViewerLayoutPending ||= layout;
+  if (photoViewerFrame !== null) return;
+  photoViewerFrame = window.requestAnimationFrame(() => {
+    photoViewerFrame = null;
+    if (!document.querySelector("#photo-viewer")?.open) return;
+    const needsLayout = photoViewerLayoutPending;
+    photoViewerLayoutPending = false;
+    if (needsLayout) layoutPhotoViewerImage();
+    else applyPhotoViewerTransform();
+  });
 }
 
 function layoutPhotoViewerImage() {
@@ -5533,6 +5635,7 @@ function finishPhotoViewerDrag(renderPending = true) {
   } catch {
     // The browser may release capture before pointercancel reaches the delegated handler.
   }
+  if (renderPending) schedulePhotoViewerFrame();
   if (renderPending && shouldRender) renderPhotoViewer();
 }
 
@@ -5579,7 +5682,7 @@ function handlePhotoViewerFullscreenChange() {
   }
   updatePhotoViewerFullscreenControl();
   state.photoViewerNeedsBaseZoom = true;
-  window.requestAnimationFrame(layoutPhotoViewerImage);
+  schedulePhotoViewerFrame(true);
 }
 
 function updatePhotoViewerFullscreenControl() {
@@ -5595,7 +5698,7 @@ function updatePhotoViewerFavoriteControl() {
   if (!dialog?.open || !state.photoViewerGenerationId) return;
   const button = dialog.querySelector(".photo-viewer-toolbar [data-action=toggle-favorite]");
   if (!button) return;
-  const generation = photoViewerGeneration(state.photoViewerGenerationId);
+  const generation = photoViewerGeneration(photoViewerDisplayed?.id || state.photoViewerGenerationId);
   const active = Boolean(generation?.is_favorite);
   const label = active ? "Remove from Favorites" : "Add to Favorites";
   button.setAttribute("aria-pressed", String(active));
@@ -5641,7 +5744,7 @@ function handlePhotoViewerResize() {
   const dialog = document.querySelector("#photo-viewer");
   if (!dialog?.open) return;
   state.photoViewerNeedsBaseZoom = true;
-  window.requestAnimationFrame(layoutPhotoViewerImage);
+  schedulePhotoViewerFrame(true);
 }
 
 function notePhotoViewerActivity() {
@@ -5659,11 +5762,28 @@ function closePhotoViewer() {
   const dialog = document.querySelector("#photo-viewer");
   const shouldExitFullscreen = state.photoViewerFullscreenOwned && Boolean(document.fullscreenElement);
   if (dialog?.open) dialog.close();
-  else resetPhotoViewerState();
+  resetPhotoViewerState();
   if (shouldExitFullscreen) document.exitFullscreen().catch(() => {});
 }
 
 function resetPhotoViewerState() {
+  photoViewerNavigationRevision++;
+  photoViewerLoadRevision++;
+  photoViewerPreloader.dispose();
+  photoViewerImages?.dispose();
+  photoViewerImages = null;
+  photoViewerImage = null;
+  photoViewerDisplayed = null;
+  photoViewerLoadKey = null;
+  photoViewerLoading = false;
+  photoViewerPaging = false;
+  photoViewerLoadError = null;
+  photoViewerRetryDirection = null;
+  photoViewerDirection = "older";
+  window.cancelAnimationFrame(photoViewerFrame);
+  photoViewerFrame = null;
+  photoViewerLayoutPending = false;
+  document.querySelector("#photo-viewer .photo-viewer-host")?.replaceChildren();
   state.photoViewerDetachedGeneration = null;
   if (state.photoViewerTimer) window.clearTimeout(state.photoViewerTimer);
   state.photoViewerTimer = null;
@@ -5736,7 +5856,7 @@ function removeGeneration(id) {
   pendingGenerationIds.delete(id);
   scheduleActivityRefresh();
   generationRefreshGate.invalidate(id);
-  const closesPhotoViewer = state.photoViewerGenerationId === id;
+  const closesPhotoViewer = state.photoViewerGenerationId === id || photoViewerDisplayed?.id === id;
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
   document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)?.remove();
@@ -5748,7 +5868,7 @@ function removeGeneration(id) {
 
 function removeGalleryGeneration(id) {
   generationRefreshGate.invalidate(id);
-  const closesPhotoViewer = state.photoViewerGenerationId === id;
+  const closesPhotoViewer = state.photoViewerGenerationId === id || photoViewerDisplayed?.id === id;
   if (closesPhotoViewer) closePhotoViewer();
   state.generations = state.generations.filter((item) => item.id !== id);
   document.querySelector(`#gallery [data-generation-id="${CSS.escape(id)}"]`)?.remove();

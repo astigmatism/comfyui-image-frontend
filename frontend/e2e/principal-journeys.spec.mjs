@@ -91,6 +91,9 @@ async function clickGalleryControl(control) {
     const box = await control.boundingBox();
     await control.page().mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await expect(card.locator('[role="group"]')).toHaveCSS("opacity", "1", { timeout: 2000 });
+    // A final actionability scroll can hide hover controls again on tall cards.
+    // Retry preparation if that happens, without repeating the real action.
+    await control.click({ trial: true, timeout: 1500 });
   }).toPass({ timeout: 10000 });
   await control.click();
 }
@@ -547,10 +550,17 @@ test("Favorites filter follows the view sentinel and ignores stale cursor pages"
   await page.locator("#gallery-scale").fill("100");
   await page.locator("#gallery-sentinel").scrollIntoViewIfNeeded();
   await nextRequested;
+  // Leaving the folder may abort the read before it can emit a response.
+  const settled = new Promise((resolve) => {
+    const finish = (request) => {
+      if (!request.url().includes("cursor=filter-next")) return;
+      page.off("requestfinished", finish); page.off("requestfailed", finish); resolve();
+    };
+    page.on("requestfinished", finish); page.on("requestfailed", finish);
+  });
   await page.evaluate((id) => { window.location.hash = `#/c/${id}`; }, folderId);
-  const fulfilled = page.waitForResponse((response) => response.url().includes("cursor=filter-next"));
   releaseNextPage();
-  await fulfilled;
+  await settled;
   // The held page (which contains a favorite) must not have leaked into the empty folder:
   // filter on + no favorites shows the favorites empty state, not the collection one.
   await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
@@ -821,6 +831,7 @@ test("runtime selector is a borderless single-line two-instance control", async 
     "generate-row",
     "prompt-pipeline-flow",
     "auto-generation",
+    "automation-status-host",
     "comfyui-instance-field",
   ]);
   const generateRowOrder = await page.locator(".generate-row").evaluate((element) =>
@@ -1139,6 +1150,7 @@ test("photo viewer delete asks for confirmation and removes the generation", asy
 });
 
 test("image card toolbar delete confirms and removes the generation", async ({ page }) => {
+  test.setTimeout(60_000); // Includes login, catalog loading and a real fixture generation.
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Generic Landscape");
@@ -1440,18 +1452,19 @@ test("initial gallery snapshot commits before buffered live updates", async ({ p
   );
   let producer = null;
   try {
-    await page.goto("/");
-    await signInAdminWithCurrentFixturePassword(page);
-    await Promise.all([snapshotCaptured, eventsConnected]);
-    await expect(page.getByRole("heading", { name: "Loading gallery…" })).toBeVisible();
-
+    // Prepare the producer before holding the reader's 15-second gallery request.
+    // Catalog loading in a second tab must not consume that response deadline.
     producer = await context.newPage();
     await producer.goto("/");
+    await signInAdminWithCurrentFixturePassword(producer);
     await selectPublishedSource(producer, "Generic Landscape");
     await producer
       .getByRole("textbox", { name: "Prompt", exact: true })
       .fill("buffered live update after gallery snapshot");
     await expect(producer.getByRole("button", { name: "Generate" })).toBeEnabled();
+    await page.goto("/");
+    await Promise.all([snapshotCaptured, eventsConnected]);
+    await expect(page.getByRole("heading", { name: "Loading gallery…" })).toBeVisible();
     const accepted = await generateAndExpectAccepted(producer);
     const generation = await accepted.json();
 
@@ -1509,17 +1522,18 @@ test("failed initial gallery snapshot preserves buffered live generations", asyn
   );
   let producer = null;
   try {
-    await page.goto("/");
-    await signInAdminWithCurrentFixturePassword(page);
-    await Promise.all([galleryRequested, eventsConnected]);
-
+    // Keep unrelated producer setup outside the reader's response deadline.
     producer = await context.newPage();
     await producer.goto("/");
+    await signInAdminWithCurrentFixturePassword(producer);
     await selectPublishedSource(producer, "Generic Landscape");
     await producer
       .getByRole("textbox", { name: "Prompt", exact: true })
       .fill("buffered update survives unavailable gallery snapshot");
     await expect(producer.getByRole("button", { name: "Generate" })).toBeEnabled();
+    await page.goto("/");
+    await Promise.all([galleryRequested, eventsConnected]);
+    await expect(page.getByRole("heading", { name: "Loading gallery…" })).toBeVisible();
     const accepted = await generateAndExpectAccepted(producer);
     const generation = await accepted.json();
 
@@ -2669,6 +2683,7 @@ test("backend field errors disclose Advanced controls and stale compositions do 
 });
 
 test("failed and cancelled attempts remain one-card, recallable history", async ({ page }) => {
+  test.setTimeout(60_000); // Includes login, catalog loading and a real fixture generation.
   await page.goto("/");
   await signIn(page, "artist.one", "E2EUserPermanent123!");
   await selectPublishedSource(page, "Generic Landscape");

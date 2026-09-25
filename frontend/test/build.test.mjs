@@ -45,8 +45,11 @@ test("production build emits one content-addressed frontend module graph", async
   assert.doesNotMatch(index, /(?:href|src)="\/assets\/(?:styles\.css|app\.mjs)"/u);
 
   const expectedImports = {
-    app: new Set([first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
-    thumbnails: new Set([first.assets.api]),
+    app: new Set([first.assets.photo_viewer_images, first.assets.photo_viewer_preload, first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
+    image_cleanup: new Set(),
+    photo_viewer_images: new Set([first.assets.image_cleanup]),
+    photo_viewer_preload: new Set(),
+    thumbnails: new Set([first.assets.api, first.assets.image_cleanup]),
     gallery_dom: new Set(),
     generation_submissions: new Set([first.assets.api]),
     gallery_selection: new Set([first.assets.api, first.assets.lib, first.assets.gallery_view]),
@@ -63,7 +66,7 @@ test("production build emits one content-addressed frontend module graph", async
     lora_stack: new Set(),
     render: new Set([first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view]),
   };
-  for (const name of ["auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
+  for (const name of ["image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

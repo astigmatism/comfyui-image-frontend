@@ -112,10 +112,17 @@ test("re-rendered gallery cards keep their loaded thumbnail without refetching",
   const id = result.id || result.items[0].generation.id;
   const card = page.locator(`.gallery-card[data-generation-id="${id}"]`);
   await expect(card).toHaveClass(/status-succeeded/, { timeout: 40_000 });
+  // Earlier journeys can leave the gallery at full-card scale; folders precede
+  // images, and offscreen thumbnails are intentionally released/not requested.
   const image = card.locator("img[data-thumbnail-src]");
-  await expect(image).toHaveAttribute("src", /^blob:/);
-  await expect.poll(() => image.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
-  const count = () => Object.values(thumbnailRequests).reduce((sum, total) => sum + total, 0);
+  // Late group metadata can move the card after a single scroll. Keep the
+  // target visible until the initial thumbnail has actually decoded.
+  await expect.poll(async () => {
+    await card.scrollIntoViewIfNeeded();
+    return image.evaluate((img) => img.getAttribute("src")?.startsWith("blob:") && img.complete && img.naturalWidth > 0);
+  }).toBe(true);
+  const thumbnailURL = new URL(await image.getAttribute("data-thumbnail-src"), page.url()).href;
+  const count = () => thumbnailRequests[thumbnailURL] || 0;
   const firstCount = count();
   expect(firstCount).toBeGreaterThan(0);
   // Favoriting preserves the loaded image through reconciliation, with no
