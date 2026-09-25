@@ -715,55 +715,19 @@ test("recall preserves the current thinking mode when the recall carries none", 
   assert.equal(recalled.promptAssistant.creativeDirection, "historical direction");
 });
 
-test("recall restores a configured historical ComfyUI runtime even while it is offline", () => {
-  const result = recalledComfyuiInstanceState(
-    {
-      selectedComfyuiInstanceId: "primary",
-      comfyuiInstances: [
-        { id: "primary", label: "Primary", available: true },
-        { id: "worker-2", label: "Worker 2", available: true },
-      ],
-    },
-    {
-      comfyui_instance_id: "worker-2",
-      comfyui_instance_label: "Worker 2",
-      comfyui_instance_configured: true,
+test("recall never restores a historical runtime selection", () => {
+  for (const configured of [true, false]) {
+    const current = { defaultComfyuiInstanceId: "primary" };
+    const result = recalledComfyuiInstanceState(current, {
+      comfyui_instance_id: "old-worker", comfyui_instance_configured: configured,
       comfyui_instance_available: false,
-      comfyui_instance_warning: "Worker 2 is currently unavailable.",
-    },
-  );
-
-  assert.equal(result.state.selectedComfyuiInstanceId, "worker-2");
-  assert.equal(result.state.comfyuiInstanceSelectionInitialized, true);
-  assert.equal(result.state.comfyuiInstanceError, "Worker 2 is currently unavailable.");
-  assert.equal(
-    result.state.comfyuiInstances.find((item) => item.id === "worker-2").available,
-    false,
-  );
-  assert.equal(result.notice, "Worker 2 is currently unavailable.");
-});
-
-test("recall preserves the current runtime when the historical runtime was removed", () => {
-  const current = {
-    selectedComfyuiInstanceId: "primary",
-    comfyuiInstances: [{ id: "primary", label: "Primary", available: true }],
-  };
-  const result = recalledComfyuiInstanceState(
-    current,
-    {
-      comfyui_instance_id: "retired-worker",
-      comfyui_instance_label: "Retired worker",
-      comfyui_instance_configured: false,
-      comfyui_instance_available: false,
-      comfyui_instance_warning:
-        "Retired worker is no longer configured. The current runtime selection was preserved.",
-    },
-  );
-
-  const applied = { ...current, ...result.state };
-  assert.equal(applied.selectedComfyuiInstanceId, "primary");
-  assert.match(result.state.comfyuiInstanceWarning, /current runtime selection was preserved/);
-  assert.match(result.notice, /Retired worker is no longer configured/);
+    });
+    assert.deepEqual(result.state, {});
+    assert.match(result.notice, /assigned GPU service/);
+  }
+  assert.equal(recalledComfyuiInstanceState({ defaultComfyuiInstanceId: "primary" }, {
+    comfyui_instance_id: "primary",
+  }).notice, null);
 });
 
 test("recall preserves the current source and migrates compatible historical metadata when its source is gone", () => {

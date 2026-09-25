@@ -25,7 +25,8 @@ COPY pyproject.toml README.md ./
 # working directory. Compose and docker-run environment values still take
 # precedence, so private settings and explicit instance lists remain authoritative.
 ENV CIF_COMFYUI_LABEL="Primary"
-ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="[{\"id\":\"worker-2\",\"label\":\"Secondary\",\"base_url\":\"http://192.168.1.21:8189\",\"concurrency\":1}]"
+ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="[{\"id\":\"worker-2\",\"label\":\"Secondary\",\"base_url\":\"http://192.168.1.21:8189\",\"concurrency\":1},{\"id\":\"promptgen\",\"label\":\"CPU Prompt Generator\",\"description\":\"CPU-only prompt workflow catalog and execution\",\"base_url\":\"http://comfyui-promptgen:8188\",\"ws_url\":\"ws://comfyui-promptgen:8188/ws\",\"user\":\"default\",\"concurrency\":1}]"
+ENV CIF_COMFYUI_TEXT_INSTANCE_ID="promptgen"
 COPY backend ./backend
 RUN pip install --no-cache-dir .
 COPY --from=frontend-build /build/frontend/dist ./frontend/dist

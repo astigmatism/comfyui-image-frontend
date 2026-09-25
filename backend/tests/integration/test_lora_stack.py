@@ -48,3 +48,30 @@ def test_checkpoint_batch_persists_stack_and_recalls_exactly(fake_state, setting
             assert next(item for item in recalled["input_definitions"] if item["id"] == "loras")[
                 "items"
             ] == [{"id": "a", "label": "Alpha"}, {"id": "b", "label": "Beta"}]
+
+
+def test_cached_lora_publication_can_queue_after_offline_restart(fake_state, settings_factory):
+    from tests.helpers import restore_cookie
+
+    fake_state.workflow_files = dict(
+        build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
+    )
+    settings = settings_factory()
+    with TestClient(create_app(settings)) as first:
+        _, cookie = provision_user(first, username="lora.cached")
+        payload = _moody_payload(
+            first,
+            "cached LoRA",
+            checkpoint="v4_int8",
+            loras=[{"id": "a", "strength": 1}, {"id": "b", "strength": 0}],
+        )
+    fake_state.service_available = False
+    with TestClient(create_app(settings)) as restarted:
+        restore_cookie(restarted, cookie)
+        assert not restarted.app.state.container.comfyui.cached_object_info()
+        response = restarted.post(
+            "/api/generations", headers={"X-CSRF-Token": csrf(restarted)}, json=payload
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["status"] == "queued"
+        assert not fake_state.submitted

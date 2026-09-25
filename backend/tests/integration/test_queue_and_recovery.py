@@ -378,7 +378,7 @@ def test_comfyui_outage_preserves_history_and_pauses_dispatch(settings_factory, 
     with TestClient(create_app(settings)) as first:
         _, cookie = provision_user(first, username="outage.user")
         queued = create_generation(first, "resume after outage", seed=14)
-        blocked_payload = generation_payload(first, "blocked while down", seed=15)
+        blocked_payload = generation_payload(first, "queued while down", seed=15)
 
     fake_state.service_available = False
     settings.enable_background_worker = True
@@ -392,7 +392,8 @@ def test_comfyui_outage_preserves_history_and_pauses_dispatch(settings_factory, 
             headers={"X-CSRF-Token": second.get("/api/auth/session").json()["csrf_token"]},
             json=blocked_payload,
         )
-        assert rejected.status_code == 503
+        assert rejected.status_code == 201, rejected.text
+        assert rejected.json()["status"] == "queued"
 
         fake_state.service_available = True
         completed = wait_for_status(second, queued["id"], "succeeded", timeout=10)

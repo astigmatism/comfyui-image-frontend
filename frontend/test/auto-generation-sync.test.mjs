@@ -131,3 +131,28 @@ test("an edit made while the workflow loads resumes when its controls are ready"
     assert.equal(f.auto().snapshot.max_generations, 7);
   } finally { f.controller.abort(); }
 });
+
+
+test("restored pending automation edits discard old runtime selections", async () => {
+  const f = fixture();
+  try {
+    const old = structuredClone(f.local());
+    old.quantity = 3;
+    old.generation.comfyui_instance_id = "cpu";
+    old.prompt_generation = { source_key: "text", parameters: {}, comfyui_instance_id: "gpu" };
+    f.values.set("owner", JSON.stringify({ revision: 1, snapshot: old }));
+    const restored = createAutoGenerationSync(f.options);
+    await restored.flush();
+    assert.equal(f.requests.length, 1);
+    const sent = f.requests[0].snapshot;
+    assert.equal(sent.quantity, 3);
+    assert.equal(Object.hasOwn(sent.generation, "comfyui_instance_id"), false);
+    assert.equal(Object.hasOwn(sent.prompt_generation, "comfyui_instance_id"), false);
+    restored.observe({ ...f.auto(), snapshot: { ...sent,
+      generation: { ...sent.generation, comfyui_instance_id: "gpu" },
+      prompt_generation: { ...sent.prompt_generation, comfyui_instance_id: "cpu" },
+    } });
+    await restored.flush();
+    assert.equal(f.requests.length, 1);
+  } finally { f.controller.abort(); }
+});

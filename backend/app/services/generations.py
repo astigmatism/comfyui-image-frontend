@@ -187,7 +187,12 @@ class GenerationService:
         request: GenerationCreate,
         frozen_profile: WorkflowProfile | None = None,
     ) -> tuple[Generation, GenerationEvent]:
-        instance = self._instance_for_request(session, request, require_available=True)
+        instance = self._instance_for_request(
+            session,
+            request,
+            require_available=frozen_profile is not None,
+            captured=frozen_profile is not None,
+        )
         collection = self._collection_for_owner(session, user.id, request.collection_id)
         profile = frozen_profile or self._profile_for_request(session, request)
         if publication_kind(profile.resolved_contract_json) != "image":
@@ -204,10 +209,11 @@ class GenerationService:
                 status_code=503,
             )
         try:
-            validate_lora_runtime(
-                profile.source_api_json,
-                self.comfyui_instances.get(instance.id).cached_object_info(),
-            )
+            object_info = self.comfyui_instances.get(instance.id).cached_object_info()
+            if object_info:
+                validate_lora_runtime(profile.source_api_json, object_info)
+            # After an offline restart the cached publication can still queue.
+            # The dispatcher rechecks the live LoRA inventory before submitting.
         except ValueError as exc:
             raise AppError("lora_runtime_unavailable", str(exc), status_code=422) from exc
         prompt_run = self._verify_prompt_run(session, user, request.prompt_assistant_run_id)
@@ -284,9 +290,16 @@ class GenerationService:
         request: GenerationCreate,
         *,
         require_available: bool,
+        captured: bool = False,
     ) -> ComfyUIInstanceConfig:
-        instance_id = request.comfyui_instance_id or self.comfyui_instances.default_id
-        instance = self.comfyui_instances.config(instance_id)
+        # Accepted preparations retain their recorded runtime through configuration changes.
+        instance = (
+            self.comfyui_instances.config(
+                request.comfyui_instance_id or self.comfyui_instances.default_id
+            )
+            if captured
+            else self.comfyui_instances.for_stage("image", request.comfyui_instance_id)
+        )
         if instance is None:
             raise AppError(
                 "comfyui_instance_unconfigured",
@@ -317,14 +330,13 @@ class GenerationService:
     def _profile_for_request(
         self, session: Session, request: GenerationCreate, *, require_dependencies: bool = True
     ) -> WorkflowProfile:
-        if request.source_key:
-            profile = self.registry.get_current(
-                session, request.source_key, require_dependencies=require_dependencies
-            )
-        elif request.profile_id:
-            profile = self.registry.get_current_by_profile(session, request.profile_id)
-        else:  # Pydantic rejects this; keep the service boundary defensive.
-            raise AppError("source_unavailable", "Generation source is required.", status_code=422)
+        profile = self.registry.resolve_source(
+            session,
+            source_key=request.source_key,
+            profile_id=request.profile_id,
+            output_kind="image",
+            require_dependencies=require_dependencies,
+        )
         revision = request.revision
         if revision and (
             revision.publication_id != profile.publication_id
@@ -706,6 +718,7 @@ class GenerationService:
                     WorkflowProfile.source_key,
                 ).where(
                     WorkflowProfile.workflow_id.in_(workflow_ids),
+                    WorkflowProfile.instance_id == self.comfyui_instances.default_id,
                     WorkflowProfile.is_current.is_(True),
                     WorkflowProfile.state == WorkflowState.VALID,
                 )
@@ -1265,7 +1278,7 @@ class GenerationService:
                 "comfyui_instance_available": False,
                 "comfyui_instance_warning": (
                     f"{generation.comfyui_instance_label} is no longer configured. "
-                    "The current ComfyUI selection was preserved."
+                    "New images use the server-assigned GPU service."
                 ),
             }
         health = session.get(ComfyUIInstanceHealth, instance.id)

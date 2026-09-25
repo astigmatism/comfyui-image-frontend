@@ -132,7 +132,7 @@ def test_restart_without_browser_runs_until_limit(settings_factory, fake_state):
         assert len(jobs(second)) == 3
 
 
-def test_frozen_revision_and_atomic_validation(app_client):
+def test_retired_revision_blocks_future_cycles(app_client):
     user, _ = provision_user(app_client)
     enable(app_client, max_generations=None)
     with app_client.app.state.container.db.session_factory() as session:
@@ -141,8 +141,8 @@ def test_frozen_revision_and_atomic_validation(app_client):
         profile.is_current = False
         session.commit()
     tick(app_client, user["id"])
-    assert len(jobs(app_client)) == 1
-    assert jobs(app_client)[0].final_prompt == "lighthouse"
+    assert jobs(app_client) == []
+    assert app_client.get("/api/auto-generation").json()["status"] == "blocked"
 
 
 def test_settings_revision_import_and_owner_isolation(app_client):

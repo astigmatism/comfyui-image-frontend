@@ -13,6 +13,11 @@ from tests.helpers import generation_payload, provision_user
 from tests.publication_fixtures import build_publication_bundle
 
 
+@pytest.fixture
+def app_client(prompt_client):
+    return prompt_client
+
+
 def register(client, fake_state):
     bundle = build_publication_bundle("text")
     fake_state.workflow_files.update(bundle.files)
@@ -255,7 +260,7 @@ def test_automation_shares_one_prompt_and_stops_at_limit(app_client, fake_state)
     enabled = enable(app_client, prompt_generation=prompt, quantity=3, max_generations=2)
     assert enabled["snapshot"]["prompt_generation"] == {
         **prompt,
-        "comfyui_instance_id": "test-instance",
+        "comfyui_instance_id": "promptgen",
     }
     tick(app_client, user["id"])
     start(app_client)
@@ -380,47 +385,43 @@ def test_stop_keeps_an_accepted_image_and_apply_invalidates_pending_work(app_cli
         )
 
 
-def test_text_and_image_jobs_share_capacity_and_manual_priority(
-    app_client, fake_state, monkeypatch
-):
+def test_text_jobs_serialize_within_the_cpu_assignment(app_client, fake_state, monkeypatch):
     import asyncio
 
-    from tests.helpers import create_generation
-    from tests.integration.test_auto_generation import enable, tick
-
-    user, _ = provision_user(app_client)
-    prompt = register(app_client, fake_state)
-    image = create_generation(app_client, "manual image")
-    enable(app_client, prompt_generation=prompt)
-    tick(app_client, user["id"])
+    provision_user(app_client)
+    payload = register(app_client, fake_state)
+    first = post(app_client, "/api/prompt-generations", payload).json()
+    second = post(app_client, "/api/prompt-generations", payload).json()
     worker = app_client.app.state.container.worker
-    assert worker._claim_next()[0] == image["id"]
-    from tests.integration.test_auto_generation import complete
+    claim = worker._claim_next("promptgen")
+    assert claim[0] == "text:" + first["id"]
 
-    complete(app_client)
-    tick(app_client, user["id"])
-    claim = worker._claim_next()
-    assert claim[0].startswith("text:")
-
-    async def capacity():
-        instance = worker.comfyui_instances.default_id
+    async def occupied():
         task = asyncio.create_task(asyncio.sleep(60))
         worker._active[claim[0]] = task
-        worker._active_instance_ids[claim[0]] = instance
+        worker._active_instance_ids[claim[0]] = "promptgen"
+        original = worker._claim_next
 
-        def unexpected_claim(*args):
-            raise AssertionError("Text job must occupy the shared capacity")
+        def checked(instance_id=None):
+            assert instance_id != "promptgen", "CPU capacity must remain occupied"
+            return original(instance_id)
 
-        monkeypatch.setattr(worker, "_claim_next", unexpected_claim)
-        try:
-            await worker._dispatch_iteration()
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            worker._active.pop(claim[0])
-            worker._active_instance_ids.pop(claim[0])
+        with monkeypatch.context() as patch:
+            patch.setattr(worker, "_claim_next", checked)
+            try:
+                await worker._dispatch_iteration()
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                worker._active.pop(claim[0])
+                worker._active_instance_ids.pop(claim[0])
 
-    app_client.portal.call(capacity)
+    app_client.portal.call(occupied)
+    with app_client.app.state.container.db.session_factory() as session:
+        run = session.get(PromptGenerationRun, first["id"])
+        run.status = "succeeded"
+        session.commit()
+    assert worker._claim_next("promptgen")[0] == "text:" + second["id"]
 
 
 def test_known_text_result_recovers_without_a_second_submission(app_client, fake_state):

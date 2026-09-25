@@ -2,7 +2,7 @@
 
 Prompt Generation is an optional preparation stage. It starts off for accounts without a saved preference. Its source selector lists text publications from the existing workflow registry, even when only one exists. Subject entry is manual and independent of LoRAs.
 
-The control panel uses independent switches and expansion buttons for Auto-generation, Prompt Generation, and Creative Direction. Enabling Prompt Generation or Creative Direction expands its section; Auto-generation preserves its expansion state. The caption beneath Generate reflects the enabled stages. During auto-generation, active stages use blue, underlined text and accessible status labels; overlapping image and Creative Direction work can highlight both stages. Stopped, blocked, retrying, completed, or disconnected automation has no active highlight. The existing Generate button, quantity selector, model controls, and image runtime remain in place.
+The control panel uses independent switches and expansion buttons for Auto-generation, Prompt Generation, and Creative Direction. Enabling Prompt Generation or Creative Direction expands its section; Auto-generation preserves its expansion state. The caption beneath Generate reflects the enabled stages. During auto-generation, active stages use blue, underlined text and accessible status labels; overlapping image and Creative Direction work can highlight both stages. Stopped, blocked, retrying, completed, or disconnected automation has no active highlight. The existing Generate button, quantity selector and model controls remain in place. Both runtime selectors are removed; server configuration assigns the GPU and CPU services.
 
 - **Generate prompt** executes only the selected text publication and places the result in the prompt editor.
 - The button animates while submitting, waiting for ComfyUI capacity, generating, or reconnecting. Prompt-only requests can queue while images run, including during auto-generation; routine progress and completion do not add helper rows.
@@ -21,7 +21,7 @@ The control panel uses independent switches and expansion buttons for Auto-gener
 
 `cif.control-panel.v1.<user-id>` stores a versioned local snapshot, last synchronized base, server revision, and unresolved conflict. Writes happen on input; only server synchronization is debounced. The origin and authenticated user isolate the journal. Existing local controls are imported into the shared settings format.
 
-Settings include source-specific parameters and interfaces, prompt text, model selection, quantity, image runtime, seed, resolution, LoRAs, Creative Direction, enabled stages, expansion states, and the draft limit. `cif.panel-draft.<user-id>` retains editor draft protection. `cif.auto-settings.v1.<user-id>` retains unacknowledged automatic settings changes. The server remains authoritative for running automation.
+Settings include source-specific parameters and interfaces, prompt text, model selection, quantity, seed, resolution, LoRAs, Creative Direction, enabled stages, expansion states, and the draft limit. `cif.panel-draft.<user-id>` retains editor draft protection. `cif.auto-settings.v1.<user-id>` retains unacknowledged automatic settings changes. The server remains authoritative for running automation.
 
 Restore the journal first. Load current interfaces before comparing local/base/remote values and reconcile all three with the existing interface migration helpers. This avoids treating newly published defaults as edits. LoRA order and strengths survive for retained items, retired items disappear, and new items use published defaults. Historical generation snapshots remain unchanged. The existing conflict controls resolve genuine cross-device conflicts explicitly. Unavailable sources and storage errors are visible; saved selections are not replaced silently. Uploaded asset references retain the existing ownership validation.
 
@@ -54,7 +54,7 @@ All mutation endpoints require authentication, CSRF, generation protocol `3`, an
 | `POST /api/generation-preparations` | Accept an expanded `items` list; each item has an image `generation`, `prompt_generation`, and optional Refine `assistant`. All items must request the same prompt and refinement — the group produces one text run shared by every item. Return a durable group with HTTP 202. |
 | `GET /api/generation-preparations/{id}` | Read each item's stage, raw/final text, linked text run and image, and any error. |
 
-`PromptGenerationRun` freezes the text graph, parameters, publication revision, registered ComfyUI instance, and resolved seeds. `GenerationPreparation` freezes each image request and optional assistant inputs, then links the completed stages and accepted image. Text execution uses its publication's registered instance independently of the selected image runtime.
+`PromptGenerationRun` freezes the text graph, parameters, publication revision, registered ComfyUI instance, and resolved seeds. `GenerationPreparation` freezes each image request and optional assistant inputs, then links the completed stages and accepted image. Text and image execution use their independently assigned server runtimes and authoritative catalogs. Retired runtime preferences are discarded without losing workflow controls.
 
 Text and image work use the same scheduler, per-instance capacity, account fairness, and priority for manual work already accepted before automation was enabled. A finished text job releases its slot before downstream image work. Pending preparations contribute to activity and automatic limits. The image acceptance transaction is the existing generation service transaction; failures never fall back to an older prompt.
 
@@ -67,13 +67,15 @@ Migration `b73a94f1c205`, following `a12c39e781b4`, adds the text-run and prepar
 Deploy through Samus's supported `update_production --sha <full-reviewed-main-sha> --wait` entrypoint. Application releases do not replace the pinned runner. Verify the completed release job, application SHA/image, health, HTTPS, and fingerprinted frontend assets. Live feature acceptance is a separate verification.
 
 
-## Independent text and image runtimes
+## Fixed text and image services
 
-Set `CIF_COMFYUI_TEXT_INSTANCE_ID` to a configured instance to choose the text
-runtime independently of the default image runtime. Each prompt request accepts
-an optional `comfyui_instance_id`; the browser's Prompt runtime selector persists
-this choice separately from image settings. Text responses report the effective
-instance. Prepared batches and automatic snapshots pin both stages separately.
-The selected text runtime must serve the exact requested publication revision;
-missing or mismatched copies require a bundle copy and catalog refresh.
+`CIF_COMFYUI_TEXT_INSTANCE_ID` assigns the CPU prompt catalog and execution service.
+`CIF_COMFYUI_DEFAULT_INSTANCE_ID` assigns the GPU image catalog and execution service.
+The assignments must be distinct. There are no runtime selectors or request overrides.
+An unset text assignment disables prompt generation; it never falls back to the GPU.
+
+New requests omit runtime IDs. Existing clients may supply the assigned ID for
+compatibility, but a conflicting ID is rejected. Responses and accepted preparations
+record both assignments. Future automatic cycles normalize old selections to server
+configuration; accepted work retains its recorded runtime. Revision checks still apply.
 See [CPU deployment and copy checks](comfyui-promptgen.md).

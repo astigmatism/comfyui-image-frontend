@@ -80,10 +80,117 @@ class WorkflowRegistry:
         return health
 
     def instance_rank(self, instance_id: str, kind: str) -> tuple[bool, int]:
-        preferred = (
-            (self.text_instance_id or self.default_id) if kind == "text" else self.default_id
-        )
+        preferred = self.assigned_instance_id(kind)
         return (instance_id != preferred, self.configured_ids.index(instance_id))
+
+    def assigned_instance_id(self, kind: str) -> str | None:
+        return self.text_instance_id if kind == "text" else self.default_id
+
+    def resolve_source(
+        self,
+        session: Session,
+        *,
+        source_key: str | None = None,
+        profile_id: str | None = None,
+        output_kind: str | None = None,
+        require_dependencies: bool = True,
+    ) -> WorkflowProfile:
+        """Use aliases only for identity, never for controls, health or execution."""
+        identity = session.scalar(
+            select(WorkflowProfile)
+            .where(
+                WorkflowProfile.source_key == source_key
+                if source_key
+                else WorkflowProfile.id == profile_id
+            )
+            .order_by(WorkflowProfile.is_current.desc(), WorkflowProfile.last_seen_at.desc())
+            .limit(1)
+        )
+        if identity is None:
+            # A saved source key may arrive before this database has discovered
+            # its identity. Missing rows are not conclusive during discovery.
+            kinds = [output_kind] if output_kind else ["image", "text"]
+            for candidate_kind in kinds:
+                candidate_id = self.assigned_instance_id(candidate_kind)
+                if candidate_id is not None:
+                    self._require_discovered_catalog(session, candidate_id)
+            raise AppError(
+                "source_unavailable",
+                "Generation source is not currently available.",
+                status_code=409,
+            )
+        kind = publication_kind(identity.resolved_contract_json)
+        if output_kind is not None and kind != output_kind:
+            raise AppError(
+                "source_kind_invalid", f"Choose a {output_kind} generation source.", status_code=422
+            )
+        instance_id = self.assigned_instance_id(kind)
+        if instance_id is None:
+            raise AppError(
+                "prompt_runtime_not_configured",
+                "Prompt generation is not configured in the server environment.",
+                status_code=503,
+            )
+        if instance_id not in self.configured_ids:
+            raise AppError(
+                "comfyui_instance_unconfigured",
+                "The assigned service is no longer configured.",
+                status_code=503,
+            )
+        target_key = source_key_for(instance_id, str(identity.source_id))
+        profile = session.scalar(
+            select(WorkflowProfile).where(
+                WorkflowProfile.source_key == target_key,
+                WorkflowProfile.instance_id == instance_id,
+                WorkflowProfile.is_current.is_(True),
+                WorkflowProfile.state == WorkflowState.VALID,
+            )
+        )
+        if profile is None:
+            rejected = next(
+                (
+                    entry
+                    for entry in self.unavailable_catalog_entries(session)
+                    if entry.get("source_key") == target_key
+                ),
+                None,
+            )
+            if rejected:
+                raise AppError(
+                    "source_dependency_missing",
+                    str(rejected.get("message") or PUBLIC_DEPENDENCY_MESSAGE),
+                    status_code=409,
+                )
+            self._require_discovered_catalog(session, instance_id)
+            raise AppError(
+                "text_publication_missing" if kind == "text" else "source_unavailable",
+                "Publication missing from the assigned service. Publish it there and refresh.",
+                status_code=409,
+            )
+        if publication_kind(profile.resolved_contract_json) != kind:
+            raise AppError(
+                "source_kind_invalid",
+                "The assigned publication has a different output kind.",
+                status_code=409,
+            )
+        if require_dependencies and target_key in self.dependency_unavailable_source_keys(session):
+            raise AppError("source_dependency_missing", PUBLIC_DEPENDENCY_MESSAGE, status_code=409)
+        return profile
+
+    def _require_discovered_catalog(self, session: Session, instance_id: str) -> None:
+        health = self.catalog_health(session, instance_id)
+        if health is None or health.capabilities_json.get("catalog_state") == "loading":
+            raise AppError(
+                "source_catalog_loading",
+                "The assigned service's workflow catalog is still loading.",
+                status_code=503,
+            )
+        if not health.available:
+            raise AppError(
+                "comfyui_instance_unavailable",
+                "The assigned catalog is offline; its publication could not be verified.",
+                status_code=503,
+            )
 
     def mark_startup_loading(self) -> None:
         """Make cached sources visible while each instance discovers its catalog."""
@@ -601,6 +708,8 @@ class WorkflowRegistry:
         groups: dict[tuple[str | None, str], WorkflowProfile] = {}
         for profile in self.current_replicas(session):
             kind = publication_kind(profile.resolved_contract_json)
+            if profile.instance_id != self.assigned_instance_id(kind):
+                continue
             key = (profile.source_id or profile.source_key, kind)
             previous = groups.get(key)
             if previous is None or self.instance_rank(
@@ -703,7 +812,7 @@ class WorkflowRegistry:
                 WorkflowProfile.api_graph_sha256 == api_hash,
                 WorkflowProfile.contract_sha256 == contract_hash,
                 WorkflowProfile.is_current.is_(True),
-                WorkflowProfile.instance_id.in_(self.configured_ids),
+                WorkflowProfile.instance_id == self.default_id,
                 WorkflowProfile.state == WorkflowState.VALID,
             )
         )

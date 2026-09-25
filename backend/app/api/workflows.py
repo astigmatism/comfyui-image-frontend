@@ -96,11 +96,11 @@ def _catalog_groups(
             (str(raw.get("logical_key") or source_key), summary.output_kind), []
         ).append(summary)
     accepted_keys = {item.source_key for item in result}
-    for items in groups.values():
+    for key, items in list(groups.items()):
         items.sort(
             key=lambda item: (
-                item.source_key not in accepted_keys,
                 registry.instance_rank(item.instance_id, item.output_kind),
+                item.source_key not in accepted_keys,
             )
         )
         replicas = [
@@ -120,12 +120,9 @@ def _catalog_groups(
         ]
         for item in items:
             item.replicas = replicas
-            if item.output_kind == "text":
-                # Controls describe an immutable graph. A dependency failure on its
-                # catalog instance must still allow an explicit compatible text target.
-                item.available = any(
-                    replica.available and replica.revision == item.revision for replica in replicas
-                )
+        assigned = registry.assigned_instance_id(key[1])
+        if items[0].instance_id != assigned:
+            del groups[key]
     return groups
 
 
@@ -138,9 +135,7 @@ def get_workflow(
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> WorkflowDetail:
     container = get_container(request)
-    profile = container.registry.get_current(session, source_key, require_dependencies=False)
-    if publication_kind(profile.resolved_contract_json) != "text":
-        container.registry.get_current(session, source_key)
+    profile = container.registry.resolve_source(session, source_key=source_key)
     summary = _summary(
         profile, container.registry.catalog_health(session, str(profile.instance_id))
     )
@@ -152,11 +147,6 @@ def get_workflow(
         [],
     )
     summary.replicas = group[0].replicas if group else []
-    if summary.output_kind == "text":
-        summary.available = any(
-            replica.available and replica.revision == summary.revision
-            for replica in summary.replicas
-        )
     return WorkflowDetail(
         **summary.model_dump(), interface=_public_interface(profile.resolved_contract_json)
     )

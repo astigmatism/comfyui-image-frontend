@@ -91,7 +91,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - complete multiple-node/multiple-publisher history with compact final-batch retention, ordinary publisher-image mirror de-duplication, untouched unmapped outputs, optional retrieval warnings, one-best partial/failure/interruption retention, and terminal ComfyUI source cleanup/retry;
 - restart/outage recovery and cached source availability;
 - automatic full catalog refresh on offline-to-online recovery, including empty-cache startup, without continuous online refetch;
-- last-valid cached catalog dispatch through a healthy selected runtime while an unavailable runtime remains blocked;
+- last-valid cached catalogs queue only on their assigned service during outages and resume on recovery;
 - exact recall and unavailable/republished source behavior;
 - per-generation Prompt Assistant snapshots: run-derived values for linked runs, submitted drafts for manual rows, blank-instruction normalization to `null`, recall preference with the linked-run fallback (gaining the run's thinking mode) for legacy `null` rows, batch-item snapshot coverage without linked runs, and schema mode/instruction-boundary validation;
 - migration up/down/up with old rows, execution-ID/label backfill, per-instance health, and instance-queue indexes;
@@ -239,3 +239,10 @@ They verify both the installed entrypoint under the portal's mount contract and
 application startup as non-root numeric users. Live Samus installation, button
 visibility, trusted HTTPS, and the 16-LoRA generation acceptance are separate
 operator checks in [the installation guide](production-service-portal.md).
+
+Fixed-stage routing coverage verifies that both runtime selectors are absent, stale
+preferences and recalled records cannot select a runtime, and conflicting API targets
+are rejected. Catalog tests use independent GPU/CPU copies with missing dependencies,
+drift, retirement, outages and recovery. Automation tests normalize both old pins before
+new cycles while preserving accepted work and receipt replay. Browser journeys verify
+CPU prompt generation, GPU image generation, saved controls and stable synchronization.

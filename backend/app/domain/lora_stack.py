@@ -79,7 +79,7 @@ def validate_lora_runtime(api_document: Mapping[str, Any], object_info: Mapping[
     )
     if "CIFLoraStack" not in object_info or not spec or not isinstance(spec[0], list):
         raise ValueError(
-            "The selected runtime needs the Image Frontend LoRA Stack node "
+            "The assigned runtime needs the Image Frontend LoRA Stack node "
             "and native model-only loader."
         )
     installed = set(spec[0])
@@ -89,5 +89,5 @@ def validate_lora_runtime(api_document: Mapping[str, Any], object_info: Mapping[
         for item in json.loads(node["inputs"]["catalog_json"])
     ):
         raise ValueError(
-            "The selected runtime is missing files required by this workflow's LoRA catalog."
+            "The assigned runtime is missing files required by this workflow's LoRA catalog."
         )

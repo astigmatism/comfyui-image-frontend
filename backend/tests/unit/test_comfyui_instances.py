@@ -113,6 +113,12 @@ def test_standard_compose_defaults_extend_the_existing_household_primary(
             None,
             "http://192.168.1.21:8189",
         ),
+        (
+            "promptgen",
+            "CPU Prompt Generator",
+            "CPU-only prompt workflow catalog and execution",
+            "http://comfyui-promptgen:8188",
+        ),
     ]
     primary = settings.configured_comfyui_instances[0]
     assert (primary.ws_url, primary.user, primary.concurrency) == (
@@ -172,8 +178,9 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
     assert [item.id for item in settings.configured_comfyui_instances] == [
         "persisted-home",
         "worker-2",
+        "promptgen",
     ]
-    primary, worker = settings.configured_comfyui_instances
+    primary, worker, cpu = settings.configured_comfyui_instances
     assert primary.model_dump() == {
         "id": "persisted-home",
         "label": "Primary",
@@ -189,6 +196,8 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
         "http://192.168.1.21:8189",
     )
     assert worker.description is None
+    assert cpu.id == settings.comfyui_text_instance_id == "promptgen"
+    assert cpu.base_url == "http://comfyui-promptgen:8188"
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f'ENV CIF_COMFYUI_LABEL="{image_defaults["CIF_COMFYUI_LABEL"]}"' in dockerfile
     assert "CIF_COMFYUI_DESCRIPTION" not in dockerfile
@@ -230,7 +239,7 @@ def test_private_env_can_override_standard_compose_instance_defaults(
     override_file = tmp_path / "override.env"
     override_file.write_text(
         'CIF_COMFYUI_INSTANCES=[{"id":"custom","label":"Custom",'
-        '"base_url":"http://custom.test:8188"}]\n',
+        '"base_url":"http://custom.test:8188"}]\nCIF_COMFYUI_TEXT_INSTANCE_ID=\n',
         encoding="utf-8",
     )
 
@@ -335,7 +344,17 @@ async def test_instance_registry_never_falls_back_for_an_unknown_pin() -> None:
         await instances.close()
 
 
-@pytest.mark.parametrize("instance_id", ["missing", "bad/id", ""])
+@pytest.mark.parametrize("instance_id", ["missing", "bad/id"])
 def test_text_default_must_name_a_configured_instance(instance_id):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, test_mode=True, comfyui_text_instance_id=instance_id)
+
+
+def test_stage_assignments_must_be_distinct():
+    with pytest.raises(ValidationError, match="distinct"):
+        Settings(_env_file=None, test_mode=True, comfyui_text_instance_id="default")
+
+
+def test_empty_text_assignment_is_image_only():
+    settings = Settings(_env_file=None, test_mode=True, comfyui_text_instance_id="")
+    assert settings.comfyui_text_instance_id is None

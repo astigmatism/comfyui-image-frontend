@@ -24,6 +24,11 @@ from tests.integration.test_auto_generation import command, complete, enable, ti
 from tests.integration.test_prompt_generation import post, register
 
 
+@pytest.fixture
+def app_client(prompt_client):
+    return prompt_client
+
+
 def prepare(client, fake_state, **overrides):
     user, _ = provision_user(client)
     prompt = register(client, fake_state)

@@ -194,6 +194,7 @@ print('Candidate import, migrations, database, worker and assets passed as confi
             env_file.write(
                 'CIF_COMFYUI_INSTANCES=[{"id":"smoke","label":"Smoke","base_url":"http://127.0.0.1:9"}]\n'
             )
+            env_file.write("CIF_COMFYUI_TEXT_INSTANCE_ID=\n")
             env_file.flush()
             command[-1:-1] = ["--env-file", env_file.name]
             subprocess.run(command, check=True, timeout=30, stdout=log, stderr=subprocess.STDOUT)

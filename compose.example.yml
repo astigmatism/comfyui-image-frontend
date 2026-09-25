@@ -11,7 +11,7 @@ services:
       # should use the TLS edge below on ${CIF_TLS_HOST_PORT:-8443} instead.
       - "${CIF_BIND_IP:-192.168.1.5}:${CIF_HOST_PORT:-8000}:8000"
     env_file:
-      # Non-secret deployment defaults supply both household ComfyUI runtimes.
+      # Non-secret defaults retain household runtimes and add the CPU service.
       # The private .env is loaded last so an explicit operator configuration
       # wins. A missing .env is tolerated: the published defaults above carry
       # the stack until the operator supplies session and bootstrap values.
@@ -22,9 +22,12 @@ services:
       - application-data:/data
     # Allows host.docker.internal URLs to reach services running directly on
     # the Docker host. The household worker default uses its supplied LAN URL
-    # and therefore does not require an additional Docker network attachment.
+    # while the CPU prompt service uses the shared ComfyUI Docker network.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - comfyui
     # Service Portal "Update and restart" opt-in. The portal reads these live
     # labels from the running container and, after operator confirmation, runs
     # the repository's update script in a detached maintenance container from
@@ -116,3 +119,8 @@ volumes:
     # An explicit name keeps documented backup/restore commands stable even
     # when the Compose project directory is renamed.
     name: comfyui-image-frontend-data
+
+networks:
+  comfyui:
+    external: true
+    name: comfyui_default

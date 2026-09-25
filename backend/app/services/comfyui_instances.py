@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import httpx
 
@@ -43,6 +44,33 @@ class ComfyUIInstances:
 
     def config(self, instance_id: str) -> ComfyUIInstanceConfig | None:
         return self._configs.get(instance_id)
+
+    def for_stage(
+        self, kind: Literal["image", "text"], supplied_id: str | None = None
+    ) -> ComfyUIInstanceConfig:
+        """Resolve an environment assignment; old request fields are assertions only."""
+        instance_id = self.default_id if kind == "image" else self.settings.comfyui_text_instance_id
+        if instance_id is None:
+            raise AppError(
+                "prompt_runtime_not_configured",
+                "Configure the CPU prompt service in the server environment.",
+                status_code=503,
+            )
+        if supplied_id is not None and supplied_id != instance_id:
+            raise AppError(
+                "runtime_assignment_conflict",
+                "Generation services are server-assigned. Reload the app for current settings.",
+                status_code=409,
+                details={"stage": kind, "instance_id": instance_id},
+            )
+        config = self.config(instance_id)
+        if config is None:
+            raise AppError(
+                "comfyui_instance_unconfigured",
+                "The assigned service is not configured.",
+                status_code=503,
+            )
+        return config
 
     def get(self, instance_id: str) -> ComfyUIAdapter:
         adapter = self._adapters.get(instance_id)

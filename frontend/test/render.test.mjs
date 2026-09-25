@@ -604,7 +604,7 @@ test("gallery and service regions render independent progressive startup states"
     selectedInstanceId: "removed-runtime",
     instances: [{ id: "primary", label: "Primary ComfyUI", available: true }],
   });
-  assert.match(removedSelectionBanner, /Choose a ComfyUI runtime/);
+  assert.match(removedSelectionBanner, /Image service is not configured/);
   assert.doesNotMatch(removedSelectionBanner, /selected runtime remains available/);
 });
 
@@ -774,7 +774,7 @@ test("focused prompt editor enables thinking by default", () => {
   assert.match(html, /id="prompt-editor-thinking-mode" type="checkbox" checked/);
 });
 
-test("generation panel places the configured ComfyUI runtime below generation controls", () => {
+test("generation panel retains workflow controls without runtime selectors", () => {
   const state = {
     submitting: false,
     services: [{ service: "comfyui", available: true }],
@@ -798,7 +798,7 @@ test("generation panel places the configured ComfyUI runtime below generation co
         base_url: "http://private-worker:8188",
       },
     ],
-    selectedComfyuiInstanceId: "primary",
+    defaultComfyuiInstanceId: "primary",
     workflows: [{ profile_id: "p1", display_name: "Portrait" }],
     activeProfileId: "p1",
     controls: { "prompt.text": "hello", "sampling.steps": 8 },
@@ -807,31 +807,8 @@ test("generation panel places the configured ComfyUI runtime below generation co
     selectedPreset: null,
   };
   const html = generationPanelMarkup(state, state.workflows[0], contract);
-  const runtimeIndex = html.indexOf('id="comfyui-instance"');
-  const generateIndex = html.indexOf('id="generate-button"');
-  const autoGenerateIndex = html.indexOf('id="auto-generate"');
-  const creativeDirectionIndex = html.indexOf('id="auto-generate-creative-direction"');
-  const sourceIndex = html.indexOf('id="workflow-source"');
-  const promptIndex = html.indexOf('data-control-block="prompt.text"');
-  assert.ok(
-    generateIndex >= 0 &&
-      generateIndex < autoGenerateIndex &&
-      autoGenerateIndex < runtimeIndex &&
-      promptIndex < creativeDirectionIndex &&
-      runtimeIndex < sourceIndex &&
-      sourceIndex < promptIndex,
-  );
-  assert.match(html, /<label for="comfyui-instance">Runtime<\/label>/);
-  assert.match(html, /value="primary" selected>Primary<\/option>/);
-  assert.match(html, /value="worker-2" >Secondary<\/option>/);
+  assert.doesNotMatch(html, /id="comfyui-instance"|id="prompt-generation-runtime"/);
   assert.doesNotMatch(html, /24 GB VRAM|10 GB VRAM/);
-  const runtimeStatus =
-    html.match(/<small id="comfyui-instance-status"[\s\S]*?<\/small>/)?.[0] || "";
-  assert.match(runtimeStatus, /class="comfyui-instance-status available"/);
-  assert.match(runtimeStatus, /title="Available"/);
-  assert.match(runtimeStatus, /tabindex="0" role="status"/);
-  assert.match(runtimeStatus, /aria-hidden="true">✅<\/span>/);
-  assert.match(runtimeStatus, /class="comfyui-instance-status-message">Available<\/span>/);
   assert.doesNotMatch(html, /private-primary|private-worker|base_url|8188/);
   assert.match(html, /id="auto-generate"[^>]*role="switch"/);
   const creativeDirectionControl =
@@ -852,72 +829,20 @@ test("generation panel places the configured ComfyUI runtime below generation co
   assert.doesNotMatch(html, /<details class="advanced-group"/);
 });
 
-test("only the selected unavailable ComfyUI runtime blocks generation", () => {
-  const instances = [
-    {
-      id: "primary",
-      label: "Primary ComfyUI",
-      description: "RTX 3090 · 24 GB VRAM",
-      is_default: true,
-      available: true,
-      message: "",
-    },
-    {
-      id: "worker-2",
-      label: "Worker 2",
-      description: "RTX 3080 · 10 GB VRAM",
-      is_default: false,
-      available: false,
-      message: "Worker 2 did not answer its health check.",
-    },
-  ];
-  const baseState = {
-    submitting: false,
-    comfyuiInstancesStatus: "ready",
-    comfyuiInstanceConfigurationMode: "explicit",
-    comfyuiInstances: instances,
-    workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
-    activeProfileId: "p1",
-    controls: { "prompt.text": "hello", "sampling.steps": 8 },
-    fieldErrors: {},
-    formError: null,
+test("cached authoritative image sources can queue while the assigned service is offline", () => {
+  const base = {
+    comfyuiInstancesStatus: "ready", defaultComfyuiInstanceId: "primary",
+    comfyuiInstances: [{ id: "primary", available: false }, { id: "promptgen", available: true }],
+    workflows: [{ profile_id: "p1", display_name: "Portrait", available: true, cached: true }],
+    activeProfileId: "p1", controls: { "prompt.text": "hello", "sampling.steps": 8 },
   };
-
-  const selectedUnavailable = generationPanelMarkup(
-    { ...baseState, selectedComfyuiInstanceId: "worker-2" },
-    baseState.workflows[0],
-    contract,
-  );
-  assert.match(selectedUnavailable, /Worker 2 · ❌/);
-  assert.match(
-    selectedUnavailable,
-    /title="Worker 2 did not answer its health check\."[^>]*role="alert"/,
-  );
-  assert.match(selectedUnavailable, /aria-hidden="true">❌<\/span>/);
-  assert.match(
-    selectedUnavailable,
-    /class="comfyui-instance-status-message">Worker 2 did not answer its health check\.<\/span>/,
-  );
-  assert.match(
-    selectedUnavailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
-    /disabled/,
-  );
-
-  const selectedAvailable = generationPanelMarkup(
-    { ...baseState, selectedComfyuiInstanceId: "primary" },
-    baseState.workflows[0],
-    contract,
-  );
-  assert.match(selectedAvailable, /aria-hidden="true">✅<\/span>/);
-  assert.match(selectedAvailable, /class="comfyui-instance-status-message">Available<\/span>/);
-  assert.doesNotMatch(selectedAvailable, /RTX 3090|24 GB VRAM/);
-  assert.doesNotMatch(
-    selectedAvailable.match(/<button id="generate-button"[^>]*>/)?.[0] || "",
-    /disabled/,
-  );
+  const html = generationPanelMarkup(base, base.workflows[0], contract);
+  assert.doesNotMatch(html.match(/<button id="generate-button"[^>]*>/)?.[0] || "", /disabled/);
+  const missing = generationPanelMarkup({ ...base, defaultComfyuiInstanceId: null }, base.workflows[0], contract);
+  assert.match(missing.match(/<button id="generate-button"[^>]*>/)?.[0] || "", /disabled/);
 });
 
-test("runtime control is hidden when at most one ComfyUI runtime is configured", () => {
+test("no runtime control appears while configuration loads or for image-only installations", () => {
   const baseState = {
     submitting: false,
     workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
@@ -931,7 +856,7 @@ test("runtime control is hidden when at most one ComfyUI runtime is configured",
       ...baseState,
       comfyuiInstancesStatus: "loading",
       comfyuiInstances: [],
-      selectedComfyuiInstanceId: null,
+      defaultComfyuiInstanceId: null,
     },
     baseState.workflows[0],
     contract,
@@ -953,7 +878,7 @@ test("runtime control is hidden when at most one ComfyUI runtime is configured",
           available: true,
         },
       ],
-      selectedComfyuiInstanceId: "default",
+      defaultComfyuiInstanceId: "default",
     },
     baseState.workflows[0],
     contract,

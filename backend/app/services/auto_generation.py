@@ -221,8 +221,11 @@ class AutoGenerationService:
                 raise AppError("direction_required", "Enter Creative Direction before enabling it.")
         captured = snapshot.model_copy(deep=True)
         captured.generation.comfyui_instance_id = runtime.id
+        captured.generation.source_key = profile.source_key
+        captured.generation.profile_id = None
         if captured.prompt_generation and text_profile:
             captured.prompt_generation.comfyui_instance_id = text_profile.instance_id
+            captured.prompt_generation.source_key = str(text_profile.source_key)
         if captured.assistant and not captured.assistant.instructions:
             captured.assistant.instructions = DEFAULT_PROMPT_INSTRUCTIONS[captured.assistant.mode]
         if captured.assistant:
@@ -449,6 +452,19 @@ class AutoGenerationService:
             await _run_blocking(self._record_error, user_id, revision, error)
             await notify_user(self.container.broker, user_id, "auto_generation.updated")
 
+    def _normalize_assignments(
+        self, session: Session, row: AutoGeneration, snapshot: AutoGenerationSnapshot
+    ) -> AutoGenerationSnapshot:
+        # These pins describe the next cycle, not a user preference. Accepted jobs
+        # and preparations already own independent immutable captured requests.
+        editable = snapshot.model_copy(deep=True)
+        editable.generation.comfyui_instance_id = None
+        if editable.prompt_generation:
+            editable.prompt_generation.comfyui_instance_id = None
+        captured, profile_id = self._capture(session, row.user_id, editable)
+        row.snapshot_json, row.profile_id = captured, profile_id
+        return AutoGenerationSnapshot.model_validate(captured)
+
     def _prepare_cycle(self, user_id: str) -> dict[str, Any] | None:
         with self.container.db.session_factory() as session:
             lock_user_state(session)
@@ -462,88 +478,96 @@ class AutoGenerationService:
                 or user.state != UserState.ACTIVE
             ):
                 return None
-            revision = row.revision
-            if row.next_retry_at and row.next_retry_at.replace(tzinfo=UTC) > datetime.now(UTC):
-                return None
-            snapshot = AutoGenerationSnapshot.model_validate(row.snapshot_json)
-            # A failed accepted cycle is observed once; never flood the gallery with failures.
-            accepted = session.scalars(
-                select(AutoGenerationCycle).where(
-                    AutoGenerationCycle.user_id == user_id,
-                    AutoGenerationCycle.state == "accepted",
-                )
-            ).all()
-            for previous in accepted:
-                if session.scalar(
-                    select(GenerationPreparation.id)
-                    .where(
-                        GenerationPreparation.auto_cycle_id == previous.id,
-                        GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
-                    )
-                    .limit(1)
-                ):
-                    continue
-                jobs = session.scalars(
-                    select(Generation).where(Generation.auto_cycle_id == previous.id)
-                ).all()
-                if any(job.status in ACTIVE_STATUSES for job in jobs):
-                    continue
-                previous.state = "completed"
-                failed = next(
-                    (
-                        job
-                        for job in jobs
-                        if job.status
-                        in {
-                            GenerationStatus.FAILED_WITH_ARTIFACTS,
-                            GenerationStatus.FAILED_WITHOUT_ARTIFACTS,
-                            GenerationStatus.INTERRUPTED,
-                        }
-                    ),
-                    None,
-                )
-                if failed and previous.revision == revision:
-                    row.status = "blocked"
-                    row.error_code = failed.error_code or "automatic_generation_failed"
-                    row.message = (
-                        failed.error_message
-                        or "An automatic generation failed. Review its result, then retry."
-                    )
-                    session.commit()
-                    return {"action": "changed", "revision": revision}
-            if snapshot.prompt_generation:
-                return self._prepare_prompt_cycle(session, row, snapshot)
-            cycle = session.scalar(
-                select(AutoGenerationCycle).where(
-                    AutoGenerationCycle.user_id == user_id,
-                    AutoGenerationCycle.revision == revision,
-                    AutoGenerationCycle.state.in_(["preparing", "ready"]),
-                )
-            )
-            if cycle is None:
-                cycle = AutoGenerationCycle(user_id=user_id, revision=revision)
-                session.add(cycle)
-                session.flush()
-            if cycle.state == "preparing":
-                if cycle.claim:
+            try:
+                revision = row.revision
+                if row.next_retry_at and row.next_retry_at.replace(tzinfo=UTC) > datetime.now(UTC):
                     return None
-                claim = str(uuid.uuid4())
-                cycle.claim = claim
-                cycle_id = cycle.id
-                row.status = "preparing"
-                latest = row.latest_prompt
+                snapshot = AutoGenerationSnapshot.model_validate(row.snapshot_json)
+                # A failed accepted cycle is observed once; never flood the gallery with failures.
+                accepted = session.scalars(
+                    select(AutoGenerationCycle).where(
+                        AutoGenerationCycle.user_id == user_id,
+                        AutoGenerationCycle.state == "accepted",
+                    )
+                ).all()
+                for previous in accepted:
+                    if session.scalar(
+                        select(GenerationPreparation.id)
+                        .where(
+                            GenerationPreparation.auto_cycle_id == previous.id,
+                            GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+                        )
+                        .limit(1)
+                    ):
+                        continue
+                    jobs = session.scalars(
+                        select(Generation).where(Generation.auto_cycle_id == previous.id)
+                    ).all()
+                    if any(job.status in ACTIVE_STATUSES for job in jobs):
+                        continue
+                    previous.state = "completed"
+                    failed = next(
+                        (
+                            job
+                            for job in jobs
+                            if job.status
+                            in {
+                                GenerationStatus.FAILED_WITH_ARTIFACTS,
+                                GenerationStatus.FAILED_WITHOUT_ARTIFACTS,
+                                GenerationStatus.INTERRUPTED,
+                            }
+                        ),
+                        None,
+                    )
+                    if failed and previous.revision == revision:
+                        row.status = "blocked"
+                        row.error_code = failed.error_code or "automatic_generation_failed"
+                        row.message = (
+                            failed.error_message
+                            or "An automatic generation failed. Review its result, then retry."
+                        )
+                        session.commit()
+                        return {"action": "changed", "revision": revision}
+                if snapshot.prompt_generation:
+                    return self._prepare_prompt_cycle(session, row, snapshot)
+                cycle = session.scalar(
+                    select(AutoGenerationCycle).where(
+                        AutoGenerationCycle.user_id == user_id,
+                        AutoGenerationCycle.revision == revision,
+                        AutoGenerationCycle.state.in_(["preparing", "ready"]),
+                    )
+                )
+                if cycle is None:
+                    snapshot = self._normalize_assignments(session, row, snapshot)
+                    cycle = AutoGenerationCycle(user_id=user_id, revision=revision)
+                    session.add(cycle)
+                    session.flush()
+                if cycle.state == "preparing":
+                    if cycle.claim:
+                        return None
+                    claim = str(uuid.uuid4())
+                    cycle.claim = claim
+                    cycle_id = cycle.id
+                    row.status = "preparing"
+                    latest = row.latest_prompt
+                    session.commit()
+                    assistant = snapshot.assistant
+                    if assistant:
+                        assistant = assistant.model_copy(
+                            update={"prompt": latest or assistant.prompt}
+                        )
+                    return {
+                        "action": "compose",
+                        "revision": revision,
+                        "cycle_id": cycle_id,
+                        "claim": claim,
+                        "assistant": assistant,
+                    }
+                return {"action": "ready", "revision": revision, "cycle_id": cycle.id}
+            except AppError as error:
+                self._set_error(row, error)
                 session.commit()
-                assistant = snapshot.assistant
-                if assistant:
-                    assistant = assistant.model_copy(update={"prompt": latest or assistant.prompt})
-                return {
-                    "action": "compose",
-                    "revision": revision,
-                    "cycle_id": cycle_id,
-                    "claim": claim,
-                    "assistant": assistant,
-                }
-            return {"action": "ready", "revision": revision, "cycle_id": cycle.id}
+                return {"action": "changed", "revision": row.revision}
 
     def _prepare_prompt_cycle(
         self, session: Session, row: AutoGeneration, snapshot: AutoGenerationSnapshot
@@ -575,16 +599,11 @@ class AutoGenerationService:
             row.enabled, row.status, row.message = False, "completed", "Generation limit reached."
             session.commit()
             return {"action": "changed", "revision": row.revision}
+        snapshot = self._normalize_assignments(session, row, snapshot)
         cycle = AutoGenerationCycle(user_id=row.user_id, revision=row.revision, state="accepted")
         session.add(cycle)
         session.flush()
         assert snapshot.prompt_generation is not None
-        if snapshot.prompt_generation.comfyui_instance_id is None:
-            text_profile, _ = self.container.prompt_generation.validate_source(
-                session, snapshot.prompt_generation
-            )
-            snapshot.prompt_generation.comfyui_instance_id = text_profile.instance_id
-            row.snapshot_json = snapshot.model_dump(mode="json")
         items = [
             GenerationPreparationItem(
                 generation=snapshot.generation.model_copy(
@@ -682,6 +701,7 @@ class AutoGenerationService:
                 row.message = "Generation limit reached."
                 session.commit()
                 return None
+            snapshot = self._normalize_assignments(session, row, snapshot)
             profile = session.get(WorkflowProfile, row.profile_id)
             if profile is None:
                 raise AppError("source_unavailable", "The captured workflow is unavailable.")
@@ -771,18 +791,22 @@ class AutoGenerationService:
                 )
                 .values(claim=None)
             )
-            retryable = not isinstance(error, AppError) or error.code in _RETRYABLE
-            row.failures += 1
-            row.status = "retrying" if retryable else "blocked"
-            row.error_code = error.code if isinstance(error, AppError) else "automation_unavailable"
-            row.message = (
-                error.message
-                if isinstance(error, AppError)
-                else "Auto generation is temporarily unavailable. Retrying."
-            )
-            row.next_retry_at = (
-                datetime.now(UTC) + timedelta(seconds=min(60, 2 ** min(row.failures - 1, 6)))
-                if retryable
-                else None
-            )
+            self._set_error(row, error)
             session.commit()
+
+    @staticmethod
+    def _set_error(row: AutoGeneration, error: Exception) -> None:
+        retryable = not isinstance(error, AppError) or error.code in _RETRYABLE
+        row.failures += 1
+        row.status = "retrying" if retryable else "blocked"
+        row.error_code = error.code if isinstance(error, AppError) else "automation_unavailable"
+        row.message = (
+            error.message
+            if isinstance(error, AppError)
+            else "Auto generation is temporarily unavailable. Retrying."
+        )
+        row.next_retry_at = (
+            datetime.now(UTC) + timedelta(seconds=min(60, 2 ** min(row.failures - 1, 6)))
+            if retryable
+            else None
+        )

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..blocking import run_blocking
 from ..domain.prompt_generation import adapt_seed, collect_text
-from ..domain.publication import publication_kind, source_key_for
+from ..domain.publication import publication_kind
 from ..errors import AppError
 from ..models import (
     AutoGeneration,
@@ -31,10 +31,8 @@ from ..models import (
     User,
     UserState,
     WorkflowProfile,
-    WorkflowState,
 )
 from ..schemas import (
-    GenerationCreate,
     GenerationPreparationCreate,
     GenerationPreparationItem,
     PromptAssistantSnapshot,
@@ -124,76 +122,22 @@ class PromptGenerationService:
     def validate_source(
         self, session: Session, payload: PromptGenerationCreate
     ) -> tuple[WorkflowProfile, Any]:
-        profile = self.container.generations._profile_for_request(
-            session, GenerationCreate(**payload.model_dump()), require_dependencies=False
+        self.container.comfyui_instances.for_stage("text", payload.comfyui_instance_id)
+        profile = self.container.registry.resolve_source(
+            session, source_key=payload.source_key, output_kind="text"
         )
-        if publication_kind(profile.resolved_contract_json) != "text":
-            raise AppError("source_kind_invalid", "Choose a text prompt source.", status_code=422)
-        instance_id = (
-            payload.comfyui_instance_id
-            or self.container.settings.comfyui_text_instance_id
-            or profile.instance_id
-            or self.container.comfyui_instances.default_id
-        )
-        self.container.comfyui_instances.get(instance_id)
-        target = session.scalar(
-            select(WorkflowProfile).where(
-                WorkflowProfile.instance_id == instance_id,
-                WorkflowProfile.source_id == profile.source_id,
-                WorkflowProfile.is_current.is_(True),
-                WorkflowProfile.state == WorkflowState.VALID,
-            )
-        )
-        if target is None:
-            target_key = source_key_for(instance_id, str(profile.source_id))
-            if any(
-                entry.get("source_key") == target_key
-                for entry in self.container.registry.unavailable_catalog_entries(session)
-            ):
-                raise AppError(
-                    "source_dependency_missing",
-                    "This prompt publication requires ComfyUI node classes that are "
-                    "unavailable on the selected runtime.",
-                    status_code=409,
-                )
-            health = self.container.registry.catalog_health(session, instance_id)
-            if health is None or health.capabilities_json.get("catalog_state") == "loading":
-                raise AppError(
-                    "source_catalog_loading",
-                    "The prompt runtime catalog is still loading.",
-                    status_code=503,
-                )
-            if not health.available:
-                raise AppError(
-                    "comfyui_instance_unavailable",
-                    "The prompt runtime catalog is offline. Its publication could not be verified.",
-                    status_code=503,
-                )
-            raise AppError(
-                "text_publication_missing",
-                (
-                    "The selected prompt runtime does not have this publication. "
-                    "Refresh its catalog after copying the bundle."
-                ),
-                status_code=409,
-            )
-        if publication_kind(target.resolved_contract_json) != "text" or any(
-            (
-                target.publication_id != payload.revision.publication_id,
-                target.ui_graph_sha256 != payload.revision.workflow_sha256,
-                target.api_graph_sha256 != payload.revision.api_sha256,
-                target.manifest_sha256 != payload.revision.manifest_sha256,
-            )
+        revision = payload.revision
+        if (
+            profile.publication_id != revision.publication_id
+            or profile.ui_graph_sha256 != revision.workflow_sha256
+            or profile.api_graph_sha256 != revision.api_sha256
+            or profile.manifest_sha256 != revision.manifest_sha256
         ):
             raise AppError(
                 "text_publication_mismatch",
-                (
-                    "The prompt runtime has a different publication revision. "
-                    "Re-copy the bundle and refresh its catalog."
-                ),
+                "The CPU prompt publication changed. Review its controls before generating.",
                 status_code=409,
             )
-        profile = self.container.registry.get_current_by_profile(session, target.id)
         compiled = self.container.compiler.compile(
             contract=profile.resolved_contract_json,
             api_document=profile.source_api_json,
@@ -217,11 +161,14 @@ class PromptGenerationService:
     ) -> PromptGenerationRun:
         profile, compiled = self.validate_source(session, payload)
         graph_hash = adapt_seed(profile, compiled, self.container.compiler)
-        captured = payload.model_copy(update={"comfyui_instance_id": profile.instance_id})
+        assert profile.instance_id is not None
+        captured = payload.model_copy(
+            update={"comfyui_instance_id": profile.instance_id, "source_key": profile.source_key}
+        )
         run = PromptGenerationRun(
             owner_id=owner_id,
             profile_id=profile.id,
-            instance_id=profile.instance_id or self.container.comfyui_instances.default_id,
+            instance_id=profile.instance_id,
             automatic=automatic,
             queue_seq=self.container.generations._next_queue_sequence(session),
             request_json=captured.model_dump(mode="json"),
@@ -255,6 +202,8 @@ class PromptGenerationService:
         )
         service._collection_for_owner(session, owner_id, captured.generation.collection_id)
         captured.generation.comfyui_instance_id = runtime.id
+        captured.generation.source_key = profile.source_key
+        captured.generation.profile_id = None
         prompt_id = next(
             i["id"]
             for i in profile.resolved_contract_json["inputs"]

@@ -32,15 +32,16 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
 
 ## ComfyUI execution instances
 
-`GET /api/comfyui-instances` requires a fully initialized authenticated session and returns the safe configured selector catalog plus cached per-instance health. It never returns `base_url`, `ws_url`, `user`, credentials, or concurrency:
+`GET /api/comfyui-instances` requires a fully initialized authenticated session and returns the read-only stage assignments and configured instances plus cached per-instance health. It never returns `base_url`, `ws_url`, `user`, credentials, or concurrency:
 
 ```json
 {
-  "default_instance_id": "default",
+  "default_instance_id": "primary",
+  "text_instance_id": "promptgen",
   "configuration_mode": "explicit",
   "items": [
     {
-      "id": "default",
+      "id": "primary",
       "label": "Primary",
       "description": null,
       "is_default": true,
@@ -49,8 +50,8 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
       "checked_at": "2026-08-06T20:00:00Z"
     },
     {
-      "id": "worker-2",
-      "label": "Secondary",
+      "id": "promptgen",
+      "label": "CPU Prompt Generator",
       "description": null,
       "is_default": false,
       "available": false,
@@ -61,7 +62,7 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
 }
 ```
 
-Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog or `CIF_COMFYUI_ADDITIONAL_INSTANCES` was supplied (including an empty deliberate opt-out), and `legacy` when the backend synthesized only the one-item **Primary** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients initialize the selector from `default_instance_id`, retain a later user choice while polling health, and disable new submission when the selected item is unavailable.
+Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog or `CIF_COMFYUI_ADDITIONAL_INSTANCES` was supplied (including an empty deliberate opt-out), and `legacy` when the backend synthesized only the one-item **Primary** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients cannot select runtimes. `default_instance_id` fixes the image service and `text_instance_id` fixes the prompt service. A null text assignment disables prompt generation. Validated cached publications may queue during an outage; accepted jobs wait for their recorded service.
 
 ## Published generation sources
 
@@ -75,7 +76,7 @@ Items follow deployment-configuration order. `configuration_mode` is `explicit` 
 
 The historical route name `workflows` is retained, but objects now represent deliberately published sources.
 
-The `instance_id` on a workflow summary identifies the default adapter that supplied the publication catalog. It is not the execution selection for a future generation. Execution is selected independently with `comfyui_instance_id` on the generation request and reported on generation summaries.
+The `instance_id` on a workflow summary identifies its authoritative catalog and execution service: the image assignment for `/api/workflows`, the prompt assignment for `/api/workflows?output_kind=text`. Other copies appear only in safe `replicas` metadata. Old source keys may resolve to the authoritative profile by logical identity; controls and submitted revisions are checked against that profile.
 
 ### Source summary
 
@@ -197,7 +198,7 @@ The selector portion of this example uses the current Moody Krea 2 public values
 }
 ```
 
-`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. A last-valid cached/offline entry remains available from its frozen graph; dispatch is then gated by the independently selected execution runtime reported by `/api/comfyui-instances`.
+`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. A last-valid cached/offline entry remains available from its frozen graph; dispatch waits for the assigned execution service reported by `/api/comfyui-instances`.
 
 Recognized v1 `generation_source` and `technical_inventory` objects are typed, additive, and returned on both summary and detail responses so clients can plan later catalog/dropdown behavior without refetching every source. Older manifests and unrecognized/malformed section schemas return `null` for that section while the raw manifest remains retained server-side. Unknown v1 values, array entries, warning strings, and extra fields are preserved. Artifact basenames, class types, and counts are descriptive only and are never accepted as request selectors. `output_reachable + compiled_orphans = compiled_api` and the accepted API count are checked diagnostically, not as queue gates.
 
@@ -286,7 +287,6 @@ Canonical request:
 ```json
 {
   "source_key": "<opaque-source-key>",
-  "comfyui_instance_id": "worker-2",
   "revision": {
     "publication_id": "<publication-id>",
     "workflow_sha256": "...",
@@ -305,7 +305,7 @@ Canonical request:
 }
 ```
 
-`comfyui_instance_id` is optional and defaults to `default_instance_id` from `GET /api/comfyui-instances`. A supplied value must name a configured instance. Validation rejects an unknown ID with `comfyui_instance_unconfigured`; durable creation also requires current availability and returns `comfyui_instance_unavailable` with HTTP 503 when that target cannot accept work. It never silently substitutes another runtime.
+New clients omit `comfyui_instance_id`. This deprecated compatibility field accepts only the assigned image ID from `GET /api/comfyui-instances`; any conflicting value is rejected with `runtime_assignment_conflict` (409). Prompt requests follow the same rule against `text_instance_id`. Missing prompt configuration returns `prompt_runtime_not_configured` (503). Unfinished discovery returns retryable `source_catalog_loading` (503); a validated cached publication can be accepted while its service is offline. Submission receipts are checked before these new-request rules, so accepted retries return their original result after configuration changes.
 
 `revision` is optional for a fresh caller but recommended for a UI selection. If the selected source was republished, a mismatch returns HTTP 409 with `source_republished`; the backend never compiles against a silently changed graph.
 
@@ -576,7 +576,7 @@ Generation detail adds:
 
 `unmapped_outputs` remains node-keyed and copies every nonpublisher node result without field or class filtering. `interface.native_outputs` never filters runtime history. Public `raw_history` removes only top-level submitted graph envelopes such as `prompt` and `extra_data`; it retains the actual node results, publisher metadata, raw status/messages/errors, and execution metadata. Top-level `artifacts` is the compact downloadable set: the latest semantic stage while active, the authored final batch after success, or one best eligible image after cancellation/failure/interruption. Pruned image references remain in declared/unmapped/raw metadata with no application artifact summary. If optional retrieval fails, its logical locator likewise remains and the response carries a warning.
 
-Recall returns `available`, an unavailable reason when relevant, and—when exact—the `source_key`, full `revision`, and effective `parameters`. It also returns `comfyui_instance_id`, the historical `comfyui_instance_label`, `comfyui_instance_configured`, `comfyui_instance_available`, and an optional `comfyui_instance_warning`. A removed or unavailable runtime is reported instead of being replaced by the default. Recall never substitutes a newer publication or submits automatically.
+Recall returns `available`, an unavailable reason when relevant, and—when exact—the `source_key`, full `revision`, and effective `parameters`. It also returns `comfyui_instance_id`, the historical `comfyui_instance_label`, `comfyui_instance_configured`, `comfyui_instance_available`, and an optional `comfyui_instance_warning`. A removed or unavailable runtime is reported instead of being replaced by the default. Recall never changes the server assignments, substitutes a newer publication, or submits automatically.
 
 ## Artifact, upload, and result access
 

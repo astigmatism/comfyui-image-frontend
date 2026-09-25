@@ -98,16 +98,19 @@ from app.config import get_settings
 settings = get_settings()
 instances = settings.configured_comfyui_instances
 assert settings.comfyui_instance_configuration_mode == "explicit"
-assert [item.id for item in instances] == ["smoke-primary", "worker-2"]
+assert [item.id for item in instances] == ["smoke-primary", "worker-2", "promptgen"]
 assert instances[0].base_url == "http://127.0.0.1:9"
 assert instances[1].label == "Secondary"
 assert instances[1].base_url == "http://192.168.1.21:8189"
+assert instances[2].base_url == "http://comfyui-promptgen:8188"
+assert settings.comfyui_text_instance_id == "promptgen"
 '
 
 # A full runtime list supplied by an operator remains authoritative over the
 # bundled additional-worker default.
 docker run --rm --network none --entrypoint python \
   -e CIF_TEST_MODE=true \
+  -e CIF_COMFYUI_TEXT_INSTANCE_ID= \
   -e 'CIF_COMFYUI_INSTANCES=[{"id":"custom","label":"Custom","base_url":"http://127.0.0.1:9"}]' \
   "$IMAGE" -c '
 from app.config import get_settings
@@ -118,6 +121,7 @@ assert [item.id for item in settings.configured_comfyui_instances] == ["custom"]
 # An explicit empty additional list is the deliberate single-runtime opt-out.
 docker run --rm --network none --entrypoint python \
   -e CIF_TEST_MODE=true \
+  -e CIF_COMFYUI_TEXT_INSTANCE_ID= \
   -e CIF_COMFYUI_INSTANCE_ID=intentional-single \
   -e 'CIF_COMFYUI_ADDITIONAL_INSTANCES=[]' \
   "$IMAGE" -c '

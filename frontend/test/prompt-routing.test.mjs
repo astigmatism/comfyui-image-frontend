@@ -21,16 +21,17 @@ const state = () => ({
   comfyuiInstances: [{ id: "primary", label: "Primary", available: true }, { id: "promptgen", label: "Prompt Generator", available: true }],
 });
 
-test("text default, explicit override, and source fallback are independent of image selection", () => {
+test("text assignment ignores stale preferences and has no fallback", () => {
   const value = state();
   assert.equal(promptRuntimeId(value), "promptgen");
   value.promptGeneration.runtime_id = "primary";
-  assert.equal(promptRuntimeId(value), "primary");
+  assert.equal(promptRuntimeId(value), "promptgen");
   value.selectedComfyuiInstanceId = "promptgen";
-  assert.equal(promptRuntimeId(value), "primary");
+  assert.equal(promptRuntimeId(value), "promptgen");
   value.promptGeneration.runtime_id = null;
   value.textComfyuiInstanceId = null;
-  assert.equal(promptRuntimeId(value), source.instance_id);
+  assert.equal(promptRuntimeId(value), null);
+  assert.match(promptRuntimeError(value), /not configured/);
 });
 
 test("saved alias values survive deduplication without merging unrelated names", () => {
@@ -42,45 +43,42 @@ test("saved alias values survive deduplication without merging unrelated names",
   assert.equal(reconcileSourceKey([source], "unrelated", saved), "unrelated");
 });
 
-test("missing, drifted, offline, and removed text targets do not fall back", () => {
+test("CPU publication health is authoritative and cached jobs may wait", () => {
   const value = state();
   assert.equal(promptRuntimeError(value), null);
   value.promptGeneration.runtime_id = "gone";
-  assert.match(promptRuntimeError(value), /configured/);
-  value.promptGeneration.runtime_id = "promptgen";
+  assert.equal(promptRuntimeError(value), null);
   value.comfyuiInstances[1].available = false;
+  assert.equal(promptRuntimeError(value), null);
+  value.promptGeneratorSource = { ...source, available: false };
   assert.match(promptRuntimeError(value), /unavailable/);
-  value.comfyuiInstances[1].available = true;
-  value.promptGeneratorSource = structuredClone(source);
-  value.promptGeneratorSource.replicas[1].revision = { ...revision, api_sha256: "drift" };
-  assert.match(promptRuntimeError(value), /different publication revision/);
-  value.promptGeneratorSource.replicas.pop();
-  assert.match(promptRuntimeError(value), /does not have/);
-  assert.equal(promptRuntimeId(value), "promptgen");
+  value.promptGeneratorSource = { ...source, instance_id: "primary" };
+  assert.match(promptRuntimeError(value), /assigned CPU/);
+  value.textComfyuiInstanceId = "removed";
+  assert.match(promptRuntimeError(value), /not configured/);
 });
 
-test("server-populated text pins reconcile but explicit runtime edits remain changes", () => {
+test("server-owned stage pins never cause automation settings updates", () => {
   const snapshot = { generation: { source_key: "image", comfyui_instance_id: "primary" }, prompt_generation: { source_key: "cpu-text", revision, parameters: {} } };
   const pinned = structuredClone(snapshot);
   pinned.prompt_generation.comfyui_instance_id = "promptgen";
   assert.equal(sameAutomationConfiguration(snapshot, pinned), true);
   snapshot.prompt_generation.comfyui_instance_id = "primary";
-  assert.equal(sameAutomationConfiguration(snapshot, pinned), false);
+  assert.equal(sameAutomationConfiguration(snapshot, pinned), true);
   snapshot.prompt_generation.comfyui_instance_id = "promptgen";
   snapshot.generation.comfyui_instance_id = "promptgen";
-  assert.equal(sameAutomationConfiguration(snapshot, pinned), false);
+  assert.equal(sameAutomationConfiguration(snapshot, pinned), true);
 });
 
-test("prompt runtime selector and automatic status show separate targets", () => {
+test("runtime selectors are absent and automatic status reports both assignments", () => {
   const value = { ...state(), parameters: {}, sources: [source], promptAssistant: {},
     activeSource: { ...source, output_kind: "image" }, activeSourceKey: "image",
     controlSectionOpen: { "prompt-generation": true }, generationQuantity: 1 };
   const markup = generationPanelMarkup(value, value.activeSource, { inputs: [
     { id: "prompt", label: "Prompt", type: "multiline_string", semantic_role: "positive_prompt", default: "" },
   ], outputs: [] });
-  assert.match(markup, /Prompt runtime/);
-  assert.match(markup, /id="prompt-generation-runtime"/);
-  assert.match(markup, /value="promptgen" selected/);
+  assert.doesNotMatch(markup, /id="prompt-generation-runtime"|id="comfyui-instance"/);
+  assert.match(markup, /id="prompt-generation-source"/);
   value.autoGenerate = true;
   value.maxAutoGenerations = 20;
   value.automation = { snapshot: { generation: { comfyui_instance_id: "primary" }, prompt_generation: { comfyui_instance_id: "promptgen" } } };

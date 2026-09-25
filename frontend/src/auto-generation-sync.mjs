@@ -1,16 +1,14 @@
 import { settingsEqual } from "./user-settings.mjs";
 
 // Compare the editable contract, excluding server-populated optional fields.
-export function automationConfiguration(snapshot, resolvedTextInstance = null) {
+export function automationConfiguration(snapshot) {
   if (!snapshot) return null;
   const generation = {};
-  for (const key of ["source_key", "revision", "parameters", "prompt_assistant", "comfyui_instance_id", "collection_id"]) {
+  for (const key of ["source_key", "revision", "parameters", "prompt_assistant", "collection_id"]) {
     generation[key] = snapshot.generation[key] ?? null;
   }
-  const prompt = snapshot.prompt_generation ? {
-    ...snapshot.prompt_generation,
-    comfyui_instance_id: snapshot.prompt_generation.comfyui_instance_id ?? resolvedTextInstance,
-  } : null;
+  const prompt = snapshot.prompt_generation ? { ...snapshot.prompt_generation } : null;
+  if (prompt) delete prompt.comfyui_instance_id;
   return { generation, variants: snapshot.variants, quantity: snapshot.quantity,
     assistant: snapshot.assistant ?? null, prompt_generation: prompt,
     max_generations: snapshot.max_generations ?? null };
@@ -18,9 +16,16 @@ export function automationConfiguration(snapshot, resolvedTextInstance = null) {
 
 export function sameAutomationConfiguration(a, b) {
   return settingsEqual(
-    automationConfiguration(a, b?.prompt_generation?.comfyui_instance_id),
-    automationConfiguration(b, a?.prompt_generation?.comfyui_instance_id),
+    automationConfiguration(a),
+    automationConfiguration(b),
   );
+}
+
+function editableSnapshot(snapshot) {
+  const copy = structuredClone(snapshot);
+  delete copy.generation.comfyui_instance_id;
+  if (copy.prompt_generation) delete copy.prompt_generation.comfyui_instance_id;
+  return copy;
 }
 
 export function createAutoGenerationSync({ api, read, current, apply, status, saving, signal, storage, storageKey, canSave = () => true, delay = 400 }) {
@@ -40,6 +45,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
   try { pending = JSON.parse(storage.getItem(storageKey) || "null"); }
   catch { status("error", "Saved automatic settings could not be read."); }
   if (pending && (!Number.isInteger(pending.revision) || !pending.snapshot?.generation)) pending = null;
+  if (pending) pending.snapshot = editableSnapshot(pending.snapshot);
 
   const clear = () => {
     clearTimeout(timer);
@@ -79,7 +85,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
       return;
     }
     if (!busy && sameAutomationConfiguration(snapshot, auto.snapshot)) { clear(); return; }
-    pending = { snapshot: structuredClone(snapshot), revision: pending?.revision ?? auto.revision };
+    pending = { snapshot: editableSnapshot(snapshot), revision: pending?.revision ?? auto.revision };
     persist();
     if (!conflict) status("pending", null);
     schedule();

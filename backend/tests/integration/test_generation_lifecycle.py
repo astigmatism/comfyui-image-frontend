@@ -879,11 +879,16 @@ def test_prompt_rejection_retains_safe_terminal_error_and_internal_node_errors(
         assert failed["prompt_id"] is None
         assert failed["artifact_count"] == 0
         assert failed["error_code"] == "comfyui_prompt_rejected"
-        assert failed["error_message"] == "ComfyUI rejected the compiled workflow request."
+        assert (
+            failed["error_message"]
+            == "ComfyUI could not start the workflow. Check its settings and required models."
+        )
         assert failed["errors"] == [
             {
                 "code": "comfyui_prompt_rejected",
-                "message": "ComfyUI rejected the compiled workflow request.",
+                "message": (
+                    "ComfyUI could not start the workflow. Check its settings and required models."
+                ),
             }
         ]
         assert failed["raw_history"] == {}

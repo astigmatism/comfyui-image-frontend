@@ -304,8 +304,12 @@ async def test_catalog_refresh_failure_does_not_mark_a_healthy_runtime_unavailab
             return True, None
 
     class FailedRegistry:
-        async def refresh(self):
-            raise RuntimeError("sanitized catalog refresh failure")
+        async def refresh(self, instance_id):
+            assert instance_id == "primary"
+            # The registry absorbs discovery failures and persists catalog health
+            # independently; the worker must retain the successful execution probe.
+            self.available = False
+            worker._stop.set()
 
     def persist_service(service: str, available: bool, message: str | None) -> None:
         persisted_services.append((service, available, message))
@@ -327,17 +331,15 @@ async def test_catalog_refresh_failure_does_not_mark_a_healthy_runtime_unavailab
             (instance_id, available, message)
         ),
     )
-    monkeypatch.setattr(worker, "_comfy_recovery_state", lambda _available: (False, True))
+    monkeypatch.setattr(
+        worker, "_comfy_recovery_state", lambda _available, _instance_id: (False, True)
+    )
 
     await asyncio.wait_for(worker._health_loop(), timeout=1)
 
     assert persisted_instances == [("primary", True, None)]
-    assert persisted_services[0] == ("ollama", True, None)
-    assert persisted_services[1] == (
-        "comfyui",
-        False,
-        "ComfyUI source discovery failed during recovery.",
-    )
+    assert persisted_services == [("ollama", True, None)]
+    assert worker.generations.registry.available is False
 
 
 def test_transient_claim_failure_is_logged_and_later_generations_succeed(

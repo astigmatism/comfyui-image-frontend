@@ -808,90 +808,16 @@ test("collections route generation, preview preference, move, and recursive dele
   );
 });
 
-test("runtime selector is a borderless single-line two-instance control", async ({ page }) => {
+test("image generation uses the server assignment without a runtime selector", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
-
-  const row = page.locator(".comfyui-instance-field");
-  const selector = page.getByLabel("Runtime", { exact: true });
-  await expect(row).toBeVisible();
-  const actionOrder = await page.locator(".generation-actions").evaluate((element) =>
-    Array.from(element.children).map((child) =>
-      child.id || child.dataset.controlSection ||
-      (child.classList.contains("generate-row")
-        ? "generate-row"
-        : child.classList.contains("auto-generation-options")
-          ? "auto-generation-options"
-          : child.classList.contains("comfyui-instance-field")
-            ? "comfyui-instance-field"
-            : "unknown"),
-    ),
-  );
-  expect(actionOrder).toEqual([
-    "generate-row",
-    "prompt-pipeline-flow",
-    "auto-generation",
-    "automation-status-host",
-    "comfyui-instance-field",
-  ]);
-  const generateRowOrder = await page.locator(".generate-row").evaluate((element) =>
-    Array.from(element.children).map((child) =>
-      child.id ||
-      (child.classList.contains("generation-quantity") ? "generation-quantity" : "unknown"),
-    ),
-  );
-  expect(generateRowOrder).toEqual(["generate-button", "generation-quantity"]);
-  await expect(selector).toHaveValue("default");
-  await expect(selector.locator("option")).toHaveText(["Primary", "Secondary"]);
-  const status = row.locator("#comfyui-instance-status");
-  await expect(row.locator(".comfyui-instance-status-icon")).toHaveText("✅");
-  await expect(status).toHaveAttribute("title", "Available");
-  await expect(status.locator(".comfyui-instance-status-message")).toHaveText("Available");
-  await status.focus();
-  await expect(status.locator(".comfyui-instance-status-message")).toBeVisible();
-
-  const presentation = await row.evaluate((element) => {
-    const [label, select, status] = element.children;
-    const centers = [label, select, status].map((child) => {
-      const rect = child.getBoundingClientRect();
-      return rect.top + rect.height / 2;
-    });
-    const style = getComputedStyle(element);
-    return {
-      backgroundImage: style.backgroundImage,
-      borderWidths: [
-        style.borderTopWidth,
-        style.borderRightWidth,
-        style.borderBottomWidth,
-        style.borderLeftWidth,
-      ],
-      centerSpread: Math.max(...centers) - Math.min(...centers),
-    };
-  });
-  expect(presentation.backgroundImage).toBe("none");
-  expect(presentation.borderWidths).toEqual(["0px", "0px", "0px", "0px"]);
-  expect(presentation.centerSpread).toBeLessThan(1);
-
-  await selector.selectOption("worker-2");
-  await expect(selector).toHaveValue("worker-2");
-  await expect(status).toHaveAttribute("title", "Available");
-  await page
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("worker runtime routing check");
-  const acceptedResponse = await generateAndExpectAccepted(page);
-  const accepted = await acceptedResponse.json();
-  expect(accepted.comfyui_instance_id).toBe("worker-2");
-  expect(accepted.comfyui_instance_label).toBe("Secondary");
-  await expect.poll(async () => {
-    const detail = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
-    return detail.status;
-  }).toBe("succeeded");
-  const completed = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
-  expect(completed.comfyui_instance_id).toBe("worker-2");
-  expect(completed.comfyui_instance_label).toBe("Secondary");
-  await expect(
-    page.locator(`.gallery-card[data-generation-id="${accepted.id}"] .card-details-button`),
-  ).toHaveAttribute("aria-label", "Generation details");
+  await expect(page.locator("#comfyui-instance, #prompt-generation-runtime")).toHaveCount(0);
+  await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("fixed GPU routing check");
+  const response = await generateAndExpectAccepted(page);
+  expect(response.request().postDataJSON()).not.toHaveProperty("comfyui_instance_id");
+  const accepted = await response.json();
+  expect(accepted.comfyui_instance_id).toBe("default");
+  await expect.poll(async () => (await (await page.request.get(`/api/generations/${accepted.id}`)).json()).status).toBe("succeeded");
 });
 
 test("photo viewer slideshow waits for a generation's final completed image", async ({

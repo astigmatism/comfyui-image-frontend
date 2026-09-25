@@ -88,6 +88,25 @@ def app_client(
         yield client
 
 
+@pytest.fixture
+def prompt_client(settings_factory, fake_services, fake_state):
+    """Two configured roles sharing a fake transport; concurrency tests use separate servers."""
+    settings = settings_factory(
+        comfyui_additional_instances=[
+            {
+                "id": "promptgen",
+                "label": "CPU Prompt Service",
+                "base_url": fake_services.base_url,
+                "ws_url": fake_services.ws_url,
+                "user": "fixture-user",
+            }
+        ],
+        comfyui_text_instance_id="promptgen",
+    )
+    with TestClient(create_app(settings)) as client:
+        yield client
+
+
 def auth_session(client: TestClient) -> dict[str, object]:
     response = client.get("/api/auth/session")
     assert response.status_code == 200, response.text

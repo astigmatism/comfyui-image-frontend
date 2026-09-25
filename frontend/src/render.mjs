@@ -1,4 +1,4 @@
-import { promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
+import { promptRuntimeError } from "./prompt-routing.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { classicGalleryHeaderMarkup, galleryLayoutMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
@@ -182,7 +182,7 @@ export function generationPanelMarkup(state, profile, contract) {
             content: `<div id="server-controls">${serverControlsMarkup(state)}</div>`,
           })}
           <div id="automation-status-host">${automationStatusMarkup(state)}</div>
-          ${comfyuiInstanceSelectorMarkup(state)}
+
         </div>
         ${sourcePickerMarkup(state, sources, activeKey, sourceSelectorDisabled)}
         ${presets.length ? presetMarkup(presets, state.selectedPreset) : ""}
@@ -249,13 +249,12 @@ export function generationRequestBlocked(state, profile, contract, clientErrors 
   const usesInstanceCatalog = state.comfyuiInstancesStatus !== undefined;
   const selectedInstance = usesInstanceCatalog
     ? (state.comfyuiInstances || []).find(
-        (item) => item.id === state.selectedComfyuiInstanceId,
+        (item) => item.id === state.defaultComfyuiInstanceId,
       )
     : null;
   const serviceStateBlocksGeneration = usesInstanceCatalog
     ? state.comfyuiInstancesStatus !== "ready" ||
       !selectedInstance ||
-      selectedInstance.available !== true ||
       Boolean(state.comfyuiInstanceError)
     : state.servicesStatus === undefined
       ? comfy?.available === false
@@ -273,109 +272,10 @@ export function generationRequestBlocked(state, profile, contract, clientErrors 
       state.sourceDetailLoading ||
       state.sourceDetailError ||
       profile.available === false ||
+      (state.promptGeneration?.enabled && Boolean(promptRuntimeError(state))) ||
       serviceStateBlocksGeneration ||
       Object.keys(clientErrors).length > 0,
   );
-}
-
-function comfyuiInstanceSelectorMarkup(state) {
-  if (state.comfyuiInstancesStatus === undefined) return "";
-  const instances = Array.isArray(state.comfyuiInstances)
-    ? state.comfyuiInstances
-    : [];
-  // With a single configured runtime the selection is automatic, so the
-  // control is hidden; it only appears when there is more than one option.
-  if (instances.length < 2) return "";
-  const selected = instances.find(
-    (item) => item.id === state.selectedComfyuiInstanceId,
-  );
-  const options = instances.length
-    ? `${selected ? "" : '<option value="" selected>Choose a runtime</option>'}${instances
-        .map((instance) => {
-          const availability = instance.available === true ? "" : " · ❌";
-          const copy = `${instance.label || instance.id}${availability}`;
-          return `<option value="${escapeHtml(instance.id)}" ${instance.id === state.selectedComfyuiInstanceId ? "selected" : ""}>${escapeHtml(copy)}</option>`;
-        })
-        .join("")}`
-    : `<option value="">${state.comfyuiInstancesStatus === "loading" ? "Loading runtimes…" : "No runtimes configured"}</option>`;
-  const status = comfyuiInstanceStatus(state, selected);
-  return `<div class="field compact comfyui-instance-field">
-    <label for="comfyui-instance">Runtime</label>
-    <select id="comfyui-instance" aria-describedby="comfyui-instance-status" ${instances.length ? "" : "disabled"}>${options}</select>
-    <small id="comfyui-instance-status" class="comfyui-instance-status ${status.kind}" title="${escapeHtml(status.message)}" tabindex="0" ${status.role ? `role="${status.role}"` : ""}><span class="comfyui-instance-status-icon" aria-hidden="true">${status.icon}</span><span class="comfyui-instance-status-message">${escapeHtml(status.message)}</span></small>
-  </div>`;
-}
-
-function comfyuiInstanceStatus(state, selected) {
-  if (state.comfyuiInstancesStatus === "loading") {
-    return {
-      icon: "⏳",
-      kind: "pending",
-      role: "status",
-      message: "Checking configured runtimes…",
-    };
-  }
-  if (state.comfyuiInstanceError) {
-    return {
-      icon: "❌",
-      kind: "error",
-      role: "alert",
-      message: state.comfyuiInstanceError,
-    };
-  }
-  if (state.comfyuiInstancesStatus === "error") {
-    return {
-      icon: "❌",
-      kind: "error",
-      role: "alert",
-      message:
-        state.comfyuiInstancesMessage ||
-        "ComfyUI runtime status is temporarily unavailable.",
-    };
-  }
-  if (!selected) {
-    return {
-      icon: "❌",
-      kind: "error",
-      role: "alert",
-      message: (state.comfyuiInstances || []).length
-        ? "Choose a configured runtime before generating."
-        : "No ComfyUI runtimes are configured.",
-    };
-  }
-  if (selected.available !== true) {
-    return {
-      icon: "❌",
-      kind: "error",
-      role: "alert",
-      message:
-        selected.message ||
-        `${selected.label || selected.id} is unavailable. Choose another runtime or try again later.`,
-    };
-  }
-  if (state.comfyuiInstanceWarning) {
-    return {
-      icon: "⚠️",
-      kind: "warning",
-      role: "status",
-      message: state.comfyuiInstanceWarning,
-    };
-  }
-  if (state.comfyuiInstanceConfigurationMode === "legacy") {
-    return {
-      icon: "⚠️",
-      kind: "warning",
-      role: "status",
-      message:
-        "Only the primary ComfyUI runtime is configured for this deployment.",
-    };
-  }
-  return {
-    icon: "✅",
-    kind: "available",
-    role: "status",
-    message: "Available",
-  };
 }
 
 function sourceKey(source) {
@@ -881,9 +781,7 @@ function promptGenerationMarkup(state) {
   const saved = selection.sources?.[selection.active_source];
   const values = saved?.values || {};
   const sources = state.promptGeneratorSources || [];
-  const runtimeId = promptRuntimeId(state);
   const runtimeError = promptRuntimeError(state);
-  const runtimes = state.comfyuiInstances || [];
   const missing = selection.active_source && !sources.some((item) => item.source_key === selection.active_source);
   const inputs = sortInterfaceInputs(interfaceInputs(source?.interface)).map((input) =>
     controlMarkup(input, values, source.interface, {})
@@ -901,11 +799,7 @@ function promptGenerationMarkup(state) {
       ${missing ? `<option value="${escapeHtml(selection.active_source)}" selected disabled>Saved source unavailable</option>` : ""}
       ${sources.map((item) => `<option value="${escapeHtml(item.source_key)}" ${item.source_key === selection.active_source ? "selected" : ""} ${item.available === false ? "disabled" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}
     </select></label>
-    <div class="field"><label for="prompt-generation-runtime">Prompt runtime</label><select id="prompt-generation-runtime" ${state.promptGenerationBusy || state.comfyuiInstancesStatus !== "ready" ? "disabled" : ""}>
-      ${!runtimes.some((item) => item.id === runtimeId) ? `<option value="${escapeHtml(runtimeId || "")}" selected disabled>${runtimeId ? "Saved runtime unavailable" : "Checking prompt runtimes…"}</option>` : ""}
-      ${runtimes.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === runtimeId ? "selected" : ""} ${promptRuntimeError(state, item.id) ? "disabled" : ""}>${escapeHtml(item.label)}${item.available ? "" : " (unavailable)"}</option>`).join("")}
-    </select></div>
-    ${source && runtimeError ? `<p class="form-error" role="status">${escapeHtml(runtimeError)}</p>` : ""}
+    ${runtimeError ? `<p class="form-error" role="status">${escapeHtml(runtimeError)}</p>` : ""}
     <div class="prompt-generation-inputs">${inputs}</div>
     <button type="button" class="button secondary" data-action="generate-prompt" aria-live="polite" aria-atomic="true" aria-busy="${promptGenerationButtonPresentation(state).busy}" ${!source || runtimeError || state.submitting || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${generationButtonContentMarkup(promptGenerationButtonPresentation(state))}</button>
     ${state.promptGenerationError || state.promptGenerationReadError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError || state.promptGenerationReadError)}</p>` : ""}
@@ -2342,10 +2236,10 @@ export function serviceBannerMarkup(
       (item) => item.id === comfyuiInstances.selectedInstanceId,
     );
     if (!selected) {
-      return '<div class="service-banner" role="status"><strong>Choose a ComfyUI runtime.</strong><span>Select an available runtime before generating; history remains available.</span></div>';
+      return '<div class="service-banner" role="status"><strong>Image service is not configured.</strong><span>Check the server environment; history remains available.</span></div>';
     }
     if (selected?.available === false) {
-      return `<div class="service-banner" role="status"><strong>${escapeHtml(selected.label || selected.id)} unavailable.</strong><span>${escapeHtml(selected.message || "Choose another configured runtime to generate; history remains available.")}</span></div>`;
+      return `<div class="service-banner" role="status"><strong>${escapeHtml(selected.label || selected.id)} unavailable.</strong><span>${escapeHtml(selected.message || "Image jobs wait for the GPU service to recover; prompt generation and history remain available.")}</span></div>`;
     }
     return "";
   }

@@ -217,6 +217,11 @@ class Settings(BaseSettings):
     def validate_comfyui_instance_id(cls, value: str) -> str:
         return _validate_comfyui_instance_id(value)
 
+    @field_validator("comfyui_text_instance_id", mode="before")
+    @classmethod
+    def normalize_text_assignment(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
     @field_validator("comfyui_default_instance_id")
     @classmethod
     def validate_comfyui_default_instance_id(cls, value: str | None) -> str | None:
@@ -275,6 +280,8 @@ class Settings(BaseSettings):
             )
             if self.comfyui_text_instance_id not in instance_ids:
                 raise ValueError("comfyui_text_instance_id must match a configured instance")
+            if self.comfyui_text_instance_id == default_instance_id:
+                raise ValueError("Image and prompt generation must use distinct ComfyUI instances")
         self.comfyui_instances = [
             instance.model_copy(
                 update={

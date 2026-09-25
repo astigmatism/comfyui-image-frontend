@@ -78,7 +78,13 @@ class SourceSettings(APIModel):
 
 
 class PromptGenerationSettings(APIModel):
-    runtime_id: str | None = None
+    @model_validator(mode="before")
+    @classmethod
+    def discard_runtime_preference(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: item for key, item in value.items() if key != "runtime_id"}
+        return value
+
     previous_assistant_mode: Literal["create", "refine"] | None = None
     enabled: bool = False
     active_source: str | None = None
@@ -89,7 +95,6 @@ class SharedSettings(APIModel):
     gallery_layout: Literal["grouped", "classic"] = "grouped"
     prompt_generation: PromptGenerationSettings = Field(default_factory=PromptGenerationSettings)
     active_source: str | None = None
-    runtime_id: str | None = None
     sources: dict[str, SourceSettings] = Field(default_factory=dict)
     model_selections: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
     quantity: int = Field(default=1, ge=1, le=16)
@@ -101,6 +106,13 @@ class SharedSettings(APIModel):
     assistant_instructions: dict[str, str] = Field(default_factory=dict)
     use_creative_direction: bool = False
     max_generations: int | None = Field(default=200, ge=1, le=1_000_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_runtime_preference(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: item for key, item in value.items() if key != "runtime_id"}
+        return value
 
     @model_validator(mode="after")
     def bounded(self) -> SharedSettings:
@@ -354,6 +366,7 @@ class GenerationCreate(APIModel):
         min_length=1,
         max_length=64,
         pattern=COMFYUI_INSTANCE_ID_PATTERN,
+        json_schema_extra={"deprecated": True},
     )
 
     # Temporary compatibility envelope for the pre-publication browser/API. It resolves only to
@@ -810,7 +823,11 @@ class ServiceStatus(APIModel):
 
 class PromptGenerationCreate(APIModel):
     comfyui_instance_id: str | None = Field(
-        default=None, min_length=1, max_length=64, pattern=COMFYUI_INSTANCE_ID_PATTERN
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=COMFYUI_INSTANCE_ID_PATTERN,
+        json_schema_extra={"deprecated": True},
     )
     source_key: str
     revision: SourceRevision

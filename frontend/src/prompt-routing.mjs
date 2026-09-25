@@ -19,22 +19,19 @@ export function samePublication(a, b) {
 }
 
 export function promptRuntimeId(state) {
-  return state.promptGeneration?.runtime_id || state.textComfyuiInstanceId ||
-    state.promptGeneratorSource?.instance_id || state.defaultComfyuiInstanceId || null;
+  return state.textComfyuiInstanceId || null;
 }
 
-export function promptRuntimeError(state, id = promptRuntimeId(state)) {
-  if (state.comfyuiInstancesStatus !== "ready") return "Prompt runtime availability is still being checked.";
+export function promptRuntimeError(state) {
+  if (state.comfyuiInstancesStatus !== "ready") return "Prompt service configuration is still being checked.";
+  const id = promptRuntimeId(state);
+  if (!id) return "Prompt generation is not configured. The server needs a CPU prompt service assignment.";
   const runtime = (state.comfyuiInstances || []).find((item) => item.id === id);
-  if (!runtime) return "Choose a configured prompt runtime.";
-  if (!runtime.available) return `${runtime.label} is unavailable.`;
+  if (!runtime) return "The assigned CPU prompt service is not configured.";
   const source = state.promptGeneratorSource;
-  if (!source) return "Choose a prompt source.";
-  // Older descriptors have no replica list; the server still validates the request.
-  if (!source.replicas?.length) return null;
-  const replica = source.replicas.find((item) => item.instance_id === id);
-  if (!replica) return "This prompt runtime does not have the publication. Copy the bundle and refresh its catalog.";
-  if (!samePublication(replica.revision, source.revision)) return "This prompt runtime has a different publication revision. Re-copy the bundle and refresh its catalog.";
-  if (!replica.available) return "This publication is unavailable on the selected prompt runtime.";
+  if (!source) return runtime.available ? "Choose a prompt source." : "The CPU prompt service is unavailable; waiting for its workflow catalog.";
+  if (source.instance_id !== id) return "Reload prompt sources from the assigned CPU service.";
+  if (source.available === false) return "This publication is unavailable on the CPU prompt service.";
+  // Validated cached publications may queue while the assigned service is offline.
   return null;
 }

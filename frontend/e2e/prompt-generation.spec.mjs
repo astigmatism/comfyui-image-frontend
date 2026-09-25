@@ -72,32 +72,41 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   expect(errors).toEqual([]);
 });
 
-test("prompt runtime override persists and automation pins separate stages", async ({ page }) => {
+test("fixed stage assignments ignore saved choices and automation has no runtime controls", async ({ page }) => {
   test.setTimeout(60_000);
-  const promptRuntime = page.getByLabel("Prompt runtime", { exact: true });
-  await expect(promptRuntime).toHaveValue("worker-2");
-  await expect(page.locator("#comfyui-instance")).toHaveValue("default");
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
-  await promptRuntime.selectOption("default");
-  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Independent runtime");
-  const promptResponse = page.waitForResponse((response) => response.url().endsWith("/api/prompt-generations") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Generate prompt", exact: true }).click();
-  expect((await (await promptResponse).json()).comfyui_instance_id).toBe("default");
-  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/Independent runtime explores/);
-  await expect(promptRuntime).toBeEnabled();
-  await expect.poll(async () => (await (await page.request.get("/api/preferences")).json()).settings.prompt_generation.runtime_id).toBe("default");
+  await expect(page.locator("#prompt-generation-runtime, #comfyui-instance")).toHaveCount(0);
+  const preferences = await (await page.request.get("/api/preferences")).json();
+  const session = await (await page.request.get("/api/auth/session")).json();
+  preferences.settings.runtime_id = "promptgen";
+  preferences.settings.prompt_generation.runtime_id = "default";
+  await page.request.put("/api/preferences", {
+    headers: { "X-CSRF-Token": session.csrf_token },
+    data: { settings: preferences.settings, expected_revision: preferences.revision },
+  });
   await page.reload();
-  await expect(promptRuntime).toHaveValue("default");
-  await expect(page.locator("#comfyui-instance")).toHaveValue("default");
-  await promptRuntime.selectOption("worker-2");
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Fixed CPU service");
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/prompt-generations") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Generate prompt", exact: true }).click();
+  const response = await responsePromise;
+  expect(response.request().postDataJSON()).not.toHaveProperty("comfyui_instance_id");
+  expect((await response.json()).comfyui_instance_id).toBe("promptgen");
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/Fixed CPU service explores/);
+  const saved = (await (await page.request.get("/api/preferences")).json()).settings;
+  expect(saved).not.toHaveProperty("runtime_id");
+  expect(saved.prompt_generation).not.toHaveProperty("runtime_id");
   await page.locator('[data-action="toggle-control-section"][aria-controls="control-section-auto-generation-body"]').click();
   await page.getByLabel("Images queued limit", { exact: true }).fill("1");
   const enabled = page.waitForResponse((response) => response.url().endsWith("/api/auto-generation") && response.request().method() === "PUT");
   await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
-  const automatic = await (await enabled).json();
-  expect(automatic.snapshot.prompt_generation.comfyui_instance_id).toBe("worker-2");
+  const accepted = await enabled;
+  const sent = accepted.request().postDataJSON().snapshot;
+  expect(sent.generation).not.toHaveProperty("comfyui_instance_id");
+  expect(sent.prompt_generation).not.toHaveProperty("comfyui_instance_id");
+  const automatic = await accepted.json();
+  expect(automatic.snapshot.prompt_generation.comfyui_instance_id).toBe("promptgen");
   expect(automatic.snapshot.generation.comfyui_instance_id).toBe("default");
   await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(1);
+  await expect(page.locator("#prompt-generation-runtime, #comfyui-instance")).toHaveCount(0);
 });
 
 test("saved primary source controls survive the CPU catalog becoming representative", async ({ page }) => {
@@ -124,7 +133,7 @@ test("saved primary source controls survive the CPU catalog becoming representat
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("Retained subject");
   await expect(page.locator("#prompt-generation-source")).toHaveValue(source.source_key);
   await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
-  await expect(page.getByLabel("Prompt runtime", { exact: true })).toHaveValue("worker-2");
+  await expect(page.locator("#prompt-generation-runtime, #comfyui-instance")).toHaveCount(0);
 });
 
 async function controlledAutomaticPipeline(page) {
@@ -377,9 +386,8 @@ test("prompt submission keeps its spinner across polling and removes helper rows
   await expect(button.locator(".button-spinner")).toHaveCount(0);
 });
 
-for (const automatic of [false, true]) test(`prompt queues behind an image with auto-generation ${automatic ? "on" : "off"}`, async ({ page }) => {
+for (const automatic of [false, true]) test(`CPU prompt runs alongside an image with auto-generation ${automatic ? "on" : "off"}`, async ({ page }) => {
   test.setTimeout(60_000);
-  await page.getByLabel("Prompt runtime", { exact: true }).selectOption("default");
   await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
   await page.locator('[data-control-section="prompt-generation"] .control-section-trigger').click();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow image before manual prompt");
@@ -390,7 +398,7 @@ for (const automatic of [false, true]) test(`prompt queues behind an image with 
   await expect(page.locator(".gallery-card.status-running").first()).toBeVisible();
   const button = page.locator('[data-action="generate-prompt"]');
   await button.click();
-  await expect(button).toHaveText("Waiting for ComfyUI…");
+  await expect(button).toHaveAttribute("aria-busy", "true");
   await expect(button.locator(".button-spinner")).toBeVisible();
   if (automatic) {
     await expect(main).toHaveText("Auto Generating");
@@ -498,4 +506,41 @@ test("lost prompt replies recover automatically after reload without losing the 
   expect(new Set(posts.map((post) => post.key)).size).toBe(1);
   expect(new Set(posts.map((post) => post.body)).size).toBe(1);
   await expect(page.locator(".submission-recovery, .prompt-pipeline-status")).toHaveCount(0);
+});
+
+
+test("missing CPU assignment blocks prompt generation without falling back to the GPU", async ({ page }) => {
+  await page.route("**/api/comfyui-instances", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ json: { ...payload, text_instance_id: null } });
+  });
+  await page.reload();
+  await expect(page.locator('[data-control-section="prompt-generation"]')).toContainText("Prompt generation is not configured");
+  await expect(page.getByRole("button", { name: "Generate prompt", exact: true })).toBeDisabled();
+  await expect(page.locator("#generate-button")).toBeDisabled();
+  await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
+  await expect(page.locator("#generate-button")).toBeEnabled();
+  await expect(page.locator("#comfyui-instance, #prompt-generation-runtime")).toHaveCount(0);
+});
+
+test("an initially empty CPU catalog is reloaded after discovery recovers", async ({ page }) => {
+  let ready = false;
+  await page.route("**/api/workflows?output_kind=text", async (route) => {
+    if (ready) await route.continue();
+    else await route.fulfill({ json: [] });
+  });
+  await page.route("**/api/workflows/*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.json();
+    if (!ready && source.output_kind === "text") {
+      await route.fulfill({ status: 503, json: { error: { code: "source_catalog_loading", message: "CPU catalog is loading." } } });
+    } else await route.fulfill({ response });
+  });
+  await page.reload();
+  await expect(page.locator('[data-control-section="prompt-generation"]')).toContainText("CPU catalog is loading.");
+  ready = true;
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Generate prompt", exact: true })).toBeEnabled();
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
 });
