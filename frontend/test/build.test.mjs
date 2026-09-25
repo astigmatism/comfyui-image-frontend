@@ -45,7 +45,8 @@ test("production build emits one content-addressed frontend module graph", async
   assert.doesNotMatch(index, /(?:href|src)="\/assets\/(?:styles\.css|app\.mjs)"/u);
 
   const expectedImports = {
-    app: new Set([first.assets.photo_viewer_images, first.assets.photo_viewer_preload, first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
+    app: new Set([first.assets.prompt_routing, first.assets.photo_viewer_images, first.assets.photo_viewer_preload, first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
+    prompt_routing: new Set(),
     image_cleanup: new Set(),
     photo_viewer_images: new Set([first.assets.image_cleanup]),
     photo_viewer_preload: new Set(),
@@ -64,9 +65,9 @@ test("production build emits one content-addressed frontend module graph", async
     generation_countdown: new Set([first.assets.render]),
     lib: new Set([first.assets.lora_stack]),
     lora_stack: new Set(),
-    render: new Set([first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view]),
+    render: new Set([first.assets.prompt_routing, first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view]),
   };
-  for (const name of ["image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
+  for (const name of ["prompt_routing", "image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "server_clock", "generation_countdown", "lora_stack", "user_settings"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

@@ -51,7 +51,9 @@ class AppContainer:
             settings,
             transport=speech_to_text_transport,
         )
-        self.registry = WorkflowRegistry(self.db.session_factory, self.comfyui)
+        self.registry = WorkflowRegistry(
+            self.db.session_factory, self.comfyui, instances=self.comfyui_instances
+        )
         self.compiler = WorkflowCompiler()
         self.generation_eta = GenerationEtaEstimator(self.db.session_factory)
         self.generations = GenerationService(

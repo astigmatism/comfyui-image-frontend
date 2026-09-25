@@ -21,6 +21,7 @@ def main() -> None:
     primary.state.workflow_files.update(
         build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
     )
+    worker.state.workflow_files = dict(primary.state.workflow_files)
     primary.state.slow_stage_delay = 2.0
     worker.state.slow_stage_delay = 2.0
     # Keep this sample running through image persistence and the cancellation round trip.
@@ -57,6 +58,7 @@ def main() -> None:
                 },
             ],
             comfyui_default_instance_id="default",
+            comfyui_text_instance_id="worker-2",
             comfyui_workflow_directory="workflows",
             ollama_base_url=primary.base_url,
             speech_to_text_url=f"{primary.base_url}/v1/audio/transcriptions",

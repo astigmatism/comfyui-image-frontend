@@ -72,6 +72,61 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   expect(errors).toEqual([]);
 });
 
+test("prompt runtime override persists and automation pins separate stages", async ({ page }) => {
+  test.setTimeout(60_000);
+  const promptRuntime = page.getByLabel("Prompt runtime", { exact: true });
+  await expect(promptRuntime).toHaveValue("worker-2");
+  await expect(page.locator("#comfyui-instance")).toHaveValue("default");
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
+  await promptRuntime.selectOption("default");
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Independent runtime");
+  const promptResponse = page.waitForResponse((response) => response.url().endsWith("/api/prompt-generations") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Generate prompt", exact: true }).click();
+  expect((await (await promptResponse).json()).comfyui_instance_id).toBe("default");
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/Independent runtime explores/);
+  await expect(promptRuntime).toBeEnabled();
+  await expect.poll(async () => (await (await page.request.get("/api/preferences")).json()).settings.prompt_generation.runtime_id).toBe("default");
+  await page.reload();
+  await expect(promptRuntime).toHaveValue("default");
+  await expect(page.locator("#comfyui-instance")).toHaveValue("default");
+  await promptRuntime.selectOption("worker-2");
+  await page.locator('[data-action="toggle-control-section"][aria-controls="control-section-auto-generation-body"]').click();
+  await page.getByLabel("Images queued limit", { exact: true }).fill("1");
+  const enabled = page.waitForResponse((response) => response.url().endsWith("/api/auto-generation") && response.request().method() === "PUT");
+  await page.getByRole("switch", { name: "Auto-generate", exact: true }).check();
+  const automatic = await (await enabled).json();
+  expect(automatic.snapshot.prompt_generation.comfyui_instance_id).toBe("worker-2");
+  expect(automatic.snapshot.generation.comfyui_instance_id).toBe("default");
+  await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(1);
+});
+
+test("saved primary source controls survive the CPU catalog becoming representative", async ({ page }) => {
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Retained subject");
+  await expect.poll(async () => {
+    const prefs = await (await page.request.get("/api/preferences")).json();
+    const prompt = prefs.settings.prompt_generation;
+    return prompt.sources[prompt.active_source]?.values.subject_name;
+  }).toBe("Retained subject");
+  const [source] = await (await page.request.get("/api/workflows?output_kind=text")).json();
+  const primaryKey = source.replicas.find((item) => item.instance_id === "default").source_key;
+  const preferences = await (await page.request.get("/api/preferences")).json();
+  const prompt = preferences.settings.prompt_generation;
+  prompt.sources[primaryKey] = prompt.sources[prompt.active_source];
+  delete prompt.sources[prompt.active_source];
+  prompt.active_source = primaryKey;
+  const session = await (await page.request.get("/api/auth/session")).json();
+  const updated = await page.request.put("/api/preferences", {
+    headers: { "X-CSRF-Token": session.csrf_token },
+    data: { settings: preferences.settings, expected_revision: preferences.revision },
+  });
+  expect(updated.ok(), await updated.text()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("Retained subject");
+  await expect(page.locator("#prompt-generation-source")).toHaveValue(source.source_key);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
+  await expect(page.getByLabel("Prompt runtime", { exact: true })).toHaveValue("worker-2");
+});
+
 async function controlledAutomaticPipeline(page) {
   // Keep stage boundaries deterministic while exercising the real app and SSE handlers.
   // Backend integration tests separately hold the real composition/acceptance boundary.
@@ -324,6 +379,7 @@ test("prompt submission keeps its spinner across polling and removes helper rows
 
 for (const automatic of [false, true]) test(`prompt queues behind an image with auto-generation ${automatic ? "on" : "off"}`, async ({ page }) => {
   test.setTimeout(60_000);
+  await page.getByLabel("Prompt runtime", { exact: true }).selectOption("default");
   await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
   await page.locator('[data-control-section="prompt-generation"] .control-section-trigger').click();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("slow image before manual prompt");

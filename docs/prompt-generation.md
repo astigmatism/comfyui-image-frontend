@@ -65,3 +65,15 @@ A known ComfyUI prompt ID reconnects to history after restart. Completed text an
 Migration `b73a94f1c205`, following `a12c39e781b4`, adds the text-run and preparation tables without modifying historical image records. Migration `c92f6e81ab30` adds bounded internal prompt-rejection diagnostics. It retains only validation types and numeric bounds, not upstream prompt contents. Startup retires incompatible unaccepted legacy automatic preparations while preserving accepted images and history. Test upgrades on a populated database copy. Failed-cutover recovery uses the pinned release runner's existing backup transaction: preserve the failed candidate database, restore the pre-cutover database and operational files, and verify the previous image. Keep assets, uploads, workflows, and recovery artifacts.
 
 Deploy through Samus's supported `update_production --sha <full-reviewed-main-sha> --wait` entrypoint. Application releases do not replace the pinned runner. Verify the completed release job, application SHA/image, health, HTTPS, and fingerprinted frontend assets. Live feature acceptance is a separate verification.
+
+
+## Independent text and image runtimes
+
+Set `CIF_COMFYUI_TEXT_INSTANCE_ID` to a configured instance to choose the text
+runtime independently of the default image runtime. Each prompt request accepts
+an optional `comfyui_instance_id`; the browser's Prompt runtime selector persists
+this choice separately from image settings. Text responses report the effective
+instance. Prepared batches and automatic snapshots pin both stages separately.
+The selected text runtime must serve the exact requested publication revision;
+missing or mismatched copies require a bundle copy and catalog refresh.
+See [CPU deployment and copy checks](comfyui-promptgen.md).

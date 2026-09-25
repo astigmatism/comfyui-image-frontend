@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "c92f6e81ab30"
+HEAD_REVISION = "ab84d290e613"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -578,3 +578,57 @@ def test_prompt_migration_and_runner_recovery_preserve_an_isolated_database_copy
             failed.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
         )
     assert (assets / "keep.txt").read_text() == "retained artifact"
+
+
+def test_instance_catalog_migration_preserves_cached_health_and_scopes_diagnostics(tmp_path):
+    import json
+
+    path = tmp_path / "catalogs.db"
+    config = _config(path)
+    command.upgrade(config, "c92f6e81ab30")
+    engine = create_engine(f"sqlite:///{path}")
+    capabilities = {
+        "instance_id": "primary",
+        "catalog_state": "cached_offline",
+        "cached_sources": 2,
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO service_health "
+                "(service, available, capabilities_json, message, checked_at) "
+                "VALUES ('comfyui', 0, :capabilities, 'offline', :now)"
+            ),
+            {"capabilities": json.dumps(capabilities), "now": datetime.now(UTC)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO workflow_diagnostics "
+                "(basename, accepted, code, message, details_json, checked_at) "
+                "VALUES ('*', 0, 'server_unreachable', 'offline', '{}', :now)"
+            ),
+            {"now": datetime.now(UTC)},
+        )
+    engine.dispose()
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT instance_id, capabilities_json FROM workflow_catalog_health")
+        ).one()
+        assert row.instance_id == "primary"
+        assert json.loads(row.capabilities_json) == capabilities
+        assert (
+            connection.execute(text("SELECT instance_id FROM workflow_diagnostics")).scalar_one()
+            == "primary"
+        )
+    engine.dispose()
+    command.downgrade(config, "c92f6e81ab30")
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT instance_id FROM workflow_catalog_health")).scalar_one()
+            == "primary"
+        )
+    engine.dispose()

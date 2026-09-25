@@ -3296,30 +3296,18 @@ class QueueWorker:
                     available,
                     message,
                 )
-            comfy_available, comfy_message = comfy_health[instances.default_id]
-            catalog_loading, should_refresh_catalog = await _run_blocking(
-                self._comfy_recovery_state,
-                comfy_available,
-            )
-            catalog_refreshed = False
-            catalog_failure_message: str | None = None
-            if should_refresh_catalog:
-                try:
-                    await self.generations.registry.refresh()
-                    catalog_refreshed = True
-                except Exception:
-                    logger.exception("workflow_catalog_recovery_refresh_failed")
-                    # Execution health is independent from publication discovery. Keep the
-                    # successful adapter probe available so a frozen cached graph can still
-                    # dispatch, while the catalog service reports its own refresh failure.
-                    catalog_failure_message = "ComfyUI source discovery failed during recovery."
-            if not catalog_refreshed and not catalog_loading:
-                await _run_blocking(
-                    self._persist_service_health,
-                    "comfyui",
-                    False if catalog_failure_message else comfy_available,
-                    catalog_failure_message or comfy_message,
+            for instance_id, (available, message) in comfy_health.items():
+                catalog_loading, should_refresh_catalog = await _run_blocking(
+                    self._comfy_recovery_state,
+                    available,
+                    instance_id,
                 )
+                if should_refresh_catalog:
+                    await self.generations.registry.refresh(instance_id)
+                elif not catalog_loading and not available:
+                    await _run_blocking(
+                        self.generations.registry.record_offline, instance_id, message
+                    )
             try:
                 await asyncio.wait_for(
                     self._stop.wait(), timeout=self.settings.external_health_interval_seconds
@@ -3327,11 +3315,17 @@ class QueueWorker:
             except TimeoutError:
                 continue
 
-    def _comfy_recovery_state(self, comfy_available: bool) -> tuple[bool, bool]:
+    def _comfy_recovery_state(
+        self, comfy_available: bool, instance_id: str | None = None
+    ) -> tuple[bool, bool]:
         """Read the small cached state needed to decide whether catalog recovery is due."""
 
         with self.session_factory() as session:
-            previous_comfy = session.get(ServiceHealth, "comfyui")
+            previous_comfy = (
+                self.generations.registry.catalog_health(session, instance_id)
+                if instance_id
+                else session.get(ServiceHealth, "comfyui")
+            )
             catalog_state = (
                 previous_comfy.capabilities_json.get("catalog_state") if previous_comfy else None
             )

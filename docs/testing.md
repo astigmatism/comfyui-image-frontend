@@ -82,7 +82,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - revision mismatch and invalid republish behavior;
 - validate/accept with dynamic parameters, random/fixed maximum seed, workflow `extra_pnginfo`, and native prompt ID;
 - durable acceptance, rapid submissions, per-user FIFO and round-robin fairness;
-- default-adapter-only publication discovery with independent execution selection, per-instance health and lanes, and unavailable/unconfigured target rejection;
+- per-instance publication discovery and diagnostics, deduplicated catalogs, exact-copy text routing with independent image selection, per-instance health and lanes, and unavailable/unconfigured target rejection;
 - generation pinning across input upload, prompt submission, history monitoring, result retrieval, cancellation, and independent target outages;
 - pre-submission WebSocket readiness, structured node-local progress with legacy fallback,
   coalescing, prompt/client isolation, and delayed/missing-event history reconciliation;

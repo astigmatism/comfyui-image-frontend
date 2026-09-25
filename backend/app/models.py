@@ -270,6 +270,7 @@ class WorkflowDiagnostic(Base):
     __tablename__ = "workflow_diagnostics"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True)
     basename: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
     workflow_id: Mapped[str | None] = mapped_column(String(255))
@@ -284,6 +285,16 @@ class ServiceHealth(Base):
     __tablename__ = "service_health"
 
     service: Mapped[str] = mapped_column(String(32), primary_key=True)
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    capabilities_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    message: Mapped[str | None] = mapped_column(Text)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkflowCatalogHealth(Base):
+    __tablename__ = "workflow_catalog_health"
+
+    instance_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     capabilities_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     message: Mapped[str | None] = mapped_column(Text)

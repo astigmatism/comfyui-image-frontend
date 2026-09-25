@@ -78,6 +78,7 @@ class SourceSettings(APIModel):
 
 
 class PromptGenerationSettings(APIModel):
+    runtime_id: str | None = None
     previous_assistant_mode: Literal["create", "refine"] | None = None
     enabled: bool = False
     active_source: str | None = None
@@ -263,7 +264,17 @@ class ModelSelector(APIModel):
     choices: list[ModelSelectorChoice]
 
 
+class WorkflowReplica(APIModel):
+    instance_id: str
+    source_key: str
+    revision: SourceRevision
+    readiness: str
+    available: bool
+    cached: bool
+
+
 class WorkflowSummary(APIModel):
+    replicas: list[WorkflowReplica] = Field(default_factory=list)
     output_kind: Literal["image", "text"] = "image"
     source_key: str
     display_name: str
@@ -303,6 +314,7 @@ class ComfyUIInstanceStatus(APIModel):
 
 class ComfyUIInstanceList(APIModel):
     default_instance_id: str
+    text_instance_id: str | None = None
     configuration_mode: Literal["explicit", "legacy"]
     items: list[ComfyUIInstanceStatus]
 
@@ -797,6 +809,9 @@ class ServiceStatus(APIModel):
 
 
 class PromptGenerationCreate(APIModel):
+    comfyui_instance_id: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=COMFYUI_INSTANCE_ID_PATTERN
+    )
     source_key: str
     revision: SourceRevision
     parameters: dict[str, Any] = Field(default_factory=dict)

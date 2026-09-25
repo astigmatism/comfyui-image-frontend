@@ -1,15 +1,26 @@
 import { settingsEqual } from "./user-settings.mjs";
 
 // Compare the editable contract, excluding server-populated optional fields.
-export function automationConfiguration(snapshot) {
+export function automationConfiguration(snapshot, resolvedTextInstance = null) {
   if (!snapshot) return null;
   const generation = {};
   for (const key of ["source_key", "revision", "parameters", "prompt_assistant", "comfyui_instance_id", "collection_id"]) {
     generation[key] = snapshot.generation[key] ?? null;
   }
+  const prompt = snapshot.prompt_generation ? {
+    ...snapshot.prompt_generation,
+    comfyui_instance_id: snapshot.prompt_generation.comfyui_instance_id ?? resolvedTextInstance,
+  } : null;
   return { generation, variants: snapshot.variants, quantity: snapshot.quantity,
-    assistant: snapshot.assistant ?? null, prompt_generation: snapshot.prompt_generation ?? null,
+    assistant: snapshot.assistant ?? null, prompt_generation: prompt,
     max_generations: snapshot.max_generations ?? null };
+}
+
+export function sameAutomationConfiguration(a, b) {
+  return settingsEqual(
+    automationConfiguration(a, b?.prompt_generation?.comfyui_instance_id),
+    automationConfiguration(b, a?.prompt_generation?.comfyui_instance_id),
+  );
 }
 
 export function createAutoGenerationSync({ api, read, current, apply, status, saving, signal, storage, storageKey, canSave = () => true, delay = 400 }) {
@@ -47,7 +58,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
   };
   const observe = (auto) => {
     if (signal.aborted || busy || !pending) return;
-    if (!auto.enabled || settingsEqual(automationConfiguration(pending.snapshot), automationConfiguration(auto.snapshot))) {
+    if (!auto.enabled || sameAutomationConfiguration(pending.snapshot, auto.snapshot)) {
       clear();
     } else if (auto.revision !== pending.revision) changedElsewhere();
     else schedule();
@@ -67,7 +78,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
       status("error", error.message);
       return;
     }
-    if (!busy && settingsEqual(automationConfiguration(snapshot), automationConfiguration(auto.snapshot))) { clear(); return; }
+    if (!busy && sameAutomationConfiguration(snapshot, auto.snapshot)) { clear(); return; }
     pending = { snapshot: structuredClone(snapshot), revision: pending?.revision ?? auto.revision };
     persist();
     if (!conflict) status("pending", null);
@@ -100,7 +111,7 @@ export function createAutoGenerationSync({ api, read, current, apply, status, sa
         if (signal.aborted) return;
         apply(result);
         if (!result.enabled) clear();
-        else if (settingsEqual(automationConfiguration(result.snapshot), automationConfiguration(sent.snapshot))) {
+        else if (sameAutomationConfiguration(result.snapshot, sent.snapshot)) {
           succeeded = true;
           if (settingsEqual(pending?.snapshot, sent.snapshot)) clear();
           else if (pending) { pending.revision = result.revision; persist(); }

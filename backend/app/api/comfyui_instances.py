@@ -53,6 +53,7 @@ def list_comfyui_instances(
         )
     return ComfyUIInstanceList(
         default_instance_id=instances.default_id,
+        text_instance_id=instances.settings.comfyui_text_instance_id,
         configuration_mode=instances.configuration_mode,
         items=items,
     )

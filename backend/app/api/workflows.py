@@ -9,15 +9,16 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
-from ..domain.publication import publication_kind
+from ..domain.publication import publication_kind, source_key_for
 from ..domain.source_metadata import TIMELINE_MONTH_PATTERN, recognize_source_metadata
-from ..models import ServiceHealth
+from ..models import ServiceHealth, WorkflowCatalogHealth
 from ..schemas import (
     ModelSelector,
     ModelSelectorChoice,
     ServiceStatus,
     SourceRevision,
     WorkflowDetail,
+    WorkflowReplica,
     WorkflowSummary,
 )
 
@@ -35,11 +36,35 @@ def list_workflows(
     _: Annotated[AuthContext, Depends(require_ready_user)],
     output_kind: Literal["image", "text"] = "image",
 ) -> list[WorkflowSummary]:
-    container = get_container(request)
-    health = session.get(ServiceHealth, "comfyui")
-    result = [_summary(profile, health) for profile in container.registry.list_current(session)]
+    groups = _catalog_groups(request, session)
+    return sorted(
+        (items[0] for (_, kind), items in groups.items() if kind == output_kind),
+        key=lambda item: (item.display_name.casefold(), item.source_key),
+    )
+
+
+def _catalog_groups(
+    request: Request, session: Session, *, source_id: str | None = None
+) -> dict[tuple[str, str], list[WorkflowSummary]]:
+    registry = get_container(request).registry
+    groups: dict[tuple[str, str], list[WorkflowSummary]] = {}
+    result = []
+    for profile in registry.current_replicas(session, source_id=source_id):
+        summary = _summary(profile, registry.catalog_health(session, str(profile.instance_id)))
+        result.append(summary)
+        groups.setdefault(
+            (
+                source_key_for("", profile.source_id)
+                if profile.source_id
+                else str(profile.source_key),
+                summary.output_kind,
+            ),
+            [],
+        ).append(summary)
     existing_keys = {item.source_key for item in result}
-    for raw in container.registry.unavailable_catalog_entries(session):
+    for raw in registry.unavailable_catalog_entries(session):
+        if source_id is not None and raw.get("logical_key") != source_key_for("", source_id):
+            continue
         source_key = raw.get("source_key")
         if not isinstance(source_key, str) or source_key in existing_keys:
             continue
@@ -47,32 +72,61 @@ def list_workflows(
         if not isinstance(revision, Mapping):
             continue
         generation_source = raw.get("generation_source")
-        result.append(
-            WorkflowSummary(
-                output_kind=publication_kind(raw.get("interface") or {}),
-                source_key=source_key,
-                display_name=str(raw.get("display_name", "Unavailable source")),
-                instance_id=str(raw.get("instance_id", "default")),
-                readiness=str(raw.get("readiness", "unavailable")),
-                available=False,
-                cached=False,
-                message=str(raw.get("message", "This published source is unavailable.")),
-                warnings=[str(value) for value in raw.get("warnings", [])],
-                revision=SourceRevision(
-                    publication_id=str(revision.get("publication_id", "")),
-                    workflow_sha256=str(revision.get("workflow_sha256", "")),
-                    api_sha256=str(revision.get("api_sha256", "")),
-                    manifest_sha256=str(revision.get("manifest_sha256", "")),
-                ),
-                generation_source=generation_source,
-                technical_inventory=raw.get("technical_inventory"),
-                model_selectors=_model_selectors(raw.get("interface"), generation_source),
+        summary = WorkflowSummary(
+            output_kind=publication_kind(raw.get("interface") or {}),
+            source_key=source_key,
+            display_name=str(raw.get("display_name", "Unavailable source")),
+            instance_id=str(raw.get("instance_id", "default")),
+            readiness=str(raw.get("readiness", "unavailable")),
+            available=False,
+            cached=False,
+            message=str(raw.get("message", "This published source is unavailable.")),
+            warnings=[str(value) for value in raw.get("warnings", [])],
+            revision=SourceRevision(
+                publication_id=str(revision.get("publication_id", "")),
+                workflow_sha256=str(revision.get("workflow_sha256", "")),
+                api_sha256=str(revision.get("api_sha256", "")),
+                manifest_sha256=str(revision.get("manifest_sha256", "")),
+            ),
+            generation_source=generation_source,
+            technical_inventory=raw.get("technical_inventory"),
+            model_selectors=_model_selectors(raw.get("interface"), generation_source),
+        )
+        groups.setdefault(
+            (str(raw.get("logical_key") or source_key), summary.output_kind), []
+        ).append(summary)
+    accepted_keys = {item.source_key for item in result}
+    for items in groups.values():
+        items.sort(
+            key=lambda item: (
+                item.source_key not in accepted_keys,
+                registry.instance_rank(item.instance_id, item.output_kind),
             )
         )
-    return sorted(
-        (item for item in result if item.output_kind == output_kind),
-        key=lambda item: (item.display_name.casefold(), item.source_key),
-    )
+        replicas = [
+            WorkflowReplica(
+                **item.model_dump(
+                    include={
+                        "instance_id",
+                        "source_key",
+                        "revision",
+                        "readiness",
+                        "available",
+                        "cached",
+                    }
+                )
+            )
+            for item in items
+        ]
+        for item in items:
+            item.replicas = replicas
+            if item.output_kind == "text":
+                # Controls describe an immutable graph. A dependency failure on its
+                # catalog instance must still allow an explicit compatible text target.
+                item.available = any(
+                    replica.available and replica.revision == item.revision for replica in replicas
+                )
+    return groups
 
 
 @router.get("/workflows/{source_key}", response_model=WorkflowDetail)
@@ -84,9 +138,25 @@ def get_workflow(
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> WorkflowDetail:
     container = get_container(request)
-    profile = container.registry.get_current(session, source_key)
-    health = session.get(ServiceHealth, "comfyui")
-    summary = _summary(profile, health)
+    profile = container.registry.get_current(session, source_key, require_dependencies=False)
+    if publication_kind(profile.resolved_contract_json) != "text":
+        container.registry.get_current(session, source_key)
+    summary = _summary(
+        profile, container.registry.catalog_health(session, str(profile.instance_id))
+    )
+    group = _catalog_groups(request, session, source_id=profile.source_id).get(
+        (
+            source_key_for("", profile.source_id) if profile.source_id else str(profile.source_key),
+            summary.output_kind,
+        ),
+        [],
+    )
+    summary.replicas = group[0].replicas if group else []
+    if summary.output_kind == "text":
+        summary.available = any(
+            replica.available and replica.revision == summary.revision
+            for replica in summary.replicas
+        )
     return WorkflowDetail(
         **summary.model_dump(), interface=_public_interface(profile.resolved_contract_json)
     )
@@ -112,7 +182,7 @@ def service_status(
     return result
 
 
-def _summary(profile: Any, health: ServiceHealth | None) -> WorkflowSummary:
+def _summary(profile: Any, health: ServiceHealth | WorkflowCatalogHealth | None) -> WorkflowSummary:
     online = bool(health and health.available)
     cached = not online
     catalog_state = (

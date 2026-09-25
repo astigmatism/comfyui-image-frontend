@@ -1,3 +1,4 @@
+import { reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
 import { photoViewerPreloadArtifact, createPhotoViewerPreloader } from "./photo-viewer-preload.mjs";
 import { createPhotoViewerImages, photoKey } from "./photo-viewer-images.mjs";
 import { submitGeneration, setSubmissionOwner, pendingSubmission, createSubmissionRecovery, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
@@ -109,6 +110,8 @@ let autoSettingsSync = null;
 const state = {
   session: null,
   comfyuiInstances: [],
+  defaultComfyuiInstanceId: null,
+  textComfyuiInstanceId: null,
   comfyuiInstancesStatus: "idle",
   comfyuiInstancesMessage: null,
   comfyuiInstanceConfigurationMode: null,
@@ -614,6 +617,14 @@ async function handleClick(event) {
     state.formError = null;
     renderPanel();
     renderServiceBanner();
+    syncServerControls();
+    return;
+  }
+  if (element.id === "prompt-generation-runtime") {
+    state.promptGeneration.runtime_id = element.value || null;
+    state.promptGenerationError = null;
+    settingsSync?.schedule();
+    renderPanel();
     syncServerControls();
     return;
   }
@@ -2265,6 +2276,8 @@ async function logout() {
   stopLiveUpdates();
   stopApplicationStartup();
   state.comfyuiInstances = [];
+  state.defaultComfyuiInstanceId = null;
+  state.textComfyuiInstanceId = null;
   state.comfyuiInstancesStatus = "idle";
   state.comfyuiInstancesMessage = null;
   state.comfyuiInstanceConfigurationMode = null;
@@ -2350,6 +2363,8 @@ async function enterApplication() {
   const controller = new AbortController();
   applicationStartupController = controller;
   state.comfyuiInstances = [];
+  state.defaultComfyuiInstanceId = null;
+  state.textComfyuiInstanceId = null;
   state.comfyuiInstancesStatus = "loading";
   state.comfyuiInstancesMessage = null;
   state.comfyuiInstanceConfigurationMode = null;
@@ -2652,6 +2667,8 @@ function applyComfyuiInstanceCatalog(payload) {
     : [];
   const previousId = state.selectedComfyuiInstanceId;
   state.comfyuiInstances = items;
+  state.defaultComfyuiInstanceId = payload?.default_instance_id || null;
+  state.textComfyuiInstanceId = payload?.text_instance_id || null;
   state.comfyuiInstanceConfigurationMode =
     payload?.configuration_mode === "legacy"
       ? "legacy"
@@ -2843,6 +2860,8 @@ function comfyuiInstancePanelState() {
     status: state.comfyuiInstancesStatus,
     message: state.comfyuiInstancesMessage,
     configurationMode: state.comfyuiInstanceConfigurationMode,
+    textDefault: state.textComfyuiInstanceId,
+    textRuntime: promptRuntimeId(state),
     selectedId: state.selectedComfyuiInstanceId,
     error: state.comfyuiInstanceError,
     warning: state.comfyuiInstanceWarning,
@@ -3239,6 +3258,7 @@ async function loadSources({ signal, diagnostic = false } = {}) {
         });
     if (signal?.aborted || catalogToken !== state.sourceCatalogToken) return;
     state.sources = Array.isArray(sources) ? sources : [];
+    state.activeSourceKey = reconcileSourceKey(state.sources, state.activeSourceKey, state.parameterStateBySource);
     state.sourceCatalogStatus = "ready";
     const selected = state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
     if (state.activeSourceKey && !selected && state.parameterStateBySource[state.activeSourceKey]) {
@@ -3283,6 +3303,8 @@ async function loadSources({ signal, diagnostic = false } = {}) {
 }
 
 async function selectSource(key, { summary = null, signal, diagnostic = false } = {}) {
+  const canonical = reconcileSourceKey(state.sources, key, state.parameterStateBySource);
+  if (canonical !== key) { key = canonical; summary = null; }
   syncServerControls();
   const activeMigration = sourceInterface(state.activeSource)
     ? {
@@ -3865,9 +3887,11 @@ function syncGenerationButtons() {
     sync(button, generationButtonPresentation(state), disabled);
   }
   sync(document.querySelector('[data-action="generate-prompt"]'), promptGenerationButtonPresentation(state),
-    !state.promptGeneratorSource || state.submitting || state.promptGenerationBusy || Boolean(state.pendingSubmission));
+    !state.promptGeneratorSource || Boolean(promptRuntimeError(state)) || state.submitting || state.promptGenerationBusy || Boolean(state.pendingSubmission));
   const promptSource = document.querySelector("#prompt-generation-source");
   if (promptSource) promptSource.disabled = state.promptGenerationBusy;
+  const promptRuntime = document.querySelector("#prompt-generation-runtime");
+  if (promptRuntime) promptRuntime.disabled = state.promptGenerationBusy || state.comfyuiInstancesStatus !== "ready";
 }
 
 function syncGenerationSubmissionState() {
@@ -6788,6 +6812,7 @@ async function loadPromptGenerators(signal = applicationStartupController?.signa
 }
 
 async function selectPromptGenerator(key, signal = applicationStartupController?.signal) {
+  key = reconcileSourceKey(state.promptGeneratorSources, key, state.promptGeneration.sources);
   state.promptGeneration.active_source = key;
   state.promptGeneratorSource = null;
   state.promptGenerationError = null;
@@ -6839,7 +6864,9 @@ function promptGenerationPayload() {
   const source = state.promptGeneratorSource;
   if (!source || source.available === false) throw new Error("Choose an available prompt source.");
   const saved = state.promptGeneration.sources[source.source_key];
-  return { source_key: source.source_key, revision: sourceRevision(source), parameters: parametersForRequest(source.interface, saved.values) };
+  const runtimeError = promptRuntimeError(state);
+  if (runtimeError) throw new Error(runtimeError);
+  return { source_key: source.source_key, revision: sourceRevision(source), parameters: parametersForRequest(source.interface, saved.values), comfyui_instance_id: promptRuntimeId(state) };
 }
 
 async function runPromptGeneration(withImages) {

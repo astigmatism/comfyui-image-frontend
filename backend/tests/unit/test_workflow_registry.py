@@ -472,7 +472,7 @@ def test_transport_outage_retains_cached_current_revision() -> None:
     diagnostics = asyncio.run(registry.refresh())
 
     assert [item.code for item in diagnostics] == ["server_unreachable"]
-    assert diagnostics[0].details_json == {"cached_sources": 1}
+    assert diagnostics[0].details_json == {"cached_sources": 1, "instance_id": "test-instance"}
     with session_factory() as session:
         assert len(registry.list_current(session)) == 1
         health = session.get(ServiceHealth, "comfyui")

@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     comfyui_instances: list[ComfyUIInstanceConfig] | None = None
     comfyui_additional_instances: list[ComfyUIInstanceConfig] = Field(default_factory=list)
     comfyui_default_instance_id: str | None = None
+    comfyui_text_instance_id: str | None = None
     comfyui_workflow_directory: str = "workflows"
     comfyui_concurrency: int = Field(default=1, ge=1, le=32)
     comfyui_listing_max_bytes: int = 4 * 1024 * 1024
@@ -268,6 +269,12 @@ class Settings(BaseSettings):
         if default_instance_id not in instance_ids:
             raise ValueError("comfyui_default_instance_id must match a configured instance")
         self.comfyui_default_instance_id = default_instance_id
+        if self.comfyui_text_instance_id is not None:
+            self.comfyui_text_instance_id = _validate_comfyui_instance_id(
+                self.comfyui_text_instance_id
+            )
+            if self.comfyui_text_instance_id not in instance_ids:
+                raise ValueError("comfyui_text_instance_id must match a configured instance")
         self.comfyui_instances = [
             instance.model_copy(
                 update={

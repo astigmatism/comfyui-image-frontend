@@ -1,3 +1,4 @@
+import { promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { classicGalleryHeaderMarkup, galleryLayoutMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
@@ -880,6 +881,9 @@ function promptGenerationMarkup(state) {
   const saved = selection.sources?.[selection.active_source];
   const values = saved?.values || {};
   const sources = state.promptGeneratorSources || [];
+  const runtimeId = promptRuntimeId(state);
+  const runtimeError = promptRuntimeError(state);
+  const runtimes = state.comfyuiInstances || [];
   const missing = selection.active_source && !sources.some((item) => item.source_key === selection.active_source);
   const inputs = sortInterfaceInputs(interfaceInputs(source?.interface)).map((input) =>
     controlMarkup(input, values, source.interface, {})
@@ -897,8 +901,13 @@ function promptGenerationMarkup(state) {
       ${missing ? `<option value="${escapeHtml(selection.active_source)}" selected disabled>Saved source unavailable</option>` : ""}
       ${sources.map((item) => `<option value="${escapeHtml(item.source_key)}" ${item.source_key === selection.active_source ? "selected" : ""} ${item.available === false ? "disabled" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}
     </select></label>
+    <div class="field"><label for="prompt-generation-runtime">Prompt runtime</label><select id="prompt-generation-runtime" ${state.promptGenerationBusy || state.comfyuiInstancesStatus !== "ready" ? "disabled" : ""}>
+      ${!runtimes.some((item) => item.id === runtimeId) ? `<option value="${escapeHtml(runtimeId || "")}" selected disabled>${runtimeId ? "Saved runtime unavailable" : "Checking prompt runtimes…"}</option>` : ""}
+      ${runtimes.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === runtimeId ? "selected" : ""} ${promptRuntimeError(state, item.id) ? "disabled" : ""}>${escapeHtml(item.label)}${item.available ? "" : " (unavailable)"}</option>`).join("")}
+    </select></div>
+    ${source && runtimeError ? `<p class="form-error" role="status">${escapeHtml(runtimeError)}</p>` : ""}
     <div class="prompt-generation-inputs">${inputs}</div>
-    <button type="button" class="button secondary" data-action="generate-prompt" aria-live="polite" aria-atomic="true" aria-busy="${promptGenerationButtonPresentation(state).busy}" ${!source || state.submitting || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${generationButtonContentMarkup(promptGenerationButtonPresentation(state))}</button>
+    <button type="button" class="button secondary" data-action="generate-prompt" aria-live="polite" aria-atomic="true" aria-busy="${promptGenerationButtonPresentation(state).busy}" ${!source || runtimeError || state.submitting || state.promptGenerationBusy || state.pendingSubmission ? "disabled" : ""}>${generationButtonContentMarkup(promptGenerationButtonPresentation(state))}</button>
     ${state.promptGenerationError || state.promptGenerationReadError ? `<p class="form-error" role="alert">${escapeHtml(state.promptGenerationError || state.promptGenerationReadError)}</p>` : ""}
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
   </div>`;
@@ -1508,7 +1517,12 @@ function generationActivityInfo(state, now) {
     if (state.autoGenerate && state.automation?.snapshot) {
       const runtimeId = state.automation.snapshot.generation.comfyui_instance_id;
       const runtime = (state.comfyuiInstances || []).find((item) => item.id === runtimeId);
-      description += ` Runtime: ${runtime?.label || runtimeId}.`;
+      description += ` Image runtime: ${runtime?.label || runtimeId}.`;
+      const textId = state.automation.snapshot.prompt_generation?.comfyui_instance_id;
+      if (textId) {
+        const textRuntime = (state.comfyuiInstances || []).find((item) => item.id === textId);
+        description += ` Prompt runtime: ${textRuntime?.label || textId}.`;
+      }
     }
     if (state.autoGenerate && state.autoGeneratePinned) {
       const pinned = (Array.isArray(state.collections) ? state.collections : [])

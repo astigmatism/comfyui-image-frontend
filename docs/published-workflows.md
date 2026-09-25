@@ -331,6 +331,7 @@ All settings use the `CIF_` prefix:
 |---|---:|---|
 | `CIF_COMFYUI_BASE_URL` | `http://127.0.0.1:8188` | Server-only ComfyUI HTTP endpoint |
 | `CIF_COMFYUI_WS_URL` | derived | Optional WebSocket override |
+| `CIF_COMFYUI_TEXT_INSTANCE_ID` | unset | Independent text default; must name a configured instance |
 | `CIF_COMFYUI_INSTANCE_ID` | `default` | Stable identity used in source keys |
 | `CIF_COMFYUI_USER` | unset | Optional `Comfy-User` value |
 | `CIF_COMFYUI_WORKFLOW_DIRECTORY` | `workflows` | Recursive userdata listing root |
@@ -375,3 +376,19 @@ See [`migration-published-workflows.md`](migration-published-workflows.md) for t
 6. Verify the public controls and warning text without exposing bindings.
 7. Start with a low-cost request, then inspect `prompt_id`, effective parameters, raw history, declared/unmapped outputs, the compact retained artifact set, and successful ComfyUI source cleanup.
 8. Back up the application database and asset directory together; ComfyUI publication files remain external prerequisites.
+
+
+## Replicated publications
+
+Discovery and dependency diagnostics are isolated per configured instance. A logical
+source is its `source_id` and output kind; identical display names do not imply the
+same source. Listings contain one representative per logical source, with safe
+`replicas` descriptors for each instance-specific key and revision. Explicit detail
+lookups remain supported for every configured copy. Current rows, retirement, and
+last-valid caches remain per instance. Removed instances retain historical rows but
+are excluded from selectable catalogs.
+
+Text execution requires the selected runtime's current accepted copy to match the
+requested publication ID, workflow hash, API hash, and manifest hash. Image execution
+continues to support its existing independent runtime selection. See
+[the CPU prompt-generation runbook](comfyui-promptgen.md).

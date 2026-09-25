@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _RETRYABLE = {
     "comfyui_instance_unavailable",
+    "source_catalog_loading",
     "ollama_output_budget_exhausted",
     "ollama_generate_unavailable",
     "ollama_generate_transport_error",
@@ -185,8 +186,11 @@ class AutoGenerationService:
         profile = service._profile_for_request(session, request)
         runtime = service._instance_for_request(session, request, require_available=False)
         service._collection_for_owner(session, user_id, request.collection_id)
+        text_profile = None
         if snapshot.prompt_generation:
-            self.container.prompt_generation.validate_source(session, snapshot.prompt_generation)
+            text_profile, _ = self.container.prompt_generation.validate_source(
+                session, snapshot.prompt_generation
+            )
         # Validate every variant, without freezing resolved random seeds.
         for variant in snapshot.variants:
             item = request.model_copy(
@@ -217,6 +221,8 @@ class AutoGenerationService:
                 raise AppError("direction_required", "Enter Creative Direction before enabling it.")
         captured = snapshot.model_copy(deep=True)
         captured.generation.comfyui_instance_id = runtime.id
+        if captured.prompt_generation and text_profile:
+            captured.prompt_generation.comfyui_instance_id = text_profile.instance_id
         if captured.assistant and not captured.assistant.instructions:
             captured.assistant.instructions = DEFAULT_PROMPT_INSTRUCTIONS[captured.assistant.mode]
         if captured.assistant:
@@ -573,6 +579,12 @@ class AutoGenerationService:
         session.add(cycle)
         session.flush()
         assert snapshot.prompt_generation is not None
+        if snapshot.prompt_generation.comfyui_instance_id is None:
+            text_profile, _ = self.container.prompt_generation.validate_source(
+                session, snapshot.prompt_generation
+            )
+            snapshot.prompt_generation.comfyui_instance_id = text_profile.instance_id
+            row.snapshot_json = snapshot.model_dump(mode="json")
         items = [
             GenerationPreparationItem(
                 generation=snapshot.generation.model_copy(

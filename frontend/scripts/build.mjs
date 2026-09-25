@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "app.mjs"];
+const modules = ["prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -73,6 +73,7 @@ const productionHtml = sourceHtml
 await writeFile(join(dist, "index.html"), productionHtml);
 
 const assets = {
+  prompt_routing: `${assetPrefix}/prompt-routing.mjs`,
   image_cleanup: `${assetPrefix}/image-cleanup.mjs`,
   photo_viewer_images: `${assetPrefix}/photo-viewer-images.mjs`,
   photo_viewer_preload: `${assetPrefix}/photo-viewer-preload.mjs`,

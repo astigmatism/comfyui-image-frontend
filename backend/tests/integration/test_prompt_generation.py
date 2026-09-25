@@ -253,7 +253,10 @@ def test_automation_shares_one_prompt_and_stops_at_limit(app_client, fake_state)
     user, _ = provision_user(app_client)
     prompt = register(app_client, fake_state)
     enabled = enable(app_client, prompt_generation=prompt, quantity=3, max_generations=2)
-    assert enabled["snapshot"]["prompt_generation"] == prompt
+    assert enabled["snapshot"]["prompt_generation"] == {
+        **prompt,
+        "comfyui_instance_id": "test-instance",
+    }
     tick(app_client, user["id"])
     start(app_client)
     result = wait_for(

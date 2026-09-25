@@ -314,9 +314,13 @@ class GenerationService:
             )
         return instance
 
-    def _profile_for_request(self, session: Session, request: GenerationCreate) -> WorkflowProfile:
+    def _profile_for_request(
+        self, session: Session, request: GenerationCreate, *, require_dependencies: bool = True
+    ) -> WorkflowProfile:
         if request.source_key:
-            profile = self.registry.get_current(session, request.source_key)
+            profile = self.registry.get_current(
+                session, request.source_key, require_dependencies=require_dependencies
+            )
         elif request.profile_id:
             profile = self.registry.get_current_by_profile(session, request.profile_id)
         else:  # Pydantic rejects this; keep the service boundary defensive.
@@ -675,18 +679,7 @@ class GenerationService:
                 )
             )
 
-        capabilities = session.scalar(
-            select(ServiceHealth.capabilities_json).where(ServiceHealth.service == "comfyui")
-        )
-        unavailable_source_keys = {
-            value
-            for value in (
-                capabilities.get("dependency_unavailable_source_keys", [])
-                if isinstance(capabilities, dict)
-                else []
-            )
-            if isinstance(value, str)
-        }
+        unavailable_source_keys = self.registry.dependency_unavailable_source_keys(session)
         workflow_ids = {row.workflow_id for row in rows}
         recallable_identities = frozenset(
             (

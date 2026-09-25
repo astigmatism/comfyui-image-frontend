@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..blocking import run_blocking
 from ..domain.prompt_generation import adapt_seed, collect_text
-from ..domain.publication import publication_kind
+from ..domain.publication import publication_kind, source_key_for
 from ..errors import AppError
 from ..models import (
     AutoGeneration,
@@ -31,6 +31,7 @@ from ..models import (
     User,
     UserState,
     WorkflowProfile,
+    WorkflowState,
 )
 from ..schemas import (
     GenerationCreate,
@@ -58,6 +59,7 @@ TEXT_ACTIVE = ("queued", "dispatching", "submitting", "running")
 def text_summary(run: PromptGenerationRun) -> dict[str, Any]:
     return {
         "id": run.id,
+        "comfyui_instance_id": run.instance_id,
         "status": run.status,
         "prompt": run.prompt,
         "source_key": run.request_json["source_key"],
@@ -123,11 +125,75 @@ class PromptGenerationService:
         self, session: Session, payload: PromptGenerationCreate
     ) -> tuple[WorkflowProfile, Any]:
         profile = self.container.generations._profile_for_request(
-            session, GenerationCreate(**payload.model_dump())
+            session, GenerationCreate(**payload.model_dump()), require_dependencies=False
         )
         if publication_kind(profile.resolved_contract_json) != "text":
             raise AppError("source_kind_invalid", "Choose a text prompt source.", status_code=422)
-        self.container.comfyui_instances.get(profile.instance_id or "default")
+        instance_id = (
+            payload.comfyui_instance_id
+            or self.container.settings.comfyui_text_instance_id
+            or profile.instance_id
+            or self.container.comfyui_instances.default_id
+        )
+        self.container.comfyui_instances.get(instance_id)
+        target = session.scalar(
+            select(WorkflowProfile).where(
+                WorkflowProfile.instance_id == instance_id,
+                WorkflowProfile.source_id == profile.source_id,
+                WorkflowProfile.is_current.is_(True),
+                WorkflowProfile.state == WorkflowState.VALID,
+            )
+        )
+        if target is None:
+            target_key = source_key_for(instance_id, str(profile.source_id))
+            if any(
+                entry.get("source_key") == target_key
+                for entry in self.container.registry.unavailable_catalog_entries(session)
+            ):
+                raise AppError(
+                    "source_dependency_missing",
+                    "This prompt publication requires ComfyUI node classes that are "
+                    "unavailable on the selected runtime.",
+                    status_code=409,
+                )
+            health = self.container.registry.catalog_health(session, instance_id)
+            if health is None or health.capabilities_json.get("catalog_state") == "loading":
+                raise AppError(
+                    "source_catalog_loading",
+                    "The prompt runtime catalog is still loading.",
+                    status_code=503,
+                )
+            if not health.available:
+                raise AppError(
+                    "comfyui_instance_unavailable",
+                    "The prompt runtime catalog is offline. Its publication could not be verified.",
+                    status_code=503,
+                )
+            raise AppError(
+                "text_publication_missing",
+                (
+                    "The selected prompt runtime does not have this publication. "
+                    "Refresh its catalog after copying the bundle."
+                ),
+                status_code=409,
+            )
+        if publication_kind(target.resolved_contract_json) != "text" or any(
+            (
+                target.publication_id != payload.revision.publication_id,
+                target.ui_graph_sha256 != payload.revision.workflow_sha256,
+                target.api_graph_sha256 != payload.revision.api_sha256,
+                target.manifest_sha256 != payload.revision.manifest_sha256,
+            )
+        ):
+            raise AppError(
+                "text_publication_mismatch",
+                (
+                    "The prompt runtime has a different publication revision. "
+                    "Re-copy the bundle and refresh its catalog."
+                ),
+                status_code=409,
+            )
+        profile = self.container.registry.get_current_by_profile(session, target.id)
         compiled = self.container.compiler.compile(
             contract=profile.resolved_contract_json,
             api_document=profile.source_api_json,
@@ -151,13 +217,14 @@ class PromptGenerationService:
     ) -> PromptGenerationRun:
         profile, compiled = self.validate_source(session, payload)
         graph_hash = adapt_seed(profile, compiled, self.container.compiler)
+        captured = payload.model_copy(update={"comfyui_instance_id": profile.instance_id})
         run = PromptGenerationRun(
             owner_id=owner_id,
             profile_id=profile.id,
-            instance_id=profile.instance_id or self.container.settings.comfyui_instance_id,
+            instance_id=profile.instance_id or self.container.comfyui_instances.default_id,
             automatic=automatic,
             queue_seq=self.container.generations._next_queue_sequence(session),
-            request_json=payload.model_dump(mode="json"),
+            request_json=captured.model_dump(mode="json"),
             contract_json=copy.deepcopy(profile.resolved_contract_json),
             compiled_graph_json=compiled.compiled_graph,
             compiled_graph_sha256=graph_hash,
@@ -274,6 +341,7 @@ class PromptGenerationService:
                         **captured.generation.public_parameters,
                         **shared_image_seeds,
                     }
+            captured.prompt_generation.comfyui_instance_id = shared_text.instance_id
             row = GenerationPreparation(
                 group_id=group,
                 owner_id=owner_id,
@@ -293,9 +361,20 @@ class PromptGenerationService:
         self, owner_id: str, payload: PromptGenerationCreate | GenerationPreparationCreate, key: str
     ) -> dict[str, Any]:
         endpoint = "prompt" if isinstance(payload, PromptGenerationCreate) else "preparation"
+        original = payload.model_dump(mode="json")
+        prompts = (
+            [original]
+            if isinstance(payload, PromptGenerationCreate)
+            else [item["prompt_generation"] for item in original["items"]]
+        )
+        for prompt in prompts:
+            # Preserve receipts from before text routing existed. Do not remove
+            # other optional fields: they were already part of the legacy digest.
+            if prompt.get("comfyui_instance_id") is None:
+                prompt.pop("comfyui_instance_id", None)
         digest = hashlib.sha256(
             json.dumps(
-                {"endpoint": endpoint, "payload": payload.model_dump(mode="json")},
+                {"endpoint": endpoint, "payload": original},
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode()
@@ -386,6 +465,16 @@ class PromptGenerationService:
                 )
 
         for run in await run_blocking(load):
+            if run.instance_id not in self.container.comfyui_instances.configured_ids:
+                await run_blocking(
+                    self._text_state,
+                    run.id,
+                    status="failed",
+                    error_code="comfyui_instance_unconfigured",
+                    error_message="The pinned prompt runtime is no longer configured.",
+                )
+                await notify_user(self.container.broker, run.owner_id, "prompt_generation.updated")
+                continue
             if run.status == "dispatching":
                 await run_blocking(self._text_state, run.id, status="queued")
             elif run.status == "submitting" and not run.comfyui_prompt_id:
@@ -413,8 +502,8 @@ class PromptGenerationService:
             return
         owner_id = run.owner_id
         compiled_graph = run.compiled_graph_json
-        adapter = self.container.comfyui_instances.get(run.instance_id)
         try:
+            adapter = self.container.comfyui_instances.get(run.instance_id)
             if not run.comfyui_prompt_id:
                 await run_blocking(self._text_state, identity, status="submitting")
 

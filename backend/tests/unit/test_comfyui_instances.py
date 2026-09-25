@@ -59,10 +59,12 @@ def test_json_instance_configuration_selects_an_explicit_default(monkeypatch) ->
         ),
     )
     monkeypatch.setenv("CIF_COMFYUI_DEFAULT_INSTANCE_ID", "primary")
+    monkeypatch.setenv("CIF_COMFYUI_TEXT_INSTANCE_ID", "worker-2")
 
     settings = Settings(_env_file=None, test_mode=True)
 
     assert settings.comfyui_instance_configuration_mode == "explicit"
+    assert settings.comfyui_text_instance_id == "worker-2"
     assert settings.default_comfyui_instance.label == "Primary"
     assert settings.default_comfyui_instance.description is None
     assert [item.id for item in settings.configured_comfyui_instances] == [
@@ -331,3 +333,9 @@ async def test_instance_registry_never_falls_back_for_an_unknown_pin() -> None:
         assert error.value.code == "comfyui_instance_unconfigured"
     finally:
         await instances.close()
+
+
+@pytest.mark.parametrize("instance_id", ["missing", "bad/id", ""])
+def test_text_default_must_name_a_configured_instance(instance_id):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, test_mode=True, comfyui_text_instance_id=instance_id)
