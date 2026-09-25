@@ -5123,7 +5123,13 @@ async function refreshGeneration(
       state.generations.unshift(detail);
     else return;
     state.generations = sortGenerationsNewestFirst(state.generations);
-    upsertGalleryCard(detail);
+    const galleryStructureChanged =
+      inserted ||
+      state.generations[index]?.id !== id ||
+      previous?.prompt_fingerprint !== detail.prompt_fingerprint ||
+      (state.favoritesFilter && Boolean(previous?.is_favorite) !== Boolean(detail.is_favorite));
+    if (galleryStructureChanged) renderGallery();
+    else upsertGalleryCard(detail);
     syncServerControls();
     const dialog = document.querySelector("#detail-dialog");
     if (dialog?.open && dialog.dataset.generationId === id) dialog.innerHTML = detailMarkup(detail);

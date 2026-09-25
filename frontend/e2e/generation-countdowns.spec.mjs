@@ -47,7 +47,13 @@ test("approved pair ages in place, mirrors viewer and title, and disappears imme
   await page.locator('[data-generation-id="photo"] .card-media').click();
   const viewer = page.locator("#photo-viewer .photo-viewer-activity-host .activity-pair");
   await expect(viewer).toBeVisible();
-  await expect(viewer.locator("[data-activity-current]")).toHaveText(await badge.locator("[data-activity-current]").textContent());
+  // Read both clocks in the same browser turn; a captured string can become
+  // stale while the viewer opens or a fresh activity snapshot arrives.
+  await expect.poll(() => page.evaluate(() => {
+    const current = document.querySelector("#generation-activity-host [data-activity-current]")?.textContent;
+    const viewer = document.querySelector("#photo-viewer [data-activity-current]")?.textContent;
+    return /^~\d/.test(current) && current === viewer;
+  })).toBe(true);
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(badge).toBeInViewport();

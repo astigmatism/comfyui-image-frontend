@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import (
@@ -503,6 +503,15 @@ class GenerationSummary(APIModel):
     source_key: str | None = None
     publication_id: str | None = None
     collection_id: str | None = None
+
+    @field_validator("accepted_at")
+    @classmethod
+    def normalize_accepted_at(cls, value: datetime) -> datetime:
+        # SQLite reloads stored UTC timestamps without tzinfo. Keep acceptance
+        # responses and later reads on the same unambiguous timeline.
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class GenerationPage(APIModel):

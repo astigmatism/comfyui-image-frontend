@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -414,6 +415,35 @@ test("generations sort by request acceptance time newest first with the API tie-
     "microsecond-newer",
   ]);
 });
+
+for (const timezone of ["UTC", "America/Los_Angeles", "Asia/Tokyo"]) {
+  test(`legacy and explicit UTC acceptance times sort identically in ${timezone}`, () => {
+    const generations = [
+      { id: "g1", accepted_at: "2026-09-25T07:11:40.123451" },
+      { id: "g2", accepted_at: "2026-09-25T07:11:40.123452" },
+      { id: "g3", accepted_at: "2026-09-25T07:11:40.123453" },
+      { id: "g4", accepted_at: "2026-09-25T07:11:40.123454Z" },
+      { id: "older", accepted_at: "2026-09-25T07:00:00" },
+      { id: "same-a", accepted_at: "2026-09-25T07:11:40.123456" },
+      { id: "same-m", accepted_at: "2026-09-25T16:11:40.123456+09:00" },
+      { id: "same-z", accepted_at: "2026-09-25T00:11:40.123456-07:00" },
+      { id: "micro-z-older", accepted_at: "2026-09-25T07:11:40.123458" },
+      { id: "micro-a-newer", accepted_at: "2026-09-25T07:11:40.123459" },
+      { id: "invalid-a", accepted_at: "invalid-a" },
+      { id: "invalid-z", accepted_at: "invalid-z" },
+      { id: "missing-a" },
+      { id: "missing-z" },
+    ];
+    const script = `
+      import { sortGenerationsNewestFirst } from ${JSON.stringify(new URL("../src/lib.mjs", import.meta.url).href)};
+      process.stdout.write(JSON.stringify(sortGenerationsNewestFirst(${JSON.stringify(generations)}).map(item => item.id)));
+    `;
+    const sorted = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, TZ: timezone }, encoding: "utf8",
+    }));
+    assert.deepEqual(sorted, ["micro-a-newer", "micro-z-older", "same-z", "same-m", "same-a", "g4", "g3", "g2", "g1", "older", "invalid-z", "invalid-a", "missing-z", "missing-a"]);
+  });
+}
 
 test("active generation detection covers every non-terminal generation phase", () => {
   for (const status of ["queued", "dispatching", "running", "cancel_requested"]) {

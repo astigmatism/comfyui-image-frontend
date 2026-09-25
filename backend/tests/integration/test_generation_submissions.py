@@ -1,3 +1,5 @@
+import base64
+import json
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -14,6 +16,55 @@ def submit(client, payload, key, *, batch=False):
         headers={"X-CSRF-Token": csrf(client), "Idempotency-Key": key},
         json=payload,
     )
+
+
+def test_four_item_batch_keeps_utc_acceptance_times_across_reads_and_cursors(app_client):
+    provision_user(app_client)
+    valid = generation_payload(app_client, "four cards in one prompt group")
+    payload = {"items": [valid] * 4}
+    key = str(uuid4())
+    response = submit(app_client, payload, key, batch=True)
+    assert response.status_code == 201, response.text
+    accepted = [item["generation"] for item in response.json()["items"]]
+    timestamps = {item["id"]: item["accepted_at"] for item in accepted}
+    assert len(timestamps) == 4
+    assert all(value.endswith("Z") for value in timestamps.values())
+
+    def assert_timestamps(items):
+        assert {item["id"]: item["accepted_at"] for item in items} == timestamps
+
+    history = app_client.get("/api/generations?collection_id=").json()["items"]
+    assert_timestamps(history)
+    assert_timestamps(
+        [app_client.get(f"/api/generations/{item['id']}").json() for item in accepted]
+    )
+    receipt = app_client.get(f"/api/generation-submissions/{key}").json()["result"]
+    assert_timestamps([item["generation"] for item in receipt["items"]])
+    replay = submit(app_client, payload, key, batch=True).json()
+    assert_timestamps([item["generation"] for item in replay["items"]])
+    members_url = f"/api/gallery/prompt-groups/{history[-1]['id']}/members"
+    assert_timestamps(app_client.get(members_url).json()["items"])
+
+    # Both server-issued cursors and cursors built from normalized summaries
+    # must continue to page through SQLite's timezone-less stored timestamps.
+    first = app_client.get("/api/generations?collection_id=&limit=2").json()
+    last = first["items"][-1]
+    cursors = [first["next_cursor"]]
+    for timestamp in (last["accepted_at"], last["accepted_at"].removesuffix("Z")):
+        cursors.append(
+            base64.urlsafe_b64encode(
+                json.dumps({"accepted_at": timestamp, "id": last["id"]}).encode()
+            )
+            .decode()
+            .rstrip("=")
+        )
+    for cursor in cursors:
+        for url in ("/api/generations", members_url):
+            page = app_client.get(url, params={"collection_id": "", "cursor": cursor})
+            assert page.status_code == 200, page.text
+            assert [item["id"] for item in page.json()["items"]] == [
+                item["id"] for item in history[2:]
+            ]
 
 
 def test_identical_race_and_payload_conflict(app_client):
