@@ -759,7 +759,7 @@ def _lora_contract(
             if not isinstance(catalog, list) or any(
                 not isinstance(item, dict)
                 or not {"id", "label", "filename"} <= set(item)
-                or set(item) - {"id", "label", "filename", "description"}
+                or set(item) - {"id", "label", "filename", "description", "trigger_word"}
                 or not isinstance(item["filename"], str)
                 or not item["filename"]
                 or len(item["filename"]) > 1000
@@ -767,7 +767,11 @@ def _lora_contract(
             ):
                 raise ValueError("Invalid frozen LoRA catalog.")
             public_items = [
-                {key: item[key] for key in ("id", "label", "description") if key in item}
+                {
+                    key: item[key]
+                    for key in ("id", "label", "description", "trigger_word")
+                    if key in item
+                }
                 for item in catalog
             ]
             if stack["items"] != public_items:

@@ -579,11 +579,12 @@ function validateTypedParameter(
       if (!Array.isArray(catalog) || !catalog.length || catalog.length > 100) throw new Error("Publish 1 to 100 LoRAs");
       const ids = new Set();
       for (const item of catalog) {
-        if (!isObject(item) || Object.keys(item).some((key) => !["id", "label", "filename", "description"].includes(key)) ||
+        if (!isObject(item) || Object.keys(item).some((key) => !["id", "label", "filename", "description", "trigger_word"].includes(key)) ||
             typeof item.id !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(item.id) || ids.has(item.id) ||
             typeof item.label !== "string" || !item.label.trim() || item.label.length > 120 ||
             typeof item.filename !== "string" || !item.filename || item.filename.length > 1000 ||
-            (Object.hasOwn(item, "description") && (typeof item.description !== "string" || !item.description.trim() || item.description.length > 1000))) {
+            (Object.hasOwn(item, "description") && (typeof item.description !== "string" || !item.description.trim() || item.description.length > 1000)) ||
+            (Object.hasOwn(item, "trigger_word") && (typeof item.trigger_word !== "string" || !item.trigger_word.trim() || item.trigger_word.length > 120))) {
           throw new Error("Invalid private LoRA catalog");
         }
         ids.add(item.id);
@@ -606,7 +607,7 @@ function validateTypedParameter(
       }
       if (semanticRole !== "lora" || inputs.required !== false) throw new Error("LoRA stacks must be optional with semantic role lora");
       Object.assign(parameter, {
-        items: catalog.map(({ id, label, description }) => ({ id, label, ...(description === undefined ? {} : { description }) })),
+        items: catalog.map(({ id, label, description, trigger_word }) => ({ id, label, ...(description === undefined ? {} : { description }), ...(trigger_word === undefined ? {} : { trigger_word }) })),
         default: value, minimum, maximum, step,
       });
     } catch (error) {
@@ -1453,7 +1454,7 @@ export function derivePublishedMetadata(savedWorkflow, apiGraph, validation) {
       const stack = inputsByNode.get(nodeId);
       if (stack) loras.push({
         usage: "public_stack", parameter_id: stack.id,
-        items: stack.items.map(({ id, label, description }) => ({ id, label, ...(description === undefined ? {} : { description }) })),
+        items: stack.items.map(({ id, label, description, trigger_word }) => ({ id, label, ...(description === undefined ? {} : { description }), ...(trigger_word === undefined ? {} : { trigger_word }) })),
         default: stack.default.map(({ id, strength }) => ({ id, strength })),
         minimum: stack.minimum, maximum: stack.maximum, step: stack.step,
       });

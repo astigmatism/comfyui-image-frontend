@@ -22,10 +22,10 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
         if (
             not isinstance(item, dict)
             or not {"id", "label"} <= set(item)
-            or set(item) - {"id", "label", "description"}
+            or set(item) - {"id", "label", "description", "trigger_word"}
         ):
             raise ValueError(
-                "LoRA items may contain only public IDs, labels, and usage descriptions."
+                "LoRA items may contain only public IDs, labels, descriptions, and trigger words."
             )
         public_id, label = item["id"], item["label"]
         if not isinstance(public_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", public_id):
@@ -38,6 +38,12 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
             or len(item["description"]) > 1000
         ):
             raise ValueError("LoRA usage descriptions must be nonempty text up to 1000 characters.")
+        if "trigger_word" in item and (
+            not isinstance(item["trigger_word"], str)
+            or not item["trigger_word"].strip()
+            or len(item["trigger_word"]) > 120
+        ):
+            raise ValueError("LoRA trigger words must be nonempty text up to 120 characters.")
         ids.add(public_id)
     if not isinstance(value, list) or len(value) != len(items):
         raise ValueError("Include every published LoRA exactly once.")

@@ -96,12 +96,83 @@ def test_usage_description_is_public_and_does_not_change_execution():
     assert compiled.effective_controls["prompt"] == "lake"
 
 
+def test_trigger_word_is_public_and_does_not_change_execution():
+    def update(public, private):
+        public["items"][0]["trigger_word"] = "AlphaCharacter"
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["trigger_word"] = "AlphaCharacter"
+        private["catalog_json"] = json.dumps(catalog)
+
+    selected = source(update)
+    for interface in (selected.public_interface, _public_interface(selected.private_contract)):
+        item = interface["inputs"][-1]["items"][0]
+        assert item == {"id": "a", "label": "Alpha", "trigger_word": "AlphaCharacter"}
+        assert "filename" not in json.dumps(item)
+    compiled = compile_stack(selected)
+    assert compiled.effective_controls["loras"] == [
+        {"id": "a", "strength": 0},
+        {"id": "b", "strength": 0},
+    ]
+    assert compiled.effective_controls["prompt"] == "lake"
+
+
+def test_moody_candidate_only_claims_the_verified_tifa_trigger():
+    spec = importlib.util.spec_from_file_location(
+        "prepare_lora_workflow", ROOT / "scripts/lora/prepare_workflow.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    filenames = [f"private/{name}.safetensors" for name in ("spread", "claire", "nexblend", "tifa")]
+    workflow = {
+        "nodes": [
+            {
+                "id": 822,
+                "inputs": [{"name": "model", "link": None}, {"name": "clip", "link": 100}],
+                "outputs": [{"name": "model", "links": []}, {"name": "clip", "links": []}],
+                "widgets_values": [{"lora": name} for name in filenames],
+            },
+            {"id": 30, "outputs": [{"links": [100]}]},
+        ],
+        "links": [[100, 30, 0, 822, 1]],
+    }
+    api = {
+        "822": {
+            "class_type": "Power Lora Loader (rgthree)",
+            "inputs": {
+                "model": ["30", 0],
+                **{f"lora_{index}": {"lora": name} for index, name in enumerate(filenames, 1)},
+            },
+        },
+        **{
+            node_id: {"class_type": "Fake", "inputs": {"model": ["822", 0]}}
+            for node_id in ("599", "663", "842")
+        },
+    }
+
+    _, candidate_api = module.prepare(workflow, api)
+    catalog = json.loads(candidate_api["822"]["inputs"]["catalog_json"])
+    assert [item.get("trigger_word") for item in catalog] == [None, None, None, "TifaLockhart"]
+
+
 @pytest.mark.parametrize("description", [None, "", " ", 1, {}, "x" * 1001])
 def test_invalid_usage_description_is_rejected(description):
     def update(public, private):
         public["items"][0]["description"] = description
         catalog = json.loads(private["catalog_json"])
         catalog[0]["description"] = description
+        private["catalog_json"] = json.dumps(catalog)
+
+    with pytest.raises(ContractError):
+        source(update)
+
+
+@pytest.mark.parametrize("trigger_word", [None, "", " ", 1, {}, "x" * 121])
+def test_invalid_trigger_word_is_rejected(trigger_word):
+    def update(public, private):
+        public["items"][0]["trigger_word"] = trigger_word
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["trigger_word"] = trigger_word
         private["catalog_json"] = json.dumps(catalog)
 
     with pytest.raises(ContractError):
@@ -136,6 +207,12 @@ def test_malformed_requests(value):
         lambda public, private: public["items"][0].update(filename="private"),
         lambda public, private: public["items"][0].update(label="Changed"),
         lambda public, private: public["items"][0].update(description="Unpublished usage"),
+        lambda public, private: public["items"][0].update(trigger_word="UnpublishedTrigger"),
+        lambda public, private: private.update(
+            catalog_json=private["catalog_json"].replace(
+                '"label": "Alpha"', '"label": "Alpha", "trigger_word": "Secret"'
+            )
+        ),
         lambda public, private: public.update(step=0.1),
         lambda public, private: public["default"][0].update(strength=0.05),
         lambda public, private: public["bindings"][0].update(input="catalog_json"),
@@ -242,6 +319,8 @@ def test_configurable_inventory_excludes_private_fields():
         "parameter_id": "loras",
         **{key: declaration[key] for key in ("items", "default", "minimum", "maximum", "step")},
     }
+    assert _public_choice_loras_are_safe({"loras": [stack]})
+    stack["items"][0]["trigger_word"] = "AlphaCharacter"
     assert _public_choice_loras_are_safe({"loras": [stack]})
     for mutate in (
         lambda item: item.update(filename="private"),

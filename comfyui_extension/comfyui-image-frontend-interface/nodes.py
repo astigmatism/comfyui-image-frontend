@@ -921,7 +921,7 @@ class CIFLoraStack:
             if (
                 not isinstance(item, dict)
                 or not {"id", "label", "filename"} <= set(item)
-                or set(item) - {"id", "label", "filename", "description"}
+                or set(item) - {"id", "label", "filename", "description", "trigger_word"}
             ):
                 raise ValueError("Invalid private LoRA catalog entry.")
             filename = item["filename"]
@@ -929,7 +929,11 @@ class CIFLoraStack:
                 raise ValueError("Invalid private LoRA filename.")
         declaration = {
             "items": [
-                {key: item[key] for key in ("id", "label", "description") if key in item}
+                {
+                    key: item[key]
+                    for key in ("id", "label", "description", "trigger_word")
+                    if key in item
+                }
                 for item in catalog
             ],
             "minimum": minimum,

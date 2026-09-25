@@ -99,6 +99,7 @@ test("control bar values, active source, and section states persist across reloa
 
   // LoRA strength lives in the collapsed LoRAs section.
   await sectionTrigger("group-loras").click();
+  await page.getByRole("button", { name: "Mix & adjust" }).click();
   await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
 
   // Creative Direction lives in its own collapsed section.
@@ -133,6 +134,7 @@ test("control bar values, active source, and section states persist across reloa
   await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "false");
   await expect(sectionTrigger("creative-direction")).toHaveAttribute("aria-expanded", "true");
   await expect(sectionTrigger("group-loras")).toHaveAttribute("aria-expanded", "true");
+  await page.getByRole("button", { name: "Mix & adjust" }).click();
   await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue(
     "1.25",
   );
@@ -192,6 +194,7 @@ test("republished LoRA membership is reconciled on load, submission, and persist
     await page.reload();
     const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
     if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
+    await page.getByRole("button", { name: "Mix & adjust" }).click();
     await expect(page.locator(".lora-row")).toHaveCount(expected.length);
     expect(await page.locator(".lora-row").evaluateAll((rows) => rows.map((row) => ({
       id: row.dataset.loraId,
@@ -222,6 +225,7 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
   const stack = source.interface.inputs.find((input) => input.type === "lora_stack");
   const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
   if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
+  await page.getByRole("button", { name: "Mix & adjust" }).click();
   await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("recall the original LoRA catalog");
   const accepted = page.waitForResponse((response) =>

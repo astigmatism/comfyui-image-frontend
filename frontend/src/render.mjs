@@ -806,7 +806,7 @@ function promptGenerationMarkup(state) {
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
   </div>`;
   return controlSectionMarkup({ key: "prompt-generation", title: "Prompt Generation", content,
-    titleHelp: "Subject entry is independent of LoRAs. Each batch shares one generated prompt, manual or automatic.",
+    titleHelp: "A LoRA Quick Pick with a published trigger word fills Subject name. You can also edit it directly. Each batch shares one generated prompt, manual or automatic.",
     open: controlSectionIsOpen(state.controlSectionOpen, "prompt-generation", false),
     actions: featureSwitchMarkup("prompt-generation-enabled", "Use Prompt Generation", selection.enabled),
     className: "control-section-prompt-generation" });

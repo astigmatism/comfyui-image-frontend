@@ -392,6 +392,19 @@ function bindDelegatedEvents() {
       persistActiveParameterState();
       syncParameterValidation(id);
       autoSettingsSync?.stage();
+      settingsSync?.schedule();
+    },
+    refresh: renderPanel,
+    onSolo: (triggerWord) => {
+      const source = state.promptGeneratorSource;
+      const input = interfaceInputs(source?.interface).find((item) => item.id === "subject_name" && item.type === "string");
+      const saved = state.promptGeneration.sources[source?.source_key];
+      if (!input || !saved || source.available === false) return false;
+      saved.values.subject_name = triggerWord;
+      if (!saved.explicitInputIds.includes("subject_name")) saved.explicitInputIds.push("subject_name");
+      state.promptGenerationError = null;
+      settingsSync?.schedule();
+      return true;
     },
   });
   root.addEventListener("submit", handleSubmit);

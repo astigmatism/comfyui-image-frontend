@@ -1530,6 +1530,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
 
   const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
   if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
+  await page.getByRole("button", { name: "Mix & adjust" }).click();
   await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await page.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
   const submittedStack = [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }];
@@ -1603,6 +1604,45 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
         !Array.isArray(request.parameters.checkpoint),
     ),
   ).toBe(true);
+});
+
+test("LoRA Quick Picks set the published trigger as prompt subject and keep exact mixer control", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  const sourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
+  await page.route(`**/api/workflows/${sourceKey}`, async (route) => {
+    const response = await route.fetch();
+    const source = await response.json();
+    source.interface.inputs.find((input) => input.type === "lora_stack").items[0].trigger_word = "AlphaCharacter";
+    await route.fulfill({ response, json: source });
+  });
+  await page.reload();
+  await page.getByRole("switch", { name: "Use Prompt Generation" }).check();
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toBeVisible();
+  await ensureControlSectionExpanded(page, "LoRAs");
+
+  await page.getByRole("button", { name: "Use only AlphaCharacter at strength 1" }).click();
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
+  await expect(page.locator("[data-lora-quick-strength]")).toHaveValue("1");
+  await page.locator('[data-lora-control="loras"]').screenshot({ path: testInfo.outputPath("lora-quick-picks.png"), animations: "disabled" });
+  await expect.poll(async () => {
+    const preferences = await (await page.request.get("/api/preferences")).json();
+    return preferences.settings.sources?.[sourceKey]?.values?.loras ?? null;
+  }).toEqual([{ id: "a", strength: 1 }, { id: "b", strength: 0 }]);
+
+  await page.getByRole("button", { name: "Use only Beta at strength 1" }).click();
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
+  await page.getByRole("button", { name: "Mix & adjust" }).click();
+  await page.getByRole("checkbox", { name: "Enable AlphaCharacter" }).check();
+  await expect(page.getByRole("checkbox", { name: "Enable AlphaCharacter" })).toBeFocused();
+  await expect(page.getByRole("slider", { name: "AlphaCharacter strength slider" })).toBeVisible();
+  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1");
+  await expect(page.getByRole("button", { name: "Use only Beta at strength 1" })).toHaveAttribute("aria-pressed", "false");
+  await page.locator('[data-lora-control="loras"]').screenshot({ path: testInfo.outputPath("lora-mixer.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "All off" }).click();
+  await expect(page.getByRole("button", { name: "Close mixer" })).toBeFocused();
+  await expect(page.locator("[data-lora-active-count]")).toHaveText("0 active");
 });
 
 

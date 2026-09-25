@@ -5228,21 +5228,53 @@ tr:last-child td {
 }
 
 
-/* LoRA controls fit the narrow generation panel as well as phone screens. */
-.lora-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.8rem; }
-.lora-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 88px; align-items: center; gap: 0.4rem; }
-.lora-label { grid-column: 2 / 4; overflow-wrap: anywhere; }
+/* Quick Picks use two narrow columns; the ordered strength mixer opens only on demand. */
+.lora-stack { min-width: 0; }
+.lora-quick-hint { margin: 0 0 7px; color: var(--muted); font-size: .72rem; line-height: 1.35; }
+.lora-quick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.lora-quick-pick {
+  display: flex; align-items: center; justify-content: space-between; gap: 5px;
+  min-width: 0; min-height: 43px; padding: 5px 9px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-1); color: var(--text-soft);
+  font-size: .8rem; font-weight: 600; text-align: left; cursor: pointer;
+}
+.lora-quick-copy { display: grid; min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
+.lora-quick-copy small { margin-top: 2px; color: var(--muted); font-size: .65rem; font-weight: 400; white-space: nowrap; }
+.lora-quick-pick:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); }
+.lora-quick-pick.is-active { border-color: var(--accent); background: var(--surface-blue); color: var(--text); }
+.lora-quick-check { flex: 0 0 12px; color: var(--accent-hover); text-align: right; }
+.lora-quick-pick:disabled { opacity: .55; cursor: default; }
+.lora-quick-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; margin-top: 7px; }
+.lora-quick-actions { display: flex; align-items: center; gap: 9px; min-width: 0; margin-left: auto; }
+.lora-quick-strength { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: .72rem; }
+.lora-quick-strength[hidden], .lora-active-count[hidden], .lora-row input[type="range"][hidden] { display: none; }
+.lora-quick-strength input[type="number"] { width: 60px; min-height: 30px; padding: 0 5px; font-size: .8rem; font-variant-numeric: tabular-nums; }
+.lora-active-count { color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lora-mixer-toggle, .lora-clear { padding: 3px 0; border: 0; background: none; color: var(--accent-hover); font-size: .75rem; cursor: pointer; }
+.lora-mixer-toggle { white-space: nowrap; }
+.lora-clear { color: var(--muted); white-space: nowrap; }
+.lora-mixer-toggle:hover:not(:disabled), .lora-clear:hover:not(:disabled) { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.lora-mixer-toggle:disabled, .lora-clear:disabled { opacity: .5; cursor: default; }
+.lora-mixer { padding-top: 9px; margin-top: 3px; border-top: 1px solid var(--border); }
+.lora-stack .hint { margin: 0 0 5px; color: var(--muted); font-size: .72rem; }
+.lora-list { display: grid; gap: 0; padding: 0; margin: 0; list-style: none; }
+.lora-row { display: grid; grid-template-columns: 36px 24px minmax(0, 1fr) 63px; align-items: center; gap: 5px; min-width: 0; min-height: 44px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.lora-row:last-child { border-bottom: 0; }
+.lora-handle { grid-column: 1; grid-row: 1 / span 2; min-width: 36px; min-height: 36px; width: 36px; height: 36px; padding: 0; cursor: grab; touch-action: none; }
+.lora-enable-hit { display: grid; grid-column: 2; grid-row: 1; place-items: center; width: 24px; min-height: 36px; cursor: pointer; }
+.lora-enabled { width: 18px !important; min-height: 18px !important; padding: 0 !important; margin: 0; cursor: inherit; }
+.lora-label { grid-column: 3 / 5; grid-row: 1; min-width: 0; overflow-wrap: anywhere; }
+.lora-row:not(.is-active) .lora-label { grid-column: 3; }
 .lora-title { display: inline; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: help; }
 .lora-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
 .lora-tooltip { position: fixed; inset: auto; margin: 0; width: min(280px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; white-space: pre-line; }
 .lora-tooltip:popover-open { display: block; }
-.lora-handle { grid-row: span 2; cursor: grab; touch-action: none; }
-.lora-row.is-dragging { opacity: 0.6; }
+.lora-row.is-dragging { opacity: .6; }
 .lora-row.lora-drop-target { box-shadow: 0 -2px 0 var(--accent); }
-.lora-row input[type="range"] { grid-column: 2; min-width: 0; width: 100%; }
-.lora-row input[type="number"] { grid-column: 3; min-width: 0; width: 100%; }
-.lora-handle { min-width: 44px; min-height: 44px; padding: 0.35rem; }
-.lora-stack .hint { margin-top: 0; color: var(--muted); }
+.lora-row input[type="range"] { grid-column: 2 / 4; grid-row: 2; min-width: 0; width: 100%; }
+.lora-row input[type="number"] { grid-column: 4; grid-row: 2; min-width: 0; width: 100%; padding: 0 4px; font-variant-numeric: tabular-nums; }
+.lora-row:not(.is-active) input[type="number"] { grid-row: 1; }
 
 /* Consecutive prompt groups keep controls in the gallery's gutters. */
 .gallery-grid.has-prompt-groups { display: block; }

@@ -44,6 +44,9 @@ def prepare(workflow, api):
         {"id": public_id, "label": label, "filename": old["inputs"][f"lora_{index}"]["lora"]}
         for index, (public_id, label) in enumerate(PUBLIC_LORAS, 1)
     ]
+    # The exact Tifa trigger is corroborated by the installed file's training
+    # metadata and archived author instructions; the other three are unverified.
+    catalog[-1]["trigger_word"] = "TifaLockhart"
     ui_filenames = [
         value["lora"]
         for value in node["widgets_values"]
