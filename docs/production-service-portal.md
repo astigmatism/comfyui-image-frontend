@@ -136,6 +136,26 @@ command output stays in restricted `deployment.log`, not portal logs. A monitori
 timeout fails the portal job; the durable child continues. Inspect that same job
 before doing anything else.
 
+## Application compatibility with the installed runner
+
+Application updates must pass the runner already installed on the host. Changing
+`scripts/production-update.py` on `main` does not update that runner. The container
+smoke suite invokes the frozen `smoke_image` function from Samus runner
+`c4227cd0b312477a11df779e42c0ec23efd390f3` with the built candidate image, production
+UID `1000:1000`, read-only root, disposable tmpfs data and no network. A backend
+regression also combines that function's exact environment with Dockerfile defaults.
+
+The GPU/CPU stage assignments belong in external `runtime.env`; they are not global
+Docker image defaults. This preserves the runner's intentionally image-only smoke
+configuration while rejecting invalid explicit production assignments. See the
+[CPU rollout prerequisites](comfyui-promptgen.md) before this first deployment.
+
+The runner rejects saved environment changes that are not yet present on the
+running container. Prepare configuration with an app-only recreation of the
+**existing** pinned image, then verify `update_production --check-only` before using
+the portal button. An application update never installs new runner code or silently
+rewrites external configuration.
+
 ## Acceptance on Samus
 
 1. Install tooling without changing the selected app image; verify the four live

@@ -139,7 +139,7 @@ def test_standard_compose_defaults_extend_the_existing_household_primary(
     assert "\nCIF_COMFYUI_INSTANCES=" not in defaults
 
 
-def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
+def test_production_image_bundles_instances_without_imposing_deployment_assignments(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -147,6 +147,7 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
         "CIF_COMFYUI_INSTANCES",
         "CIF_COMFYUI_ADDITIONAL_INSTANCES",
         "CIF_COMFYUI_DEFAULT_INSTANCE_ID",
+        "CIF_COMFYUI_TEXT_INSTANCE_ID",
         "CIF_COMFYUI_LABEL",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -157,6 +158,8 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
         if not line or line.startswith("#"):
             continue
         name, value = line.split("=", 1)
+        if name == "CIF_COMFYUI_TEXT_INSTANCE_ID":
+            continue  # A stage assignment comes from Compose/private environment only.
         image_defaults[name] = value
         monkeypatch.setenv(name, value)
     monkeypatch.chdir(tmp_path)
@@ -196,11 +199,13 @@ def test_production_image_bundles_defaults_for_launches_that_bypass_compose(
         "http://192.168.1.21:8189",
     )
     assert worker.description is None
-    assert cpu.id == settings.comfyui_text_instance_id == "promptgen"
+    assert cpu.id == "promptgen"
+    assert settings.comfyui_text_instance_id is None
     assert cpu.base_url == "http://comfyui-promptgen:8188"
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f'ENV CIF_COMFYUI_LABEL="{image_defaults["CIF_COMFYUI_LABEL"]}"' in dockerfile
     assert "CIF_COMFYUI_DESCRIPTION" not in dockerfile
+    assert "ENV CIF_COMFYUI_TEXT_INSTANCE_ID=" not in dockerfile
     escaped_workers = image_defaults["CIF_COMFYUI_ADDITIONAL_INSTANCES"].replace('"', '\\"')
     assert f'ENV CIF_COMFYUI_ADDITIONAL_INSTANCES="{escaped_workers}"' in dockerfile
 

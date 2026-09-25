@@ -6,14 +6,27 @@ Its host endpoint is `http://192.168.1.5:8189`; the frontend reaches it as
 The GPU image runtime remains `http://comfyui:8188`.
 
 Before deploying the fixed-assignment release, ops sets these values in
-`credentials/comfyui-image-frontend/runtime.env` before recreating the app container. Its explicit instance list overrides image-bundled
-additions, so a GPU-only private list must be updated first:
+`credentials/comfyui-image-frontend/runtime.env`. Its explicit instance list overrides
+image-bundled additions, so a GPU-only private list must be updated first:
 
 ```dotenv
 CIF_COMFYUI_INSTANCES=[{"id":"primary","label":"Primary ComfyUI","base_url":"http://comfyui:8188","ws_url":"ws://comfyui:8188/ws","user":"default","concurrency":1},{"id":"promptgen","label":"Prompt Generator","description":"CPU-only prompt generation runtime (port 8189); publication catalog source","base_url":"http://comfyui-promptgen:8188","ws_url":"ws://comfyui-promptgen:8188/ws","user":"default","concurrency":1}]
 CIF_COMFYUI_DEFAULT_INSTANCE_ID=primary
 CIF_COMFYUI_TEXT_INSTANCE_ID=promptgen
 ```
+
+The installed portal runner checks that saved environment values match the running
+app before starting an update. Changing `runtime.env` alone is insufficient: ops
+must recreate **only the current app with its existing pinned image**, preserving
+the Compose file, image/revision labels, data bind and edge. Verify health and
+`update_production --check-only` after this one-time configuration preparation.
+The later **Update and restart** button deploys the new application release.
+
+No runner upgrade is required for the fixed-assignment release. Stage assignments
+are deployment settings, so the installed runner's isolated single-instance smoke
+container starts without a text assignment. Explicit unknown assignments still
+fail validation. Repository validation runs the frozen smoke function from the
+installed runner against the actual candidate Docker image.
 
 Keep both the Moody v31 and StableLlama v1 bundles published on both instances.
 The administrator workflow refresh discovers all configured instances. Verify

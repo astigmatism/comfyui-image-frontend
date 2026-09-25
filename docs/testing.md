@@ -246,3 +246,12 @@ are rejected. Catalog tests use independent GPU/CPU copies with missing dependen
 drift, retirement, outages and recovery. Automation tests normalize both old pins before
 new cycles while preserving accepted work and receipt replay. Browser journeys verify
 CPU prompt generation, GPU image generation, saved controls and stable synchronization.
+
+
+The standard `container-smoke` validation also runs `scripts/portal-image-smoke.py`
+against the built image. This invokes the unchanged smoke function from the runner
+installed on Samus (`c4227cd0b312477a11df779e42c0ec23efd390f3`), not just the current
+source runner. It verifies non-root, read-only, network-isolated startup, migrations,
+worker readiness and served assets. `test_portal_image_contract.py` reproduces the
+installed runner's environment with actual Dockerfile defaults and validates the
+explicit two-stage production assignments; an unknown explicit text ID still fails.

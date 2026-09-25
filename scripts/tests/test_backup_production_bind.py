@@ -329,6 +329,20 @@ class RestoredLayoutTests(unittest.TestCase):
                 patch.dict(backup.os.environ, {}, clear=True),
             ):
                 self.assertEqual(backup.preflight(root, backup.APP)["Id"], backup.APP)
+                stage_environment = {
+                    "CIF_COMFYUI_DEFAULT_INSTANCE_ID": "primary",
+                    "CIF_COMFYUI_TEXT_INSTANCE_ID": "promptgen",
+                }
+                services[backup.APP]["environment"].update(stage_environment)
+                # Editing runtime.env alone cannot pass the installed updater.
+                with self.assertRaisesRegex(RuntimeError, "Saved environment differs"):
+                    backup.preflight(root, backup.APP)
+                # Recreating the existing app applies configuration without changing
+                # its image or requiring a runner upgrade before the later portal update.
+                containers[backup.APP]["Config"]["Env"].extend(
+                    f"{key}={value}" for key, value in stage_environment.items()
+                )
+                self.assertEqual(backup.preflight(root, backup.APP)["Id"], backup.APP)
                 services[backup.APP]["environment"]["CIF_SESSION_SECRET"] = "changed"  # noqa: S105 - synthetic fixture
                 with self.assertRaisesRegex(RuntimeError, "Saved environment differs"):
                     backup.preflight(root, backup.APP)

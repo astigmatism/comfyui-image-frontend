@@ -103,25 +103,24 @@ assert instances[0].base_url == "http://127.0.0.1:9"
 assert instances[1].label == "Secondary"
 assert instances[1].base_url == "http://192.168.1.21:8189"
 assert instances[2].base_url == "http://comfyui-promptgen:8188"
-assert settings.comfyui_text_instance_id == "promptgen"
+assert settings.comfyui_text_instance_id is None
 '
 
 # A full runtime list supplied by an operator remains authoritative over the
 # bundled additional-worker default.
 docker run --rm --network none --entrypoint python \
   -e CIF_TEST_MODE=true \
-  -e CIF_COMFYUI_TEXT_INSTANCE_ID= \
   -e 'CIF_COMFYUI_INSTANCES=[{"id":"custom","label":"Custom","base_url":"http://127.0.0.1:9"}]' \
   "$IMAGE" -c '
 from app.config import get_settings
 settings = get_settings()
 assert [item.id for item in settings.configured_comfyui_instances] == ["custom"]
+assert settings.comfyui_text_instance_id is None
 '
 
 # An explicit empty additional list is the deliberate single-runtime opt-out.
 docker run --rm --network none --entrypoint python \
   -e CIF_TEST_MODE=true \
-  -e CIF_COMFYUI_TEXT_INSTANCE_ID= \
   -e CIF_COMFYUI_INSTANCE_ID=intentional-single \
   -e 'CIF_COMFYUI_ADDITIONAL_INSTANCES=[]' \
   "$IMAGE" -c '
@@ -131,4 +130,23 @@ assert settings.comfyui_instance_configuration_mode == "explicit"
 assert [item.id for item in settings.configured_comfyui_instances] == ["intentional-single"]
 '
 
-echo "Isolated container startup and two-runtime configuration smoke tests passed."
+# Use the unchanged runner currently installed on Samus, not just the updated
+# source runner: application releases do not replace the installed deployment tool.
+python3 scripts/portal-image-smoke.py "$IMAGE"
+
+# The real deployment supplies both assignments. Confirm that image defaults
+# cannot override the external environment or cause a different stage mapping.
+docker run --rm --network none --entrypoint python \
+  -e CIF_TEST_MODE=true \
+  -e 'CIF_COMFYUI_INSTANCES=[{"id":"primary","label":"GPU","base_url":"http://comfyui:8188"},{"id":"promptgen","label":"CPU","base_url":"http://comfyui-promptgen:8188"}]' \
+  -e CIF_COMFYUI_DEFAULT_INSTANCE_ID=primary \
+  -e CIF_COMFYUI_TEXT_INSTANCE_ID=promptgen \
+  "$IMAGE" -c '
+from app.config import get_settings
+settings = get_settings()
+assert settings.comfyui_default_instance_id == "primary"
+assert settings.comfyui_text_instance_id == "promptgen"
+assert [item.id for item in settings.configured_comfyui_instances] == ["primary", "promptgen"]
+'
+
+echo "Isolated startup, installed portal runner and fixed-stage configuration checks passed."

@@ -285,6 +285,13 @@ class PortalDockerTests(unittest.TestCase):
     def test_installed_entrypoint_runs_without_checkout_or_outer_credentials(self):
         # Run real Bash/Python/Alpine with precisely the portal's two mounts.
         # Stub Docker responses only, so this cannot launch a production job.
+        # Docker Desktop presents macOS bind ownership as root. Populate a disposable
+        # Linux volume so the real non-root deployment-owner check is exercised too.
+        volume = "cif-portal-fixture-" + uuid.uuid4().hex
+        subprocess.run(["docker", "volume", "create", volume], check=True, capture_output=True)
+        self.addCleanup(
+            subprocess.run, ["docker", "volume", "rm", volume], check=True, capture_output=True
+        )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             root.chmod(0o755)
@@ -327,6 +334,31 @@ class PortalDockerTests(unittest.TestCase):
                 "else: sys.exit(99)\n"
             )
             (root / "bin/docker").chmod(0o755)
+            deployment_mount = f"type=volume,source={volume},target={launch.ROOT}"
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--user",
+                    "0:0",
+                    "--mount",
+                    f"type=bind,source={root},target=/fixture,readonly",
+                    "--mount",
+                    deployment_mount,
+                    "--entrypoint",
+                    "python3",
+                    self.image,
+                    "-c",
+                    "import os, shutil; from pathlib import Path; "
+                    f"target=Path({launch.ROOT!r}); "
+                    "shutil.copytree('/fixture', target, dirs_exist_ok=True); "
+                    "[os.chown(p, 1000, 1000) for p in [target, *target.rglob('*')]]",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
             for code in (0, 7):
                 result = subprocess.run(
                     [
@@ -334,9 +366,9 @@ class PortalDockerTests(unittest.TestCase):
                         "run",
                         "--rm",
                         "--user",
-                        f"{os.getuid()}:{os.getgid()}",
+                        "1000:1000",
                         "--mount",
-                        f"type=bind,source={root},target={launch.ROOT}",
+                        deployment_mount,
                         "--mount",
                         "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock",
                         "--env",
