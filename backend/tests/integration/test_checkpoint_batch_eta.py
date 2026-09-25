@@ -107,12 +107,12 @@ def test_running_sibling_estimates_the_rest_of_the_checkpoint_batch(
         first_duration = float(first["generation_duration_seconds"])
         assert first_duration > 0.9
 
-        observed = _wait_eta(client, ids[1], "run_sibling", timeout=15)
+        observed = _wait_eta(client, ids[1], "batch", timeout=15)
         eta = observed["progress"]["eta"]
         started_at = _started_at(client, ids[1])
         updated_at = datetime.fromisoformat(str(eta["updated_at"]))
         elapsed = max(0.0, (updated_at.astimezone(UTC) - started_at).total_seconds())
-        assert eta["confidence"] == "medium"
+        assert eta["confidence"] == "low"
         remaining = float(eta["remaining_seconds"])
         assert 0 < remaining <= first_duration + 0.05
         assert remaining == pytest.approx(first_duration - elapsed, abs=0.15)
@@ -120,13 +120,6 @@ def test_running_sibling_estimates_the_rest_of_the_checkpoint_batch(
 
         for generation_id in ids[1:]:
             wait_for_status(client, generation_id, "succeeded", timeout=30)
-
-        # The finished run is fully torn down in the worker's in-memory state.
-        worker = client.app.state.container.worker
-        assert worker._generation_run_ids == {}
-        assert worker._run_members == {}
-        assert worker._run_sibling_durations == {}
-        assert worker._run_cohorts == {}
 
 
 def test_failed_sibling_is_excluded_from_the_batch_estimate(fake_state, settings_factory) -> None:
@@ -157,7 +150,7 @@ def test_failed_sibling_is_excluded_from_the_batch_estimate(fake_state, settings
             client, ids[1], "failed_with_artifacts", "failed_without_artifacts", timeout=30
         )
 
-        observed = _wait_eta(client, ids[2], "run_sibling", timeout=15)
+        observed = _wait_eta(client, ids[2], "batch", timeout=15)
         eta = observed["progress"]["eta"]
         started_at = _started_at(client, ids[2])
         updated_at = datetime.fromisoformat(str(eta["updated_at"]))
@@ -166,15 +159,12 @@ def test_failed_sibling_is_excluded_from_the_batch_estimate(fake_state, settings
         # Only the healthy sibling is in evidence: the estimate tracks its
         # duration, not the average of healthy plus failed durations.
         assert float(eta["remaining_seconds"]) == pytest.approx(first_duration - elapsed, abs=0.15)
-        assert eta["confidence"] == "medium"
+        assert eta["confidence"] == "low"
 
         wait_for_status(client, ids[2], "succeeded", timeout=30)
-        worker = client.app.state.container.worker
-        assert worker._run_sibling_durations == {}
-        assert worker._run_members == {}
 
 
-def test_audit_folds_total_checkpoint_scope_and_single_generation_recalls_it(
+def test_verified_history_is_durable_and_single_generation_recalls_it(
     fake_state, settings_factory
 ) -> None:
     fake_state.workflow_files = dict(build_publication_bundle("moody").files)
@@ -202,7 +192,7 @@ def test_audit_folds_total_checkpoint_scope_and_single_generation_recalls_it(
             with client.app.state.container.db.session_factory() as session:
                 row = session.scalar(
                     select(GenerationTimingProfile).where(
-                        GenerationTimingProfile.scope == "total_checkpoint"
+                        GenerationTimingProfile.scope == "verified"
                     )
                 )
             if row is not None:
@@ -211,17 +201,15 @@ def test_audit_folds_total_checkpoint_scope_and_single_generation_recalls_it(
         assert row is not None
         assert row.sample_count == 3
 
-        # A single generation keeps the checkpoint cohort (same source, model
-        # variant, prompt size, resolution) but changes its exact
-        # configuration, so only the checkpoint scope can recall it.
+        # A new submission uses verified matching history, outside the original batch.
         single = _post(
             client,
             "/api/generations",
-            _moody_payload(client, prompt, enable_seedvr2_upscale=True),
+            _moody_payload(client, prompt),
         )
-        observed = _wait_eta(client, single["id"], "historical_checkpoint", timeout=15)
+        observed = _wait_eta(client, single["id"], "historical_exact", timeout=15)
         eta = observed["progress"]["eta"]
-        assert eta["confidence"] == "low"
+        assert eta["sample_count"] == 3
         assert float(eta["remaining_seconds"]) >= 0
         wait_for_status(client, single["id"], "succeeded", timeout=30)
 
@@ -264,15 +252,23 @@ def test_fresh_worker_reseeds_completed_siblings_from_the_database(
             first.completed_at = completed_at
             session.commit()
 
-        worker = client.app.state.container.worker
-        worker._register_run_timing(second_id)
-
-        run_id = worker._generation_run_ids[second_id]
-        assert worker._run_cohorts[ids[1]] is not None
-        assert [
-            sample[1] for sample in worker._run_sibling_durations[run_id].values()
-        ] == pytest.approx([1.5])
-
+        estimator = client.app.state.container.generation_eta
+        # Application wall time alone is deliberately insufficient after restart.
         with client.app.state.container.db.session_factory() as session:
             second = session.get(Generation, second_id)
-        assert worker._sibling_durations_for(second) == pytest.approx((1.5,))
+            assert estimator.duration(second) is None
+            first = session.get(Generation, first_id)
+            first.comfyui_prompt_id = "recovered"
+            first.execution_timing_json = {
+                "version": 3,
+                "prompt_id": "recovered",
+                "provenance": "native",
+                "started_at": started_at.isoformat(),
+                "finished_at": completed_at.isoformat(),
+                "duration_seconds": 1.5,
+            }
+            estimator.record_success(session, first)
+            session.commit()
+        estimator.refresh()
+        assert estimator.duration(second).seconds == pytest.approx(1.5)
+        assert estimator.duration(second).basis == "batch"

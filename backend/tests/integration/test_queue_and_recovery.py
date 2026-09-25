@@ -415,11 +415,11 @@ def test_orphaned_live_prompt_releases_slot_for_next_generation(
         completed = wait_for_status(client, successor["id"], "succeeded", timeout=10)
 
         assert interrupted["error_code"] == "execution_interrupted"
-        assert interrupted["comfyui_status"] == {
-            "status_str": "running",
-            "completed": False,
-            "messages": [],
-        }
+        assert interrupted["comfyui_status"]["status_str"] == "running"
+        assert interrupted["comfyui_status"]["completed"] is False
+        assert [message[0] for message in interrupted["comfyui_status"]["messages"]] == [
+            "execution_start"
+        ]
         assert completed["canonical_artifact_id"] is not None
         assert [item["prompt"] for item in fake_state.submitted] == [
             "orphaned outside app",

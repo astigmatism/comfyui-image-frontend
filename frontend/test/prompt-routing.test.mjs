@@ -83,6 +83,5 @@ test("runtime selectors are absent and automatic status reports both assignments
   value.maxAutoGenerations = 20;
   value.automation = { snapshot: { generation: { comfyui_instance_id: "primary" }, prompt_generation: { comfyui_instance_id: "promptgen" } } };
   const activity = generationActivityMarkup(value);
-  assert.match(activity, /Image runtime: Primary/);
-  assert.match(activity, /Prompt runtime: Prompt Generator/);
+  assert.equal(activity, ""); // Enabled automation alone is not accepted image work.
 });

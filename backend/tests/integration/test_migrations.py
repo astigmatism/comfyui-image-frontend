@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "ab84d290e613"
+HEAD_REVISION = "ea93b51d708c"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -631,4 +631,63 @@ def test_instance_catalog_migration_preserves_cached_health_and_scopes_diagnosti
             connection.execute(text("SELECT instance_id FROM workflow_catalog_health")).scalar_one()
             == "primary"
         )
+    engine.dispose()
+
+
+def test_verified_timing_migration_invalidates_old_estimates_without_deleting_history(tmp_path):
+    import json
+
+    path = tmp_path / "timing-upgrade.sqlite3"
+    config = _config(path)
+    command.upgrade(config, LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    _insert_populated_legacy_rows(engine)
+    engine.dispose()
+    command.upgrade(config, "ab84d290e613")
+    engine = create_engine(f"sqlite:///{path}")
+    old_progress = {
+        "kind": "node",
+        "label": "Sampler",
+        "fraction": 0.5,
+        "eta": {"remaining_seconds": 43774},
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE generations SET progress_json = :progress WHERE id = :id"),
+            {"progress": json.dumps(old_progress), "id": LEGACY_GENERATION_ID},
+        )
+        before = connection.execute(
+            text(
+                "SELECT final_prompt, raw_history_json, compiled_graph_json "
+                "FROM generations WHERE id = :id"
+            ),
+            {"id": LEGACY_GENERATION_ID},
+        ).one()
+    engine.dispose()
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        after = connection.execute(
+            text(
+                "SELECT final_prompt, raw_history_json, compiled_graph_json "
+                "FROM generations WHERE id = :id"
+            ),
+            {"id": LEGACY_GENERATION_ID},
+        ).one()
+        assert after == before
+        progress = json.loads(
+            connection.execute(
+                text("SELECT progress_json FROM generations WHERE id = :id"),
+                {"id": LEGACY_GENERATION_ID},
+            ).scalar_one()
+        )
+        assert progress == {k: v for k, v in old_progress.items() if k != "eta"}
+        assert (
+            connection.execute(
+                text("SELECT execution_timing_json FROM generations WHERE id = :id"),
+                {"id": LEGACY_GENERATION_ID},
+            ).scalar_one()
+            is None
+        )
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     engine.dispose()

@@ -458,7 +458,7 @@ def test_idle_timing_audit_learns_matching_generation_eta(settings_factory, fake
 
         predicted = create_generation(
             client,
-            "different private subject and composition",
+            "first private calibration prompt",
             seed=9823,
         )
         running = wait_for_generation(
@@ -473,6 +473,8 @@ def test_idle_timing_audit_learns_matching_generation_eta(settings_factory, fake
         )
         eta = running["progress"]["eta"]
         assert set(eta) == {
+            "sample_count",
+            "model_version",
             "remaining_seconds",
             "completion_at",
             "lower_seconds",
@@ -483,7 +485,7 @@ def test_idle_timing_audit_learns_matching_generation_eta(settings_factory, fake
         }
         assert 0 <= eta["lower_seconds"] <= eta["remaining_seconds"] <= eta["upper_seconds"]
         assert eta["confidence"] == "low"
-        assert eta["basis"] in {"historical_exact", "progress_landmark"}
+        assert eta["basis"] == "historical_exact"
 
         completion_at = datetime.fromisoformat(eta["completion_at"])
         updated_at = datetime.fromisoformat(eta["updated_at"])
@@ -762,7 +764,10 @@ def test_cached_execution_reconciles_complete_history_without_ordinary_events(
         prompt_id = complete["prompt_id"]
         assert prompt_id
         client_id = str(fake_state.prompts[prompt_id]["client_id"])
-        assert [event["type"] for event in fake_state.event_log[client_id]] == ["execution_cached"]
+        assert [event["type"] for event in fake_state.event_log[client_id]] == [
+            "execution_start",
+            "execution_cached",
+        ]
 
         assert complete["artifact_count"] == 1
         assert {item["output_id"] for item in complete["artifacts"]} == {"final"}
@@ -816,7 +821,10 @@ def test_cached_hint_with_nonterminal_history_never_authorizes_success(
         prompt_id = interrupted["prompt_id"]
         assert prompt_id
         client_id = str(fake_state.prompts[prompt_id]["client_id"])
-        assert [event["type"] for event in fake_state.event_log[client_id]] == ["execution_cached"]
+        assert [event["type"] for event in fake_state.event_log[client_id]] == [
+            "execution_start",
+            "execution_cached",
+        ]
         assert interrupted["comfyui_status"] == {
             "status_str": "running",
             "completed": False,

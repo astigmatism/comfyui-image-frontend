@@ -1,3 +1,5 @@
+"""Execution-only timing evidence. Queue and delivery time never train this model."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,1349 +7,535 @@ import hashlib
 import json
 import logging
 import math
-import re
 import statistics
 import threading
-import time
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypeGuard
 
-from sqlalchemy import and_, delete, func, or_, select
-from sqlalchemy.orm import Session, load_only, sessionmaker
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from ..blocking import run_blocking
 from ..models import (
-    ACTIVE_STATUSES,
     Generation,
-    GenerationEvent,
     GenerationStatus,
     GenerationTimingAuditState,
     GenerationTimingProfile,
 )
 
 logger = logging.getLogger(__name__)
-
-TIMING_FEATURE_VERSION = 2
-_DEFAULT_AUDIT_INTERVAL_SECONDS = 300.0
-_DEFAULT_AUDIT_BATCH_SIZE = 24
-_DEFAULT_MAX_PROFILE_SAMPLES = 64
-_DEFAULT_MAX_PROFILES = 4_096
-_DEFAULT_AUDIT_TIME_BUDGET_SECONDS = 2.0
-_AUDIT_BUSY_TIMEOUT_MS = 250
-_AUDIT_STATE_KEY = "generation_eta"
-_MAX_ACTIVE_FEATURE_CACHE = 256
-_MAX_AUDIT_PROGRESS_EVENTS_PER_GENERATION = 64
+TIMING_FEATURE_VERSION = 3
 _MAX_SAMPLE_SECONDS = 7 * 24 * 60 * 60
-_PERFORMANCE_TOKENS = frozenset(
-    {
-        "batch",
-        "count",
-        "frame",
-        "iteration",
-        "pass",
-        "sample",
-        "step",
-        "tile",
-    }
-)
-_CONTENT_TOKENS = frozenset({"caption", "content", "negative_prompt", "prompt", "text"})
-_CHECKPOINT_ROLES = frozenset({"model", "checkpoint"})
-_TOTAL_SCOPES = (
-    "total_exact",
-    "total_checkpoint",
-    "total_revision_resolution",
-    "total_revision",
-    "total_source",
-    "total_instance",
-)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    try:
+        return _aware_utc(datetime.fromisoformat(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _number(value: Any) -> TypeGuard[int | float]:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def is_checkpoint_declaration(declaration: Mapping[str, Any] | None) -> bool:
+    return bool(
+        isinstance(declaration, Mapping)
+        and declaration.get("type") == "choice"
+        and (
+            declaration.get("semantic_role") in {"model", "checkpoint"}
+            or declaration.get("id") == "checkpoint"
+        )
+    )
 
 
 @dataclass(frozen=True)
 class GenerationTimingFeatures:
-    """Versioned hashes of timing-relevant, non-content generation features."""
+    compute_key: str
+    width: int | None
+    height: int | None
+    prompt_length: int
 
-    exact_key: str
-    revision_resolution_key: str
-    revision_key: str
-    source_key: str
-    instance_key: str
-    checkpoint_key: str | None = None
-    compatible_key: str | None = None
-    feature_version: int = TIMING_FEATURE_VERSION
+    @property
+    def exact_key(self) -> str:
+        return _digest(asdict(self))
 
-    def total_profile_keys(self) -> tuple[tuple[str, str], ...]:
-        keys: list[tuple[str, str]] = [(_TOTAL_SCOPES[0], self.exact_key)]
-        if self.checkpoint_key is not None:
-            keys.append((_TOTAL_SCOPES[1], self.checkpoint_key))
-        keys.extend(
-            (
-                (_TOTAL_SCOPES[2], self.revision_resolution_key),
-                (_TOTAL_SCOPES[3], self.revision_key),
-                (_TOTAL_SCOPES[4], self.source_key),
-                (_TOTAL_SCOPES[5], self.instance_key),
-            )
-        )
-        return tuple(keys)
-
-    def persisted_hashes(self) -> dict[str, Any]:
-        return {
-            "feature_version": self.feature_version,
-            **{scope: key for scope, key in self.total_profile_keys()},
-        }
-
-
-@dataclass(frozen=True)
-class _ProfileSnapshot:
-    median_seconds: float
-    lower_seconds: float
-    upper_seconds: float
-    sample_count: int
-    recent_sample_count: int
-    samples: tuple[float, ...] = ()
-
-
-_BASIS_ORDER = (
-    "run_sibling",
-    "progress_landmark",
-    "historical_exact",
-    "historical_checkpoint",
-    "run_sibling_compatible",
-    "historical_revision_resolution",
-    "historical_revision",
-    "historical_source",
-    "historical_instance",
-)
-
-
-@dataclass
-class _Deadline:
-    attempt: datetime
-    evidence: tuple[Any, ...]
-    basis: str
-    completion: datetime
-    lower: datetime
-    upper: datetime
-    confidence: str
-    progress_at: datetime | None
-    seen_landmarks: set[str]
-
-
-@dataclass(frozen=True)
-class _RecentCompletion:
-    features: GenerationTimingFeatures
-    seconds: float
-    completed_at: datetime
-
-
-@dataclass(frozen=True)
-class _AuditBatchResult:
-    observed: int
-    has_more: bool
-    profile_updates: dict[tuple[str, str], _ProfileSnapshot]
-    removed_profile_keys: frozenset[tuple[str, str]]
-    observed_through: tuple[datetime, str] | None = None
-
-
-def _empty_audit_result() -> _AuditBatchResult:
-    return _AuditBatchResult(
-        observed=0,
-        has_more=False,
-        profile_updates={},
-        removed_profile_keys=frozenset(),
-    )
-
-
-def is_checkpoint_declaration(declaration: Mapping[str, Any] | None) -> bool:
-    """True for the contract choice input that selects the checkpoint model.
-
-    Mirrors the selector rule used to display the checkpoint label: a ``choice``
-    input whose semantic role is ``model`` or ``checkpoint``, or whose id is
-    ``checkpoint``.
-    """
-    if not isinstance(declaration, Mapping) or declaration.get("type") != "choice":
-        return False
-    semantic_role = declaration.get("semantic_role")
-    if isinstance(semantic_role, str) and semantic_role in _CHECKPOINT_ROLES:
-        return True
-    control_id = declaration.get("id")
-    return isinstance(control_id, str) and control_id == "checkpoint"
-
-
-def _prompt_size_bucket(length: int) -> int:
-    """Coarse content-free prompt-length band (0..8); prompt text is never stored."""
-    if length <= 0:
-        return 0
-    return min(8, math.floor(math.log2(length + 1)) // 2)
+    def comparable(self, other: GenerationTimingFeatures) -> bool:
+        if self.compute_key != other.compute_key:
+            return False
+        if (
+            max(self.prompt_length + 32, other.prompt_length + 32)
+            / min(self.prompt_length + 32, other.prompt_length + 32)
+            > 1.5
+        ):
+            return False
+        if None in (self.width, self.height, other.width, other.height):
+            return (self.width, self.height) == (other.width, other.height)
+        assert self.width and self.height and other.width and other.height
+        pixels = self.width * self.height / (other.width * other.height)
+        aspect = (self.width / self.height) / (other.width / other.height)
+        return 0.8 <= pixels <= 1.25 and 0.8 <= aspect <= 1.25
 
 
 def build_generation_timing_features(generation: Generation) -> GenerationTimingFeatures:
-    """Return only hashes; prompt, seed, owner, asset IDs, and other content are excluded."""
-
-    source_data = _mapping(getattr(generation, "generation_source_json", None))
-    instance_id = _bounded_identity(
-        getattr(generation, "comfyui_instance_id", None) or source_data.get("instance_id"),
-        fallback="unknown-instance",
-    )
-    source_identity = _bounded_identity(
-        source_data.get("source_key"),
-        fallback=_bounded_identity(
-            getattr(generation, "workflow_id", None), fallback="unknown-source"
-        ),
-    )
-    api_revision = _bounded_identity(
-        source_data.get("api_sha256") or getattr(generation, "api_graph_sha256", None),
-        fallback="unknown-api-revision",
-    )
-
-    instance_key = _digest("instance", {"instance": instance_id})
-    source_key = _digest(
-        "source",
-        {"instance": instance_id, "source": source_identity},
-    )
-    revision_key = _digest(
-        "revision",
-        {
-            "instance": instance_id,
-            "source": source_identity,
-            "api_revision": api_revision,
-        },
-    )
-
-    contract = _mapping(getattr(generation, "resolved_contract_json", None))
-    effective = _mapping(getattr(generation, "effective_controls_json", None))
-    definitions = contract.get("inputs") or contract.get("controls") or []
-    if not isinstance(definitions, list):
-        definitions = []
-
-    width: int | None = None
-    height: int | None = None
-    performance_controls: dict[str, Any] = {}
-    checkpoint_value: str | None = None
-    for raw_definition in definitions:
-        if not isinstance(raw_definition, Mapping):
-            continue
-        control_id = raw_definition.get("id")
-        if not isinstance(control_id, str) or not control_id:
-            continue
-        input_type = str(raw_definition.get("type", ""))
-        semantic_role = str(raw_definition.get("semantic_role", ""))
-        value = effective.get(control_id)
-
-        if checkpoint_value is None and is_checkpoint_declaration(raw_definition):
-            bounded = _bounded_choice(value)
-            if isinstance(bounded, str) and bounded:
-                checkpoint_value = bounded
-        if semantic_role == "width":
-            width = _positive_integer(value) or width
-            continue
-        if semantic_role == "height":
-            height = _positive_integer(value) or height
-            continue
-        if input_type == "resolution" and isinstance(value, Mapping):
-            width = _positive_integer(value.get("width")) or width
-            height = _positive_integer(value.get("height")) or height
-            continue
-        if input_type == "image" and isinstance(value, Mapping):
-            media_width = _positive_integer(value.get("width"))
-            media_height = _positive_integer(value.get("height"))
-            if media_width and media_height:
-                performance_controls[control_id] = {
-                    "media_pixel_bucket": _pixel_bucket(media_width, media_height),
-                    "media_aspect_bucket": _aspect_bucket(media_width, media_height),
-                }
-            continue
-        if _is_content_or_seed(input_type, semantic_role, control_id):
-            continue
-        if input_type == "boolean" and isinstance(value, bool):
-            performance_controls[control_id] = value
-        elif input_type in {"asset_selector", "choice", "enum"} and isinstance(
-            value, (str, int, float, bool)
-        ):
-            performance_controls[control_id] = _bounded_choice(value)
-        elif input_type in {"integer", "number"} and _is_performance_numeric(
-            semantic_role, control_id
-        ):
-            numeric = _finite_number(value)
-            if numeric is not None:
-                performance_controls[control_id] = numeric
-
-    resolution_shape = {
-        "pixel_bucket": _pixel_bucket(width, height),
-        "aspect_bucket": _aspect_bucket(width, height),
-    }
-    revision_resolution_key = _digest(
-        "revision-resolution",
-        {"revision": revision_key, "resolution": resolution_shape},
-    )
-    final_prompt = getattr(generation, "final_prompt", None)
-    prompt_bucket = _prompt_size_bucket(len(final_prompt) if isinstance(final_prompt, str) else 0)
-    exact_shape = {
-        "revision_resolution": revision_resolution_key,
-        "width": width,
-        "height": height,
-        "controls": performance_controls,
-        "prompt_bucket": prompt_bucket,
-        "preset": _bounded_choice(getattr(generation, "selected_preset", None)),
-        "requested_outputs": sorted(
-            value[:200]
-            for value in (getattr(generation, "requested_outputs_json", None) or [])
-            if isinstance(value, str) and value
-        ),
-    }
-    exact_key = _digest("exact", exact_shape)
-    checkpoint_ids = {
-        definition.get("id")
-        for definition in definitions
-        if isinstance(definition, Mapping) and is_checkpoint_declaration(definition)
-    }
-    compatible_key = (
-        _digest(
-            "checkpoint-compatible",
-            {
-                **exact_shape,
-                "controls": {
-                    key: value
-                    for key, value in performance_controls.items()
-                    if key not in checkpoint_ids
-                },
-            },
-        )
-        if checkpoint_value is not None
-        else None
-    )
-    # The checkpoint scope deliberately omits the API revision: a republished
-    # source keeps its model-variant cohort, while revision sensitivity is
-    # already covered by total_revision_resolution further down the ladder.
-    # Prompt size enters only as a coarse length band; prompt text is never hashed.
-    checkpoint_key: str | None = None
-    if checkpoint_value is not None:
-        checkpoint_key = _digest(
-            "checkpoint",
-            {
-                "instance": instance_id,
-                "source": source_identity,
-                "checkpoint": checkpoint_value,
-                "prompt_bucket": prompt_bucket,
-                "resolution": resolution_shape,
-            },
-        )
-    return GenerationTimingFeatures(
-        exact_key=exact_key,
-        revision_resolution_key=revision_resolution_key,
-        revision_key=revision_key,
-        source_key=source_key,
-        instance_key=instance_key,
-        checkpoint_key=checkpoint_key,
-        compatible_key=compatible_key,
-    )
-
-
-def build_progress_landmark_key(
-    features: GenerationTimingFeatures,
-    progress: Mapping[str, Any] | None,
-) -> str | None:
-    """Hash an exact-feature/current-node decile; it is not a workflow percentage."""
-
-    if not isinstance(progress, Mapping) or progress.get("kind") != "node":
-        return None
-    node_id = next(
-        (
-            str(value).strip()
-            for value in (
-                progress.get("display_node_id"),
-                progress.get("real_node_id"),
-                progress.get("node_id"),
+    contract = generation.resolved_contract_json or {}
+    effective = generation.effective_controls_json or {}
+    source = generation.generation_source_json or {}
+    controls: dict[str, Any] = {}
+    width = height = None
+    for definition in contract.get("inputs", contract.get("controls", [])):
+        key = definition.get("id")
+        value = effective.get(key)
+        kind, role = definition.get("type", ""), definition.get("semantic_role", "")
+        if role in {"width", "height"}:
+            if role == "width":
+                width = value
+            else:
+                height = value
+        elif kind == "resolution" and isinstance(value, Mapping):
+            width, height = value.get("width"), value.get("height")
+        elif kind == "image":
+            controls[key] = (
+                {k: value.get(k) for k in ("width", "height")}
+                if isinstance(value, Mapping)
+                else None
             )
-            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value).strip()
+        elif (
+            kind not in {"string", "multiline_string", "seed"}
+            and "seed" not in str(role)
+            and "prompt" not in str(role)
+        ):
+            controls[key] = value
+    width = width if isinstance(width, int) and not isinstance(width, bool) and width > 0 else None
+    height = (
+        height if isinstance(height, int) and not isinstance(height, bool) and height > 0 else None
+    )
+    return GenerationTimingFeatures(
+        compute_key=_digest(
+            {
+                "version": TIMING_FEATURE_VERSION,
+                "instance": generation.comfyui_instance_id,
+                "source": source.get("source_key", generation.workflow_id),
+                "revision": [
+                    generation.api_graph_sha256,
+                    generation.contract_sha256,
+                    source.get("manifest_sha256"),
+                ],
+                "controls": controls,
+                "preset": generation.selected_preset,
+                "outputs": sorted(generation.requested_outputs_json or []),
+            }
         ),
-        None,
+        width=width,
+        height=height,
+        prompt_length=len(generation.final_prompt or ""),
     )
-    fraction = _progress_fraction(progress)
-    if node_id is None or fraction is None:
+
+
+def execution_start(generation: Generation) -> datetime | None:
+    timing = generation.execution_timing_json or {}
+    if (
+        timing.get("version") != TIMING_FEATURE_VERSION
+        or timing.get("prompt_id") != generation.comfyui_prompt_id
+    ):
         return None
-    decile = min(10, max(0, math.floor(fraction * 10)))
-    return _digest(
-        "progress-landmark",
-        {
-            "exact": features.exact_key,
-            "node": node_id[:100],
-            "decile": decile,
-        },
+    # Anchor the active countdown to this server's event receipt, not another host's clock.
+    return _parse_timestamp(timing.get("observed_started_at") or timing.get("started_at"))
+
+
+def verified_duration(generation: Generation) -> float | None:
+    timing = generation.execution_timing_json or {}
+    seconds = timing.get("duration_seconds")
+    if (
+        timing.get("version") == TIMING_FEATURE_VERSION
+        and timing.get("prompt_id") == generation.comfyui_prompt_id
+        and timing.get("provenance") in {"native", "monotonic"}
+        and _number(seconds)
+        and 0 < seconds <= _MAX_SAMPLE_SECONDS
+    ):
+        return float(seconds)
+    return None
+
+
+def native_execution_timing(
+    history: Mapping[str, Any], prompt_id: str | None
+) -> dict[str, Any] | None:
+    """Pair native millisecond timestamps for this prompt, never application timestamps."""
+    status = history.get("status", {})
+    if not isinstance(status, Mapping) or status.get("status_str") != "success" or not prompt_id:
+        return None
+    starts: list[float] = []
+    finishes: list[float] = []
+    cached: set[str] = set()
+    messages = status.get("messages", [])
+    if not isinstance(messages, list):
+        return None
+    for message in messages:
+        if not isinstance(message, (list, tuple)) or len(message) != 2:
+            continue
+        kind, data = message
+        if not isinstance(data, Mapping) or data.get("prompt_id") != prompt_id:
+            continue
+        if kind == "execution_cached" and isinstance(data.get("nodes"), list):
+            cached.update(
+                str(node) for node in data.get("nodes", []) if isinstance(node, (str, int))
+            )
+        stamp = data.get("timestamp")
+        if (
+            not _number(stamp)
+            or not 1_000_000_000_000 <= stamp <= datetime.now(UTC).timestamp() * 1000 + 300_000
+        ):
+            continue
+        if kind == "execution_start":
+            starts.append(float(stamp))
+        elif kind == "execution_success":
+            finishes.append(float(stamp))
+    # Identical duplicate delivery is harmless; ambiguous attempts are not evidence.
+    if len(set(starts)) != 1 or len(set(finishes)) != 1:
+        return None
+    prompt = history.get("prompt", [])
+    graph = (
+        prompt[2]
+        if isinstance(prompt, list) and len(prompt) > 2 and isinstance(prompt[2], Mapping)
+        else {}
     )
+    if graph and set(graph).issubset(cached):
+        return None
+    seconds = (finishes[0] - starts[0]) / 1000
+    if not 0 < seconds <= _MAX_SAMPLE_SECONDS:
+        return None
+    return {
+        "version": TIMING_FEATURE_VERSION,
+        "prompt_id": prompt_id,
+        "provenance": "native",
+        "started_at": datetime.fromtimestamp(starts[0] / 1000, UTC).isoformat(),
+        "finished_at": datetime.fromtimestamp(finishes[0] / 1000, UTC).isoformat(),
+        "duration_seconds": seconds,
+    }
+
+
+@dataclass(frozen=True)
+class DurationEstimate:
+    seconds: float
+    lower: float
+    upper: float
+    basis: str
+    sample_count: int
+    confidence: str
+
+
+def reliable_statistics(samples: Sequence[float], basis: str) -> DurationEstimate | None:
+    clean = [float(v) for v in samples if _number(v) and 0 < v <= _MAX_SAMPLE_SECONDS]
+    if not clean:
+        return None
+    median = statistics.median(clean)
+    mad = statistics.median(abs(v - median) for v in clean)
+    if len(clean) >= 3:
+        tolerance = max(3 * mad, median * 0.25, 2)
+        retained = [v for v in clean if abs(v - median) <= tolerance]
+        if len(retained) <= len(clean) // 2:
+            return None
+        clean = retained
+    if max(clean) / min(clean) > 2:
+        return None
+    median = statistics.median(clean)
+    spread = statistics.median(abs(v - median) for v in clean) / median
+    confidence = (
+        "high"
+        if len(clean) >= 5 and spread <= 0.1
+        else "medium"
+        if len(clean) >= 2 and spread <= 0.25
+        else "low"
+    )
+    if basis == "historical_nearby" and confidence == "high":
+        confidence = "medium"
+    return DurationEstimate(
+        median,
+        min(min(clean), median * 0.75),
+        max(max(clean), median * 1.25),
+        basis,
+        len(clean),
+        confidence,
+    )
+
+
+def eta_payload(duration: DurationEstimate, origin: datetime, now: datetime) -> dict[str, Any]:
+    completion = origin + timedelta(seconds=duration.seconds)
+    remaining = max(0, (completion - now).total_seconds())
+    return {
+        "remaining_seconds": round(remaining, 3),
+        "completion_at": completion.isoformat(),
+        "lower_seconds": round(
+            max(0, (origin + timedelta(seconds=duration.lower) - now).total_seconds()), 3
+        ),
+        "upper_seconds": round(
+            max(remaining, (origin + timedelta(seconds=duration.upper) - now).total_seconds()), 3
+        ),
+        "confidence": duration.confidence if remaining else "low",
+        "basis": duration.basis,
+        "sample_count": duration.sample_count,
+        "model_version": TIMING_FEATURE_VERSION,
+        "updated_at": now.isoformat(),
+    }
 
 
 class GenerationEtaEstimator:
-    """In-memory ETA lookup backed by bounded, idle-maintained SQLite profiles."""
+    """Bounded cache of durable, verified samples grouped by compute identity."""
 
     def __init__(
         self,
         session_factory: sessionmaker[Session],
         *,
-        audit_interval_seconds: float = _DEFAULT_AUDIT_INTERVAL_SECONDS,
-        audit_batch_size: int = _DEFAULT_AUDIT_BATCH_SIZE,
-        max_profile_samples: int = _DEFAULT_MAX_PROFILE_SAMPLES,
-        max_profiles: int = _DEFAULT_MAX_PROFILES,
-        audit_time_budget_seconds: float = _DEFAULT_AUDIT_TIME_BUDGET_SECONDS,
+        max_profile_samples: int = 64,
+        max_profiles: int = 4096,
+        audit_interval_seconds: float = 300,
+        audit_batch_size: int = 24,
+        audit_time_budget_seconds: float = 2,
     ) -> None:
         self.session_factory = session_factory
-        self.audit_interval_seconds = max(0.05, float(audit_interval_seconds))
-        self.audit_batch_size = max(1, int(audit_batch_size))
-        self.max_profile_samples = max(8, int(max_profile_samples))
-        self.max_profiles = max(8, int(max_profiles))
-        self.max_total_profiles = max(5, self.max_profiles * 3 // 4)
-        self.max_landmark_profiles = self.max_profiles - self.max_total_profiles
-        self.audit_time_budget_seconds = max(0.05, float(audit_time_budget_seconds))
-        self._profiles: dict[tuple[str, str], _ProfileSnapshot] = {}
-        self._feature_cache: OrderedDict[str, GenerationTimingFeatures] = OrderedDict()
-        self._deadlines: OrderedDict[str, _Deadline] = OrderedDict()
-        self._recent: OrderedDict[str, _RecentCompletion] = OrderedDict()
-        self._audited_through: tuple[datetime, str] | None = None
-        self._stop_event = asyncio.Event()
-        self._wake_event = asyncio.Event()
-        self._audit_stop_event = threading.Event()
-        self._audit_connection_lock = threading.Lock()
-        self._audit_connection: Any | None = None
-        self._maintenance_task: asyncio.Task[None] | None = None
+        self.max_profile_samples = max(5, max_profile_samples)
+        self.max_profiles = max(1, max_profiles)
+        self.audit_interval_seconds = audit_interval_seconds
+        self.audit_batch_size = audit_batch_size
+        self._profiles: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        self._lock = threading.RLock()
+        self._wake = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self.revision = 0
 
     async def start(self) -> None:
-        if self._maintenance_task is not None:
-            if not self._maintenance_task.done():
-                return
-            self._maintenance_task.result()
-        self._audit_stop_event.clear()
-        self._profiles = await run_blocking(self._load_profiles)
+        await run_blocking(self._load_profiles)
         self._loop = asyncio.get_running_loop()
-        self._stop_event.clear()
-        self._wake_event.set()
-        self._maintenance_task = asyncio.create_task(
+        self._task = asyncio.create_task(
             self._maintenance_loop(), name="generation-eta-maintenance"
         )
+        self._wake.set()
 
     async def stop(self) -> None:
-        task = self._maintenance_task
-        self._maintenance_task = None
-        self._stop_event.set()
-        self._audit_stop_event.set()
-        self._interrupt_audit_connection()
-        self.notify()
-        if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
-        self._feature_cache.clear()
-        self._deadlines.clear()
-        self._recent.clear()
+        if self._task:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
         self._loop = None
 
     def notify(self) -> None:
-        """Wake maintenance after a terminal commit without doing database work inline."""
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._wake.set)
 
-        loop = self._loop
-        if loop is None or loop.is_closed():
+    def _load_profiles(self) -> None:
+        with self._lock, self.session_factory() as session:
+            session.execute(
+                delete(GenerationTimingProfile).where(
+                    GenerationTimingProfile.feature_version != TIMING_FEATURE_VERSION
+                )
+            )
+            rows = session.scalars(
+                select(GenerationTimingProfile)
+                .where(
+                    GenerationTimingProfile.feature_version == TIMING_FEATURE_VERSION,
+                    GenerationTimingProfile.scope == "verified",
+                )
+                .order_by(GenerationTimingProfile.updated_at.desc())
+                .limit(self.max_profiles)
+            ).all()
+            with self._lock:
+                self._profiles = OrderedDict((r.scope_key, r.samples_json) for r in reversed(rows))
+                self.revision += 1
+            session.commit()
+
+    def record_success(self, session: Session, generation: Generation) -> None:
+        seconds = verified_duration(generation)
+        if generation.status != GenerationStatus.SUCCEEDED or seconds is None:
             return
-        loop.call_soon_threadsafe(self._wake_event.set)
-
-    def _interrupt_audit_connection(self) -> None:
-        with self._audit_connection_lock:
-            connection = self._audit_connection
-        interrupt = getattr(connection, "interrupt", None)
-        if callable(interrupt):
-            with suppress(Exception):
-                interrupt()
-
-    def forget(self, generation_id: str) -> None:
-        self._deadlines.pop(generation_id, None)
-        self._feature_cache.pop(generation_id, None)
-
-    def observe_success(
-        self,
-        generation_id: str,
-        features: GenerationTimingFeatures,
-        seconds: float,
-        completed_at: datetime,
-    ) -> None:
-        """Publish bounded live evidence; durable training still happens only when idle."""
-        completed_at = _aware_utc(completed_at)
-        if not _valid_sibling_durations([seconds]):
+        assert generation.execution_timing_json is not None
+        features = build_generation_timing_features(generation)
+        key = features.compute_key
+        profile_id = _digest([TIMING_FEATURE_VERSION, key])
+        row = session.get(GenerationTimingProfile, profile_id)
+        samples = list(row.samples_json) if row else []
+        if any(s.get("id") == generation.id for s in samples):
             return
-        if self._audited_through and (completed_at, generation_id) <= self._audited_through:
-            return
-        self._recent[generation_id] = _RecentCompletion(features, seconds, completed_at)
-        self._recent.move_to_end(generation_id)
-        while len(self._recent) > self.max_profile_samples:
-            self._recent.popitem(last=False)
-
-    def _profile_for(self, scope: str, key: str) -> _ProfileSnapshot | None:
-        persisted = self._profiles.get((scope, key))
-        recent = [
-            sample.seconds
-            for sample in self._recent.values()
-            if (scope, key) in sample.features.total_profile_keys()
+        sample = {
+            "id": generation.id,
+            "batch": generation.timing_batch_id,
+            "features": asdict(features),
+            "seconds": seconds,
+            "finished_at": generation.execution_timing_json["finished_at"],
+        }
+        samples = sorted([*samples, sample], key=lambda s: (s["finished_at"], s["id"]))[
+            -self.max_profile_samples :
         ]
-        if not recent:
-            return persisted
-        samples = [*(persisted.samples if persisted else ()), *recent][-self.max_profile_samples :]
-        median, lower, upper = _robust_stats(samples)
-        return _ProfileSnapshot(
-            median,
-            lower,
-            upper,
-            (persisted.sample_count if persisted else 0) + len(recent),
-            len(samples),
-            tuple(samples),
+        stats = reliable_statistics([s["seconds"] for s in samples], "historical_exact")
+        if row is None:
+            row = GenerationTimingProfile(
+                id=profile_id,
+                feature_version=TIMING_FEATURE_VERSION,
+                scope="verified",
+                scope_key=key,
+                sample_count=0,
+                median_seconds=0,
+                lower_seconds=0,
+                upper_seconds=0,
+            )
+            session.add(row)
+        row.samples_json = samples
+        row.sample_count = len(samples)
+        row.median_seconds = stats.seconds if stats else 0
+        row.lower_seconds = stats.lower if stats else 0
+        row.upper_seconds = stats.upper if stats else 0
+        row.updated_at = max(
+            _parse_timestamp(s["finished_at"]) or datetime.now(UTC) for s in samples
         )
+        session.flush()
+        old_ids = list(
+            session.scalars(
+                select(GenerationTimingProfile.id)
+                .order_by(GenerationTimingProfile.updated_at.desc(), GenerationTimingProfile.id)
+                .offset(self.max_profiles)
+            )
+        )
+        if old_ids:
+            session.execute(
+                delete(GenerationTimingProfile).where(GenerationTimingProfile.id.in_(old_ids))
+            )
+        # Cache publication is performed after commit by the caller.
+        logger.info(
+            "generation_timing_sample",
+            extra={
+                "duration_seconds": seconds,
+                "provenance": generation.execution_timing_json["provenance"],
+                "model_version": TIMING_FEATURE_VERSION,
+            },
+        )
+
+    def refresh(self, generation_id: str | None = None) -> None:
+        if generation_id is None:
+            self._load_profiles()
+            return
+        with self._lock, self.session_factory() as session:
+            generation = session.get(Generation, generation_id)
+            if generation is None:
+                return
+            key = build_generation_timing_features(generation).compute_key
+            row = session.get(GenerationTimingProfile, _digest([TIMING_FEATURE_VERSION, key]))
+            if row:
+                self._profiles[key] = row.samples_json
+                self._profiles.move_to_end(key)
+                while len(self._profiles) > self.max_profiles:
+                    self._profiles.popitem(last=False)
+                self.revision += 1
+
+    def duration(self, generation: Generation) -> DurationEstimate | None:
+        features = build_generation_timing_features(generation)
+        with self._lock:
+            samples = list(self._profiles.get(features.compute_key, []))
+        compatible = [
+            s
+            for s in samples
+            if s["id"] != generation.id
+            and features.comparable(GenerationTimingFeatures(**s["features"]))
+        ]
+        batch = [
+            s["seconds"]
+            for s in compatible
+            if generation.timing_batch_id and s["batch"] == generation.timing_batch_id
+        ][-5:]
+        exact = [s["seconds"] for s in compatible if s["features"] == asdict(features)][-20:]
+        nearby = [s["seconds"] for s in compatible][-20:]
+        for basis, values in (
+            ("batch", batch),
+            ("historical_exact", exact),
+            ("historical_nearby", nearby),
+        ):
+            if basis == "historical_nearby" and len(values) < 3:
+                continue
+            estimate = reliable_statistics(values, basis)
+            if estimate and (basis != "historical_nearby" or estimate.sample_count >= 3):
+                return estimate
+        return None
 
     def estimate(
         self,
         generation: Generation,
         progress: Mapping[str, Any] | None = None,
         now: datetime | None = None,
-        sibling_durations: Sequence[float] | None = None,
-        compatible_sibling_durations: Sequence[float] | None = None,
     ) -> dict[str, Any] | None:
-        generation_id = str(generation.id)
-        status = getattr(generation, "status", None)
-        normalized_status = status.value if isinstance(status, GenerationStatus) else str(status)
-        if normalized_status != GenerationStatus.RUNNING.value:
-            self.forget(generation_id)
+        start = execution_start(generation)
+        if generation.status != GenerationStatus.RUNNING or start is None:
             return None
-        started_at = getattr(generation, "started_at", None)
-        if not isinstance(started_at, datetime):
-            return None
-        started_at = _aware_utc(started_at)
-        current = _aware_utc(now or datetime.now(UTC))
-        previous = self._deadlines.get(generation_id)
-        if previous is not None and previous.attempt != started_at:
-            self.forget(generation_id)
-            previous = None
-        features = self._active_features(generation)
-        if progress is None:
-            saved = getattr(generation, "progress_json", None)
-            progress = saved if isinstance(saved, Mapping) else None
-        progress_at = _parse_timestamp(progress.get("updated_at")) if progress else None
-        stale = bool(
-            previous and previous.progress_at and progress_at and progress_at < previous.progress_at
+        duration = self.duration(generation)
+        return (
+            eta_payload(duration, start, _aware_utc(now or datetime.now(UTC))) if duration else None
         )
-        landmark_key = build_progress_landmark_key(features, progress)
-        profile: _ProfileSnapshot | None = None
-        basis = ""
-        evidence: tuple[Any, ...] = ()
-        for candidate in _BASIS_ORDER:
-            if candidate in {"run_sibling", "run_sibling_compatible"}:
-                samples = _valid_sibling_durations(
-                    sibling_durations
-                    if candidate == "run_sibling"
-                    else compatible_sibling_durations
-                )
-                if not samples:
-                    continue
-                median, lower, upper = _robust_stats(samples)
-                profile = _ProfileSnapshot(median, lower, upper, len(samples), len(samples))
-                evidence = (candidate, tuple(samples))
-            elif candidate == "progress_landmark":
-                if stale or landmark_key is None:
-                    continue
-                profile = self._profile_for("progress_landmark", landmark_key)
-                evidence = (candidate, landmark_key)
-            else:
-                scope = candidate.replace("historical_", "total_")
-                key = dict(features.total_profile_keys()).get(scope)
-                if key is None:
-                    continue
-                profile = self._profile_for(scope, key)
-                evidence = (candidate, key, profile)
-            if profile is not None:
-                basis = candidate
-                break
-
-        # The saved deadline survives process restarts and cache eviction. The progress
-        # snapshot is cleared on requeue, so it cannot belong to a previous attempt.
-        saved_progress = getattr(generation, "progress_json", None)
-        if not isinstance(saved_progress, Mapping) or not isinstance(
-            saved_progress.get("eta"), Mapping
-        ):
-            saved_progress = progress
-        if previous is None and saved_progress:
-            saved_eta = saved_progress.get("eta")
-            if isinstance(saved_eta, Mapping):
-                completion = _parse_timestamp(saved_eta.get("completion_at"))
-                updated = _parse_timestamp(saved_eta.get("updated_at"))
-                saved_basis = saved_eta.get("basis")
-                saved_lower = _finite_number(saved_eta.get("lower_seconds"))
-                saved_upper = _finite_number(saved_eta.get("upper_seconds"))
-                saved_progress_at = _parse_timestamp(saved_progress.get("updated_at"))
-                saved_landmark = build_progress_landmark_key(features, saved_progress)
-                if (
-                    completion
-                    and updated
-                    and updated >= started_at
-                    and saved_basis in _BASIS_ORDER
-                    and saved_lower is not None
-                    and saved_upper is not None
-                ):
-                    previous = _Deadline(
-                        started_at,
-                        evidence
-                        if basis == saved_basis
-                        and (basis != "progress_landmark" or landmark_key == saved_landmark)
-                        else (),
-                        str(saved_basis),
-                        completion,
-                        updated + timedelta(seconds=saved_lower),
-                        updated + timedelta(seconds=saved_upper),
-                        str(saved_eta.get("confidence", "low")),
-                        saved_progress_at,
-                        {saved_landmark}
-                        if saved_landmark and saved_basis == "progress_landmark"
-                        else set(),
-                    )
-                    if (
-                        basis == "progress_landmark"
-                        and saved_progress_at
-                        and progress_at
-                        and progress_at < saved_progress_at
-                    ):
-                        profile = None
-
-        revise = profile is not None and (
-            previous is None
-            or (
-                _BASIS_ORDER.index(basis) <= _BASIS_ORDER.index(previous.basis)
-                and evidence != previous.evidence
-                and not (basis == "progress_landmark" and landmark_key in previous.seen_landmarks)
-            )
-        )
-        if revise and profile is not None:
-            # A landmark measures residual time at entry, not at each progress tick.
-            origin = (
-                max(started_at, min(current, progress_at or current))
-                if basis == "progress_landmark"
-                else started_at
-            )
-            confidence = (
-                ("high" if profile.sample_count >= 3 else "medium")
-                if basis == "run_sibling"
-                else _profile_confidence(profile)
-            )
-            seen = set(previous.seen_landmarks) if previous else set()
-            if basis == "progress_landmark" and landmark_key and len(seen) < 256:
-                seen.add(landmark_key)
-            previous = _Deadline(
-                started_at,
-                evidence,
-                basis,
-                origin + timedelta(seconds=profile.median_seconds),
-                origin + timedelta(seconds=profile.lower_seconds),
-                origin + timedelta(seconds=profile.upper_seconds),
-                _cap_confidence(confidence, basis),
-                progress_at,
-                seen,
-            )
-        if previous is None:
-            return None
-        if progress_at and (previous.progress_at is None or progress_at > previous.progress_at):
-            previous.progress_at = progress_at
-        self._deadlines[generation_id] = previous
-        self._deadlines.move_to_end(generation_id)
-        while len(self._deadlines) > _MAX_ACTIVE_FEATURE_CACHE:
-            self._deadlines.popitem(last=False)
-        remaining = max(0.0, (previous.completion - current).total_seconds())
-        return {
-            "remaining_seconds": round(remaining, 3),
-            "completion_at": previous.completion.isoformat(),
-            "lower_seconds": round(
-                max(0.0, min(remaining, (previous.lower - current).total_seconds())), 3
-            ),
-            "upper_seconds": round(max(remaining, (previous.upper - current).total_seconds()), 3),
-            "confidence": previous.confidence if remaining > 0 else "low",
-            "basis": previous.basis,
-            "updated_at": current.isoformat(),
-        }
-
-    def _active_features(self, generation: Generation) -> GenerationTimingFeatures:
-        generation_id = str(getattr(generation, "id", ""))
-        cached = self._feature_cache.get(generation_id)
-        if cached is not None:
-            self._feature_cache.move_to_end(generation_id)
-            return cached
-        features = build_generation_timing_features(generation)
-        self._feature_cache[generation_id] = features
-        if len(self._feature_cache) > _MAX_ACTIVE_FEATURE_CACHE:
-            self._feature_cache.popitem(last=False)
-        return features
 
     async def _maintenance_loop(self) -> None:
-        while not self._stop_event.is_set():
+        while True:
             with suppress(TimeoutError):
-                await asyncio.wait_for(self._wake_event.wait(), timeout=self.audit_interval_seconds)
-            self._wake_event.clear()
-            if self._stop_event.is_set():
-                return
+                await asyncio.wait_for(self._wake.wait(), timeout=self.audit_interval_seconds)
+            self._wake.clear()
             try:
-                result = await self._run_audit_batch()
-                self._apply_audit_result(result)
-                if result.has_more:
+                more = await run_blocking(self._audit_batch)
+                if more:
                     await asyncio.sleep(0.05)
-                    self._wake_event.set()
+                    self._wake.set()
             except asyncio.CancelledError:
-                self._audit_stop_event.set()
-                self._interrupt_audit_connection()
                 raise
             except Exception:
                 logger.exception("generation_eta_maintenance_failed")
 
-    async def _run_audit_batch(self) -> _AuditBatchResult:
-        audit_task = asyncio.create_task(run_blocking(self._audit_batch))
-        try:
-            return await asyncio.shield(audit_task)
-        except asyncio.CancelledError:
-            self._audit_stop_event.set()
-            self._interrupt_audit_connection()
-            with suppress(asyncio.CancelledError):
-                await asyncio.gather(audit_task, return_exceptions=True)
-            raise
-
-    def _apply_audit_result(self, result: _AuditBatchResult) -> None:
-        if result.observed_through is not None:
-            self._audited_through = result.observed_through
-            for generation_id, sample in list(self._recent.items()):
-                if (sample.completed_at, generation_id) <= result.observed_through:
-                    del self._recent[generation_id]
-        if not result.profile_updates and not result.removed_profile_keys:
-            return
-        profiles = dict(self._profiles)
-        for key in result.removed_profile_keys:
-            profiles.pop(key, None)
-        profiles.update(result.profile_updates)
-        if len(profiles) > self.max_profiles:
-            logger.error(
-                "generation_eta_cache_bound_exceeded",
-                extra={"profiles": len(profiles), "limit": self.max_profiles},
-            )
-            profiles = dict(list(profiles.items())[-self.max_profiles :])
-        self._profiles = profiles
-
-    def _load_profiles(self) -> dict[tuple[str, str], _ProfileSnapshot]:
+    def _audit_batch(self) -> bool:
+        """Resume bounded historical verification. Never infer execution from wall duration."""
         with self.session_factory() as session:
-            self._prune_profiles(session)
-            rows = list(
-                session.scalars(
-                    select(GenerationTimingProfile)
-                    .where(GenerationTimingProfile.feature_version == TIMING_FEATURE_VERSION)
-                    .order_by(
-                        GenerationTimingProfile.updated_at.desc(),
-                        GenerationTimingProfile.sample_count.desc(),
-                        GenerationTimingProfile.id,
-                    )
-                    .limit(self.max_profiles)
+            state = session.get(GenerationTimingAuditState, "generation_eta")
+            if state is None:
+                state = GenerationTimingAuditState(
+                    key="generation_eta", feature_version=TIMING_FEATURE_VERSION
                 )
-            )
-            session.commit()
-            return {
-                (profile.scope, profile.scope_key): _profile_snapshot(profile) for profile in rows
-            }
-
-    def _audit_batch(self) -> _AuditBatchResult:
-        if self._audit_stop_event.is_set():
-            return _empty_audit_result()
-        with self.session_factory() as session:
-            connection, prior_busy_timeout = self._configure_audit_connection(session)
-            try:
-                return self._audit_batch_in_session(session)
-            except Exception:
-                session.rollback()
-                if self._audit_stop_event.is_set():
-                    return _empty_audit_result()
-                raise
-            finally:
-                self._restore_audit_connection(connection, prior_busy_timeout)
-
-    def _audit_batch_in_session(self, session: Session) -> _AuditBatchResult:
-        if self._has_active_generation(session):
-            return _empty_audit_result()
-        state = self._audit_state(session)
-        statement = (
-            select(Generation)
-            .options(
-                load_only(
-                    Generation.id,
-                    Generation.status,
-                    Generation.started_at,
-                    Generation.completed_at,
-                    Generation.comfyui_instance_id,
-                    Generation.generation_source_json,
-                    Generation.workflow_id,
-                    Generation.api_graph_sha256,
-                    Generation.resolved_contract_json,
-                    Generation.effective_controls_json,
-                    Generation.selected_preset,
-                    Generation.requested_outputs_json,
-                    Generation.final_prompt,
-                )
-            )
-            .where(
+                session.add(state)
+            if state.feature_version != TIMING_FEATURE_VERSION:
+                state.feature_version = TIMING_FEATURE_VERSION
+                state.cursor_completed_at = None
+                state.cursor_generation_id = None
+            query = select(Generation).where(
                 Generation.status == GenerationStatus.SUCCEEDED,
                 Generation.completed_at.is_not(None),
             )
-        )
-        if state.cursor_completed_at is not None and state.cursor_generation_id is not None:
-            statement = statement.where(
-                or_(
-                    Generation.completed_at > state.cursor_completed_at,
-                    and_(
-                        Generation.completed_at == state.cursor_completed_at,
-                        Generation.id > state.cursor_generation_id,
-                    ),
-                )
-            )
-        candidates = list(
-            session.scalars(
-                statement.order_by(Generation.completed_at, Generation.id).limit(
-                    self.audit_batch_size
-                )
-            )
-        )
-        if not candidates:
-            if not state.backfill_complete:
-                state.backfill_complete = True
-                state.updated_at = datetime.now(UTC)
-                if self._audit_stop_event.is_set() or self._has_active_generation(session):
-                    session.rollback()
-                else:
-                    session.commit()
-            return _empty_audit_result()
-
-        events_by_generation = self._load_progress_events(
-            session, [generation.id for generation in candidates]
-        )
-        deadline = time.monotonic() + self.audit_time_budget_seconds
-        touched_profiles: dict[str, GenerationTimingProfile] = {}
-        processed = 0
-        for generation in candidates:
-            if self._audit_stop_event.is_set():
-                session.rollback()
-                return _empty_audit_result()
-            if processed and time.monotonic() >= deadline:
-                break
-            started_at = generation.started_at
-            completed_at = generation.completed_at
-            if not isinstance(completed_at, datetime):
-                continue
-            observed_at = _aware_utc(completed_at)
-            if isinstance(started_at, datetime):
-                duration = (observed_at - _aware_utc(started_at)).total_seconds()
-            else:
-                duration = 0.0
-            if math.isfinite(duration) and 0 < duration <= _MAX_SAMPLE_SECONDS:
-                features = build_generation_timing_features(generation)
-                for scope, scope_key in features.total_profile_keys():
-                    profile = self._add_profile_sample(
-                        session,
-                        scope,
-                        scope_key,
-                        duration,
-                        observed_at=observed_at,
+            if state.cursor_completed_at:
+                query = query.where(
+                    (Generation.completed_at > state.cursor_completed_at)
+                    | (
+                        (Generation.completed_at == state.cursor_completed_at)
+                        & (Generation.id > state.cursor_generation_id)
                     )
-                    touched_profiles[profile.id] = profile
-                    if self._audit_stop_event.is_set():
-                        session.rollback()
-                        return _empty_audit_result()
-
-                landmark_values: dict[str, float] = {}
-                for payload, created_at in events_by_generation.get(generation.id, []):
-                    raw_progress = payload.get("progress")
-                    progress = raw_progress if isinstance(raw_progress, Mapping) else None
-                    landmark_key = build_progress_landmark_key(features, progress)
-                    if landmark_key is None:
-                        continue
-                    residual = (observed_at - _aware_utc(created_at)).total_seconds()
-                    if 0 <= residual <= _MAX_SAMPLE_SECONDS and math.isfinite(residual):
-                        prior = landmark_values.get(landmark_key)
-                        if prior is None or residual > prior:
-                            landmark_values[landmark_key] = residual
-                for landmark_key, residual in sorted(landmark_values.items()):
-                    profile = self._add_profile_sample(
-                        session,
-                        "progress_landmark",
-                        landmark_key,
-                        residual,
-                        observed_at=observed_at,
+                )
+            rows = session.scalars(
+                query.order_by(Generation.completed_at, Generation.id).limit(self.audit_batch_size)
+            ).all()
+            for generation in rows:
+                if verified_duration(generation) is None:
+                    timing = native_execution_timing(
+                        generation.raw_history_json or {}, generation.comfyui_prompt_id
                     )
-                    touched_profiles[profile.id] = profile
-                    if self._audit_stop_event.is_set():
-                        session.rollback()
-                        return _empty_audit_result()
-
-            state.cursor_completed_at = observed_at
-            state.cursor_generation_id = generation.id
-            state.backfill_complete = False
-            state.updated_at = datetime.now(UTC)
-            processed += 1
-
-        has_more = processed < len(candidates) or len(candidates) >= self.audit_batch_size
-        state.backfill_complete = not has_more
-        if self._audit_stop_event.is_set() or self._has_active_generation(session):
-            session.rollback()
-            return _empty_audit_result()
-        removed_keys, removed_ids = self._prune_profiles(session)
-        session.flush()
-        profile_updates = {
-            (profile.scope, profile.scope_key): _profile_snapshot(profile)
-            for profile_id, profile in touched_profiles.items()
-            if profile_id not in removed_ids
-        }
-        session.commit()
-        return _AuditBatchResult(
-            observed=processed,
-            has_more=has_more,
-            profile_updates=profile_updates,
-            removed_profile_keys=frozenset(removed_keys),
-            observed_through=(_aware_utc(state.cursor_completed_at), state.cursor_generation_id)
-            if state.cursor_completed_at is not None and state.cursor_generation_id is not None
-            else None,
-        )
-
-    @staticmethod
-    def _has_active_generation(session: Session) -> bool:
-        return (
-            session.scalar(
-                select(Generation.id).where(Generation.status.in_(ACTIVE_STATUSES)).limit(1)
-            )
-            is not None
-        )
-
-    @staticmethod
-    def _load_progress_events(
-        session: Session,
-        generation_ids: list[str],
-    ) -> dict[str, list[tuple[Mapping[str, Any], datetime]]]:
-        if not generation_ids:
-            return {}
-        ranked_events = (
-            select(
-                GenerationEvent.id.label("event_id"),
-                GenerationEvent.generation_id,
-                GenerationEvent.payload_json,
-                GenerationEvent.created_at,
-                func.row_number()
-                .over(
-                    partition_by=GenerationEvent.generation_id,
-                    order_by=GenerationEvent.id,
-                )
-                .label("generation_head_rank"),
-                func.row_number()
-                .over(
-                    partition_by=GenerationEvent.generation_id,
-                    order_by=GenerationEvent.id.desc(),
-                )
-                .label("generation_tail_rank"),
-            )
-            .where(
-                GenerationEvent.generation_id.in_(generation_ids),
-                GenerationEvent.event_type == "generation.progress",
-            )
-            .subquery()
-        )
-        event_rows = session.execute(
-            select(
-                ranked_events.c.generation_id,
-                ranked_events.c.payload_json,
-                ranked_events.c.created_at,
-            )
-            .where(
-                or_(
-                    ranked_events.c.generation_head_rank
-                    <= _MAX_AUDIT_PROGRESS_EVENTS_PER_GENERATION // 2,
-                    ranked_events.c.generation_tail_rank
-                    <= _MAX_AUDIT_PROGRESS_EVENTS_PER_GENERATION // 2,
-                )
-            )
-            .order_by(ranked_events.c.generation_id, ranked_events.c.event_id)
-        ).all()
-        events_by_generation: dict[str, list[tuple[Mapping[str, Any], datetime]]] = {}
-        for generation_id, payload, created_at in event_rows:
-            if isinstance(payload, Mapping) and isinstance(created_at, datetime):
-                events_by_generation.setdefault(str(generation_id), []).append(
-                    (payload, created_at)
-                )
-        return events_by_generation
-
-    def _audit_state(self, session: Session) -> GenerationTimingAuditState:
-        state = session.get(GenerationTimingAuditState, _AUDIT_STATE_KEY)
-        now = datetime.now(UTC)
-        if state is None:
-            state = GenerationTimingAuditState(
-                key=_AUDIT_STATE_KEY,
-                feature_version=TIMING_FEATURE_VERSION,
-                cursor_completed_at=None,
-                cursor_generation_id=None,
-                backfill_complete=False,
-                updated_at=now,
-            )
-            session.add(state)
-        elif state.feature_version != TIMING_FEATURE_VERSION:
-            state.feature_version = TIMING_FEATURE_VERSION
-            state.cursor_completed_at = None
-            state.cursor_generation_id = None
-            state.backfill_complete = False
-            state.updated_at = now
-        return state
-
-    def _configure_audit_connection(self, session: Session) -> tuple[Any, int]:
-        connection = session.connection().connection.driver_connection
-        if connection is None:
-            raise RuntimeError("ETA audit requires an active DBAPI connection")
-        cursor = connection.cursor()
-        try:
-            row = cursor.execute("PRAGMA busy_timeout").fetchone()
-            prior_busy_timeout = int(row[0]) if row else 15_000
-            cursor.execute(f"PRAGMA busy_timeout={_AUDIT_BUSY_TIMEOUT_MS}")
-        finally:
-            cursor.close()
-        set_progress_handler = getattr(connection, "set_progress_handler", None)
-        if callable(set_progress_handler):
-            set_progress_handler(lambda: int(self._audit_stop_event.is_set()), 1_000)
-        with self._audit_connection_lock:
-            self._audit_connection = connection
-        return connection, prior_busy_timeout
-
-    def _restore_audit_connection(self, connection: Any, prior_busy_timeout: int) -> None:
-        with self._audit_connection_lock:
-            if self._audit_connection is connection:
-                self._audit_connection = None
-        set_progress_handler = getattr(connection, "set_progress_handler", None)
-        if callable(set_progress_handler):
-            with suppress(Exception):
-                set_progress_handler(None, 0)
-        with suppress(Exception):
-            cursor = connection.cursor()
-            try:
-                cursor.execute(f"PRAGMA busy_timeout={prior_busy_timeout}")
-            finally:
-                cursor.close()
-
-    def _prune_profiles(
-        self,
-        session: Session,
-    ) -> tuple[set[tuple[str, str]], set[str]]:
-        removed_keys: set[tuple[str, str]] = set()
-        removed_ids: set[str] = set()
-        stale = session.execute(
-            select(
-                GenerationTimingProfile.id,
-                GenerationTimingProfile.scope,
-                GenerationTimingProfile.scope_key,
-            ).where(GenerationTimingProfile.feature_version != TIMING_FEATURE_VERSION)
-        ).all()
-        self._delete_profile_rows(session, stale, removed_keys, removed_ids)
-
-        total_victims = session.execute(
-            select(
-                GenerationTimingProfile.id,
-                GenerationTimingProfile.scope,
-                GenerationTimingProfile.scope_key,
-            )
-            .where(
-                GenerationTimingProfile.feature_version == TIMING_FEATURE_VERSION,
-                GenerationTimingProfile.scope != "progress_landmark",
-            )
-            .order_by(
-                GenerationTimingProfile.updated_at.desc(),
-                GenerationTimingProfile.sample_count.desc(),
-                GenerationTimingProfile.id,
-            )
-            .offset(self.max_total_profiles)
-        ).all()
-        self._delete_profile_rows(session, total_victims, removed_keys, removed_ids)
-
-        landmark_victims = session.execute(
-            select(
-                GenerationTimingProfile.id,
-                GenerationTimingProfile.scope,
-                GenerationTimingProfile.scope_key,
-            )
-            .where(
-                GenerationTimingProfile.feature_version == TIMING_FEATURE_VERSION,
-                GenerationTimingProfile.scope == "progress_landmark",
-            )
-            .order_by(
-                GenerationTimingProfile.updated_at.desc(),
-                GenerationTimingProfile.sample_count.desc(),
-                GenerationTimingProfile.id,
-            )
-            .offset(self.max_landmark_profiles)
-        ).all()
-        self._delete_profile_rows(session, landmark_victims, removed_keys, removed_ids)
-        return removed_keys, removed_ids
-
-    @staticmethod
-    def _delete_profile_rows(
-        session: Session,
-        rows: Sequence[Any],
-        removed_keys: set[tuple[str, str]],
-        removed_ids: set[str],
-    ) -> None:
-        if not rows:
-            return
-        row_ids = [str(row.id) for row in rows]
-        removed_ids.update(row_ids)
-        removed_keys.update((str(row.scope), str(row.scope_key)) for row in rows)
-        session.execute(
-            delete(GenerationTimingProfile)
-            .where(GenerationTimingProfile.id.in_(row_ids))
-            .execution_options(synchronize_session=False)
-        )
-
-    def _add_profile_sample(
-        self,
-        session: Session,
-        scope: str,
-        scope_key: str,
-        sample_seconds: float,
-        *,
-        observed_at: datetime | None = None,
-    ) -> GenerationTimingProfile:
-        profile_id = _digest("profile", {"scope": scope, "key": scope_key})
-        profile = session.get(GenerationTimingProfile, profile_id)
-        if profile is None:
-            profile = GenerationTimingProfile(
-                id=profile_id,
-                feature_version=TIMING_FEATURE_VERSION,
-                scope=scope,
-                scope_key=scope_key,
-                sample_count=0,
-                samples_json=[],
-                median_seconds=sample_seconds,
-                lower_seconds=sample_seconds,
-                upper_seconds=sample_seconds,
-            )
-            session.add(profile)
-            session.flush()
-        samples = [*_valid_samples(profile.samples_json), float(sample_seconds)]
-        samples = samples[-self.max_profile_samples :]
-        median, lower, upper = _robust_stats(samples)
-        profile.samples_json = samples
-        profile.sample_count = int(profile.sample_count) + 1
-        profile.median_seconds = median
-        profile.lower_seconds = lower
-        profile.upper_seconds = upper
-        profile.updated_at = _aware_utc(observed_at or datetime.now(UTC))
-        return profile
-
-
-def _digest(namespace: str, value: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=True,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(
-        f"generation-eta/v{TIMING_FEATURE_VERSION}/{namespace}:".encode() + encoded
-    ).hexdigest()
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _bounded_identity(value: Any, *, fallback: str) -> str:
-    if not isinstance(value, str):
-        return fallback
-    normalized = value.strip()
-    return normalized[:512] if normalized else fallback
-
-
-def _bounded_choice(value: Any) -> str | int | float | bool | None:
-    if isinstance(value, str):
-        return value[:512]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    return None
-
-
-def _finite_number(value: Any) -> int | float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return value if math.isfinite(value) else None
-
-
-def _positive_integer(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
-
-
-def _pixel_bucket(width: int | None, height: int | None) -> int | None:
-    if width is None or height is None:
-        return None
-    return round(math.log2(width * height) * 2)
-
-
-def _aspect_bucket(width: int | None, height: int | None) -> int | None:
-    if width is None or height is None:
-        return None
-    return round(math.log2(width / height) * 2)
-
-
-def _tokenized(value: str) -> set[str]:
-    tokens = set(re.findall(r"[a-z0-9]+", value.casefold()))
-    plural_aliases = {
-        "batches": "batch",
-        "counts": "count",
-        "frames": "frame",
-        "iterations": "iteration",
-        "passes": "pass",
-        "samples": "sample",
-        "steps": "step",
-        "tiles": "tile",
-    }
-    return tokens | {plural_aliases[token] for token in tokens if token in plural_aliases}
-
-
-def _is_content_or_seed(input_type: str, semantic_role: str, control_id: str) -> bool:
-    tokens = _tokenized(semantic_role) | _tokenized(control_id)
-    return input_type in {"string", "seed"} or "seed" in tokens or bool(tokens & _CONTENT_TOKENS)
-
-
-def _is_performance_numeric(semantic_role: str, control_id: str) -> bool:
-    tokens = _tokenized(semantic_role) | _tokenized(control_id)
-    return bool(tokens & _PERFORMANCE_TOKENS)
-
-
-def _progress_fraction(progress: Mapping[str, Any]) -> float | None:
-    fraction = _finite_number(progress.get("fraction"))
-    if fraction is None:
-        value = _finite_number(progress.get("value"))
-        maximum = _finite_number(progress.get("maximum"))
-        if value is None or maximum is None or maximum <= 0:
-            return None
-        fraction = value / maximum
-    if not 0 <= fraction <= 1:
-        return None
-    return float(fraction)
-
-
-def _valid_samples(raw_samples: Any) -> list[float]:
-    if not isinstance(raw_samples, list):
-        return []
-    return [
-        float(value)
-        for value in raw_samples
-        if isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and 0 <= value <= _MAX_SAMPLE_SECONDS
-    ]
-
-
-def _valid_sibling_durations(
-    raw_durations: Sequence[float] | None,
-) -> list[float]:
-    """Keep only sane same-run wall durations; the caller supplies trusted floats."""
-    if not raw_durations:
-        return []
-    return [
-        float(value)
-        for value in raw_durations
-        if isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and 0 < value <= _MAX_SAMPLE_SECONDS
-    ]
-
-
-def _robust_stats(samples: list[float]) -> tuple[float, float, float]:
-    clean = _valid_samples(samples)
-    if not clean:
-        raise ValueError("at least one finite timing sample is required")
-    median = float(statistics.median(clean))
-    deviations = [abs(value - median) for value in clean]
-    mad = float(statistics.median(deviations))
-    if len(clean) >= 4:
-        tolerance = max(median * 0.05, mad * 4.5, 0.25)
-        filtered = [value for value in clean if abs(value - median) <= tolerance]
-        if len(filtered) >= max(3, len(clean) // 2):
-            clean = filtered
-            median = float(statistics.median(clean))
-    if len(clean) == 1:
-        lower = max(0.0, median * 0.75)
-        upper = median * 1.25
-    else:
-        ordered = sorted(clean)
-        lower = _quantile(ordered, 0.2)
-        upper = _quantile(ordered, 0.8)
-        minimum_spread = max(1.0, median * 0.1)
-        lower = min(lower, max(0.0, median - minimum_spread))
-        upper = max(upper, median + minimum_spread)
-    return median, max(0.0, lower), max(median, upper)
-
-
-def _quantile(ordered: list[float], fraction: float) -> float:
-    position = (len(ordered) - 1) * fraction
-    lower_index = math.floor(position)
-    upper_index = math.ceil(position)
-    if lower_index == upper_index:
-        return ordered[lower_index]
-    weight = position - lower_index
-    return ordered[lower_index] * (1 - weight) + ordered[upper_index] * weight
-
-
-def _profile_confidence(profile: _ProfileSnapshot) -> str:
-    effective_count = min(profile.sample_count, profile.recent_sample_count)
-    if effective_count >= 20:
-        return "high"
-    if effective_count >= 5:
-        return "medium"
-    return "low"
-
-
-def _profile_snapshot(profile: GenerationTimingProfile) -> _ProfileSnapshot:
-    return _ProfileSnapshot(
-        median_seconds=float(profile.median_seconds),
-        lower_seconds=float(profile.lower_seconds),
-        upper_seconds=float(profile.upper_seconds),
-        sample_count=int(profile.sample_count),
-        recent_sample_count=len(_valid_samples(profile.samples_json)),
-        samples=tuple(_valid_samples(profile.samples_json)),
-    )
-
-
-def _cap_confidence(confidence: str, basis: str) -> str:
-    levels = ("low", "medium", "high")
-    maximum = {
-        "progress_landmark": "high",
-        "run_sibling": "high",
-        "run_sibling_compatible": "low",
-        "historical_exact": "high",
-        "historical_revision_resolution": "medium",
-        "historical_checkpoint": "medium",
-        "historical_revision": "low",
-        "historical_source": "low",
-        "historical_instance": "low",
-    }.get(basis, "low")
-    try:
-        return levels[min(levels.index(confidence), levels.index(maximum))]
-    except ValueError:
-        return "low"
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _parse_timestamp(value: Any) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return _aware_utc(datetime.fromisoformat(value))
-    except ValueError:
-        return None
+                    if timing:
+                        generation.execution_timing_json = timing
+                self.record_success(session, generation)
+                state.cursor_completed_at = generation.completed_at
+                state.cursor_generation_id = generation.id
+            state.backfill_complete = len(rows) < self.audit_batch_size
+            session.commit()
+        self.refresh()
+        return len(rows) == self.audit_batch_size

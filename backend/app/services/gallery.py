@@ -413,6 +413,8 @@ class GalleryService:
             correlation_id=uuid_str(),
             comfyui_client_id=uuid_str(),
             comfyui_prompt_id=None,
+            execution_timing_json=None,
+            timing_batch_id=None,
             accepted_at=utcnow(),
             updated_at=utcnow(),
             dispatched_at=None,

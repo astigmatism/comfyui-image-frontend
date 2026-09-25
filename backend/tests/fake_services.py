@@ -72,6 +72,7 @@ def _nodes(graph: dict[str, Any], class_type: str) -> list[tuple[str, dict[str, 
 
 @dataclass
 class FakeServiceState:
+    execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     workflow_files: dict[str, bytes] = field(default_factory=build_workflow_files)
     object_info: dict[str, Any] = field(default_factory=object_info_fixture)
     service_available: bool = True
@@ -203,6 +204,11 @@ class FakeServiceState:
         return reference
 
     async def execute_prompt(self, prompt_id: str) -> None:
+        async with self.execution_lock:
+            if prompt_id in self.queued_prompt_ids:
+                await self._execute_prompt(prompt_id)
+
+    async def _execute_prompt(self, prompt_id: str) -> None:
         record = self.prompts[prompt_id]
         client_id = str(record["client_id"])
         graph = record["graph"]
@@ -222,6 +228,10 @@ class FakeServiceState:
             "prompt": [0, prompt_id, copy.deepcopy(graph), copy.deepcopy(record.get("extra_data"))],
             "extra_data": copy.deepcopy(record.get("extra_data")),
         }
+        started_ms = int(time.time() * 1000)
+        start_message = ["execution_start", {"prompt_id": prompt_id, "timestamp": started_ms}]
+        self.histories[prompt_id]["status"]["messages"].append(start_message)
+        await self.emit(client_id, {"type": "execution_start", "data": start_message[1]})
         await asyncio.sleep(self.initial_event_delay)
         text_publishers = _nodes(graph, "CIFPublishText")
         if text_publishers:
@@ -530,8 +540,18 @@ class FakeServiceState:
         self.histories[prompt_id]["status"] = {
             "status_str": "success",
             "completed": True,
-            "messages": [["execution_success", {"prompt_id": prompt_id}]],
+            "messages": [
+                start_message,
+                [
+                    "execution_success",
+                    {"prompt_id": prompt_id, "timestamp": int(time.time() * 1000)},
+                ],
+            ],
         }
+        if self.emit_cached_only:
+            self.histories[prompt_id]["status"]["messages"].append(
+                ["execution_cached", {"prompt_id": prompt_id, "nodes": list(graph)}]
+            )
         if self.terminal_event_type:
             self.running_prompt_ids.discard(prompt_id)
             return

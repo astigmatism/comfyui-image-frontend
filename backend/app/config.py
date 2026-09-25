@@ -112,7 +112,7 @@ class Settings(BaseSettings):
 
     _comfyui_instances_explicitly_configured: bool = PrivateAttr(default=False)
 
-    app_title: str = "ImageGen V2"
+    app_title: str = "ImageGen"
     listen_host: str = "0.0.0.0"  # noqa: S104 - configurable application listener default
     listen_port: int = 8000
     graceful_shutdown_timeout_seconds: int = Field(default=10, gt=0)

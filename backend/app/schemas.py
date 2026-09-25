@@ -440,6 +440,8 @@ class DeclaredOutputSummary(APIModel):
 
 
 class GenerationEta(APIModel):
+    sample_count: int = Field(default=0, ge=0)
+    model_version: int = 0
     remaining_seconds: float = Field(ge=0)
     completion_at: datetime
     lower_seconds: float = Field(ge=0)
@@ -564,6 +566,13 @@ class GenerationRunProgress(APIModel):
 
 
 class GenerationActivity(APIModel):
+    current_eta: GenerationEta | None = None
+    queue_eta: GenerationEta | None = None
+    current_generation_id: str | None = None
+    current_state: str = "waiting"
+    running_count: int = 0
+    queued_count: int = 0
+    snapshot_at: datetime | None = None
     run: GenerationRunProgress | None = None
     remaining_count: int = 0
     collection_remaining_counts: dict[str, int] = Field(default_factory=dict)

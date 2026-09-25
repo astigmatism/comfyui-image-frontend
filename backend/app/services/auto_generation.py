@@ -756,6 +756,7 @@ class AutoGenerationService:
                         frozen_profile=profile,
                     )
                     generation.auto_cycle_id = cycle.id
+                    generation.timing_batch_id = cycle.id
                     session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
                     events.append(event)
             cycle.state = "accepted"

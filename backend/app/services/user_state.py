@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -56,11 +56,14 @@ def asset_is_saved(session: Session, owner_id: str, asset_id: str) -> bool:
         or (automation and references_asset(automation.snapshot_json, asset_id))
         or any(
             references_asset(value, asset_id)
-            for value in session.scalars(
-                select(GenerationPreparation.request_json).where(
-                    GenerationPreparation.owner_id == owner_id,
-                    GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
-                )
+            for value in cast(
+                Any,
+                session.scalars(
+                    select(GenerationPreparation.request_json).where(
+                        GenerationPreparation.owner_id == owner_id,
+                        GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+                    )
+                ),
             )
         )
     )

@@ -302,7 +302,7 @@ test("running generation renders an accessible compact linear progress bar", () 
   assert.match(html, /aria-valuemin="0"/);
   assert.match(html, /aria-valuemax="24"/);
   assert.match(html, /aria-valuenow="12"/);
-  assert.match(html, /aria-valuetext="12 of 24 for Main sampling on Primary"/);
+  assert.match(html, /aria-valuetext="12 of 24 for Main sampling on Primary, estimating remaining time"/);
   assert.match(html, /style="--progress-value: 50\.00%"/);
   assert.match(html, /class="progress-bar-fill"/);
   assert.doesNotMatch(html, /Current operation/);
@@ -462,7 +462,8 @@ test("ETA presentation supports dispatching and hides cancelled, terminal, and i
     },
     { now },
   );
-  assert.doesNotMatch(invalid, /generation-progress-eta|About|Finishing/);
+  assert.match(invalid, /Estimating…/);
+  assert.doesNotMatch(invalid, /About|Finishing/);
 });
 
 test("indeterminate linear progress omits aria-valuenow and queued cards keep queue copy", () => {
@@ -1806,7 +1807,7 @@ test("photo viewer generation dock exposes the generate control and the top-bar 
   );
   assert.match(
     html,
-    /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><div class="generation-activity activity-progress" role="progressbar" aria-valuenow="42"/,
+    /<div class="photo-viewer-activity-host" aria-live="off" aria-atomic="true"><div class="generation-activity activity-progress" role="progressbar" aria-valuenow="42"/,
   );
   assert.ok(html.indexOf("photo-viewer-generation-dock") < html.indexOf("photo-viewer-toolbar"));
 
@@ -1818,11 +1819,11 @@ test("photo viewer generation dock exposes the generate control and the top-bar 
     { generateDisabled: true, generateLabel: "Queueing 3…", generateBusy: true },
   );
   assert.match(queued, /data-action="generate"[^>]*aria-busy="true" disabled><span class="activity-spinner button-spinner" aria-hidden="true"><\/span>Queueing 3…<\/button>/);
-  assert.match(queued, /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><\/div>/);
+  assert.match(queued, /<div class="photo-viewer-activity-host" aria-live="off" aria-atomic="true"><\/div>/);
 
   const defaulted = photoViewerMarkup(generation, {});
   assert.match(defaulted, /data-action="generate"[^>]*>Generate<\/button>/);
-  assert.match(defaulted, /<div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true"><\/div>/);
+  assert.match(defaulted, /<div class="photo-viewer-activity-host" aria-live="off" aria-atomic="true"><\/div>/);
 });
 
 test("historical native-only image batches use complete artifact count on the gallery card", () => {
@@ -2586,144 +2587,56 @@ test("an empty collection gets collection-specific empty copy", () => {
 });
 
 
-test("global activity counts resolved jobs, reports outcomes, and expires completion", () => {
-  const run = { total_count: 10, resolved_count: 6, remaining_count: 4,
-    succeeded_count: 4, failed_count: 1, cancelled_count: 1 };
-  const state = { generationActivity: { run, remaining_count: 4 } };
-  const markup = generationActivityMarkup(state);
-  assert.match(markup, /aria-valuenow="60"/);
-  assert.match(markup, /6 of 10 resolved; 4 remaining/);
-  assert.match(markup, /4 succeeded, 1 failed, 1 cancelled/);
-  assert.match(markup, /activity-error/);
-  assert.match(generationActivityMarkup({ ...state, generationSubmissionProgress: {
-    ...run, total_count: 20, remaining_count: 14,
-  } }), /aria-valuenow="30"/);
-  const completed = { generationActivity: { run: { ...run, resolved_count: 10,
-    remaining_count: 0, completed_at: "2026-09-11T12:00:00Z" } } };
-  assert.match(generationActivityMarkup(completed, Date.parse("2026-09-11T12:00:03Z")), /100%/);
-  assert.equal(generationActivityMarkup(completed, Date.parse("2026-09-11T12:00:06Z")), "");
+const countdownNow = Date.parse("2026-09-25T12:00:00Z");
+function countdownState(current = 84, all = 492) {
+  const eta = (seconds) => ({ completion_at: new Date(countdownNow + seconds * 1000).toISOString(), remaining_seconds: seconds, basis: "batch", sample_count: 3, confidence: "medium" });
+  return { generationActivity: { remaining_count: 4, running_count: 1, snapshot_at: new Date(countdownNow).toISOString(), current_eta: eta(current), queue_eta: eta(all) } };
+}
+
+test("compact pair and title share colon countdowns without percentages or dots", () => {
+  const state = countdownState();
+  const markup = generationActivityMarkup(state, countdownNow);
+  assert.match(markup, /Current/);
+  assert.match(markup, /~1:24/);
+  assert.match(markup, /~8:12/);
+  assert.match(markup, /3 samples; medium confidence/);
+  assert.doesNotMatch(markup, /role="progressbar"|aria-valuenow|%/);
+  assert.equal(generationActivityTitle(state, countdownNow), "1:24 now · 8:12 all · ImageGen");
+  assert.equal(generationActivityTitle(state, countdownNow + 1000), "1:23 now · 8:11 all · ImageGen");
 });
 
-test("global activity prefers the ETA-derived completed fraction over per-item counts", () => {
-  // 1 of 3 resolved, the in-flight item 50% done per its ETA: 50% overall.
-  const run = { total_count: 3, resolved_count: 1, remaining_count: 2,
-    succeeded_count: 1, failed_count: 0, cancelled_count: 0, completed_fraction: 0.5 };
-  const markup = generationActivityMarkup({ generationActivity: { run, remaining_count: 2 } });
-  assert.match(markup, /aria-valuenow="50"/);
-  assert.match(markup, /50%/);
-  // The fraction is clamped to 99 while anything remains.
-  const almost = { generationActivity: { run: { ...run, completed_fraction: 1 }, remaining_count: 2 } };
-  assert.match(generationActivityMarkup(almost), /aria-valuenow="99"/);
-  // A fraction of exactly 1 with nothing remaining reads 100.
-  assert.match(
-    generationActivityMarkup({ generationActivity: {
-      run: { ...run, resolved_count: 3, remaining_count: 0, completed_fraction: 1 },
-      remaining_count: 0,
-    } }),
-    /aria-valuenow="100"/,
-  );
-  // Invalid fractions fall back to the per-item count math.
-  for (const value of [null, "half", -0.2, 1.7]) {
-    const fallback = { generationActivity: { run: { ...run, completed_fraction: value }, remaining_count: 2 } };
-    assert.match(generationActivityMarkup(fallback), /aria-valuenow="33"/);
+test("countdowns format hours, short durations, and rounded seconds", () => {
+  assert.equal(generationActivityTitle(countdownState(42, 3661), countdownNow), "0:42 now · 1:01:01 all · ImageGen");
+  assert.equal(generationActivityTitle(countdownState(.1, 60.1), countdownNow), "0:01 now · 1:01 all · ImageGen");
+});
+
+test("idle hides immediately even when automation is enabled or recently completed", () => {
+  for (const state of [{}, { autoGenerate: true }, { autoGenerateStatus: "paused" }, { generationActivity: { remaining_count: 0, run: { completed_fraction: 1, completed_at: new Date().toISOString() } } }]) {
+    assert.equal(generationActivityMarkup(state), "");
+    assert.equal(generationActivityTitle(state), "ImageGen");
   }
+  assert.equal(generationActivityTitle({}, countdownNow, "Custom title"), "Custom title");
 });
 
-test("auto activity replaces percentages and distinguishes preparing, retrying and paused states", () => {
-  const state = { autoGenerate: true, generationActivity: { remaining_count: 3,
-    run: { total_count: 4, resolved_count: 1, remaining_count: 3 } } };
-  assert.match(generationActivityMarkup(state), /Auto active/);
-  assert.doesNotMatch(generationActivityMarkup(state), /role="progressbar"/);
-  assert.match(generationActivityMarkup({ ...state, submitting: true }), /Auto preparing/);
-  assert.match(generationActivityMarkup({ ...state, autoGenerateStatus: "retrying" }), /Auto retrying/);
-  assert.match(generationActivityMarkup({ ...state, autoGenerate: false, autoGenerateStatus: "paused" }), /Auto paused/);
-  assert.match(generationActivityMarkup({ ...state, autoGenerate: false }), /25%/);
-  assert.match(generationActivityMarkup({ autoGenerate: true }), /Auto waiting/);
-  const preparing = generationActivityMarkup({ ...state, promptAssistantComposing: true });
-  assert.match(preparing, /3 generations remaining/);
-  assert.match(preparing, /Preparing the next prompt while images generate/);
-  assert.match(generationActivityMarkup({ ...state, autoGeneratePromptReady: true }), /Next prompt ready/);
+test("unknown, waiting, stale, parallel and overdue states do not invent a total", () => {
+  const state = countdownState();
+  state.generationActivity.current_eta = null;
+  state.generationActivity.queue_eta = null;
+  assert.equal(generationActivityTitle(state, countdownNow), "Estimating… now · Estimating… all · ImageGen");
+  state.generationActivity.running_count = 0;
+  assert.equal(generationActivityTitle(state, countdownNow), "Waiting now · Estimating… all · ImageGen");
+  const parallel = countdownState();
+  parallel.generationActivity.running_count = 2;
+  assert.equal(generationActivityTitle(parallel, countdownNow), "1:24 next · 8:12 all · ImageGen");
+  assert.match(generationActivityTitle(countdownState(), countdownNow + 85_000), /Overdue now · Estimating… all/);
+  assert.match(generationActivityMarkup(countdownState(), countdownNow + 85_000), /Taking longer than expected/);
+  assert.match(generationActivityTitle({ ...countdownState(), generationActivityUnavailable: true }, countdownNow), /Estimating… now · Estimating… all/);
 });
 
-test("document title mirrors the activity indicator with blue and green markers", () => {
-  const run = { total_count: 10, resolved_count: 6, remaining_count: 4,
-    succeeded_count: 5, failed_count: 0, cancelled_count: 1 };
-  assert.equal(generationActivityTitle({}), "ImageGen V2");
-  assert.equal(
-    generationActivityTitle({ generationActivity: { run, remaining_count: 4 } }),
-    "🔵 60% · ImageGen V2",
-  );
-  assert.equal(
-    generationActivityTitle({ generationActivity: {
-      run: { ...run, total_count: 3, resolved_count: 1, remaining_count: 2, completed_fraction: 0.45 },
-      remaining_count: 2,
-    } }),
-    "🔵 45% · ImageGen V2",
-  );
-  const completed = { generationActivity: { run: { ...run, resolved_count: 10, remaining_count: 0 },
-    remaining_count: 0 } };
-  assert.equal(generationActivityTitle(completed), "🟢 100% · ImageGen V2");
-  assert.equal(generationActivityTitle({ generationActivity: { run: { ...run, completed_at: "2026-09-11T12:00:00Z",
-      resolved_count: 10, remaining_count: 0 } } }, Date.parse("2026-09-11T12:00:06Z")),
-    "ImageGen V2",
-  );
-  assert.equal(generationActivityTitle({ autoGenerate: true, generationActivity: { remaining_count: 3 } }),
-    "🔵 Auto active · ImageGen V2");
-  assert.equal(generationActivityTitle({ autoGenerate: false, autoGenerateStatus: "paused" }),
-    "🔵 Auto paused · ImageGen V2");
-  assert.equal(generationActivityTitle({ generationActivityUnavailable: true }),
-    "🔵 Progress unavailable · ImageGen V2");
-  assert.equal(generationActivityTitle({}, Date.now(), "Custom title"), "Custom title");
-});
-
-test("auto activity tooltip names the pinned target collection", () => {
-  const pinned = {
-    autoGenerate: true,
-    autoGeneratePinned: true,
-    autoGeneratePinnedCollectionId: "c-1",
-    collections: [{ id: "c-1", name: "Pinned folder" }],
-    generationActivity: { remaining_count: 3 },
-  };
-  assert.match(generationActivityMarkup(pinned), /Auto-generation is targeting Pinned folder\./);
-  assert.match(generationActivityMarkup(pinned), /Auto active/);
-
-  // A null pin means Home (enabled from Home or the virtual Favorites view).
-  assert.match(
-    generationActivityMarkup({ ...pinned, autoGeneratePinnedCollectionId: null }),
-    /Auto-generation is targeting Home\./,
-  );
-
-  // Without a pin (and when paused, where the pin is cleared) no target is named.
-  assert.doesNotMatch(generationActivityMarkup({ autoGenerate: true }), /targeting/);
-  assert.doesNotMatch(
-    generationActivityMarkup({ ...pinned, autoGenerate: false, autoGenerateStatus: "paused" }),
-    /targeting/,
-  );
-
-  // A pin whose collection is not (yet) in the loaded tree names nothing.
-  assert.doesNotMatch(
-    generationActivityMarkup({ ...pinned, collections: [] }),
-    /targeting/,
-  );
-
-  // The target line coexists with a retrying status message.
-  assert.match(
-    generationActivityMarkup({
-      ...pinned,
-      autoGenerateStatus: "retrying",
-      autoGenerateStatusMessage: "Prompt Assistant is temporarily unavailable. Retrying.",
-    }),
-    /Retrying\. Auto-generation is targeting Pinned folder\./,
-  );
-
-  // Folder names are escaped in the tooltip.
-  assert.doesNotMatch(
-    generationActivityMarkup({
-      ...pinned,
-      collections: [{ id: "c-1", name: '<img src=x onerror=alert(1)>' }],
-    }),
-    /<img /,
-  );
+test("client clock offset is anchored once and unchanged snapshots keep aging", () => {
+  const state = { ...countdownState(), generationActivityReceivedAt: countdownNow + 500_000 };
+  assert.equal(generationActivityTitle(state, countdownNow + 500_000), "1:24 now · 8:12 all · ImageGen");
+  assert.equal(generationActivityTitle(state, countdownNow + 502_000), "1:22 now · 8:10 all · ImageGen");
 });
 
 test("folder activity extends the direct count and labels descendant work explicitly", () => {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert
@@ -104,7 +104,9 @@ def _inflight_eta_fractions(session: Session, run_id: str, now: datetime) -> tup
             Generation.status.in_(ACTIVE_STATUSES),
         )
     ):
-        fraction = _inflight_eta_fraction(started_at, progress_json, now)
+        fraction = _inflight_eta_fraction(
+            cast(datetime | None, started_at), cast(Mapping[str, Any] | None, progress_json), now
+        )
         if fraction is None:
             continue
         has_eta = True
@@ -227,6 +229,7 @@ def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
             collection_counts[collection_id] += count
             collection_id = parents[collection_id]
 
+    request: dict[str, Any]
     for request in session.scalars(
         select(GenerationPreparation.request_json).where(
             GenerationPreparation.owner_id == owner_id,

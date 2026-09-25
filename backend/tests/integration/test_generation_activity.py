@@ -102,7 +102,17 @@ def test_activity_counts_nested_and_unfiled_jobs_without_loading_gallery_and_is_
     assert activity["collection_remaining_counts"] == {parent: 25, child: 25, target: 1}
     _finish(client, root["id"])
     login_ready_admin(client)
-    assert client.get("/api/generation-activity").json() == {
+    empty = client.get("/api/generation-activity").json()
+    assert empty["current_eta"] is None and empty["queue_eta"] is None
+    assert {
+        k: empty[k]
+        for k in (
+            "run",
+            "remaining_count",
+            "collection_remaining_counts",
+            "collection_generation_counts",
+        )
+    } == {
         "run": None,
         "remaining_count": 0,
         "collection_remaining_counts": {},
@@ -226,6 +236,9 @@ def test_unexpected_batch_failure_rolls_back_the_full_plan(app_client, monkeypat
     payload = generation_payload(client, "rolled back")
     with pytest.raises(RuntimeError, match="interrupted batch"):
         _post(client, "/api/generations/batch", {"items": [payload] * 3})
-    assert client.get("/api/generation-activity").json() == before
+    after = client.get("/api/generation-activity").json()
+    before.pop("snapshot_at")
+    after.pop("snapshot_at")
+    assert after == before
     with client.app.state.container.db.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Generation)) == 1

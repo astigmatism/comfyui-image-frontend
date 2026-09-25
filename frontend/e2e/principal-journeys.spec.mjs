@@ -3382,24 +3382,24 @@ test("toolbar and nested folder activity survive reload and reflect auto mode", 
   await page.reload();
   const progress = page.locator("#generation-activity-host");
   const folder = page.locator(`[data-gallery-card="collection"][data-collection-id="${collection.id}"]`);
-  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "60");
+  await expect(progress.locator(".activity-pair")).toContainText("Waiting");
   await expect(folder.locator(".collection-count")).toContainText("4 remaining");
-  await progress.getByRole("progressbar").focus();
+  await progress.locator(".activity-pair").focus();
   await expect(progress.locator(".activity-tooltip")).toBeVisible();
-  await expect(progress.locator(".activity-tooltip")).toContainText("6 of 10 resolved");
+  await expect(progress.locator(".activity-tooltip")).toContainText("4 generations remaining");
   await page.locator("#gallery-scale").focus();
   await expect(page.locator('[data-prompt-generator-id="subject_name"]')).toHaveCount(1);
   await expect(page.locator(".shared-settings-status")).toContainText("Settings saved across devices");
   await page.screenshot({ path: testInfo.outputPath("generation-progress-desktop.png") });
   await page.locator("#auto-generate").check();
-  await expect(progress).toContainText("Auto active");
-  await expect(progress.getByRole("progressbar")).toHaveCount(0);
+  await expect(progress).toContainText("Waiting");
+  await expect(progress.locator(".activity-pair")).toHaveCount(1);
   await page.locator("#auto-generate").uncheck();
-  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "60");
+  await expect(progress.locator(".activity-pair")).toContainText("Waiting");
   activity = { ...activity, run: { ...activity.run, total_count: 20, remaining_count: 14 },
     remaining_count: 14, collection_remaining_counts: { [collection.id]: 14 } };
   await page.reload();
-  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "30");
+  await expect(progress.locator(".activity-pair")).toContainText("Waiting");
   await expect(folder.locator(".collection-count")).toContainText("14 remaining");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(progress).toBeInViewport();
@@ -3411,9 +3411,9 @@ test("toolbar and nested folder activity survive reload and reflect auto mode", 
     succeeded_count: 19, cancelled_count: 1, completed_at: new Date().toISOString() },
     remaining_count: 0, collection_remaining_counts: {} };
   await page.reload();
-  await expect(progress.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+  await expect(progress.locator(".activity-pair")).toHaveCount(0);
   await expect(folder.locator(".collection-remaining")).toHaveCount(0);
-  await expect(progress.getByRole("progressbar")).toHaveCount(0, { timeout: 7000 });
+  await expect(progress.locator(".activity-pair")).toHaveCount(0, { timeout: 7000 });
 });
 
 test("mixed selection copies independently, moves originals, and deletes only the copies", async ({ page }) => {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
@@ -109,6 +110,7 @@ async def accept(
                 raise AppError("authentication_required", "Sign in is required.", status_code=401)
             requests = request.items if isinstance(request, GenerationBatchCreate) else [request]
             run = begin_run(session, owner_id, len(requests))
+            timing_batch_id = str(uuid.uuid4())
             outcomes: list[dict[str, Any]] = []
             events: list[dict[str, Any]] = []
             for item in requests:
@@ -117,6 +119,7 @@ async def accept(
                         generation, event = service._prepare_accept(
                             session, user=user, request=item
                         )
+                        generation.timing_batch_id = timing_batch_id
                         session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
                     outcomes.append({"generation_id": generation.id})
                     events.append(event_payload(event))

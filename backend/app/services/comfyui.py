@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -523,11 +524,25 @@ class ComfyUIAdapter:
             context="ComfyUI queue",
         )
         response.raise_for_status()
-        return _response_json_object(
+        snapshot = _response_json_object(
             response,
             maximum_bytes=self.settings.comfyui_listing_max_bytes,
             context="ComfyUI queue",
         )
+
+        # Queue entries also contain graphs and extra_data. Cache only scheduling identity.
+        self.queue_observation = (
+            time.monotonic(),
+            {
+                key: [
+                    [entry[0], str(entry[1])]
+                    for entry in snapshot.get(key, [])
+                    if isinstance(entry, list) and len(entry) > 1
+                ]
+                for key in ("queue_running", "queue_pending")
+            },
+        )
+        return snapshot
 
     async def cancel(self, prompt_id: str, *, running: bool) -> None:
         del running  # A caller hint can never authorize ComfyUI's global interrupt endpoint.

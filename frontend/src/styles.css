@@ -5411,3 +5411,13 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 @media (hover: none), (pointer: coarse) {
   .gallery-layout-control button, .classic-gallery-header button { min-height: 44px; }
 }
+
+/* Two stable time fields replace the overall percentage ring. */
+.activity-pair { gap: .65rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.activity-pair strong { font-weight: 600; color: var(--text); }
+.activity-current, .activity-all { display: inline-flex; gap: .35rem; align-items: baseline; }
+.activity-divider { opacity: .35; }
+@media (max-width: 540px) {
+  .activity-pair { gap: .35rem; font-size: .75rem; }
+  .activity-current, .activity-all { gap: .2rem; }
+}

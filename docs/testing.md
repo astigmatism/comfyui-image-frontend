@@ -55,12 +55,13 @@ The publication/registry/adapter/compiler/result tests cover:
 - exact list-shaped publisher history normalization, authoritative `artifacts[].batch_index`, multiple declared roles and batches, untouched node-keyed nonpublisher results, runtime independence from `native_outputs`, publisher mismatch errors, status/error/warning preservation, and public removal of only top-level native prompt/extra-data graph envelopes;
 - file-reference allowlists, asset path safety, status transitions, and owner-specific event serialization.
 
-Estimator unit tests cover privacy-safe feature normalization, bounded robust timing profiles,
-outlier resistance, successful-outcome filtering, exact-cohort selection and hierarchical fallback,
-node-local refinement without workflow-fraction extrapolation, confidence/interval validation, and
-cache serialization/reload. They also cover compatibility-capped confidence, separate profile
-quotas, versioned cursor backfill and deletion survival, per-generation landmark windows, idle-race
-rollback, and joining an in-flight audit during shutdown. Frontend unit/render tests cover source-driven control ordering and
+Estimator tests cover native timestamp units and identity, invalid/missing/cached evidence,
+verified execution duration rather than application wall time, restart persistence, deduplication,
+bounded retention, batch precedence, prompt-length boundaries and sparse/conflicting samples.
+Projection tests cover serial heterogeneous queues, independent recorded runtimes, account privacy,
+unknown blockers, stale observations, shared preparation and overdue deadlines. Browser tests in
+`generation-countdowns.spec.mjs` verify the compact pair, title, focus preservation, photo-viewer
+mirror, responsive layout and immediate idle hiding. Frontend unit/render tests cover source-driven control ordering and
 defaults, Advanced disclosure, all input types, finite single-select choices, stale-option
 reconciliation, absence of invented controls, BigInt-safe seed behavior, revision-aware request
 payloads, runtime-selector placement/loading/default/availability/error states,

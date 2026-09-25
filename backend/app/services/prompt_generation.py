@@ -698,6 +698,7 @@ class PromptGenerationService:
                         session, user=user, request=request, frozen_profile=profile
                     )
                     generation.auto_cycle_id = current.auto_cycle_id
+                    generation.timing_batch_id = current.auto_cycle_id or current.group_id
                     current.status, current.generation_id, current.prompt = (
                         "accepted",
                         generation.id,
@@ -912,6 +913,7 @@ class PromptGenerationService:
                         else:
                             generation.prompt_assistant_json = copy.deepcopy(assistant_snapshot)
                         generation.auto_cycle_id = row.auto_cycle_id
+                        generation.timing_batch_id = row.auto_cycle_id or row.group_id
                         row.status, row.generation_id, row.prompt = (
                             "accepted",
                             generation.id,

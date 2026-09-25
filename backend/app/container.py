@@ -10,6 +10,7 @@ from .blocking import run_blocking
 from .config import Settings
 from .db import Database
 from .domain.compiler import WorkflowCompiler
+from .services.activity_estimates import ActivityEstimator
 from .services.assets import AssetStore
 from .services.auth import AuthService
 from .services.auto_generation import AutoGenerationService
@@ -56,6 +57,7 @@ class AppContainer:
         )
         self.compiler = WorkflowCompiler()
         self.generation_eta = GenerationEtaEstimator(self.db.session_factory)
+        self.activity_estimator = ActivityEstimator(self.generation_eta, self.comfyui_instances)
         self.generations = GenerationService(
             session_factory=self.db.session_factory,
             registry=self.registry,

@@ -465,7 +465,9 @@ Determinate progress is explicitly local to the current ComfyUI node:
       "lower_seconds": 14.2,
       "upper_seconds": 25.8,
       "confidence": "high",
-      "basis": "progress_landmark",
+      "basis": "batch",
+      "sample_count": 5,
+      "model_version": 3,
       "updated_at": "2026-07-17T12:34:56.789Z"
     },
     "updated_at": "2026-07-17T12:34:56.789Z"
@@ -482,20 +484,15 @@ timestamp, `confidence` is `low`, `medium`, or `high`, and `basis` is a safe dia
 the historical fallback selected by the estimator. `basis` values are additive diagnostic text;
 clients must not branch on exact strings.
 
-Confidence reflects both sample strength and cohort compatibility. Exact technical matches and
-exact node landmarks may reach `high`; revision-and-resolution matches are capped at `medium`; and
-broader revision, source, or instance fallbacks remain `low` even with many samples.
+Confidence reflects sample count and variability. `sample_count` reports retained evidence and
+`model_version` identifies the timing model. Version 3 uses verified native execution durations:
+`batch`, `historical_exact`, or `historical_nearby`. One verified batch sample is usable at low
+confidence. Similar history requires at least three samples. Broad runtime/checkpoint and node
+landmark fallbacks are not used.
 
-`remaining_seconds` and interval bounds describe the estimate at `updated_at`. Clients count down
-toward `completion_at`, using a stable server-to-browser clock mapping calibrated from HTTP Date
-responses. A delayed or replayed update must not move an unchanged server deadline. When HTTP
-clock calibration is unavailable, the first snapshot supplies a fallback relative clock anchor.
-
-After an overrun, remaining seconds clamp to zero and `completion_at` retains the expired deadline;
-clients show “Taking longer than expected”. Fresh evidence can provide a new deadline, including a
-later one. Matching batch completions outrank history; checkpoint history outranks timing borrowed
-from a different checkpoint. `run_sibling_compatible` is a new low-confidence diagnostic basis.
-The ETA object's fields and endpoints are unchanged.
+Clients count down toward the absolute `completion_at`, keeping a stable server/client clock
+mapping. Replay must not restart the countdown. After an overrun, remaining seconds clamp to zero;
+clients show “Taking longer than expected” and invalidate dependent totals.
 
 The server does not write or broadcast timer-only ticks. Node fractions remain local to the current
 node and must never be promoted into a workflow-wide percentage or used by the client to extrapolate
@@ -705,8 +702,7 @@ Other mutations retain their existing retry behavior.
 The single-generation endpoint preserves its existing contract and joins the same run.
 
 New requests append to the current run while any member remains active; the first
-request after completion starts a new run. Adding work can lower the displayed
-percentage. A run survives browser and server restarts. Migration adopts already
+request after completion starts a new run. Adding accepted work extends the total completion estimate. A run survives browser and server restarts. Migration adopts already
 active generations into one run per owner without including historical completions.
 
 ## Server-Sent Events
@@ -746,3 +742,24 @@ with a one-second response deadline. Database or worker readiness failure return
 connection checkout pressure and duration, and event-loop lag, with no credentials,
 request bodies, or SQL parameters. Browser safe reads and thumbnails make at most
 four attempts, honoring `Retry-After` and their original overall deadline.
+
+
+## Generation time projection
+
+`GET /api/generation-activity` retains `run`, `remaining_count` and collection counts for compatibility.
+It adds `current_eta` and `queue_eta` (nullable `GenerationEta` objects), `current_generation_id`,
+`current_state`, `running_count`, `queued_count`, and `snapshot_at`. Counts and IDs are scoped to the
+signed-in account. Estimates cover all accepted image work across pages/collections, including
+preparing images, but exclude hypothetical future automatic cycles. Prompt-only work is not image
+activity; an unmeasured shared preparation blocks the total without multiplying its duration.
+
+A numeric total requires known durations and scheduling for every blocking stage. Offline services,
+unknown external jobs, stale queue observations, cancellation or overdue work yield a null total.
+Serial native queues use their actual order and the application's owner fairness; independent
+recorded runtime pins are projected in parallel. For multiple executing images `current_eta` means
+the next expected finish, labeled Next. No private blocking-job details are exposed.
+
+The compact toolbar uses `Current ~1:24 | All ~8:12`; the browser title uses
+`1:24 now · 8:12 all · ImageGen`. Unknown estimates use Estimating…, queued-only work uses Waiting,
+and no accepted work hides the badge/title timing immediately. `generation_duration_seconds` uses
+verified execution time for new measured successes, retaining the legacy interval for older rows.

@@ -6,7 +6,7 @@ single application process. These tests close the remaining lifecycle gaps:
 * a four-member checkpoint batch is observed through the same SSE event
   channel the browser subscribes to, and the confidence ladder climbs from
   "no evidence at all" (first member, fresh database) through
-  run_sibling/medium to run_sibling/high once three siblings have completed;
+  batch/low to batch/medium as comparable samples accumulate;
 * a real application restart mid-batch: app #1 is stopped while a member is
   still running in ComfyUI (the fake keeps executing it on its own loop),
   app #2 boots on the same database and the same fake ComfyUI, recovers the
@@ -251,7 +251,7 @@ def test_live_eta_ladder_arrives_over_the_sse_event_channel(fake_state, settings
     A four-member checkpoint batch on a fresh database: the first member has
     no evidence at all (no ETA), each following member estimates from the
     completed siblings, and once three siblings have finished the estimate
-    graduates to high confidence. The app runs on a real local uvicorn server
+    gains confidence as consistent samples accumulate. The app runs on a real local uvicorn server
     (see module docstring); the live drain plus the durable-replay drain both
     go through the same /api/events endpoint the browser subscribes to, and
     every phase has an explicitly bounded lifecycle.
@@ -312,14 +312,14 @@ def test_live_eta_ladder_arrives_over_the_sse_event_channel(fake_state, settings
         # Each following member estimates from its completed siblings. Serial
         # execution keeps the completed-sibling set constant during a member's
         # run, so every observed estimate for a member carries one confidence.
-        expected_confidence = {ids[1]: "medium", ids[2]: "medium", ids[3]: "high"}
+        expected_confidence = {ids[1]: "low", ids[2]: "medium", ids[3]: "medium"}
         for generation_id, confidence in expected_confidence.items():
             sibling_etas = [
                 eta
                 for _, eta in _progress_events(events, generation_id)
-                if eta is not None and eta.get("basis") == "run_sibling"
+                if eta is not None and eta.get("basis") == "batch"
             ]
-            assert sibling_etas, f"no run_sibling ETA observed over SSE for {generation_id}"
+            assert sibling_etas, f"no batch ETA observed over SSE for {generation_id}"
             observed = {
                 str(eta.get("confidence")) for eta in sibling_etas if eta["remaining_seconds"] > 0
             }
@@ -393,9 +393,9 @@ def test_restart_mid_batch_estimates_from_database_evidence(fake_state, settings
 
         # The remaining member is dispatched by the fresh worker, which has
         # no in-memory state: its ETA must come from the database.
-        observed = _wait_eta(client2, second_id, "run_sibling", timeout=30)
+        observed = _wait_eta(client2, second_id, "batch", timeout=30)
         eta = observed["progress"]["eta"]
-        assert eta["confidence"] == "medium"
+        assert eta["confidence"] == "low"
         started_at = _started_at(client2, second_id)
         updated_at = datetime.fromisoformat(str(eta["updated_at"]))
         elapsed = max(0.0, (updated_at.astimezone(UTC) - started_at).total_seconds())
@@ -406,10 +406,3 @@ def test_restart_mid_batch_estimates_from_database_evidence(fake_state, settings
 
         wait_for_status(client2, second_id, "succeeded", timeout=30)
         wait_for_status(client2, third_id, "succeeded", timeout=30)
-
-        # The finished run is fully torn down in the new process as well.
-        worker = client2.app.state.container.worker
-        assert worker._generation_run_ids == {}
-        assert worker._run_members == {}
-        assert worker._run_sibling_durations == {}
-        assert worker._run_cohorts == {}

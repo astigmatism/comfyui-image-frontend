@@ -64,7 +64,7 @@ from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, event_payload
 from .generation_activity import retain_deleted_outcome
-from .generation_eta import is_checkpoint_declaration
+from .generation_eta import is_checkpoint_declaration, verified_duration
 from .user_state import asset_is_saved, lock_user_state
 from .workflow_registry import WorkflowRegistry
 
@@ -87,6 +87,7 @@ class _GenerationSummaryRow:
     accepted_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    execution_duration_seconds: float | None
     current_stage_id: str | None
     current_stage_label: str | None
     progress_json: dict[str, Any] | None
@@ -821,9 +822,8 @@ class GenerationService:
             comfyui_instance_id=row.comfyui_instance_id,
             comfyui_instance_label=row.comfyui_instance_label,
             accepted_at=row.accepted_at,
-            generation_duration_seconds=_generation_duration_seconds(
-                row.started_at, row.completed_at
-            ),
+            generation_duration_seconds=row.execution_duration_seconds
+            or _generation_duration_seconds(row.started_at, row.completed_at),
             current_stage_id=row.current_stage_id,
             current_stage_label=row.current_stage_label,
             progress=_progress_summary(row.progress_json),
@@ -921,9 +921,8 @@ class GenerationService:
             comfyui_instance_id=generation.comfyui_instance_id,
             comfyui_instance_label=generation.comfyui_instance_label,
             accepted_at=generation.accepted_at,
-            generation_duration_seconds=_generation_duration_seconds(
-                generation.started_at, generation.completed_at
-            ),
+            generation_duration_seconds=verified_duration(generation)
+            or _generation_duration_seconds(generation.started_at, generation.completed_at),
             current_stage_id=generation.current_stage_id,
             current_stage_label=generation.current_stage_label,
             progress=_progress_summary(generation.progress_json),
@@ -1555,6 +1554,9 @@ def _summary_projection() -> tuple[Any, ...]:
         Generation.comfyui_instance_label.label("comfyui_instance_label"),
         Generation.accepted_at.label("accepted_at"),
         Generation.started_at.label("started_at"),
+        func.json_extract(Generation.execution_timing_json, "$.duration_seconds").label(
+            "execution_duration_seconds"
+        ),
         Generation.completed_at.label("completed_at"),
         Generation.current_stage_id.label("current_stage_id"),
         Generation.current_stage_label.label("current_stage_label"),
@@ -1602,6 +1604,7 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         accepted_at=values["accepted_at"],
         started_at=values["started_at"],
         completed_at=values["completed_at"],
+        execution_duration_seconds=values["execution_duration_seconds"],
         current_stage_id=values["current_stage_id"],
         current_stage_label=values["current_stage_label"],
         progress_json=values["progress_json"],

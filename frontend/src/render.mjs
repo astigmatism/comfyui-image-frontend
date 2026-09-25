@@ -99,7 +99,7 @@ export function shellMarkup(state) {
             <span>Gallery scale</span>
             <input id="gallery-scale" type="range" min="0" max="100" step="1" value="${state.galleryScale}" aria-label="Gallery scale" aria-valuetext="${state.galleryScale}%" />
           </label>
-          <div id="generation-activity-host" class="generation-activity-host" aria-live="polite" aria-atomic="true">${generationActivityMarkup(state)}</div>
+          <div id="generation-activity-host" class="generation-activity-host" aria-live="off" aria-atomic="true">${generationActivityMarkup(state)}</div>
           <details class="account-menu">
             <summary aria-label="Account menu">${escapeHtml(state.session.user.username)}</summary>
             <div class="menu-popover" role="menu">
@@ -1389,77 +1389,58 @@ export function collectionCountMarkup(collection) {
   return `<span class="collection-count${remaining ? " is-generating" : ""}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><span>${count}</span>${remaining ? `<span class="collection-remaining"><span class="activity-spinner" aria-hidden="true"></span>${remaining} remaining</span>` : ""}</span>`;
 }
 
-function generationActivityInfo(state, now) {
-  const run = state.generationSubmissionProgress || state.generationActivity?.run;
-  const remaining = Math.max(state.generationActivity?.remaining_count || 0, run?.remaining_count || 0);
-  let mode = "progress";
-  let label;
-  let description;
-  let percent = 0;
-  if (state.autoGenerate || ["paused", "blocked"].includes(state.autoGenerateStatus)) {
-    mode = ["paused", "blocked"].includes(state.autoGenerateStatus) ? "paused" : "auto";
-    label = mode === "paused" ? "Auto paused"
-      : state.autoGenerateStatus === "retrying" ? "Auto retrying"
-        : state.submitting || state.promptAssistantComposing ? "Auto preparing"
-          : remaining > 0 ? "Auto active" : "Auto waiting";
-    description = state.autoGenerateStatusMessage || `${label}. ${remaining} generations remaining. Auto-generation is enabled for your account and continues on the server.`;
-    if (state.autoGenerate && state.promptAssistantComposing && remaining > 0) {
-      description += " Preparing the next prompt while images generate.";
-    } else if (state.autoGenerate && state.autoGeneratePromptReady) {
-      description += " Next prompt ready.";
-    }
-    if (state.autoGenerate && state.automation?.snapshot) {
-      const runtimeId = state.automation.snapshot.generation.comfyui_instance_id;
-      const runtime = (state.comfyuiInstances || []).find((item) => item.id === runtimeId);
-      description += ` Image runtime: ${runtime?.label || runtimeId}.`;
-      const textId = state.automation.snapshot.prompt_generation?.comfyui_instance_id;
-      if (textId) {
-        const textRuntime = (state.comfyuiInstances || []).find((item) => item.id === textId);
-        description += ` Prompt runtime: ${textRuntime?.label || textId}.`;
-      }
-    }
-    if (state.autoGenerate && state.autoGeneratePinned) {
-      const pinned = (Array.isArray(state.collections) ? state.collections : [])
-        .find((collection) => collection.id === state.autoGeneratePinnedCollectionId);
-      const target = state.autoGeneratePinnedCollectionId ? pinned?.name : "Home";
-      if (target) description += ` Auto-generation is targeting ${target}.`;
-    }
-  } else if (run?.total_count > 0) {
-    const completedAt = Date.parse(run.completed_at || "");
-    if (!run.remaining_count && Number.isFinite(completedAt) && now - completedAt > 5000) return null;
-    // Prefer the ETA-derived continuous fraction; fall back to per-item counts.
-    const fraction = run.completed_fraction;
-    percent = typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
-      ? Math.min(run.remaining_count > 0 ? 99 : 100, Math.round(100 * fraction))
-      : Math.min(run.remaining_count > 0 ? 99 : 100, Math.floor(100 * run.resolved_count / run.total_count));
-    label = `${percent}%`;
-    mode = run.failed_count ? "error" : "progress";
-    description = `${run.resolved_count} of ${run.total_count} resolved; ${run.remaining_count} remaining. ${run.succeeded_count || 0} succeeded, ${run.failed_count || 0} failed, ${run.cancelled_count || 0} cancelled.`;
-  } else if (state.generationActivityUnavailable) {
-    mode = "paused";
-    label = "Progress unavailable";
-    description = "Generation activity is temporarily unavailable. Reconnecting…";
-  } else return null;
-  if (state.generationActivityUnavailable) description += " Updates temporarily unavailable; showing the last known progress.";
-  return { mode, label, description, percent, determinate: ["progress", "error"].includes(mode) };
+export function formatCountdown(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "Estimating…";
+  if (seconds <= 0) return "Overdue";
+  const total = Math.ceil(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  const rest = String(total % 60).padStart(2, "0");
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
 
-export function generationActivityTitle(state, now = Date.now(), base = "ImageGen V2") {
+export function generationActivityInfo(state, now = Date.now()) {
+  const activity = state.generationActivity;
+  if (!(activity?.remaining_count > 0)) return null;
+  const remaining = (eta) => {
+    if (!eta) return null;
+    const end = Date.parse(eta.completion_at);
+    const snapshot = Date.parse(activity.snapshot_at);
+    const received = state.generationActivityReceivedAt;
+    const offset = Number.isFinite(received) && Number.isFinite(snapshot) ? received - snapshot : 0;
+    return Number.isFinite(end) ? (end + offset - now) / 1000 : null;
+  };
+  const currentSeconds = remaining(activity.current_eta);
+  const overdue = currentSeconds !== null && currentSeconds <= 0;
+  const stale = state.generationActivityUnavailable;
+  const current = stale ? "Estimating…" : activity.running_count > 0
+    ? formatCountdown(currentSeconds) : "Waiting";
+  const all = formatCountdown(stale || overdue ? null : remaining(activity.queue_eta));
+  const currentLabel = activity.running_count > 1 ? "Next" : "Current";
+  const basisNames = { batch: "recent comparable images in this batch", historical_exact: "matching previous generations", historical_nearby: "similar previous generations", queue: "the accepted queue" };
+  const explain = (name, eta) => eta ? `${name}: based on ${basisNames[eta.basis] || "verified execution history"} (${eta.sample_count || 1} samples; ${eta.confidence || "low"} confidence).` : `${name}: waiting for reliable timing evidence.`;
+  let description = `${activity.remaining_count} generations remaining. ${explain(currentLabel, activity.current_eta)} ${explain("All", activity.queue_eta)}`;
+  if (overdue) description += " Taking longer than expected.";
+  if (stale) description += " Updates temporarily unavailable. Reconnecting…";
+  const numeric = (value) => /^\d/.test(value);
+  return { currentLabel, current, all, currentDisplay: numeric(current) ? `~${current}` : current,
+    allDisplay: numeric(all) ? `~${all}` : all, description };
+}
+
+export function generationActivityTitle(state, now = Date.now(), base = "ImageGen") {
   const info = generationActivityInfo(state, now);
   if (!info) return base;
-  const marker = info.determinate && info.percent >= 100 ? "🟢" : "🔵";
-  return `${marker} ${info.label} · ${base}`;
+  return `${info.current} ${info.currentLabel === "Next" ? "next" : "now"} · ${info.all} all · ${base}`;
 }
 
 export function generationActivityMarkup(state, now = Date.now()) {
   const info = generationActivityInfo(state, now);
   if (!info) return "";
-  const { mode, label, description, percent, determinate } = info;
-  const ring = determinate
-    ? `<svg class="activity-ring" viewBox="0 0 24 24" aria-hidden="true"><circle class="activity-ring-track" cx="12" cy="12" r="9" /><circle class="activity-ring-value" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="${percent} 100" /></svg>`
-    : `<span class="activity-spinner" aria-hidden="true"></span>`;
-  return `<div class="generation-activity activity-${mode}${state.generationActivityUnavailable ? " is-stale" : ""}" tabindex="0" title="${escapeHtml(description)}" ${determinate ? `role="progressbar" aria-label="Generation completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-valuetext="${escapeHtml(description)}"` : `role="status" aria-label="${escapeHtml(description)}"`}>
-    ${ring}<span class="activity-label">${label}</span><span class="activity-tooltip" aria-hidden="true">${escapeHtml(description)}</span>
+  return `<div class="generation-activity activity-pair" tabindex="0" title="${escapeHtml(info.description)}" aria-label="Generation time estimates" aria-live="off">
+    <span class="activity-current"><span data-activity-current-label>${info.currentLabel}</span> <strong data-activity-current>${escapeHtml(info.currentDisplay)}</strong></span>
+    <span class="activity-divider" aria-hidden="true">|</span>
+    <span class="activity-all">All <strong data-activity-all>${escapeHtml(info.allDisplay)}</strong></span>
+    <span class="activity-tooltip" aria-hidden="true">${escapeHtml(info.description)}</span>
   </div>`;
 }
 
@@ -1611,7 +1592,7 @@ export function galleryCardMarkup(generation) {
 }
 
 export function generationProgressMarkup(generation, { now = Date.now() } = {}) {
-  const eta = activeGenerationEta(generation, now);
+  const eta = activeGenerationEta(generation, now) || (generation.status === "running" ? { text: "Estimating…", accessibleText: "estimating remaining time", completionTimestamp: null } : null);
   const progress = activeGenerationProgress(generation);
   if (!progress) return "";
   const label = String(progress.label || "Processing");
@@ -1894,7 +1875,7 @@ export function photoViewerMarkup(
     <div class="photo-viewer-load-status" role="status" ${loading || loadError ? "" : "hidden"}>${loadError ? `${escapeHtml(loadError)} <button type="button" class="button secondary" data-action="retry-photo">Retry</button>` : "Loading image…"}</div>
     <div class="photo-viewer-generation-dock">
       <button type="button" id="photo-generate-button" class="button primary photo-viewer-generate photo-viewer-control" data-action="generate" aria-live="polite" aria-atomic="true" aria-busy="${generateBusy}"${generateDisabled ? " disabled" : ""}>${generationButtonContentMarkup({ label: generateLabel, busy: generateBusy })}</button>
-      <div class="photo-viewer-activity-host" aria-live="polite" aria-atomic="true">${activity}</div>
+      <div class="photo-viewer-activity-host" aria-live="off" aria-atomic="true">${activity}</div>
     </div>
     <div class="photo-viewer-toolbar">
       ${checkpointLabel}

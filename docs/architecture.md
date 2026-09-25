@@ -128,52 +128,38 @@ precede history persistence. `/history/{prompt_id}` is therefore terminal/recove
 the active snapshot on every terminal outcome. Polling, queue checks, interruption, cancellation,
 and error interpretation continue through the pinned adapter even if the user changes the selector.
 
-### Cached completion estimates
+### Verified completion estimates
 
-The estimator learns passively from successful, history-backed terminal generations. Timing
-feature version 2 includes the execution instance, source revision, checkpoint, exact resolution,
-performance controls, output selection, preset, and coarse prompt-length band. Prompt text, seeds,
-user identity, upload content, graphs, and results are never stored in profiles. Changing the feature
-version resets the bounded audit cursor and rebuilds statistics from retained successful generations;
-no generation records or database schema are changed. Until rebuilt, missing evidence yields a
-broader available estimate or no ETA.
+Timing model version 3 learns successful native execution intervals by pairing ComfyUI's
+millisecond start/success messages for the same prompt. An uninterrupted WebSocket observation can
+supply a monotonic fallback when native timestamps are absent. Submission, queue waits, outages,
+delayed history, retrieval and cleanup never train the model. Failed, cancelled, copied and fully
+cached executions do not contribute ordinary image timings.
 
-Successful completions immediately enter a bounded in-memory observation window, including during
-continuous generation. Durable profiles are maintained only while the queue is idle, with bounded
-batches, time/lock budgets, independent total/landmark quotas, and recent sample windows. The audit's
-completion-time/ID watermark removes already-incorporated live observations, so the same success
-cannot train an estimate twice. Progress estimation never scans historical generation rows or
-submits synthetic work.
+Execution provenance is stored on each generation. Bounded profiles commit alongside terminal
+success, including during continuous generation; the cache contains at most 4,096 profiles with 64
+samples each. A bounded cursor backfills only verifiable retained history. Migration invalidates old
+profiles and deadlines without deleting generations. A timing batch is one manual submission,
+preparation group, or automatic cycle, distinct from an account's broader activity run.
 
-The priority ladder is: matching same-run completions; exact historical node landmarks; exact
-historical totals; checkpoint history; otherwise-compatible same-run completions from other
-checkpoints; broader revision/resolution, revision, source, and instance history. One matching
-sibling is usable immediately, and subsequent matching completions contribute to the robust median.
-Cross-checkpoint sibling evidence is capped at low confidence and never overrides checkpoint
-history. Failed, cancelled, and interrupted generations contribute no completion durations.
+Lookup prefers the median of the latest five comparable batch samples, then exact history, then
+nearby history (latest 20, minimum three). Runtime, frozen revision, checkpoint, compute controls
+and output count must match. Nearby pixel count/aspect ratios stay within 25%; the ratio of prompt
+lengths plus 32 is at most 1.5. Profiles retain lengths, dimensions and hashed compute identity,
+never prompt content. Sparse conflicting samples are rejected; larger cohorts require a consistent
+majority after median/MAD filtering. Confidence uses count and variability. Broad runtime,
+cross-checkpoint and node-landmark fallbacks are removed.
 
-Run membership alone does not imply compatibility: an activity run can contain different settings
-or runtimes. The worker retains feature-tagged durations, filters matching versus compatible
-checkpoint evidence at lookup, and restores a bounded recent set using the same rules after restart.
-Restoration fetches only timing-relevant fields, never compiled graphs, raw histories, or results.
+Deadlines anchor to confirmed execution start. New evidence can refine them; repeated progress
+cannot restart them. The account-wide projection includes accepted preparing/queued/current images
+across collections and pages, without hypothetical future automatic cycles. Native queues are
+serial regardless of dispatch capacity; independent recorded runtimes finish in parallel. Unknown
+preparation, external blockers, outages or overdue blockers invalidate the total. The API uses
+sanitized recent queue observations and cached duration evidence, never synchronous network probes.
 
-Each generation attempt has a bounded cached completion deadline. Repeated updates in the same
-node/decile age that deadline; a gap in landmark coverage cannot replace it with a broader estimate.
-New matching successes or newly observed landmarks may revise it. Stale or repeated landmarks do
-not restart it. Overruns retain the expired deadline instead of repeatedly allocating more time.
-Saved progress preserves the deadline after restart; requeue starts a new attempt, and terminal
-completion clears attempt state. Node fractions remain local to their nodes and are never treated
-as whole-workflow percentages.
-
-The existing `progress.eta` object carries remaining seconds and bounds as of `updated_at`, a
-completion timestamp, confidence, and basis. The timestamp remains in the past after expiry while
-remaining seconds clamp to zero. Cards and slideshow use the same countdown functions, displaying
-“Taking longer than expected” until fresh evidence supports a revised deadline or completion arrives.
-The slideshow selects the earliest estimate among the current gallery's active generations.
-HTTP Date responses calibrate browser/server clock skew; each attempt freezes its clock mapping,
-so delayed events and reconnect replay cannot move an unchanged server deadline. A fallback anchor
-from the first ETA is used when HTTP clock calibration is unavailable. No timer-only server events
-are needed; the browser updates the visible countdown every second.
+The browser ages deadlines locally using the server snapshot and its client receipt time. It
+updates text without replacing the badge or announcing timer ticks. Current/All use m:ss or
+h:mm:ss; multiple active runtimes use Next. Idle removes both badge and title timing immediately.
 
 ## Result normalization and files
 
@@ -253,17 +239,10 @@ remain visible, and an Info button opens details containing generation duration.
 preserve hover intent and keyboard focus for the same card.
 
 The toolbar's generation activity indicator sits between Gallery scale and the account menu.
-It uses resolved jobs / planned jobs, displays outcome counts on hover or focus, shows
-completion for five seconds, and then hides. Auto-generation replaces the percentage
-with active/preparing/waiting/retrying/paused state; its scheduling remains local to the
-browser tab. Enabling the switch pins auto-generation to the collection currently on
-screen (Home when enabled from Home), so the user can browse elsewhere while
-new images keep landing in that folder; re-enabling or retrying recaptures the current
-collection, and a pin to a deleted folder falls back to the collection on screen. Manual
-generation always follows the collection on screen. The indicator's hover/focus tooltip
-names the collection auto-generation is targeting. Folder count badges add animated
-remaining counts including descendants, while the original count still describes direct
-contents. Reduced-motion preferences stop the animation.
+It displays Current and All remaining times, mirrored in the photo viewer and browser title.
+Tooltips explain evidence and confidence. When no accepted image work remains, the badge disappears
+immediately and the title returns to ImageGen (or the configured title). Automatic generation's
+separate controls continue to report its state and target collection.
 
 A compact owner-scoped activity snapshot supplies both indicators without reading card
 or workflow JSON. The browser refreshes it on lifecycle events (coalesced), SSE connection,

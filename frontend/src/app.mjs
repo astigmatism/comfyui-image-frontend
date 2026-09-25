@@ -73,6 +73,7 @@ import {
   collectionTileMarkup,
   collectionCountMarkup,
   generationActivityMarkup,
+  generationActivityInfo,
   generationActivityTitle,
   detailMarkup,
   galleryCardMarkup,
@@ -2315,14 +2316,16 @@ async function logout() {
 function renderLogin() {
   stopLiveUpdates();
   stopApplicationStartup();
-  root.innerHTML = loginMarkup(state.session?.app_title || "ImageGen V2");
+  document.title = state.session?.app_title || "ImageGen";
+  root.innerHTML = loginMarkup(state.session?.app_title || "ImageGen");
   queueMicrotask(() => root.querySelector("input")?.focus());
 }
 
 function renderPasswordChange(forced) {
   stopLiveUpdates();
   stopApplicationStartup();
-  root.innerHTML = passwordChangeMarkup(state.session?.app_title || "ImageGen V2", forced);
+  document.title = state.session?.app_title || "ImageGen";
+  root.innerHTML = passwordChangeMarkup(state.session?.app_title || "ImageGen", forced);
   queueMicrotask(() => root.querySelector("input")?.focus());
 }
 
@@ -5881,23 +5884,23 @@ function generationActivitySnapshot() {
 }
 
 function renderGenerationActivity() {
-  const markup = generationActivityMarkup(generationActivitySnapshot());
-  const host = document.querySelector("#generation-activity-host");
-  if (host) {
-    // Preserve focus, hover and animation between unchanged snapshots.
-    if (host.dataset.markup !== markup) {
-      const focused = host.contains(document.activeElement);
-      host.innerHTML = markup;
-      host.dataset.markup = markup;
-      if (focused) host.querySelector("[tabindex]")?.focus({ preventScroll: true });
+  const snapshot = generationActivitySnapshot();
+  const now = Date.now();
+  const info = generationActivityInfo(snapshot, now);
+  for (const host of document.querySelectorAll("#generation-activity-host, #photo-viewer[open] .photo-viewer-activity-host")) {
+    if (!info) {
+      if (host.childNodes.length) host.replaceChildren();
+      continue;
     }
+    if (!host.querySelector(".activity-pair")) host.innerHTML = generationActivityMarkup(snapshot, now);
+    const badge = host.querySelector(".activity-pair");
+    for (const [selector, value] of [["[data-activity-current-label]", info.currentLabel], ["[data-activity-current]", info.currentDisplay], ["[data-activity-all]", info.allDisplay], [".activity-tooltip", info.description]]) {
+      const node = badge.querySelector(selector);
+      if (node.textContent !== value) node.textContent = value;
+    }
+    if (badge.title !== info.description) badge.title = info.description;
   }
-  const viewerHost = document.querySelector("#photo-viewer[open] .photo-viewer-activity-host");
-  if (viewerHost && viewerHost.dataset.markup !== markup) {
-    viewerHost.innerHTML = markup;
-    viewerHost.dataset.markup = markup;
-  }
-  document.title = generationActivityTitle(generationActivitySnapshot(), Date.now());
+  document.title = generationActivityTitle(snapshot, now, state.session?.app_title || "ImageGen");
 }
 
 function applyCollectionActivity({ counts = true } = {}) {
@@ -5958,6 +5961,7 @@ async function fetchGenerationActivity(controller) {
     if (token !== activityRequestToken || controller.signal.aborted) return;
     const previouslyRemaining = state.generationActivity?.remaining_count;
     state.generationActivity = activity;
+    state.generationActivityReceivedAt = Date.now();
     state.generationActivityUnavailable = false;
     applyCollectionActivity();
     if (previouslyRemaining !== activity.remaining_count) syncServerControls();
@@ -6004,6 +6008,8 @@ function startLiveUpdates({ paused = false } = {}) {
   source.onerror = () => {
     if (state.eventSource !== source) return;
     state.automationUnavailable = true;
+    state.generationActivityUnavailable = true;
+    renderGenerationActivity();
     syncServerControls();
   };
   source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); submissionRecovery?.start({ immediate: true }); };
@@ -6015,7 +6021,8 @@ function applyLiveUpdate({ type, payload }) {
   if (["generation.queued", "generation.requeued", "generation.terminal", "generation.deleted"].includes(type)) {
     clearGenerationEtaAnchors(payload.generation_id);
   }
-  if (type !== "generation.progress" && type !== "generation.stage") scheduleActivityRefresh();
+  if ((type !== "generation.progress" && type !== "generation.stage") ||
+      Date.now() - (state.generationActivityReceivedAt || 0) >= 1000) scheduleActivityRefresh();
   if (type === "generation.deleted") removeGeneration(payload.generation_id);
   else if (type === "generation.progress") applyGenerationProgress(payload);
   else if (payload.generation_id) liveGenerationRefreshQueue.enqueue(payload.generation_id);

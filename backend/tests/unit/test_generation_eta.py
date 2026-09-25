@@ -1,25 +1,17 @@
 from __future__ import annotations
 
-import asyncio
-import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.models import (
-    Base,
-    Generation,
-    GenerationEvent,
-    GenerationStatus,
-    GenerationTimingAuditState,
-    GenerationTimingProfile,
-)
+import pytest
+from app.models import Base, Generation, GenerationStatus, GenerationTimingProfile
 from app.services.generation_eta import (
     TIMING_FEATURE_VERSION,
     GenerationEtaEstimator,
-    _empty_audit_result,
     build_generation_timing_features,
-    build_progress_landmark_key,
+    native_execution_timing,
+    reliable_statistics,
 )
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -142,745 +134,177 @@ def _checkpoint_generation(**kwargs: Any) -> Generation:
     return generation
 
 
-def test_timing_features_hash_compute_inputs_without_content_or_identity() -> None:
-    first = _generation(
-        owner_id="private-owner-a",
-        prompt="a secret portrait prompt",
-        seed="123",
-    )
-    second = _generation(
-        owner_id="private-owner-b",
-        prompt="a completely different private prompt",
-        seed="999999999999999",
-    )
-
-    first_features = build_generation_timing_features(first)
-    second_features = build_generation_timing_features(second)
-
-    assert first_features == second_features
-    assert first_features.feature_version == TIMING_FEATURE_VERSION
-    persisted = first_features.persisted_hashes()
-    assert all(len(value) == 64 for key, value in persisted.items() if key != "feature_version")
-    assert "prompt" not in repr(first_features).casefold()
-    assert "owner" not in repr(first_features).casefold()
-    assert "asset" not in repr(first_features).casefold()
-
-    changed_compute = build_generation_timing_features(
-        _generation(iterations=30, choice="model-b", feature_enabled=False)
-    )
-    assert changed_compute.exact_key != first_features.exact_key
-    assert changed_compute.revision_resolution_key == first_features.revision_resolution_key
-
-    changed_resolution = build_generation_timing_features(_generation(width=1536, height=1024))
-    assert changed_resolution.revision_resolution_key != first_features.revision_resolution_key
-    assert changed_resolution.revision_key == first_features.revision_key
-
-    changed_revision = build_generation_timing_features(_generation(api_hash="e" * 64))
-    assert changed_revision.revision_key != first_features.revision_key
-
-    changed_runtime = build_generation_timing_features(_generation(instance_id="worker-2"))
-    assert changed_runtime.instance_key != first_features.instance_key
-    assert changed_runtime.source_key != first_features.source_key
-    assert changed_runtime.revision_key != first_features.revision_key
-
-    changed_outputs = _generation()
-    changed_outputs.requested_outputs_json = ["preview"]
-    assert build_generation_timing_features(changed_outputs).exact_key != first_features.exact_key
-
-    dotted_steps = _generation()
-    dotted_steps.resolved_contract_json["inputs"].append(
-        {"id": "sampling.main.steps", "type": "integer", "semantic_role": "tuning"}
-    )
-    dotted_steps.effective_controls_json["sampling.main.steps"] = 40
-    assert build_generation_timing_features(dotted_steps).exact_key != first_features.exact_key
-
-
-def test_hierarchical_fallback_uses_robust_recent_statistics_and_low_confidence_first_sample(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-fallback.db")
-    estimator = GenerationEtaEstimator(factory)
-    generation = _generation()
-    features = build_generation_timing_features(generation)
-    with factory() as session:
-        for sample in [20.0, 19.0, 21.0, 20.0, 20.0, 1_000.0]:
-            estimator._add_profile_sample(session, "total_revision", features.revision_key, sample)
-        session.commit()
-    estimator._profiles = estimator._load_profiles()
-
-    current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
-    estimate = estimator.estimate(generation, now=current)
-
-    assert estimate is not None
-    assert estimate["basis"] == "historical_revision"
-    assert estimate["remaining_seconds"] == 15.0
-    assert estimate["upper_seconds"] < 40
-    assert estimate["confidence"] == "low"
-
-    with factory() as session:
-        estimator._add_profile_sample(session, "total_exact", features.exact_key, 30.0)
-        session.commit()
-    estimator._profiles = estimator._load_profiles()
-    first_sample = estimator.estimate(generation, now=current)
-
-    assert first_sample is not None
-    assert first_sample["basis"] == "historical_exact"
-    assert first_sample["remaining_seconds"] == 25.0
-    assert first_sample["confidence"] == "low"
-
-    overrun = estimator.estimate(
-        generation,
-        now=generation.started_at + timedelta(seconds=40),  # type: ignore[operator]
-    )
-    assert overrun is not None
-    assert overrun["remaining_seconds"] == 0
-    assert overrun["completion_at"] == first_sample["completion_at"]
-    assert overrun["confidence"] == "low"
-
-    generation.status = GenerationStatus.CANCEL_REQUESTED
-    assert estimator.estimate(generation, now=current) is None
-
-
-def test_idle_audit_deduplicates_success_and_learns_exact_node_decile_residual(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-landmark.db")
-    estimator = GenerationEtaEstimator(factory, audit_batch_size=4)
-    started = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
-    completed = started + timedelta(seconds=100)
-    completed_generation = _generation(
-        status=GenerationStatus.SUCCEEDED,
-        started_at=started,
-        completed_at=completed,
-    )
-    queued = _generation(
-        generation_id="00000000-0000-4000-8000-000000000002",
-        status=GenerationStatus.QUEUED,
-    )
-    with factory() as session:
-        session.add_all([completed_generation, queued])
-        session.add(
-            GenerationEvent(
-                generation_id=completed_generation.id,
-                owner_id=completed_generation.owner_id,
-                event_type="generation.progress",
-                payload_json={"progress": _progress(fraction=0.5)},
-                created_at=completed - timedelta(seconds=12),
-            )
-        )
-        session.add(
-            GenerationEvent(
-                generation_id=completed_generation.id,
-                owner_id=completed_generation.owner_id,
-                event_type="generation.progress",
-                payload_json={"progress": _progress(fraction=0.59)},
-                created_at=completed - timedelta(seconds=8),
-            )
-        )
-        session.commit()
-
-    assert estimator._audit_batch().observed == 0
-    with factory() as session:
-        session.delete(session.get(Generation, queued.id))  # type: ignore[arg-type]
-        session.commit()
-
-    learned = estimator._audit_batch()
-    assert learned.observed == 1
-    estimator._apply_audit_result(learned)
-    assert estimator._audit_batch().observed == 0
-    with factory() as session:
-        state = session.get(GenerationTimingAuditState, "generation_eta")
-        assert state is not None
-        assert state.feature_version == TIMING_FEATURE_VERSION
-        assert state.cursor_generation_id == completed_generation.id
-        assert state.backfill_complete is True
-        assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 1
-
-    running = _generation(started_at=completed)
-    landmark_key = build_progress_landmark_key(
-        build_generation_timing_features(running), _progress(fraction=0.5)
-    )
-    assert landmark_key is not None
-    current = completed + timedelta(seconds=10)
-    landmark_estimate = estimator.estimate(
-        running,
-        progress=_progress(fraction=0.5, at=current),
-        now=current,
-    )
-
-    assert landmark_estimate is not None
-    assert landmark_estimate["basis"] == "progress_landmark"
-    assert landmark_estimate["remaining_seconds"] == 12.0
-    assert landmark_estimate["confidence"] == "low"
-
-    other_node = estimator.estimate(
-        running,
-        progress=_progress(node_id="different-node", fraction=0.5),
-        now=current,
-    )
-    assert other_node is not None
-    assert other_node["basis"] == "progress_landmark"
-    assert other_node["completion_at"] == landmark_estimate["completion_at"]
-
-
-def test_confidence_is_capped_by_profile_compatibility(tmp_path: Path) -> None:
-    factory = _session_factory(tmp_path / "eta-confidence.db")
-    estimator = GenerationEtaEstimator(factory)
-    generation = _generation()
-    features = build_generation_timing_features(generation)
-    progress = _progress(fraction=0.5)
-    landmark_key = build_progress_landmark_key(features, progress)
-    assert landmark_key is not None
-    with factory() as session:
-        for index in range(20):
-            sample = 30.0 + (index % 3)
-            estimator._add_profile_sample(session, "total_revision", features.revision_key, sample)
-            estimator._add_profile_sample(
-                session,
-                "total_revision_resolution",
-                features.revision_resolution_key,
-                sample,
-            )
-            estimator._add_profile_sample(session, "total_exact", features.exact_key, sample)
-            estimator._add_profile_sample(
-                session, "progress_landmark", landmark_key, 12.0 + (index % 3)
-            )
-        session.commit()
-
-    profiles = estimator._load_profiles()
-    current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
-
-    estimator._profiles = {
-        ("total_revision", features.revision_key): profiles[
-            ("total_revision", features.revision_key)
-        ]
+def timing(generation, seconds):
+    return {
+        "version": TIMING_FEATURE_VERSION,
+        "prompt_id": generation.comfyui_prompt_id,
+        "provenance": "native",
+        "started_at": generation.started_at.isoformat(),
+        "finished_at": (generation.started_at + timedelta(seconds=seconds)).isoformat(),
+        "duration_seconds": seconds,
     }
-    revision = estimator.estimate(generation, now=current)
-    assert revision is not None
-    assert revision["basis"] == "historical_revision"
-    assert revision["confidence"] == "low"
 
-    estimator._profiles = {
-        ("total_revision_resolution", features.revision_resolution_key): profiles[
-            ("total_revision_resolution", features.revision_resolution_key)
-        ]
+
+def learn(estimator, generation, seconds):
+    generation.status = GenerationStatus.SUCCEEDED
+    generation.comfyui_prompt_id = generation.comfyui_prompt_id or generation.id
+    generation.execution_timing_json = timing(generation, seconds)
+    with estimator.session_factory() as session:
+        estimator.record_success(session, generation)
+        session.commit()
+    estimator.refresh()
+
+
+def history(seconds=60, *, prompt_id="p", start=1_750_000_000_000):
+    return {
+        "prompt": [0, prompt_id, {"1": {}, "2": {}}],
+        "status": {
+            "status_str": "success",
+            "messages": [
+                ["execution_start", {"prompt_id": prompt_id, "timestamp": start}],
+                [
+                    "execution_success",
+                    {"prompt_id": prompt_id, "timestamp": start + seconds * 1000},
+                ],
+            ],
+        },
     }
-    revision_resolution = estimator.estimate(generation, now=current)
-    assert revision_resolution is not None
-    assert revision_resolution["basis"] == "historical_revision_resolution"
-    assert revision_resolution["confidence"] == "medium"
-
-    estimator._profiles = {
-        ("total_exact", features.exact_key): profiles[("total_exact", features.exact_key)]
-    }
-    exact = estimator.estimate(generation, now=current)
-    assert exact is not None
-    assert exact["basis"] == "historical_exact"
-    assert exact["confidence"] == "high"
-
-    estimator._profiles = {
-        ("progress_landmark", landmark_key): profiles[("progress_landmark", landmark_key)]
-    }
-    landmark = estimator.estimate(generation, progress=progress, now=current)
-    assert landmark is not None
-    assert landmark["basis"] == "progress_landmark"
-    assert landmark["confidence"] == "high"
 
 
-def test_profile_retention_has_deterministic_total_and_landmark_quotas(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-profile-bounds.db")
-    estimator = GenerationEtaEstimator(factory, max_profiles=8)
-    base = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
-    total_keys = [f"{index:064x}" for index in range(10)]
-    landmark_keys = [f"{index + 100:064x}" for index in range(6)]
-    with factory() as session:
-        for index, key in enumerate(total_keys):
-            estimator._add_profile_sample(
-                session,
-                "total_exact",
-                key,
-                10.0 + index,
-                observed_at=base + timedelta(seconds=index),
-            )
-        for index, key in enumerate(landmark_keys):
-            estimator._add_profile_sample(
-                session,
-                "progress_landmark",
-                key,
-                5.0 + index,
-                observed_at=base + timedelta(seconds=index),
-            )
-        session.commit()
-
-    loaded = estimator._load_profiles()
-    with factory() as session:
-        retained = session.execute(
-            select(GenerationTimingProfile.scope, GenerationTimingProfile.scope_key)
-        ).all()
-
-    retained_total = {key for scope, key in retained if scope != "progress_landmark"}
-    retained_landmark = {key for scope, key in retained if scope == "progress_landmark"}
-    assert len(loaded) == 8
-    assert retained_total == set(total_keys[-6:])
-    assert retained_landmark == set(landmark_keys[-2:])
+def test_native_milliseconds_not_submission_or_delivery_time():
+    result = native_execution_timing(history(60), "p")
+    assert result["duration_seconds"] == 60
+    assert result["provenance"] == "native"
 
 
-def test_audit_cursor_is_single_bounded_versioned_state_and_survives_deletion(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-cursor.db")
-    estimator = GenerationEtaEstimator(factory, audit_batch_size=2)
-    base = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+@pytest.mark.parametrize("bad", [None, True, float("nan"), -1, 1_750_000_000, 9e20])
+def test_bad_native_timestamps_are_not_evidence(bad):
+    h = history()
+    h["status"]["messages"][0][1]["timestamp"] = bad
+    assert native_execution_timing(h, "p") is None
 
-    generations = [
-        _generation(
-            generation_id=f"00000000-0000-4000-8000-{index:012d}",
-            status=GenerationStatus.SUCCEEDED,
-            started_at=base + timedelta(seconds=index),
-            completed_at=base + timedelta(seconds=index + 10),
+
+def test_prompt_identity_duplicate_attempts_and_cache():
+    h = history()
+    assert native_execution_timing(h, "other") is None
+    h["status"]["messages"] *= 2
+    assert native_execution_timing(h, "p")["duration_seconds"] == 60
+    h["status"]["messages"].append(
+        ["execution_start", {"prompt_id": "p", "timestamp": 1_750_000_000_001}]
+    )
+    assert native_execution_timing(h, "p") is None
+    h = history()
+    h["status"]["messages"].append(["execution_cached", {"prompt_id": "p", "nodes": ["1", "2"]}])
+    assert native_execution_timing(h, "p") is None
+    assert native_execution_timing(history(-1), "p") is None
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        ([60, 87600], None),
+        ([60, 120, 43200], 90),
+        ([60, 61, 62, 87600], 61),
+        ([1, 100, 200], None),
+        ([60], 60),
+        ([60, 120], 90),
+    ],
+)
+def test_robust_sparse_statistics(values, expected):
+    result = reliable_statistics(values, "batch")
+    assert (result.seconds if result else None) == expected
+    if result and len(values) < 5:
+        assert result.confidence != "high"
+
+
+def test_batch_first_last_five_then_exact_history(tmp_path):
+    estimator = GenerationEtaEstimator(_session_factory(tmp_path / "timing.db"))
+    current = _generation(generation_id="current")
+    current.timing_batch_id = "batch"
+    for i in range(12):
+        g = _generation(
+            generation_id=f"sample-{i:02}",
+            started_at=current.started_at + timedelta(minutes=i * 10),
         )
-        for index in range(1, 4)
-    ]
+        g.timing_batch_id = "batch" if i < 6 else "other"
+        learn(estimator, g, 500 if i == 0 else 60 if i < 6 else 120)
+    result = estimator.duration(current)
+    assert (result.seconds, result.sample_count, result.basis) == (60, 5, "batch")
+    current.timing_batch_id = "unrelated"
+    assert estimator.duration(current).basis == "historical_exact"
+
+
+def test_prompt_boundaries_nearby_and_compute_identity(tmp_path):
+    estimator = GenerationEtaEstimator(_session_factory(tmp_path / "timing.db"))
+    current = _generation(prompt="x" * 63)
+    for i in range(3):
+        learn(estimator, _generation(generation_id=f"s{i}", prompt="y" * 62), 60 + i)
+        assert (estimator.duration(current) is not None) == (i >= 2)
+    assert estimator.duration(current).basis == "historical_nearby"
+    for field, value in [
+        ("comfyui_instance_id", "other"),
+        ("api_graph_sha256", "new"),
+        ("final_prompt", "z" * 200),
+    ]:
+        changed = _generation(prompt="x" * 63)
+        setattr(changed, field, value)
+        assert estimator.duration(changed) is None
+    for kwargs in (
+        {"width": 2048},
+        {"width": 512, "height": 2048},
+        {"choice": "other"},
+        {"iterations": 40},
+    ):
+        assert estimator.duration(_generation(prompt="x" * 63, **kwargs)) is None
+    a = build_generation_timing_features(_generation(prompt="secret", owner_id="a", seed="1"))
+    b = build_generation_timing_features(_generation(prompt="hidden", owner_id="b", seed="2"))
+    assert a == b and "secret" not in repr(a)
+
+
+def test_samples_are_durable_deduplicated_bounded_and_failed_excluded(tmp_path):
+    factory = _session_factory(tmp_path / "timing.db")
+    estimator = GenerationEtaEstimator(factory, max_profile_samples=5, max_profiles=2)
+    for i in range(8):
+        g = _generation(generation_id=f"s{i}")
+        learn(estimator, g, 60)
+        learn(estimator, g, 60)
     with factory() as session:
-        session.add_all(generations)
+        row = session.scalar(select(GenerationTimingProfile))
+        assert row.sample_count == len(row.samples_json) == 5
+        g.status = GenerationStatus.FAILED_WITHOUT_ARTIFACTS
+        g.id = "failed"
+        estimator.record_success(session, g)
         session.commit()
-
-    first = estimator._audit_batch()
-    second = estimator._audit_batch()
-    assert (first.observed, first.has_more) == (2, True)
-    assert (second.observed, second.has_more) == (1, False)
-    estimator._apply_audit_result(first)
-    estimator._apply_audit_result(second)
-    assert estimator._audit_batch().observed == 0
-
+        assert row.sample_count == 5
+    fresh = GenerationEtaEstimator(factory)
+    fresh.refresh()
+    assert fresh.duration(_generation()).seconds == 60
+    for model in ("b", "c", "d"):
+        learn(estimator, _generation(generation_id=model, choice=model), 60)
     with factory() as session:
-        state = session.get(GenerationTimingAuditState, "generation_eta")
-        assert state is not None
-        assert state.cursor_generation_id == generations[-1].id
-        assert state.backfill_complete is True
-        session.delete(session.get(Generation, generations[-1].id))  # type: ignore[arg-type]
-        session.commit()
+        assert session.scalar(select(func.count()).select_from(GenerationTimingProfile)) == 2
+    assert len(estimator._profiles) == 2
 
-    later = _generation(
-        generation_id="00000000-0000-4000-8000-000000000004",
-        status=GenerationStatus.SUCCEEDED,
-        started_at=base + timedelta(seconds=20),
-        completed_at=base + timedelta(seconds=40),
-    )
+
+def test_backfill_only_trains_native_history_not_legacy_wall_time(tmp_path):
+    factory = _session_factory(tmp_path / "backfill.db")
+    estimator = GenerationEtaEstimator(factory, audit_batch_size=1)
     with factory() as session:
-        session.add(later)
-        session.commit()
-    assert estimator._audit_batch().observed == 1
-
-    with factory() as session:
-        state = session.get(GenerationTimingAuditState, "generation_eta")
-        assert state is not None
-        assert state.cursor_generation_id == later.id
-        assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 1
-        state.feature_version = TIMING_FEATURE_VERSION - 1
-        state.cursor_completed_at = datetime(2100, 1, 1, tzinfo=UTC)
-        state.cursor_generation_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
-        session.commit()
-
-    version_backfill = estimator._audit_batch()
-    assert version_backfill.observed == 2
-    with factory() as session:
-        state = session.get(GenerationTimingAuditState, "generation_eta")
-        assert state is not None
-        assert state.feature_version == TIMING_FEATURE_VERSION
-        assert state.cursor_generation_id == generations[1].id
-        assert session.scalar(select(func.count()).select_from(GenerationTimingAuditState)) == 1
-
-
-def test_progress_event_cap_is_per_generation_and_uses_earliest_bucket_sample(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-progress-cap.db")
-    estimator = GenerationEtaEstimator(factory, audit_batch_size=4)
-    base = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
-    verbose = _generation(
-        generation_id="00000000-0000-4000-8000-000000000101",
-        status=GenerationStatus.SUCCEEDED,
-        started_at=base,
-        completed_at=base + timedelta(seconds=200),
-    )
-    quiet = _generation(
-        generation_id="00000000-0000-4000-8000-000000000102",
-        status=GenerationStatus.SUCCEEDED,
-        started_at=base + timedelta(seconds=5),
-        completed_at=base + timedelta(seconds=210),
-    )
-    with factory() as session:
-        session.add_all([verbose, quiet])
-        for index in range(80):
-            session.add(
-                GenerationEvent(
-                    generation_id=verbose.id,
-                    owner_id=verbose.owner_id,
-                    event_type="generation.progress",
-                    payload_json={"progress": _progress(node_id="verbose", fraction=0.55)},
-                    created_at=verbose.completed_at - timedelta(seconds=100 - index),
-                )
+        for i in range(2):
+            g = _generation(
+                generation_id=f"old-{i}",
+                status=GenerationStatus.SUCCEEDED,
+                completed_at=datetime(2026, 7, 18, 20, i, tzinfo=UTC),
             )
-        session.add(
-            GenerationEvent(
-                generation_id=quiet.id,
-                owner_id=quiet.owner_id,
-                event_type="generation.progress",
-                payload_json={"progress": _progress(node_id="quiet", fraction=0.55)},
-                created_at=quiet.completed_at - timedelta(seconds=15),
-            )
-        )
+            g.comfyui_prompt_id = f"p{i}"
+            if i:
+                g.raw_history_json = history(60, prompt_id=g.comfyui_prompt_id)
+            session.add(g)
         session.commit()
-        loaded_events = estimator._load_progress_events(session, [verbose.id, quiet.id])
-        assert len(loaded_events[verbose.id]) == 64
-        assert len(loaded_events[quiet.id]) == 1
-
-    result = estimator._audit_batch()
-    assert result.observed == 2
-    estimator._apply_audit_result(result)
-    running = _generation(started_at=quiet.completed_at)
-    current = quiet.completed_at + timedelta(seconds=1)
-    verbose_eta = estimator.estimate(
-        running,
-        progress=_progress(node_id="verbose", fraction=0.55),
-        now=current,
-    )
-    quiet_eta = estimator.estimate(
-        running,
-        progress=_progress(node_id="quiet", fraction=0.55),
-        now=current,
-    )
-    assert verbose_eta is not None
-    assert verbose_eta["basis"] == "progress_landmark"
-    assert verbose_eta["remaining_seconds"] == 99.0
-    assert quiet_eta is not None
-    assert quiet_eta["basis"] == "progress_landmark"
-    assert quiet_eta["remaining_seconds"] == 14.0
-
-
-def test_audit_rolls_back_if_generation_becomes_active_before_commit(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-active-race.db")
-    estimator = GenerationEtaEstimator(factory)
-    completed = _generation(
-        status=GenerationStatus.SUCCEEDED,
-        completed_at=datetime(2026, 7, 18, 12, 1, tzinfo=UTC),
-    )
-    with factory() as session:
-        session.add(completed)
-        session.commit()
-
-    checks = iter((False, True))
-    monkeypatch.setattr(estimator, "_has_active_generation", lambda _session: next(checks))
-    assert estimator._audit_batch().observed == 0
-    with factory() as session:
-        assert session.get(GenerationTimingAuditState, "generation_eta") is None
-        assert session.scalar(select(func.count()).select_from(GenerationTimingProfile)) == 0
-
-
-async def test_stop_cooperatively_joins_inflight_audit(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-stop.db")
-    estimator = GenerationEtaEstimator(factory, audit_interval_seconds=60)
-    entered = threading.Event()
-    exited = threading.Event()
-
-    def blocking_audit() -> Any:
-        entered.set()
-        estimator._audit_stop_event.wait(timeout=1)
-        exited.set()
-        return _empty_audit_result()
-
-    monkeypatch.setattr(estimator, "_audit_batch", blocking_audit)
-    await estimator.start()
-    assert await asyncio.to_thread(entered.wait, 0.5)
-    await asyncio.wait_for(estimator.stop(), timeout=0.5)
-    assert exited.is_set()
-
-
-def test_prompt_size_bucket_is_coarse_monotone_and_bounded() -> None:
-    from app.services.generation_eta import _prompt_size_bucket
-
-    assert _prompt_size_bucket(0) == 0
-    assert _prompt_size_bucket(2) == 0
-    assert _prompt_size_bucket(3) == 1
-    assert _prompt_size_bucket(14) == 1
-    assert _prompt_size_bucket(15) == 2
-    assert _prompt_size_bucket(62) == 2
-    assert _prompt_size_bucket(63) == 3
-    assert _prompt_size_bucket(254) == 3
-    assert _prompt_size_bucket(255) == 4
-    assert _prompt_size_bucket(1022) == 4
-    assert _prompt_size_bucket(1023) == 5
-    assert _prompt_size_bucket(4094) == 5
-    assert _prompt_size_bucket(4095) == 6
-    assert _prompt_size_bucket(16382) == 6
-    assert _prompt_size_bucket(16383) == 7
-    assert _prompt_size_bucket(65534) == 7
-    assert _prompt_size_bucket(65535) == 8
-    assert _prompt_size_bucket(10_000_000) == 8
-    previous = 0
-    for length in range(0, 2000):
-        bucket = _prompt_size_bucket(length)
-        assert bucket >= previous
-        previous = bucket
-
-
-def test_checkpoint_scope_tracks_checkpoint_prompt_size_and_resolution() -> None:
-    base = _checkpoint_generation()
-    base_features = build_generation_timing_features(base)
-
-    assert base_features.checkpoint_key is not None
-    assert [scope for scope, _ in base_features.total_profile_keys()] == [
-        "total_exact",
-        "total_checkpoint",
-        "total_revision_resolution",
-        "total_revision",
-        "total_source",
-        "total_instance",
-    ]
-
-    # A different checkpoint value splits the cohort.
-    changed_model = build_generation_timing_features(_checkpoint_generation(choice="model-b"))
-    assert changed_model.checkpoint_key != base_features.checkpoint_key
-    assert changed_model.exact_key != base_features.exact_key
-    # The coarser scopes are unaffected by the checkpoint value.
-    assert changed_model.revision_resolution_key == base_features.revision_resolution_key
-    assert changed_model.source_key == base_features.source_key
-
-    # Prompt content never enters the key; only its length band does.
-    same_length = "totally other!"
-    assert len(same_length) == len("private prompt")
-    other_content = build_generation_timing_features(_checkpoint_generation(prompt=same_length))
-    assert other_content.checkpoint_key == base_features.checkpoint_key
-    assert other_content.exact_key == base_features.exact_key
-
-    # Crossing a prompt-size bucket splits the cohort.
-    longer_prompt = build_generation_timing_features(
-        _checkpoint_generation(prompt="one more word!!")
-    )
-    assert longer_prompt.checkpoint_key != base_features.checkpoint_key
-    assert longer_prompt.revision_key == base_features.revision_key
-
-    # Resolution and instance still split the cohort.
-    changed_width = build_generation_timing_features(_checkpoint_generation(width=1536))
-    assert changed_width.checkpoint_key != base_features.checkpoint_key
-    changed_instance = build_generation_timing_features(
-        _checkpoint_generation(instance_id="worker-2")
-    )
-    assert changed_instance.checkpoint_key != base_features.checkpoint_key
-
-    # Sources without a checkpoint selector keep the five historical scopes.
-    plain = build_generation_timing_features(_generation())
-    assert plain.checkpoint_key is None
-    assert "total_checkpoint" not in [scope for scope, _ in plain.total_profile_keys()]
-
-    # An id-based selector (id "checkpoint") matches without a role; an empty
-    # value does not create a cohort.
-    by_id = _generation()
-    by_id.resolved_contract_json["inputs"].append(
-        {"id": "checkpoint", "type": "choice", "semantic_role": "model_selector"}
-    )
-    by_id.effective_controls_json["checkpoint"] = "TYJR MXFP8"
-    assert build_generation_timing_features(by_id).checkpoint_key is not None
-    by_id.effective_controls_json["checkpoint"] = ""
-    assert build_generation_timing_features(by_id).checkpoint_key is None
-
-
-def test_sibling_stage_estimates_running_generation_from_completed_siblings(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-sibling.db")
-    estimator = GenerationEtaEstimator(factory)
-    generation = _generation()
-    current = generation.started_at + timedelta(seconds=10)  # type: ignore[operator]
-
-    estimate = estimator.estimate(generation, now=current, sibling_durations=[40.0])
-    assert estimate is not None
-    assert estimate["basis"] == "run_sibling"
-    assert estimate["confidence"] == "medium"
-    assert estimate["remaining_seconds"] == 30.0
-    # Single sample expands to [30, 50]; subtracting 10s elapsed gives [20, 40].
-    assert estimate["lower_seconds"] == 20.0
-    assert estimate["upper_seconds"] == 40.0
-
-    three = estimator.estimate(generation, now=current, sibling_durations=[40.0, 42.0, 38.0])
-    assert three is not None
-    assert three["confidence"] == "high"
-    assert three["remaining_seconds"] == 30.0
-
-    # Surviving past the sibling median retains the expired deadline.
-    overrun = estimator.estimate(
-        generation,
-        now=generation.started_at + timedelta(seconds=50),  # type: ignore[operator]
-        sibling_durations=[40.0],
-    )
-    assert overrun is not None
-    assert overrun["basis"] == "run_sibling"
-    assert overrun["confidence"] == "low"
-    assert overrun["remaining_seconds"] == 0.0
-    assert overrun["completion_at"] == estimate["completion_at"]
-
-    estimator.forget(generation.id)
-    # Invalid durations are ignored entirely; with no usable evidence and no
-    # historical profile there is no ETA at all.
-    assert (
-        estimator.estimate(
-            generation,
-            now=current,
-            sibling_durations=[0.0, -5.0, 99_999_999.0, float("nan"), None],  # type: ignore[list-item]
-        )
-        is None
-    )
-    assert estimator.estimate(generation, now=current, sibling_durations=[]) is None
-    assert estimator.estimate(generation, now=current) is None
-
-
-def test_matching_sibling_stage_ranks_above_landmark_and_historical_totals(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-sibling-order.db")
-    estimator = GenerationEtaEstimator(factory)
-    generation = _generation()
-    features = build_generation_timing_features(generation)
-    progress = _progress(fraction=0.5)
-    landmark_key = build_progress_landmark_key(features, progress)
-    assert landmark_key is not None
-    with factory() as session:
-        for index in range(20):
-            estimator._add_profile_sample(
-                session, "progress_landmark", landmark_key, 12.0 + (index % 3)
-            )
-            estimator._add_profile_sample(session, "total_revision", features.revision_key, 100.0)
-        session.commit()
-    estimator._profiles = estimator._load_profiles()
-    current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
-
-    # Matching live evidence wins even with a well-trained historical landmark.
-    landmark = estimator.estimate(
-        generation, progress=progress, now=current, sibling_durations=[40.0]
-    )
-    assert landmark is not None
-    assert landmark["basis"] == "run_sibling"
-    assert landmark["remaining_seconds"] == 35.0
-
-    # Without node progress (or for other nodes) the fresh sibling beats the
-    # historical cohort.
-    sibling = estimator.estimate(generation, now=current, sibling_durations=[40.0])
-    assert sibling is not None
-    assert sibling["basis"] == "run_sibling"
-    other_node = estimator.estimate(
-        generation,
-        progress=_progress(node_id="different-node", fraction=0.5),
-        now=current,
-        sibling_durations=[40.0],
-    )
-    assert other_node is not None
-    assert other_node["basis"] == "run_sibling"
-
-
-def test_audit_folds_total_checkpoint_scope_with_prompt_bucket(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-checkpoint-audit.db")
-    estimator = GenerationEtaEstimator(factory)
-    base = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
-    generations = [
-        _checkpoint_generation(
-            generation_id=f"00000000-0000-4000-8000-{index:012d}",
-            status=GenerationStatus.SUCCEEDED,
-            started_at=base + timedelta(seconds=index * 10),
-            completed_at=base + timedelta(seconds=index * 10 + 30),
-        )
-        for index in range(1, 3)
-    ]
-    with factory() as session:
-        session.add_all(generations)
-        session.commit()
-
-    result = estimator._audit_batch()
-    assert result.observed == 2
-    estimator._apply_audit_result(result)
-
-    with factory() as session:
-        rows = session.execute(
-            select(
-                GenerationTimingProfile.scope,
-                GenerationTimingProfile.scope_key,
-                GenerationTimingProfile.sample_count,
-            )
-        ).all()
-    assert {scope for scope, _, _ in rows} == {
-        "total_exact",
-        "total_checkpoint",
-        "total_revision_resolution",
-        "total_revision",
-        "total_source",
-        "total_instance",
-    }
-    checkpoint_rows = [row for row in rows if row[0] == "total_checkpoint"]
-    # Both siblings share one (source, checkpoint, prompt bucket, resolution) cohort.
-    assert len(checkpoint_rows) == 1
-    assert checkpoint_rows[0][2] == 2
-
-    # A different prompt-size band starts a new checkpoint cohort.
-    longer = _checkpoint_generation(
-        generation_id="00000000-0000-4000-8000-000000000009",
-        status=GenerationStatus.SUCCEEDED,
-        prompt="a" * 100,
-        started_at=base + timedelta(seconds=100),
-        completed_at=base + timedelta(seconds=130),
-    )
-    with factory() as session:
-        session.add(longer)
-        session.commit()
-    result = estimator._audit_batch()
-    assert result.observed == 1
-    estimator._apply_audit_result(result)
-    with factory() as session:
-        checkpoint_rows = session.execute(
-            select(GenerationTimingProfile.scope_key).where(
-                GenerationTimingProfile.scope == "total_checkpoint"
-            )
-        ).all()
-    assert len(checkpoint_rows) == 2
-
-
-def test_ladder_prefers_checkpoint_scope_between_exact_and_revision(
-    tmp_path: Path,
-) -> None:
-    factory = _session_factory(tmp_path / "eta-checkpoint-ladder.db")
-    estimator = GenerationEtaEstimator(factory)
-    generation = _checkpoint_generation()
-    features = build_generation_timing_features(generation)
-    current = generation.started_at + timedelta(seconds=5)  # type: ignore[operator]
-    with factory() as session:
-        for _ in range(6):
-            estimator._add_profile_sample(
-                session, "total_checkpoint", features.checkpoint_key, 60.0
-            )
-            estimator._add_profile_sample(session, "total_revision", features.revision_key, 100.0)
-        session.commit()
-    estimator._profiles = estimator._load_profiles()
-
-    estimate = estimator.estimate(generation, now=current)
-    assert estimate is not None
-    assert estimate["basis"] == "historical_checkpoint"
-    assert estimate["confidence"] == "medium"
-    assert estimate["remaining_seconds"] == 55.0
-
-    with factory() as session:
-        for _ in range(20):
-            estimator._add_profile_sample(session, "total_exact", features.exact_key, 40.0)
-        session.commit()
-    estimator._profiles = estimator._load_profiles()
-    estimate = estimator.estimate(generation, now=current)
-    assert estimate is not None
-    assert estimate["basis"] == "historical_exact"
+    while estimator._audit_batch():
+        pass
+    result = estimator.duration(_generation())
+    assert result.seconds == 60
+    assert result.sample_count == 1
+    estimator._audit_batch()
+    assert estimator.duration(_generation()).sample_count == 1

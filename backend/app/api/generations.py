@@ -85,10 +85,17 @@ async def create_generation_batch(
 @router.get("/generation-activity", response_model=GenerationActivity)
 @database_handler
 def generation_activity(
+    request: Request,
     session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> GenerationActivity:
-    return activity_snapshot(session, context.user.id)
+    snapshot = activity_snapshot(session, context.user.id)
+    return GenerationActivity.model_validate(
+        {
+            **snapshot.model_dump(),
+            **get_container(request).activity_estimator.project(session, context.user.id),
+        }
+    )
 
 
 @router.get("/generations", response_model=GenerationPage)
