@@ -326,11 +326,11 @@
 .lm-row {
   position: relative;
   display: grid;
-  grid-template-columns: 78px 36px minmax(0, 1fr) minmax(195px, 290px);
+  grid-template-columns: 100px 36px minmax(0, 1fr) minmax(195px, 290px);
   align-items: center;
   gap: 10px;
-  min-height: 120px;
-  padding: 0 20px;
+  min-height: 124px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   transition: background var(--motion-fast) ease;
 }
@@ -347,10 +347,10 @@
 }
 
 .lm-row-select:hover { background: rgb(91 156 245 / 7%); }
-.lm-row-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.lm-row-select:focus-visible { outline: none; box-shadow: inset 2px 0 0 rgb(91 156 245 / 65%), inset -2px 0 0 rgb(91 156 245 / 65%); }
 
 .lm-row.is-enabled {
-  background: linear-gradient(90deg, rgb(91 156 245 / 7%), transparent 45%);
+  background: linear-gradient(90deg, rgb(91 156 245 / 13%), rgb(91 156 245 / 3%) 37%, transparent 50%, rgb(91 156 245 / 3%) 63%, rgb(91 156 245 / 13%));
 }
 
 .lm-row.is-dragging {
@@ -366,7 +366,7 @@
   z-index: 2;
   display: grid;
   justify-items: center;
-  align-self: stretch;
+  align-self: center;
   min-width: 0;
   pointer-events: none;
 }
@@ -376,13 +376,12 @@
 .lm-image-button {
   display: grid;
   place-items: center;
-  width: 66px;
-  height: 100%;
-  min-height: 120px;
+  width: 92px;
+  aspect-ratio: 1;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text-soft);
   cursor: pointer;
@@ -600,13 +599,13 @@
   }
 
   .lm-row {
-    grid-template-columns: 66px 30px minmax(0, 1fr);
+    grid-template-columns: 94px 30px minmax(0, 1fr);
     grid-template-areas:
       "image handle info"
       "image strength strength";
     gap: 6px 8px;
-    min-height: 136px;
-    padding: 0 12px;
+    min-height: 126px;
+    padding: 16px 12px;
   }
 
   .lm-image-cell { grid-area: image; }
@@ -615,8 +614,7 @@
   .lm-strength { grid-area: strength; }
 
   .lm-image-button {
-    width: 60px;
-    min-height: 136px;
+    width: 88px;
   }
 
   .lm-row-description {
