@@ -1647,10 +1647,10 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   await manager.getByRole("button", { name: "Toggle Beta" }).click();
   await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
-  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject unchanged");
+  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject on Apply: Beta (LoRA title)");
   await manager.screenshot({ path: testInfo.outputPath("lora-manager.png"), animations: "disabled" });
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("Beta");
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await manager.getByRole("button", { name: "All off" }).click();
   await manager.getByRole("button", { name: "Apply", exact: true }).click();

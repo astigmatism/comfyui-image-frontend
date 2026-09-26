@@ -51,7 +51,9 @@ export function strongestLoraTrigger(control, value) {
   const entry = (value || []).reduce((best, candidate) =>
     candidate.strength > 0 && (!best || candidate.strength > best.strength) ? candidate : best, null);
   const item = control.items.find((candidate) => candidate.id === entry?.id);
-  return { entry, item, triggerWord: item?.trigger_word || null };
+  const verified = typeof item?.trigger_word === "string" ? item.trigger_word.trim() : "";
+  const title = typeof item?.label === "string" ? item.label.trim() : "";
+  return { entry, item, triggerWord: verified || title || null, triggerSource: verified ? "verified" : title ? "title" : null };
 }
 
 export function loraStackMarkup(control, value, images = {}) {

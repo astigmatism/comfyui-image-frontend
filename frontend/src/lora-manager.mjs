@@ -10,8 +10,9 @@ export function loraImagePath(sourceKey, controlId) {
 function subjectPreview(control, values, subjectAvailable = true) {
   const strongest = strongestLoraTrigger(control, values);
   if (!strongest.entry) return "Subject unchanged · no LoRA enabled";
-  if (!strongest.triggerWord) return `Subject unchanged · ${strongest.item?.label || strongest.entry.id} has no verified trigger`;
-  return subjectAvailable ? `Subject on Apply: ${strongest.triggerWord}` : "Subject unchanged · Prompt Generation subject is unavailable";
+  if (!subjectAvailable) return "Subject unchanged · Prompt Generation subject is unavailable";
+  if (!strongest.triggerWord) return "Subject unchanged · LoRA has no published title";
+  return `Subject on Apply: ${strongest.triggerWord}${strongest.triggerSource === "title" ? " (LoRA title)" : ""}`;
 }
 
 export function loraManagerMarkup({ control, values, memory = {}, images = {}, sourceName = "Workflow", subjectAvailable = true, error = "", busy = false }) {
@@ -32,7 +33,7 @@ export function loraManagerMarkup({ control, values, memory = {}, images = {}, s
       <button type="button" class="lm-row-select" data-lora-toggle="${id}" aria-label="Toggle ${label}" aria-pressed="${!disabled}" title="${disabled ? "Enable" : "Disable"} ${label}" ${minimum === null ? "disabled" : ""}></button>
       <div class="lm-image-cell"><button type="button" class="lm-image-button" data-lora-image-change="${id}" aria-label="${image ? "Change" : "Add"} image for ${label}">${image ? `<img src="${escape(image)}" alt="" />` : '<span class="lm-add-image" aria-hidden="true"><b>＋</b><span>Add image</span></span>'}</button><button type="button" class="lm-image-action" data-lora-image-remove="${id}" aria-label="Remove image for ${label}" title="Remove image for ${label}" ${image ? "" : "hidden"}>×</button></div>
       <button type="button" class="icon-button lm-drag-handle" data-lora-handle draggable="true" aria-label="Reorder ${label}" aria-description="Drag to reorder, or use the Up and Down arrow keys.">⠿</button>
-      <div class="lm-row-info"><span class="lm-row-name" title="${escape(item.description || "Trigger words have not been verified for this LoRA.")}">${label}</span><span class="lm-row-description">${escape(item.description || "Usage guidance not published")}</span><span class="lm-row-state">${disabled ? "Off" : "Enabled"}</span></div>
+      <div class="lm-row-info"><span class="lm-row-name" title="${escape(item.description || "No verified trigger word is published; Subject name uses this LoRA title.")}">${label}</span><span class="lm-row-description">${escape(item.description || "Usage guidance not published")}</span><span class="lm-row-state">${disabled ? "Off" : "Enabled"}</span></div>
     <div class="lm-strength"><span class="lm-strength-label">${disabled ? "Strength when enabled" : "Strength"}</span><input type="range" data-lora-range="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${strength}" aria-label="${label} strength slider" ${disabled ? "disabled" : ""} /><input type="number" data-lora-number="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${Number(strength).toFixed(2)}" aria-label="${label} strength" ${disabled ? "disabled" : ""} /></div>
     </li>`;
   }).join("");

@@ -114,7 +114,7 @@ function updateSubjectPreview() {
     ? "Subject unchanged · no LoRA enabled"
     : strongest.trigger
       ? `Subject on Apply: ${strongest.trigger}`
-      : `Subject unchanged · ${strongest.label} has no verified trigger`;
+      : `Subject on Apply: ${strongest.label} (LoRA title)`;
   document.querySelector("#lm-subject-preview").textContent = preview;
 }
 
@@ -160,7 +160,7 @@ function applyDialog() {
   }
   committed = structuredClone(draft);
   const strongest = strongestRow(committed);
-  if (strongest?.trigger) subject.value = strongest.trigger;
+  if (strongest) subject.value = strongest.trigger || strongest.label;
   renderSummary();
   closeDialog("apply");
   showToast("LoRA choices and images applied to this preview.");

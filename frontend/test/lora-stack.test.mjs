@@ -74,7 +74,7 @@ test("manager lists all LoRAs with enable, strength, image and reorder controls"
   assert.doesNotMatch(markup, /Quick pick|Mix &amp; adjust|data-lora-solo/);
 });
 
-test("strongest enabled LoRA supplies only its verified trigger", () => {
+test("strongest enabled LoRA uses its verified trigger or published title", () => {
   const withTrigger = structuredClone(control);
   withTrigger.items[0].trigger_word = '<Alpha & "Character">';
   const rows = [{ id: "a", strength: 1 }, { id: "b", strength: 0 }];
@@ -83,8 +83,13 @@ test("strongest enabled LoRA supplies only its verified trigger", () => {
   assert.match(loraManagerMarkup({ control: withTrigger, values: rows, subjectAvailable: false }), /Subject unchanged · Prompt Generation subject is unavailable/);
   assert.doesNotMatch(markup, /<Alpha/);
   assert.equal(strongestLoraTrigger(withTrigger, rows).triggerWord, '<Alpha & "Character">');
-  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1.5 }, { id: "a", strength: 1 }]).triggerWord, null);
-  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1 }, { id: "a", strength: 1 }]).triggerWord, null);
+  assert.equal(strongestLoraTrigger(withTrigger, rows).triggerSource, "verified");
+  const titleFallback = [{ id: "b", strength: 1.5 }, { id: "a", strength: 1 }];
+  const fallback = strongestLoraTrigger(withTrigger, titleFallback);
+  assert.equal(fallback.triggerWord, "Beta");
+  assert.equal(fallback.triggerSource, "title");
+  assert.match(loraManagerMarkup({ control: withTrigger, values: titleFallback }), /Subject on Apply: Beta \(LoRA title\)/);
+  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1 }, { id: "a", strength: 1 }]).triggerWord, "Beta");
   assert.equal(strongestLoraTrigger(withTrigger, [{ id: "a", strength: 0 }, { id: "b", strength: 0 }]).triggerWord, null);
 });
 
