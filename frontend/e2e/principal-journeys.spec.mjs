@@ -1532,7 +1532,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   const loraDialog = page.locator("#lora-manager-dialog");
-  await loraDialog.getByRole("checkbox", { name: "Enable Beta" }).check();
+  await loraDialog.getByRole("button", { name: "Toggle Beta" }).click();
   await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
   await loraDialog.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
@@ -1632,7 +1632,7 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   const manager = page.locator("#lora-manager-dialog");
   if (await manager.getByRole("button", { name: "All off" }).isEnabled()) await manager.getByRole("button", { name: "All off" }).click();
-  await manager.getByRole("checkbox", { name: "Enable Alpha" }).check();
+  await manager.getByRole("button", { name: "Toggle Alpha" }).click();
   await expect(manager.locator("[data-lora-subject-preview]")).toContainText("AlphaCharacter");
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
@@ -1644,7 +1644,7 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   }).toEqual(expect.arrayContaining([{ id: "a", strength: 1 }, { id: "b", strength: 0 }]));
 
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
-  await manager.getByRole("checkbox", { name: "Enable Beta" }).check();
+  await manager.getByRole("button", { name: "Toggle Beta" }).click();
   await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
   await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject unchanged");
@@ -1656,7 +1656,7 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
-  await manager.getByRole("checkbox", { name: "Enable Beta" }).check();
+  await manager.getByRole("button", { name: "Toggle Beta" }).click();
   await expect(manager.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
 });
 

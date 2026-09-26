@@ -96,12 +96,12 @@ function rowMarkup(row) {
   const label = escapeHtml(row.label);
   const id = escapeHtml(row.id);
   return `<li class="lm-row ${enabled ? "is-enabled" : ""}" data-lora-id="${id}">
+    <button type="button" class="lm-row-select" data-lora-toggle="${id}" aria-label="Toggle ${label}" aria-pressed="${enabled}" title="${enabled ? "Disable" : "Enable"} ${label}"></button>
     <div class="lm-image-cell">
       <button type="button" class="lm-image-button" data-image-change="${id}" aria-label="${row.image ? "Change" : "Add"} image for ${label}" title="${row.image ? "Change" : "Add"} image for ${label}">${imageMarkup(row)}</button>
-      <button type="button" class="lm-image-action" data-image-remove="${id}" ${row.image ? "" : "hidden"}>Remove image</button>
+      <button type="button" class="lm-image-action" data-image-remove="${id}" aria-label="Remove image for ${label}" title="Remove image for ${label}" ${row.image ? "" : "hidden"}>×</button>
     </div>
     <button type="button" class="icon-button lm-drag-handle" draggable="true" aria-label="Reorder ${label}" aria-description="Drag to reorder, or use the Up and Down arrow keys.">⠿</button>
-    <label class="lm-enable"><input type="checkbox" data-lora-enable="${id}" aria-label="Enable ${label}" ${enabled ? "checked" : ""} /></label>
     <div class="lm-row-info"><span class="lm-row-name">${label}</span><span class="lm-row-description">${escapeHtml(row.description)}</span><span class="lm-row-state">${enabled ? "Enabled" : "Off"}</span></div>
     <div class="lm-strength"><span class="lm-strength-label">${enabled ? "Strength" : "Strength when enabled"}</span><input type="range" data-lora-range="${id}" min="0.05" max="2" step="0.05" value="${strength}" aria-label="${label} strength slider" ${enabled ? "" : "disabled"} /><input type="number" data-lora-number="${id}" min="0.05" max="2" step="0.05" value="${formatStrength(strength)}" aria-label="${label} strength" ${enabled ? "" : "disabled"} /></div>
   </li>`;
@@ -120,10 +120,12 @@ function updateSubjectPreview() {
 
 function renderDialog() {
   if (!draft) return;
+  const scrollTop = dialog.querySelector(".lm-dialog-content").scrollTop;
   const count = activeRows(draft).length;
   document.querySelector("#lm-dialog-count").textContent = `${count} of ${draft.length} enabled`;
   document.querySelector("#lm-all-off").disabled = count === 0;
   list.innerHTML = draft.map(rowMarkup).join("");
+  dialog.querySelector(".lm-dialog-content").scrollTop = scrollTop;
   updateSubjectPreview();
 }
 
@@ -141,7 +143,7 @@ function openDialog() {
   dialog.returnValue = "";
   renderDialog();
   dialog.showModal();
-  queueMicrotask(() => list.querySelector("[data-lora-enable]")?.focus({ preventScroll: true }));
+  queueMicrotask(() => list.querySelector("[data-lora-toggle]")?.focus({ preventScroll: true }));
 }
 
 function closeDialog(value) {
@@ -207,19 +209,6 @@ dialog.addEventListener("close", () => {
 });
 
 list.addEventListener("change", (event) => {
-  const enabled = event.target.closest("[data-lora-enable]");
-  if (enabled) {
-    const row = rowById(enabled.dataset.loraEnable);
-    if (!row) return;
-    if (enabled.checked) row.strength = row.lastStrength || 1;
-    else {
-      if (row.strength > 0) row.lastStrength = row.strength;
-      row.strength = 0;
-    }
-    renderDialog();
-    list.querySelector(`[data-lora-enable="${CSS.escape(row.id)}"]`)?.focus({ preventScroll: true });
-    return;
-  }
   const number = event.target.closest("[data-lora-number]");
   if (number) {
     if (!number.checkValidity()) {
@@ -259,6 +248,18 @@ list.addEventListener("input", (event) => {
 });
 
 list.addEventListener("click", (event) => {
+  const selection = event.target.closest("[data-lora-toggle]");
+  if (selection) {
+    const row = rowById(selection.dataset.loraToggle);
+    if (!row) return;
+    if (row.strength > 0) {
+      row.lastStrength = row.strength;
+      row.strength = 0;
+    } else row.strength = row.lastStrength || 1;
+    renderDialog();
+    list.querySelector(`[data-lora-toggle="${CSS.escape(row.id)}"]`)?.focus({ preventScroll: true });
+    return;
+  }
   const change = event.target.closest("[data-image-change]");
   if (change) {
     imageTargetId = change.dataset.imageChange;

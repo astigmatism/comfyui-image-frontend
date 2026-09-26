@@ -324,15 +324,30 @@
 }
 
 .lm-row {
+  position: relative;
   display: grid;
-  grid-template-columns: 78px 36px 24px minmax(0, 1fr) minmax(195px, 290px);
+  grid-template-columns: 78px 36px minmax(0, 1fr) minmax(195px, 290px);
   align-items: center;
   gap: 10px;
-  min-height: 113px;
-  padding: 12px 20px;
+  min-height: 120px;
+  padding: 0 20px;
   border-bottom: 1px solid var(--border);
   transition: background var(--motion-fast) ease;
 }
+
+.lm-row-select {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.lm-row-select:hover { background: rgb(91 156 245 / 7%); }
+.lm-row-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 
 .lm-row.is-enabled {
   background: linear-gradient(90deg, rgb(91 156 245 / 7%), transparent 45%);
@@ -347,22 +362,27 @@
 }
 
 .lm-image-cell {
+  position: relative;
+  z-index: 2;
   display: grid;
   justify-items: center;
-  align-self: start;
-  gap: 3px;
+  align-self: stretch;
   min-width: 0;
+  pointer-events: none;
 }
+
+.lm-image-cell button:not(.lm-image-action) { pointer-events: auto; }
 
 .lm-image-button {
   display: grid;
   place-items: center;
   width: 66px;
-  height: 66px;
+  height: 100%;
+  min-height: 120px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   background: var(--surface-2);
   color: var(--text-soft);
   cursor: pointer;
@@ -393,25 +413,41 @@
 }
 
 .lm-image-action {
-  min-height: 19px;
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font-size: 0.67rem;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 5px;
+  background: rgb(8 13 20 / 85%);
+  color: white;
+  font-size: 1.1rem;
+  opacity: 0;
+  pointer-events: none;
   cursor: pointer;
 }
 
-.lm-image-action:hover {
-  color: var(--text);
-  text-decoration: underline;
+.lm-image-cell:hover .lm-image-action,
+.lm-image-cell:focus-within .lm-image-action {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .lm-image-action[hidden] {
   display: none;
 }
 
+@media (hover: none) {
+  .lm-image-action:not([hidden]) { opacity: 1; pointer-events: auto; }
+}
+
 .lm-drag-handle {
+  position: relative;
+  z-index: 2;
   border-color: transparent;
   background: transparent;
   color: var(--muted);
@@ -426,22 +462,6 @@
 
 .lm-drag-handle:hover {
   color: var(--text);
-}
-
-.lm-enable {
-  display: grid;
-  place-items: center;
-  min-width: 24px;
-  min-height: 36px;
-  cursor: pointer;
-}
-
-.lm-enable input {
-  width: 19px;
-  height: 19px;
-  margin: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
 }
 
 .lm-row-info {
@@ -484,12 +504,17 @@
 }
 
 .lm-strength {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 68px;
   align-items: center;
   gap: 6px 10px;
   min-width: 0;
+  pointer-events: none;
 }
+
+.lm-strength input { pointer-events: auto; }
 
 .lm-strength-label {
   grid-column: 1 / -1;
@@ -575,24 +600,23 @@
   }
 
   .lm-row {
-    grid-template-columns: 66px 30px 24px minmax(0, 1fr);
+    grid-template-columns: 66px 30px minmax(0, 1fr);
     grid-template-areas:
-      "image handle enable info"
-      "image strength strength strength";
+      "image handle info"
+      "image strength strength";
     gap: 6px 8px;
-    min-height: 124px;
-    padding: 12px;
+    min-height: 136px;
+    padding: 0 12px;
   }
 
   .lm-image-cell { grid-area: image; }
   .lm-drag-handle { grid-area: handle; }
-  .lm-enable { grid-area: enable; }
   .lm-row-info { grid-area: info; }
   .lm-strength { grid-area: strength; }
 
   .lm-image-button {
     width: 60px;
-    height: 60px;
+    min-height: 136px;
   }
 
   .lm-row-description {

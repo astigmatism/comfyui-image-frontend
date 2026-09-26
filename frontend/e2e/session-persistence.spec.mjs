@@ -100,7 +100,7 @@ test("control bar values, active source, and section states persist across reloa
   // LoRA strength lives in the collapsed LoRAs section.
   await sectionTrigger("lora-loras").click();
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
-  await page.locator("#lora-manager-dialog").getByRole("checkbox", { name: "Enable Beta" }).check();
+  await page.locator("#lora-manager-dialog").getByRole("button", { name: "Toggle Beta" }).click();
   await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
   await page.locator("#lora-manager-dialog").getByRole("button", { name: "Apply", exact: true }).click();
@@ -203,7 +203,7 @@ test("republished LoRA membership is reconciled on load, submission, and persist
     await expect(page.locator("#lora-manager-dialog .lm-row")).toHaveCount(expected.length);
     expect(await page.locator("#lora-manager-dialog .lm-row").evaluateAll((rows) => rows.map((row) => ({
       id: row.dataset.loraId,
-      strength: row.querySelector('[data-lora-enable]').checked ? Number(row.querySelector('input[type="number"]').value) : 0,
+      strength: row.querySelector('[data-lora-toggle]').getAttribute('aria-pressed') === 'true' ? Number(row.querySelector('input[type="number"]').value) : 0,
     })))).toEqual(expected);
     await page.locator("#lora-manager-dialog").getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(page.getByText("Include every LoRA exactly once.", { exact: true })).toHaveCount(0);
@@ -232,7 +232,7 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
   const source = await (await page.request.get(`/api/workflows/${sourceKey}`)).json();
   const stack = source.interface.inputs.find((input) => input.type === "lora_stack");
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
-  await page.locator("#lora-manager-dialog").getByRole("checkbox", { name: "Enable Beta" }).check();
+  await page.locator("#lora-manager-dialog").getByRole("button", { name: "Toggle Beta" }).click();
   await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
   await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
   await page.locator("#lora-manager-dialog").getByRole("button", { name: "Apply", exact: true }).click();
@@ -270,6 +270,6 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
   await expect(page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
   expect(await page.locator("#lora-manager-dialog .lm-row").evaluateAll((rows) => rows.map((row) => ({
     id: row.dataset.loraId,
-    strength: row.querySelector('[data-lora-enable]').checked ? Number(row.querySelector('input[type="number"]').value) : 0,
+    strength: row.querySelector('[data-lora-toggle]').getAttribute('aria-pressed') === 'true' ? Number(row.querySelector('input[type="number"]').value) : 0,
   })))).toEqual(submittedStack);
 });

@@ -54,7 +54,7 @@ test("manager drafts enable, strength, order and Subject until Apply", async ({ 
   await mount(page);
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   await open(page);
-  await dialog(page).getByRole("checkbox", { name: "Enable Beta" }).check();
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
   await dialog(page).getByRole("spinbutton", { name: "Beta strength" }).fill("1.25");
   await dialog(page).getByRole("spinbutton", { name: "Beta strength" }).press("Tab");
   await dialog(page).getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
@@ -65,7 +65,7 @@ test("manager drafts enable, strength, order and Subject until Apply", async ({ 
   expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }]);
 
   await open(page);
-  await dialog(page).getByRole("checkbox", { name: "Enable Alpha" }).check();
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
   await expect(dialog(page).locator("[data-lora-subject-preview]")).toContainText("AlphaCharacter");
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   await expect(dialog(page)).not.toBeVisible();
@@ -77,8 +77,28 @@ test("manager drafts enable, strength, order and Subject until Apply", async ({ 
   await dialog(page).getByRole("button", { name: "All off" }).click();
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   await open(page);
-  await dialog(page).getByRole("checkbox", { name: "Enable Alpha" }).check();
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
   await expect(dialog(page).getByRole("spinbutton", { name: "Alpha strength" })).toHaveValue("1.00");
+});
+
+test("row background toggles without jumping the scrolled list or hijacking strength controls", async ({ page }) => {
+  await mount(page);
+  await page.addStyleTag({ content: "#lora-manager-dialog { height: 330px; }" });
+  await open(page);
+  const manager = dialog(page);
+  const content = manager.locator(".lm-dialog-content");
+  const toggle = manager.getByRole("button", { name: "Toggle Gamma" });
+  await expect(manager.locator('input[type="checkbox"]')).toHaveCount(0);
+  await toggle.scrollIntoViewIfNeeded();
+  expect(await content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(await content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await manager.getByRole("spinbutton", { name: "Gamma strength" }).click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(await content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });
 
 test("staged image upload is saved only on Apply and conflicts keep the draft", async ({ page }) => {

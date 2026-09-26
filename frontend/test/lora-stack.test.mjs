@@ -59,13 +59,14 @@ test("manager lists all LoRAs with enable, strength, image and reorder controls"
   const markup = loraManagerMarkup({ control: withUsage, values: rows, memory: { b: 0.65 }, sourceName: "Example workflow" });
   assert.ok(markup.indexOf('data-lora-id="b"') < markup.indexOf('data-lora-id="a"'));
   for (const id of ["a", "b"]) {
-    assert.match(markup, new RegExp(`data-lora-enable="${id}"`));
+    assert.match(markup, new RegExp(`data-lora-toggle="${id}"`));
     assert.match(markup, new RegExp(`data-lora-range="${id}"`));
     assert.match(markup, new RegExp(`data-lora-number="${id}"`));
     assert.match(markup, new RegExp(`data-lora-image-change="${id}"`));
     assert.match(markup, /data-lora-handle/);
   }
   assert.match(markup, /data-lora-image-remove="a"/);
+  assert.doesNotMatch(markup, /type="checkbox"/);
   assert.match(markup, /0\.65/);
   assert.match(markup, /Example workflow/);
   assert.match(markup, /Use: &lt;character&gt; &amp; &quot;style&quot;/);

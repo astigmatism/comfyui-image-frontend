@@ -29,9 +29,9 @@ export function loraManagerMarkup({ control, values, memory = {}, images = {}, s
     const id = escape(entry.id);
     const disabled = entry.strength <= 0;
     return `<li class="lm-row ${disabled ? "" : "is-enabled"}" data-lora-id="${id}">
-      <div class="lm-image-cell"><button type="button" class="lm-image-button" data-lora-image-change="${id}" aria-label="${image ? "Change" : "Add"} image for ${label}">${image ? `<img src="${escape(image)}" alt="" />` : '<span class="lm-add-image" aria-hidden="true"><b>＋</b><span>Add image</span></span>'}</button><button type="button" class="lm-image-action" data-lora-image-remove="${id}" aria-label="Remove image for ${label}" ${image ? "" : "hidden"}>Remove image</button></div>
+      <button type="button" class="lm-row-select" data-lora-toggle="${id}" aria-label="Toggle ${label}" aria-pressed="${!disabled}" title="${disabled ? "Enable" : "Disable"} ${label}" ${minimum === null ? "disabled" : ""}></button>
+      <div class="lm-image-cell"><button type="button" class="lm-image-button" data-lora-image-change="${id}" aria-label="${image ? "Change" : "Add"} image for ${label}">${image ? `<img src="${escape(image)}" alt="" />` : '<span class="lm-add-image" aria-hidden="true"><b>＋</b><span>Add image</span></span>'}</button><button type="button" class="lm-image-action" data-lora-image-remove="${id}" aria-label="Remove image for ${label}" title="Remove image for ${label}" ${image ? "" : "hidden"}>×</button></div>
       <button type="button" class="icon-button lm-drag-handle" data-lora-handle draggable="true" aria-label="Reorder ${label}" aria-description="Drag to reorder, or use the Up and Down arrow keys.">⠿</button>
-      <label class="lm-enable"><input type="checkbox" data-lora-enable="${id}" aria-label="Enable ${label}" ${disabled ? "" : "checked"} ${minimum === null ? "disabled" : ""} /></label>
       <div class="lm-row-info"><span class="lm-row-name" title="${escape(item.description || "Trigger words have not been verified for this LoRA.")}">${label}</span><span class="lm-row-description">${escape(item.description || "Usage guidance not published")}</span><span class="lm-row-state">${disabled ? "Off" : "Enabled"}</span></div>
     <div class="lm-strength"><span class="lm-strength-label">${disabled ? "Strength when enabled" : "Strength"}</span><input type="range" data-lora-range="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${strength}" aria-label="${label} strength slider" ${disabled ? "disabled" : ""} /><input type="number" data-lora-number="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${Number(strength).toFixed(2)}" aria-label="${label} strength" ${disabled ? "disabled" : ""} /></div>
     </li>`;
@@ -55,7 +55,9 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
   const render = (focus = null) => {
     if (!draft) return;
     const target = dialog();
+    const scrollTop = target.querySelector(".lm-dialog-content")?.scrollTop || 0;
     target.innerHTML = loraManagerMarkup({ control: draft.control, values: draft.values, memory: draft.memory, images: draft.images, sourceName: draft.sourceName, subjectAvailable: draft.subjectAvailable, error: draft.error, busy: draft.busy });
+    target.querySelector(".lm-dialog-content").scrollTop = scrollTop;
     if (focus) target.querySelector(focus)?.focus({ preventScroll: true });
   };
   const close = () => dialog()?.close("cancel");
@@ -66,7 +68,7 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
     draft = { ...ctx, values: structuredClone(ctx.values), memory: { ...ctx.memory }, images: structuredClone(ctx.images || {}), changes: new Map(), error: "", busy: false };
     render();
     dialog().showModal();
-    dialog().querySelector("[data-lora-enable]")?.focus({ preventScroll: true });
+    dialog().querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
     try {
       const payload = await api(loraImagePath(ctx.sourceKey, ctx.control.id));
       if (!draft || draft.sourceKey !== ctx.sourceKey || draft.control.id !== ctx.control.id) return;
@@ -74,7 +76,7 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
       draft.images = structuredClone(serverImages);
       for (const [id, change] of draft.changes) draft.images[id] = { ...draft.images[id], image_url: change.preview || null };
       onImages(ctx.sourceKey, ctx.control.id, serverImages);
-      render("[data-lora-enable]");
+      render("[data-lora-toggle]");
     } catch (error) {
       if (draft) { draft.error = `Images could not be loaded: ${error.message}`; render(); }
     }
@@ -85,6 +87,13 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
     if (strength > 0) draft.memory[id] = strength;
     const preview = dialog()?.querySelector("[data-lora-subject-preview]");
     if (preview) preview.textContent = subjectPreview(draft.control, draft.values, draft.subjectAvailable);
+  }
+  function toggle(id) {
+    if (!draft) return;
+    const previous = draft.values.find((entry) => entry.id === id)?.strength || 0;
+    if (previous > 0) draft.memory[id] = previous;
+    updateStrength(id, previous > 0 ? 0 : draft.memory[id] || loraDefaultPositiveStrength(draft.control));
+    render(`[data-lora-toggle="${CSS.escape(id)}"]`);
   }
   function move(id, to) {
     if (!draft || to < 0 || to >= draft.values.length) return;
@@ -136,6 +145,8 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
     const opener = event.target.closest("[data-lora-open]");
     if (opener) { void open(opener); return; }
     if (!draft || !event.target.closest("#lora-manager-dialog")) return;
+    const selection = event.target.closest("[data-lora-toggle]");
+    if (selection && !selection.disabled) { toggle(selection.dataset.loraToggle); return; }
     if (event.target.closest("[data-lora-cancel]")) { close(); return; }
     if (event.target.closest("[data-lora-apply]")) { void save(); return; }
     if (event.target.closest("[data-lora-all-off]")) {
@@ -172,16 +183,6 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
       draft.changes.set(fileTarget, { action: "set", file, preview });
       draft.images[fileTarget] = { ...draft.images[fileTarget], image_url: preview };
       render(`[data-lora-image-change="${CSS.escape(fileTarget)}"]`);
-      return;
-    }
-    const enable = event.target.closest("[data-lora-enable]");
-    if (enable) {
-      const id = enable.dataset.loraEnable;
-      const old = draft.values.find((entry) => entry.id === id)?.strength || 0;
-      const next = enable.checked ? draft.memory[id] || loraDefaultPositiveStrength(draft.control) : 0;
-      if (old > 0) draft.memory[id] = old;
-      updateStrength(id, next);
-      render(`[data-lora-enable="${CSS.escape(id)}"]`);
       return;
     }
     const number = event.target.closest("[data-lora-number]");
