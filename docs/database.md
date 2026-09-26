@@ -49,6 +49,13 @@ added nullable with no row rewrites, so the upgrade is zero-downtime. Recall pre
 and falls back to the linked run for legacy `null` rows, whose recall now also reports the run's
 thinking mode.
 
+Migration `5e1b9c7d4a20_add_lora_images.py` adds shared LoRA thumbnail metadata. Each row is
+identified by logical workflow key, published control ID, and catalog item ID. A publication
+binding hash prevents an old image from silently attaching to a different catalog member after
+republishing. The per-item revision supports conditional updates, including removal. The database
+stores only an opaque relative path; normalized small WebP files live beneath the application data
+root. Personal LoRA order, enabled states, and remembered strengths remain in each user's settings.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -62,6 +69,7 @@ thinking mode.
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |
 | `comfyui_instance_health` | Last bounded availability result for each configured ComfyUI execution ID |
 | `uploads` | Owner-scoped application source/mask metadata |
+| `lora_images` | Shared, workflow-scoped LoRA thumbnail paths and per-item revisions |
 | `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |
@@ -154,7 +162,7 @@ its original deadline after expiry and across restart; requeue clears it for the
 
 ## Files and deletion
 
-Uploads, original artifacts, and thumbnails are normal files, not database blobs. Paths are relative to the configured data root and filenames are opaque. Every open/delete resolves the target and rejects paths outside the root.
+Uploads, original artifacts, and thumbnails are normal files, not database blobs. Paths are relative to the configured data root and filenames are opaque. Every open/delete resolves the target and rejects paths outside the root. LoRA thumbnails are normalized static WebP files; replacing or removing one updates its shared row and removes the old file after the metadata transaction commits.
 
 Migration `6e4b9c2a7d15_add_collection_favorites.py` revises `2f8d6a1c4b90` and adds UUID bookmarks with `owner_id`, `collection_id`, and `created_at`. Both foreign keys use `ON DELETE CASCADE`. The unique owner/collection constraint enforces binary favorites; `(owner_id, created_at, id)` supports the mixed feed, and a collection index supports target deletion. Collection and user deletion remove their collection bookmarks automatically; generation favorites likewise cascade on generation or user deletion.
 

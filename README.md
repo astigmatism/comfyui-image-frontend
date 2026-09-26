@@ -464,4 +464,4 @@ Authenticated startup is progressive. Only `/api/auth/session` is an essential f
 
 ### Ordered LoRA controls
 
-The complete ComfyUI interface/publisher extension is maintained in `comfyui_extension/comfyui-image-frontend-interface`, alongside the artifact-cleanup extension. Published `lora_stack` inputs support independent strengths and drag, keyboard, or touch ordering. See [ordered LoRA controls](docs/lora-controls.md) for the contract, package installation, workflow conversion, tests, and rollback procedure.
+The complete ComfyUI interface/publisher extension is maintained in `comfyui_extension/comfyui-image-frontend-interface`, alongside the artifact-cleanup extension. Published `lora_stack` inputs use a manager modal for enabled state, strength, order, and shared thumbnails; the control panel summarizes enabled LoRAs. See [ordered LoRA controls](docs/lora-controls.md) for the contract, package installation, workflow conversion, tests, and rollback procedure.

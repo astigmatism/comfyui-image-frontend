@@ -2160,6 +2160,44 @@ test("choice controls honor advanced grouping and order before their strength co
   assert.doesNotMatch(html, /Krea2\/KNPV4\.1_pre\.safetensors/);
 });
 
+test("LoRA manager launcher sits in the control section header beside the active summary", () => {
+  const stack = {
+    id: "loras",
+    type: "lora_stack",
+    label: "LoRAs",
+    group: "LoRAs",
+    minimum: 0,
+    maximum: 2,
+    step: 0.05,
+    items: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }],
+    default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }],
+  };
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    sourceCatalogStatus: "ready",
+    sourceDetailLoading: false,
+    parameters: { loras: [{ id: "a", strength: 0.75 }, { id: "b", strength: 0 }] },
+    fieldErrors: {},
+    formError: null,
+  };
+  const html = generationPanelMarkup(state, publishedSource, { inputs: [stack] });
+  const sectionStart = html.indexOf('data-control-section="lora-loras"');
+  assert.ok(sectionStart >= 0);
+  const loraSection = html.slice(sectionStart, html.indexOf("</section>", sectionStart));
+  const bodyStart = loraSection.indexOf('class="control-section-body"');
+  assert.ok(bodyStart >= 0);
+  const header = loraSection.slice(0, bodyStart);
+  const body = loraSection.slice(bodyStart);
+  assert.match(header, /class="[^"]*prompt-editor-launch[^"]*"[^>]*data-lora-open[^>]*data-lora-control-id="loras"/);
+  assert.match(header, /1 active/);
+  assert.doesNotMatch(body, /data-lora-open/);
+  assert.match(body, /Alpha/);
+  assert.doesNotMatch(body, /Beta/);
+});
+
 test("fixed-mode seed renders no random choice and exposes its exact default", () => {
   const control = {
     id: "seed",

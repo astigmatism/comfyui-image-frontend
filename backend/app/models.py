@@ -266,6 +266,22 @@ class WorkflowProfile(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class LoraImage(Base):
+    """Shared LoRA thumbnail for a logical workflow and published catalog item."""
+
+    __tablename__ = "lora_images"
+
+    workflow_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    control_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    item_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binding_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    storage_path: Mapped[str | None] = mapped_column(String(500), unique=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class WorkflowDiagnostic(Base):
     __tablename__ = "workflow_diagnostics"
 

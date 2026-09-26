@@ -8,7 +8,8 @@ import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
 import { automaticPromptUpdate, olderAutomaticProgress } from "./auto-generation-progress.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
-import { installLoraControls } from "./lora-stack.mjs";
+import { strongestLoraTrigger } from "./lora-stack.mjs";
+import { installLoraManager, loraImagePath } from "./lora-manager.mjs";
 import { api, isTransientError, setCsrfToken, upload } from "./api.mjs";
 import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
@@ -138,6 +139,8 @@ const state = {
   controlSectionOpen: {},
   recentResolutions: [],
   parameters: {},
+  loraImages: {},
+  loraStrengthMemory: {},
   explicitParameterIds: new Set(),
   parameterStateBySource: {},
   pendingSourceMigration: null,
@@ -382,29 +385,48 @@ function bindDelegatedEvents() {
     refresh: refreshAfterGalleryOperation,
     notify: toast,
   });
-  installLoraControls(root, {
-    read: (id) => state.parameters[id],
-    write: (id, value) => {
-      state.parameters[id] = structuredClone(value);
+  installLoraManager(root, {
+    api,
+    context: (id) => {
+      const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
+      if (!control || !state.activeSourceKey) return null;
+      const subjectSource = state.promptGeneratorSource;
+      const subjectAvailable = Boolean(subjectSource?.available !== false
+        && interfaceInputs(subjectSource?.interface).some((item) => item.id === "subject_name" && item.type === "string")
+        && state.promptGeneration.sources[subjectSource?.source_key]);
+      return { control, sourceKey: state.activeSourceKey, sourceName: state.activeSource?.display_name || "Workflow",
+        values: state.parameters[id], memory: state.loraStrengthMemory[id] || {}, images: state.loraImages[id] || {}, subjectAvailable };
+    },
+    onImages: (sourceKey, id, images) => {
+      if (sourceKey !== state.activeSourceKey) return;
+      state.loraImages[id] = images;
+      renderPanel();
+    },
+    apply: (id, values, memory, sourceKey) => {
+      if (sourceKey !== state.activeSourceKey) throw new Error("The workflow changed. Reopen the LoRA manager.");
+      const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
+      if (!control) throw new Error("The published LoRA catalog changed. Reopen the manager.");
+      state.parameters[id] = structuredClone(values);
+      state.loraStrengthMemory[id] = structuredClone(memory);
       state.explicitParameterIds.add(id);
       delete state.serverFieldErrors[id];
       state.formError = null;
+      const { triggerWord } = strongestLoraTrigger(control, values);
+      if (triggerWord) {
+        const source = state.promptGeneratorSource;
+        const input = interfaceInputs(source?.interface).find((item) => item.id === "subject_name" && item.type === "string");
+        const saved = state.promptGeneration.sources[source?.source_key];
+        if (input && saved && source.available !== false) {
+          saved.values.subject_name = triggerWord;
+          if (!saved.explicitInputIds.includes("subject_name")) saved.explicitInputIds.push("subject_name");
+          state.promptGenerationError = null;
+        }
+      }
       persistActiveParameterState();
       syncParameterValidation(id);
       autoSettingsSync?.stage();
       settingsSync?.schedule();
-    },
-    refresh: renderPanel,
-    onSolo: (triggerWord) => {
-      const source = state.promptGeneratorSource;
-      const input = interfaceInputs(source?.interface).find((item) => item.id === "subject_name" && item.type === "string");
-      const saved = state.promptGeneration.sources[source?.source_key];
-      if (!input || !saved || source.available === false) return false;
-      saved.values.subject_name = triggerWord;
-      if (!saved.explicitInputIds.includes("subject_name")) saved.explicitInputIds.push("subject_name");
-      state.promptGenerationError = null;
-      settingsSync?.schedule();
-      return true;
+      renderPanel();
     },
   });
   root.addEventListener("submit", handleSubmit);
@@ -2282,6 +2304,8 @@ async function logout() {
   state.selectedGenerationTargetCount = 0;
   checkpointTiersRevision += 1;
   state.parameters = {};
+  state.loraImages = {};
+  state.loraStrengthMemory = {};
   state.explicitParameterIds = new Set();
   state.parameterStateBySource = {};
   state.pendingSourceMigration = null;
@@ -2392,6 +2416,8 @@ async function enterApplication() {
   state.parameterStateBySource = normalizeStoredParameterState(
     readStoredItem(parameterStateStorageKey(sessionStorageUserId())),
   );
+  state.loraImages = {};
+  state.loraStrengthMemory = {};
   state.activeSourceKey = normalizeStoredActiveSource(
     readStoredItem(activeSourceStorageKey(sessionStorageUserId())),
   );
@@ -3205,6 +3231,7 @@ function persistActiveParameterState() {
     interface: structuredClone(sourceInterface(state.activeSource)),
     revision: structuredClone(sourceRevision(state.activeSource)),
     values: structuredClone(state.parameters),
+    lora_strength_memory: structuredClone(state.loraStrengthMemory),
     explicitInputIds: [...state.explicitParameterIds],
     selectedPreset: state.selectedPreset,
   };
@@ -3297,6 +3324,8 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
   loadRecentResolutionsForActiveSource();
   const saved = key ? state.parameterStateBySource[key] : null;
   state.parameters = structuredClone(saved?.values || {});
+  state.loraStrengthMemory = structuredClone(saved?.lora_strength_memory || {});
+  state.loraImages = {};
   state.explicitParameterIds = new Set(saved?.explicitInputIds || []);
   state.sourceDetailLoading = Boolean(key);
   state.sourceDetailError = null;
@@ -3355,6 +3384,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
     state.pendingSourceMigration = null;
     state.sourceDetailError = null;
     persistActiveParameterState();
+    void loadLoraImages(key, contract, token);
   } catch (error) {
     if (requestWasAborted(error, signal) || token !== state.sourceLoadToken) return;
     state.sourceDetailError = error.message || "The selected source could not be described.";
@@ -3365,6 +3395,20 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
       autoSettingsSync?.resume();
     }
   }
+}
+
+async function loadLoraImages(sourceKey, contract, sourceToken) {
+  const controls = interfaceInputs(contract).filter((item) => item.type === "lora_stack");
+  await Promise.all(controls.map(async (control) => {
+    try {
+      const result = await api(loraImagePath(sourceKey, control.id), { deadlineMs: 8000 });
+      if (sourceToken !== state.sourceLoadToken || sourceKey !== state.activeSourceKey) return;
+      state.loraImages[control.id] = Object.fromEntries((result.items || []).map((item) => [item.id, item]));
+      renderPanel();
+    } catch {
+      // The manager retries image metadata when opened; generation stays usable.
+    }
+  }));
 }
 
 function applyPreset(presetId) {
@@ -6422,6 +6466,7 @@ function captureSharedSettings() {
     interface: structuredClone(sourceInterface(state.activeSource)),
     revision: structuredClone(sourceRevision(state.activeSource)),
     values: structuredClone(state.parameters), explicitInputIds: [...state.explicitParameterIds],
+    lora_strength_memory: structuredClone(state.loraStrengthMemory),
     selectedPreset: state.selectedPreset,
   };
   const recent = structuredClone(state.recentResolutionsBySource);
@@ -6467,6 +6512,7 @@ async function applySharedSettings(preferences) {
   const parameters = state.parameterStateBySource[state.activeSourceKey];
   if (parameters) {
     state.parameters = structuredClone(parameters.values);
+    state.loraStrengthMemory = structuredClone(parameters.lora_strength_memory || {});
     state.explicitParameterIds = new Set(parameters.explicitInputIds);
     state.selectedPreset = parameters.selectedPreset;
   }
@@ -6704,6 +6750,8 @@ function normalizePanelSettings(value) {
     const saved = entries?.[source?.source_key];
     if (!saved || !source?.interface) return;
     saved.values = reconcileInterfaceValues(source.interface, saved.values, saved.interface, saved.explicitInputIds || []);
+    const allowed = new Map(interfaceInputs(source.interface).filter((input) => input.type === "lora_stack").map((input) => [input.id, input]));
+    saved.lora_strength_memory = Object.fromEntries(Object.entries(saved.lora_strength_memory || {}).filter(([id]) => allowed.has(id)).map(([id, strengths]) => [id, Object.fromEntries(Object.entries(strengths || {}).filter(([itemId, value]) => allowed.get(id).items.some((item) => item.id === itemId) && typeof value === "number" && Number.isFinite(value) && value > 0))]));
     saved.interface = structuredClone(source.interface);
     saved.revision = structuredClone(sourceRevision(source));
   };

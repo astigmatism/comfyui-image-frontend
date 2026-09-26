@@ -75,6 +75,7 @@ class SourceSettings(APIModel):
     selectedPreset: str | None = None
     revision: dict[str, Any] | None = None
     interface: dict[str, Any] | None = None
+    lora_strength_memory: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class PromptGenerationSettings(APIModel):

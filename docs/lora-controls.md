@@ -1,10 +1,14 @@
 # Ordered LoRA controls
 
-Published `lora_stack` inputs open as compact Quick Picks. Each pick shows the catalog's verified `trigger_word` when present, otherwise its label. Selecting one sets it to strength 1.0, sets every other LoRA to zero, and writes its verified trigger word into Prompt Generation → Subject name when that control is available. Without a published trigger word, Subject name stays unchanged. **All off** sets every strength to zero. The compact numeric field adjusts the sole active LoRA.
+Published `lora_stack` inputs appear as a collapsible LoRAs section. Its header has a **Manage LoRAs** launch control beside the section expansion control, matching the focused prompt editor. The expanded section shows only enabled LoRAs in application order, with each image, name, and strength. An empty section invites the user to open the manager.
 
-**Mix & adjust** opens the ordered multi-LoRA controls. Every catalog item remains available with an enable checkbox, exact numeric strength, and a drag handle; active rows also show a slider. Top-to-bottom order is application order. Drag the handle with a mouse, touch, or pen; Arrow Up/Down on a focused handle also moves the row with a screen-reader announcement. Strength belongs to the public ID, so reordering never changes it. Zero rows stay visible and are skipped at execution.
+The manager is a modal with every LoRA published for the selected workflow. It shows an image or placeholder at the start of each row, then the published name, an enable control, strength controls, and a reorder handle. The list order is application order, including disabled entries. **All off** disables all entries without erasing their last positive strengths. Re-enabling one restores its remembered strength from the user's saved settings. Drag the handle with a mouse, touch, or pen; Arrow Up/Down on a focused handle also moves the row with a screen-reader announcement. Strength belongs to the public ID, so reordering never changes it. Zero rows remain in the ordered generation array and are skipped at execution.
 
-Hover, focus, or tap a title to read its usage tooltip. It shares the top-bar activity tooltip's styling and uses the browser's popover layer to avoid clipping inside the scrolling controls. Escape dismisses the tooltip while preserving focus. An optional public `description` on each catalog item supplies the text; omitted descriptions explicitly say that trigger words have not been verified. Do not infer a trigger from a filename, or equate missing documentation with "no trigger required."
+Edits remain in a draft until **Apply**. **Cancel** discards the draft, including pending image assignments or removals. Apply saves order, enabled states, strengths, and image changes. Local PNG, JPEG, or WebP files can be assigned to a LoRA as shared workflow-scoped thumbnails. Any signed-in user can change these images; the manager detects a concurrent edit rather than silently replacing it. Images are separate from the generation payload and are never sent to ComfyUI as LoRA selectors.
+
+When Apply enables at least one LoRA, the strongest enabled LoRA supplies Prompt Generation → Subject name through its published, verified `trigger_word`. A strength tie uses the first LoRA in application order. If that entry has no published trigger word, Subject name stays unchanged. The manager previews the result before Apply. **All off** also leaves Subject name unchanged.
+
+The manager shows published usage guidance under each name and in its title hint. An optional public `description` on each catalog item supplies the text; omitted descriptions explicitly say that usage guidance was not published. Do not infer a trigger from a filename, or equate missing documentation with "no trigger required."
 
 The Moody Krea2 Simple v31 conversion uses Spread, Claire, NexBlend08, and Tifa in that order, each initially zero, with range 0–2 and step 0.05. These are workflow-author constraints, not a claim about visual quality at high strengths or particular combinations.
 
@@ -22,7 +26,7 @@ LoRA loader tags such as `<lora:name:strength>` are not prompt triggers in this 
 
 The backend validates the selected execution runtime's companion node and complete catalog before acceptance and again before dispatch. A secondary runtime without those prerequisites is rejected, including for a zero stack. Runtime inventory uses the adapter's latest health-probe snapshot; ComfyUI still performs its normal native validation at execution time.
 
-Requested and effective arrays remain in existing generation JSON fields. Recall and details retain labels, order, and strengths. Historical records with no stack restore zero defaults. Checkpoint fan-out takes a deep snapshot before submission; later form edits affect future submissions. No database migration is required.
+Requested and effective arrays remain in existing generation JSON fields. Recall and details retain labels, order, and strengths. Historical records with no stack restore zero defaults. Checkpoint fan-out takes a deep snapshot before submission; later form edits affect future submissions. Shared thumbnail metadata has its own database migration; the generation and public `lora_stack` payload contracts do not change.
 
 ## Package ownership
 

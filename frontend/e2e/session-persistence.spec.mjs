@@ -71,7 +71,7 @@ test("control bar values, active source, and section states persist across reloa
   // Establish the starting state explicitly: this account's settings are shared
   // with earlier browser journeys, even though this is a fresh browser context.
   for (const [key, expanded] of [["prompt", true], ["seed", true], ["resolution", true],
-    ["creative-direction", false], ["group-loras", false]]) {
+    ["creative-direction", false], ["lora-loras", false]]) {
     if ((await sectionTrigger(key).getAttribute("aria-expanded")) !== String(expanded)) {
       await sectionTrigger(key).click();
     }
@@ -80,7 +80,7 @@ test("control bar values, active source, and section states persist across reloa
   await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "true");
   await expect(sectionTrigger("resolution")).toHaveAttribute("aria-expanded", "true");
   await expect(sectionTrigger("creative-direction")).toHaveAttribute("aria-expanded", "false");
-  await expect(sectionTrigger("group-loras")).toHaveAttribute("aria-expanded", "false");
+  await expect(sectionTrigger("lora-loras")).toHaveAttribute("aria-expanded", "false");
 
   // Change the control values.
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("persistence lighthouse");
@@ -98,9 +98,12 @@ test("control bar values, active source, and section states persist across reloa
   await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("960");
 
   // LoRA strength lives in the collapsed LoRAs section.
-  await sectionTrigger("group-loras").click();
-  await page.getByRole("button", { name: "Mix & adjust" }).click();
-  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await sectionTrigger("lora-loras").click();
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await page.locator("#lora-manager-dialog").getByRole("checkbox", { name: "Enable Beta" }).check();
+  await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await page.locator("#lora-manager-dialog").getByRole("button", { name: "Apply", exact: true }).click();
 
   // Creative Direction lives in its own collapsed section.
   await sectionTrigger("creative-direction").click();
@@ -110,7 +113,7 @@ test("control bar values, active source, and section states persist across reloa
   await sectionTrigger("seed").click();
   await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "false");
   await expect(sectionTrigger("creative-direction")).toHaveAttribute("aria-expanded", "true");
-  await expect(sectionTrigger("group-loras")).toHaveAttribute("aria-expanded", "true");
+  await expect(sectionTrigger("lora-loras")).toHaveAttribute("aria-expanded", "true");
 
   await expect(page.locator(".shared-settings-status")).toContainText("Settings saved across devices");
   await page.reload();
@@ -133,17 +136,20 @@ test("control bar values, active source, and section states persist across reloa
   // keeps its strength value.
   await expect(sectionTrigger("seed")).toHaveAttribute("aria-expanded", "false");
   await expect(sectionTrigger("creative-direction")).toHaveAttribute("aria-expanded", "true");
-  await expect(sectionTrigger("group-loras")).toHaveAttribute("aria-expanded", "true");
-  await page.getByRole("button", { name: "Mix & adjust" }).click();
-  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue(
+  await expect(sectionTrigger("lora-loras")).toHaveAttribute("aria-expanded", "true");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await expect(page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue(
     "1.25",
   );
+  await page.locator("#lora-manager-dialog").getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
 test("republished LoRA membership is reconciled on load, submission, and persistence", async ({ page }) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  const promptGeneration = page.getByRole("switch", { name: "Use Prompt Generation" });
+  if (await promptGeneration.isChecked()) await promptGeneration.uncheck();
   await expect(page.locator(".shared-settings-status")).toContainText("Settings saved across devices");
   const sourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
   const source = await (await page.request.get(`/api/workflows/${sourceKey}`)).json();
@@ -175,9 +181,10 @@ test("republished LoRA membership is reconciled on load, submission, and persist
     await route.fulfill({ response, json: preferences });
   });
   const submissions = [];
-  await page.route("**/api/generations", async (route) => {
+  await page.route("**/api/generations*", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    submissions.push(route.request().postDataJSON());
+    const body = route.request().postDataJSON();
+    submissions.push(...(body.items || [body]));
     // Capture the payload with a definitive rejection, avoiding submission recovery.
     // The fake backend retains its original two-item publication.
     await route.fulfill({ status: 422, json: {
@@ -192,14 +199,13 @@ test("republished LoRA membership is reconciled on load, submission, and persist
       ...newIds.map((id) => ({ id, strength: 0 })),
     ];
     await page.reload();
-    const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
-    if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
-    await page.getByRole("button", { name: "Mix & adjust" }).click();
-    await expect(page.locator(".lora-row")).toHaveCount(expected.length);
-    expect(await page.locator(".lora-row").evaluateAll((rows) => rows.map((row) => ({
+    await page.getByRole("button", { name: "Open LoRA manager" }).click();
+    await expect(page.locator("#lora-manager-dialog .lm-row")).toHaveCount(expected.length);
+    expect(await page.locator("#lora-manager-dialog .lm-row").evaluateAll((rows) => rows.map((row) => ({
       id: row.dataset.loraId,
-      strength: Number(row.querySelector('input[type="number"]').value),
+      strength: row.querySelector('[data-lora-enable]').checked ? Number(row.querySelector('input[type="number"]').value) : 0,
     })))).toEqual(expected);
+    await page.locator("#lora-manager-dialog").getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(page.getByText("Include every LoRA exactly once.", { exact: true })).toHaveCount(0);
     const generate = page.getByRole("button", { name: "Generate", exact: true });
     await expect(generate).toBeEnabled();
@@ -210,8 +216,8 @@ test("republished LoRA membership is reconciled on load, submission, and persist
     }).toEqual(expected);
     const previousSubmissions = submissions.length;
     await generate.click();
-    await expect.poll(() => submissions.length).toBe(previousSubmissions + 1);
-    expect(submissions.at(-1).parameters[stack.id]).toEqual(expected);
+    await expect.poll(() => submissions.length).toBeGreaterThan(previousSubmissions);
+    for (const submission of submissions.slice(previousSubmissions)) expect(submission.parameters[stack.id]).toEqual(expected);
     await expect(page.getByText("Submission captured for this test.", { exact: true })).toBeVisible();
   }
 });
@@ -220,13 +226,16 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  const promptGeneration = page.getByRole("switch", { name: "Use Prompt Generation" });
+  if (await promptGeneration.isChecked()) await promptGeneration.uncheck();
   const sourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
   const source = await (await page.request.get(`/api/workflows/${sourceKey}`)).json();
   const stack = source.interface.inputs.find((input) => input.type === "lora_stack");
-  const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
-  if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
-  await page.getByRole("button", { name: "Mix & adjust" }).click();
-  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await page.locator("#lora-manager-dialog").getByRole("checkbox", { name: "Enable Beta" }).check();
+  await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await page.locator("#lora-manager-dialog").getByRole("button", { name: "Apply", exact: true }).click();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("recall the original LoRA catalog");
   const accepted = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/generations" && response.request().method() === "POST");
@@ -249,15 +258,18 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
     await route.fulfill({ response, json: other });
   });
   await selectPublishedSource(page, "Generic Landscape");
-  await expect(page.locator('.lora-row[data-lora-id="c"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await expect(page.locator('#lora-manager-dialog .lm-row[data-lora-id="c"]')).toHaveCount(1);
+  await page.locator("#lora-manager-dialog").getByRole("button", { name: "Cancel", exact: true }).click();
   await card.scrollIntoViewIfNeeded();
   const recall = card.getByRole("button", { name: "Recall settings", exact: true });
   await recall.focus();
   await recall.press("Enter");
   await expect(page.locator("#workflow-source")).toHaveAttribute("data-source-key", sourceKey);
-  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
-  expect(await page.locator(".lora-row").evaluateAll((rows) => rows.map((row) => ({
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await expect(page.locator("#lora-manager-dialog").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
+  expect(await page.locator("#lora-manager-dialog .lm-row").evaluateAll((rows) => rows.map((row) => ({
     id: row.dataset.loraId,
-    strength: Number(row.querySelector('input[type="number"]').value),
+    strength: row.querySelector('[data-lora-enable]').checked ? Number(row.querySelector('input[type="number"]').value) : 0,
   })))).toEqual(submittedStack);
 });

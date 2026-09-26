@@ -5,124 +5,108 @@ async function mount(page) {
   await page.goto("/");
   await page.evaluate(async () => {
     const base = document.querySelector('script[type="module"]').src;
-    const { loraStackMarkup, installLoraControls } = await import(new URL("./lora-stack.mjs", base));
-    window.stack = [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }];
-    window.soloCalls = [];
-    const control = { id: "loras", items: [{ id: "a", label: "Alpha", trigger_word: "AlphaCharacter", description: "Use: AlphaCharacter in your prompt (no angle brackets)." }, { id: "b", label: "Beta" }, { id: "c", label: "Gamma" }], default: window.stack, minimum: 0, maximum: 2, step: 0.05 };
+    const { loraStackMarkup } = await import(new URL("./lora-stack.mjs", base));
+    const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
+    const control = { id: "loras", type: "lora_stack", label: "LoRAs", items: [
+      { id: "a", label: "Alpha", trigger_word: "AlphaCharacter", description: "Use AlphaCharacter in the prompt." },
+      { id: "b", label: "Beta" }, { id: "c", label: "Gamma" },
+    ], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }], minimum: 0, maximum: 2, step: 0.05 };
+    window.stack = structuredClone(control.default);
+    window.memory = {};
+    window.images = Object.fromEntries(control.items.map(({ id }) => [id, { id, version: "a".repeat(64), image_url: null }]));
+    window.posts = [];
+    window.subject = "Original subject";
+    window.renderLoras = () => { document.querySelector("#lora-summary").innerHTML = loraStackMarkup(control, window.stack, window.images); };
     const root = document.querySelector("#app");
-    root.innerHTML = '<main style="width:min(100%,600px);padding:16px;overflow:hidden"><label>Subject name <input id="subject_name" value="Original subject" /></label><fieldset class="field semantic-fieldset"><legend>LoRAs</legend><div id="lora-host"></div></fieldset></main>';
-    window.renderLoras = () => { document.querySelector("#lora-host").innerHTML = loraStackMarkup(control, window.stack); };
+    root.innerHTML = `<main style="padding:16px;max-width:600px"><label>Subject name <input id="subject_name" value="Original subject"></label><section class="control-section is-expanded"><div class="control-section-header"><button class="control-section-trigger" aria-expanded="true">LoRAs</button><span class="control-section-status">0 active</span><div class="prompt-field-actions control-section-actions"><button type="button" class="icon-button prompt-editor-launch" data-lora-open data-lora-control-id="loras" aria-label="Open LoRA manager"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div><div class="control-section-body"><div id="lora-summary"></div></div></section></main><dialog id="lora-manager-dialog" class="lm-dialog" aria-labelledby="lora-manager-title"></dialog>`;
     window.renderLoras();
-    installLoraControls(root, {
-      read: () => window.stack,
-      write: (id, value) => { window.stack = structuredClone(value); },
-      refresh: window.renderLoras,
-      onSolo: (triggerWord) => {
-        window.soloCalls.push(triggerWord);
-        document.querySelector("#subject_name").value = triggerWord;
-        return true;
+    installLoraManager(root, {
+      api: async (path, options) => {
+        if (!options) return { items: Object.values(window.images) };
+        const changes = JSON.parse(options.body.get("changes"));
+        window.posts.push(changes);
+        if (window.forceConflict) { const error = new Error("Image changed."); error.code = "lora_image_conflict"; throw error; }
+        for (const change of changes) window.images[change.id] = { id: change.id, version: "b".repeat(64), image_url: change.action === "set" ? "/sample-image.webp" : null };
+        return { items: Object.values(window.images) };
+      },
+      context: () => ({ control, sourceKey: "source", sourceName: "Sample workflow", values: window.stack, memory: window.memory, images: window.images }),
+      onImages: (_source, _id, images) => { window.images = images; window.renderLoras(); },
+      apply: (_id, values, memory) => {
+        window.stack = structuredClone(values);
+        window.memory = structuredClone(memory);
+        const strongest = values.reduce((best, row) => row.strength > 0 && (!best || row.strength > best.strength) ? row : best, null);
+        if (strongest?.id === "a") window.subject = "AlphaCharacter";
+        document.querySelector("#subject_name").value = window.subject;
+        window.renderLoras();
       },
     });
   });
 }
 
-test("Quick Picks set one LoRA to 1 and only verified triggers update Subject name", async ({ page }) => {
+const dialog = (page) => page.locator("#lora-manager-dialog");
+
+async function open(page) {
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await expect(dialog(page)).toBeVisible();
+}
+
+test("manager drafts enable, strength, order and Subject until Apply", async ({ page }) => {
   await mount(page);
-  await expect(page.locator(".lora-mixer")).toHaveCount(0);
-  await page.getByRole("button", { name: "Use only AlphaCharacter at strength 1" }).click();
-  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 1 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }]);
-  await expect(page.getByLabel("Subject name")).toHaveValue("AlphaCharacter");
-  await expect(page.getByRole("spinbutton", { name: "AlphaCharacter strength" })).toHaveValue("1");
-  await expect(page.getByRole("button", { name: "Use only AlphaCharacter at strength 1" })).toHaveAttribute("aria-pressed", "true");
-
-  await page.getByRole("spinbutton", { name: "AlphaCharacter strength" }).fill("0.65");
-  await page.getByRole("button", { name: "Use only AlphaCharacter at strength 1" }).click();
-  expect(await page.evaluate(() => window.stack[0].strength)).toBe(1);
-
-  await page.getByRole("button", { name: "Use only Beta at strength 1" }).click();
-  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 0 }, { id: "b", strength: 1 }, { id: "c", strength: 0 }]);
-  await expect(page.getByLabel("Subject name")).toHaveValue("AlphaCharacter");
-  expect(await page.evaluate(() => window.soloCalls)).toEqual(["AlphaCharacter", "AlphaCharacter"]);
-  await expect(page.locator("[data-lora-status]")).toContainText("Subject name is unchanged");
-
-  await page.getByRole("button", { name: "All off" }).click();
+  await expect(page.locator(".lm-summary-item")).toHaveCount(0);
+  await open(page);
+  await dialog(page).getByRole("checkbox", { name: "Enable Beta" }).check();
+  await dialog(page).getByRole("spinbutton", { name: "Beta strength" }).fill("1.25");
+  await dialog(page).getByRole("spinbutton", { name: "Beta strength" }).press("Tab");
+  await dialog(page).getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
+  await expect(dialog(page).locator(".lm-row").first()).toHaveAttribute("data-lora-id", "b");
+  await expect(page.locator(".lm-summary-item")).toHaveCount(0);
+  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }]);
+
+  await open(page);
+  await dialog(page).getByRole("checkbox", { name: "Enable Alpha" }).check();
+  await expect(dialog(page).locator("[data-lora-subject-preview]")).toContainText("AlphaCharacter");
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(dialog(page)).not.toBeVisible();
   await expect(page.getByLabel("Subject name")).toHaveValue("AlphaCharacter");
-  await expect(page.locator(".lora-active-count")).toHaveText("0 active");
+  await expect(page.locator(".lm-summary-item")).toHaveCount(1);
+  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 1 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }]);
+
+  await open(page);
+  await dialog(page).getByRole("button", { name: "All off" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await open(page);
+  await dialog(page).getByRole("checkbox", { name: "Enable Alpha" }).check();
+  await expect(dialog(page).getByRole("spinbutton", { name: "Alpha strength" })).toHaveValue("1.00");
 });
 
-test("mixer retains exact strengths, multiple selection, and reordering", async ({ page }) => {
+test("staged image upload is saved only on Apply and conflicts keep the draft", async ({ page }) => {
   await mount(page);
-  await page.getByRole("button", { name: "Mix & adjust ＋" }).click();
-  await expect(page.locator(".lora-row")).toHaveCount(3);
-  await expect(page.locator("[data-lora-move]")).toHaveCount(0);
-  await page.getByRole("checkbox", { name: "Enable Beta" }).check();
-  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1");
-  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("0.65");
-  await expect(page.getByRole("slider", { name: "Beta strength slider" })).toHaveValue("0.65");
-  await page.getByRole("button", { name: "Reorder Beta" }).dragTo(page.locator('[data-lora-id="a"]'));
-  await expect(page.locator(".lora-row").first()).toHaveAttribute("data-lora-id", "b");
-  await page.getByRole("button", { name: "Reorder Beta" }).press("ArrowDown");
-  await expect(page.locator(".lora-row").nth(1)).toHaveAttribute("data-lora-id", "b");
-  await expect(page.locator('[data-lora-status]')).toContainText("position 2 of 3");
-  await page.getByRole("slider", { name: "Beta strength slider" }).focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("0.7");
-  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 0 }, { id: "b", strength: 0.7 }, { id: "c", strength: 0 }]);
-  await page.getByRole("checkbox", { name: "Enable Gamma" }).check();
-  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 0 }, { id: "b", strength: 0.7 }, { id: "c", strength: 1 }]);
-  await expect(page.locator(".lora-active-count")).toHaveText("2 active");
-  await expect(page.getByLabel("Subject name")).toHaveValue("Original subject");
+  await open(page);
+  // The image button identifies the row for the hidden local file picker.
+  await dialog(page).getByRole("button", { name: "Add image for Beta" }).click();
+  await dialog(page).locator("[data-lora-file]").setInputFiles({ name: "sample.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") });
+  await expect(dialog(page).getByRole("button", { name: "Change image for Beta" })).toBeVisible();
+  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(await page.evaluate(() => window.posts.length)).toBe(0);
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Add image for Beta" }).click();
+  await dialog(page).locator("[data-lora-file]").setInputFiles({ name: "sample.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") });
+  await page.evaluate(() => { window.forceConflict = true; });
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(dialog(page)).toBeVisible();
+  await expect(dialog(page).getByRole("alert")).toContainText("changed while this manager was open");
+  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }]);
 });
 
-test("touch movement retains zero rows and input identity at phone width", async ({ browser }, testInfo) => {
-  const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
+test("manager fits a narrow viewport with all rows and actions reachable", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
   const page = await context.newPage();
   await mount(page);
-  await page.getByRole("button", { name: "Mix & adjust ＋" }).tap();
-  await page.getByRole("button", { name: "AlphaCharacter", exact: true }).tap();
-  await expect(page.locator("#lora-usage-loras-a")).toBeVisible();
-  const handle = await page.getByRole("button", { name: "Reorder Gamma" }).boundingBox();
-  const target = await page.locator('[data-lora-id="a"]').boundingBox();
-  const session = await context.newCDPSession(page);
-  const x = handle.x + handle.width / 2;
-  const startY = handle.y + handle.height / 2;
-  const endY = target.y + target.height / 2;
-  await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: startY, id: 1 }] });
-  for (let i = 1; i <= 6; i++) await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: startY + (endY - startY) * i / 6, id: 1 }] });
-  await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await expect(page.locator("#lora-usage-loras-a")).not.toBeVisible();
-  await expect(page.locator(".lora-row").first()).toHaveAttribute("data-lora-id", "c");
-  expect(await page.evaluate(() => window.stack)).toEqual([{ id: "c", strength: 0 }, { id: "a", strength: 0 }, { id: "b", strength: 0 }]);
+  await open(page);
+  await expect(dialog(page).locator(".lm-row")).toHaveCount(3);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath("lora-controls-phone.png") });
+  await expect(dialog(page).getByRole("button", { name: "Apply" })).toBeVisible();
   await context.close();
-});
-
-test("title tooltips support hover, keyboard, dismissal, and clipped panels", async ({ page }) => {
-  await mount(page);
-  await page.getByRole("button", { name: "Mix & adjust ＋" }).click();
-  const title = page.getByRole("button", { name: "AlphaCharacter", exact: true });
-  const tooltip = page.locator("#lora-usage-loras-a");
-  await expect(tooltip).not.toBeVisible();
-  await title.hover();
-  await expect(tooltip).toBeVisible();
-  await expect(tooltip).toHaveText("Use: AlphaCharacter in your prompt (no angle brackets).");
-  await tooltip.hover();
-  await expect(tooltip).toBeVisible();
-  await page.getByRole("button", { name: "Reorder Gamma" }).hover();
-  await expect(tooltip).not.toBeVisible();
-  await title.focus();
-  await expect(tooltip).toBeVisible();
-  await title.press("Escape");
-  await expect(tooltip).not.toBeVisible();
-  await expect(title).toBeFocused();
-  await title.click();
-  await expect(tooltip).toBeVisible();
-  await page.getByRole("button", { name: "Gamma", exact: true }).focus();
-  await expect(page.locator("#lora-usage-loras-c")).toContainText("trigger words have not been verified");
-  const box = await page.locator("#lora-usage-loras-c").boundingBox();
-  expect(box.x).toBeGreaterThanOrEqual(0);
-  expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize().height);
-  expect(await page.locator("#lora-usage-loras-c").evaluate((el) => el.matches(":popover-open"))).toBe(true);
 });

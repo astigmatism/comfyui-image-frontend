@@ -1050,6 +1050,7 @@ test("normalizeStoredParameterState keeps well-formed per-source entries and dro
       revision: { publication_id: "p1" },
       values: { prompt: "kept" },
       explicitInputIds: ["prompt", "seed"],
+      lora_strength_memory: {},
       selectedPreset: "preset-1",
     },
     wf_c: {
@@ -1057,6 +1058,7 @@ test("normalizeStoredParameterState keeps well-formed per-source entries and dro
       revision: null,
       values: { seed: { mode: "fixed", value: "42" } },
       explicitInputIds: [],
+      lora_strength_memory: {},
       selectedPreset: null,
     },
   });

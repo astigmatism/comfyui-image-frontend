@@ -1148,6 +1148,7 @@ export function normalizeStoredParameterState(raw) {
       revision: isStoredObject(entry.revision) ? entry.revision : null,
       values: entry.values,
       explicitInputIds,
+      lora_strength_memory: isStoredObject(entry.lora_strength_memory) ? entry.lora_strength_memory : {},
       selectedPreset: typeof entry.selectedPreset === "string" && entry.selectedPreset
         ? entry.selectedPreset
         : null,

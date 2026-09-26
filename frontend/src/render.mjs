@@ -123,6 +123,7 @@ export function shellMarkup(state) {
       <dialog id="photo-viewer" class="photo-viewer" aria-label="Image viewer"><div class="photo-viewer-host"></div></dialog>
       <dialog id="admin-dialog" class="admin-dialog"></dialog>
       <dialog id="prompt-editor-dialog" class="prompt-editor-dialog" aria-label="Focused prompt editor"></dialog>
+      <dialog id="lora-manager-dialog" class="lm-dialog" aria-labelledby="lora-manager-title"></dialog>
       <dialog id="source-picker-dialog" class="source-picker-dialog" aria-label="Generation source"></dialog>
       <dialog id="collection-dialog" class="collection-dialog"></dialog>
       <dialog id="collection-delete-dialog" class="collection-delete-dialog"></dialog>
@@ -153,8 +154,8 @@ export function generationPanelMarkup(state, profile, contract) {
       .map((selector) => selector.parameter_id),
   );
   const inputs = declaredInputs.filter((input) => !promotedModelInputIds.has(input.id));
-  const basic = inputs.filter((item) => !isAdvancedInput(item));
-  const advanced = inputs.filter((item) => isAdvancedInput(item));
+  const basic = inputs.filter((item) => !isAdvancedInput(item) || item.type === "lora_stack");
+  const advanced = inputs.filter((item) => isAdvancedInput(item) && item.type !== "lora_stack");
   const advancedHasError = advanced.some((item) => clientErrors[item.id]);
   const disabled = generationSubmissionDisabled(state, profile, contract, clientErrors);
   const presets = contract?.presets || [];
@@ -650,9 +651,11 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                       section.kind === "prompt" ||
                       section.kind === "seed" ||
                       input.type === "image" ||
-                      input.type === "resolution",
+                      input.type === "resolution" ||
+                      input.type === "lora_stack",
                     hideSeedSwitch: section.kind === "seed" && input === first,
                     recentResolutions,
+                    loraImages: state.loraImages?.[input.id] || {},
                   }),
                 )
                 .join("");
@@ -672,12 +675,14 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
             section.key,
             section.kind === "seed"
               ? seedFormValue(first, values[first.id]).mode !== "random"
-              : DEFAULT_OPEN_CONTROL_SECTION_KINDS.has(section.kind),
+              : section.kind === "lora" || DEFAULT_OPEN_CONTROL_SECTION_KINDS.has(section.kind),
           ),
         className: `control-section-${section.kind}`,
         actions:
           section.kind === "prompt"
             ? promptSectionActionsMarkup(first, values, contract)
+            : section.kind === "lora"
+              ? `<div class="prompt-field-actions control-section-actions"><button type="button" class="icon-button prompt-editor-launch" data-lora-open data-lora-control-id="${escapeHtml(first.id)}" aria-label="Open LoRA manager" title="Open LoRA manager"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`
             : section.kind === "seed"
               ? `<div class="control-section-actions feature-section-switch">${seedSwitchMarkup(first, values[first.id], !controlPresentation(first, values, contract?.capability_states || {}).enabled, true)}</div>`
               : section.kind === "creative-direction" ? featureSwitchMarkup("auto-generate-creative-direction", "Use Creative Direction", state.autoGenerateCreativeDirection) : "",
@@ -688,6 +693,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
 
 function controlSectionDescriptor(input) {
   const label = input.id === "prompt.text" && !input.semantic_role ? "Prompt" : input.label || input.id;
+  if (input.type === "lora_stack") return { key: `lora-${sectionSlug(input.id)}`, kind: "lora", title: input.label || "LoRAs" };
   if (input.semantic_role === "positive_prompt" || input.id === "prompt.text") {
     return { key: "prompt", kind: "prompt", title: "Prompt" };
   }
@@ -737,6 +743,10 @@ export function controlSectionKeysWithErrors(contract, errors = {}) {
 }
 
 function controlSectionStatus(section, values) {
+  if (section.kind === "lora") {
+    const active = (values[section.controls[0]?.id] || []).filter((entry) => entry.strength > 0).length;
+    return `${active} active`;
+  }
   if (section.kind === "resolution") {
     const value = section.resolutionPair
       ? {
@@ -806,7 +816,7 @@ function promptGenerationMarkup(state) {
     ${state.promptGeneratorLoadError ? `<button type="button" class="button low" data-action="reload-prompt-generators">Retry prompt sources</button>` : ""}
   </div>`;
   return controlSectionMarkup({ key: "prompt-generation", title: "Prompt Generation", content,
-    titleHelp: "A LoRA Quick Pick with a published trigger word fills Subject name. You can also edit it directly. Each batch shares one generated prompt, manual or automatic.",
+    titleHelp: "Applying the strongest enabled LoRA can fill Subject name through its published trigger word. You can also edit it directly. Each batch shares one generated prompt, manual or automatic.",
     open: controlSectionIsOpen(state.controlSectionOpen, "prompt-generation", false),
     actions: featureSwitchMarkup("prompt-generation-enabled", "Use Prompt Generation", selection.enabled),
     className: "control-section-prompt-generation" });
@@ -919,8 +929,8 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   let field = "";
   switch (control.type) {
     case "lora_stack":
-      input = loraStackMarkup(control, value, disabled, errorId);
-      field = `<fieldset class="field semantic-fieldset"><legend>${labelContent}</legend>${input}</fieldset>`;
+      input = loraStackMarkup(control, value, options.loraImages || {});
+      field = options.hideLabel ? input : `<fieldset class="field semantic-fieldset"><legend>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "multiline_string":
       input = `<textarea ${common} rows="${escapeHtml(control.ui?.rows || (control.id === "prompt.text" ? 10 : 3))}">${escapeHtml(value ?? "")}</textarea>`;

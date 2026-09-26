@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>LoRA manager · design preview</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./lora-manager.css" />
+  </head>
+  <body class="lm-preview-host">
+    <header class="lm-preview-toolbar">
+      <div class="lm-preview-title">
+        <strong>LoRA manager</strong>
+        <span>Interactive design preview · sample images and in-memory changes</span>
+      </div>
+      <div class="lm-preview-actions" role="group" aria-label="Preview controls">
+        <button type="button" class="button low is-selected" data-preview-size="desktop" aria-pressed="true">Desktop</button>
+        <button type="button" class="button low" data-preview-size="mobile" aria-pressed="false">Narrow screen</button>
+        <button type="button" class="button secondary" data-preview-action="open">Open LoRA manager</button>
+        <button type="button" class="button low" data-preview-action="reset">Reset sample</button>
+      </div>
+    </header>
+    <main class="lm-preview-stage">
+      <iframe id="lm-preview-frame" title="Interactive LoRA manager mockup" src="./lora-manager-scene.html"></iframe>
+    </main>
+    <script type="module" src="./lora-manager-host.mjs"></script>
+  </body>
+</html>

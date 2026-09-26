@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>LoRA manager · interactive scene</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./lora-manager.css" />
+  </head>
+  <body class="lm-scene">
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="lm-panel-toggle" type="button" class="icon-button panel-toggle" aria-label="Open generation controls" aria-expanded="false">☰</button>
+          <div class="app-title">ImageGen</div>
+        </div>
+        <div class="topbar-right">
+          <span class="lm-topbar-context">Gallery</span>
+          <div class="topbar-spacer"></div>
+          <span class="lm-topbar-user">preview</span>
+        </div>
+      </header>
+
+      <aside class="control-panel" aria-label="Generation controls">
+        <div id="generation-panel">
+          <div class="panel-layout">
+            <div class="panel-fixed">
+              <div class="generation-actions">
+                <div class="generate-row"><button type="button" class="button primary" id="generate-button" disabled>Generate image</button></div>
+                <p class="lm-panel-hint">Ready to generate · sample workflow</p>
+              </div>
+              <div class="source-picker">
+                <div class="source-picker-trigger lm-source-display">
+                  <span class="source-picker-current"><strong>Moody Krea2 Simple v31</strong><small>Published workflow</small></span>
+                  <span class="lm-source-chevron" aria-hidden="true">⌄</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel-scroll">
+              <section class="control-section is-expanded" aria-labelledby="lm-prompt-heading">
+                <div class="control-section-header"><h2 id="lm-prompt-heading" class="lm-section-title">Prompt Generation</h2></div>
+                <div class="control-section-body"><div class="control-section-clip"><div class="control-section-content">
+                  <label class="field" for="lm-subject"><span>Subject name</span><input id="lm-subject" type="text" value="A cinematic portrait" /></label>
+                  <p class="lm-field-hint">Applying LoRAs may fill this with a verified trigger word.</p>
+                </div></div></div>
+              </section>
+
+              <section id="lm-lora-section" class="control-section is-expanded" aria-labelledby="lm-lora-trigger">
+                <div class="control-section-header">
+                  <button id="lm-lora-trigger" type="button" class="control-section-trigger" aria-controls="lm-lora-body" aria-expanded="true"><span class="control-section-title">LoRAs</span><svg class="control-section-indicator" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path class="control-section-indicator-vertical" d="M12 5v14"/></svg></button>
+                  <span id="lm-panel-count" class="control-section-status">2 active</span>
+                  <div class="prompt-field-actions control-section-actions"><button id="lm-manage-button" type="button" class="icon-button prompt-editor-launch" aria-label="Open LoRA manager" title="Open LoRA manager"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>
+                </div>
+                <div id="lm-lora-body" class="control-section-body" aria-labelledby="lm-lora-trigger" aria-hidden="false"><div class="control-section-clip"><div class="control-section-content">
+                  <div id="lm-summary" class="lm-summary" aria-live="polite"></div>
+                </div></div></div>
+              </section>
+
+              <section class="control-section is-expanded" aria-labelledby="lm-resolution-heading">
+                <div class="control-section-header"><h2 id="lm-resolution-heading" class="lm-section-title">Resolution</h2></div>
+                <div class="control-section-body"><div class="control-section-clip"><div class="control-section-content lm-resolution-preview">
+                  <label class="field"><span>Width</span><input type="number" value="1024" disabled /></label>
+                  <label class="field"><span>Height</span><input type="number" value="1536" disabled /></label>
+                </div></div></div>
+              </section>
+            </div>
+
+            <div class="panel-footer"><span class="lm-settings-status"><span aria-hidden="true">✓</span> Sample settings</span></div>
+          </div>
+        </div>
+      </aside>
+      <button id="lm-panel-scrim" type="button" class="panel-scrim" aria-label="Close generation controls"></button>
+
+      <main class="gallery-viewport lm-gallery">
+        <div class="lm-gallery-heading"><div><h1>Gallery</h1><p>Generation results appear here.</p></div><span class="lm-workflow-pill">Moody Krea2 Simple v31</span></div>
+        <div class="lm-gallery-empty"><span class="lm-gallery-symbol" aria-hidden="true">✧</span><h2>A fresh canvas</h2><p>Use the controls to shape your next image.</p></div>
+      </main>
+
+      <dialog id="lm-dialog" class="lm-dialog" aria-labelledby="lm-dialog-title">
+        <form method="dialog" class="dialog-frame lm-dialog-frame">
+          <header class="dialog-header lm-dialog-header">
+            <div>
+              <h2 id="lm-dialog-title">Manage LoRAs</h2>
+              <p>Moody Krea2 Simple v31 · Available for this workflow</p>
+            </div>
+            <button type="button" id="lm-close-button" class="icon-button lm-close-button" aria-label="Cancel and close LoRA manager">×</button>
+          </header>
+          <div class="lm-dialog-content">
+            <div class="lm-dialog-intro">
+              <div><strong id="lm-dialog-count">2 of 4 enabled</strong><span>Applied in list order, top to bottom</span></div>
+              <p>Reference images are shared with everyone after Apply. Images shown here are sample artwork.</p>
+            </div>
+            <ol id="lm-list" class="lm-list" aria-label="Available LoRAs"></ol>
+            <p id="lm-reorder-status" class="visually-hidden" role="status" aria-live="polite"></p>
+          </div>
+          <footer class="dialog-actions lm-dialog-footer">
+            <button id="lm-all-off" type="button" class="button low">All off</button>
+            <span id="lm-subject-preview" class="lm-subject-preview"></span>
+            <div class="lm-footer-buttons">
+              <button id="lm-cancel-button" type="button" class="button secondary">Cancel</button>
+              <button id="lm-apply-button" type="button" class="button primary">Apply</button>
+            </div>
+          </footer>
+        </form>
+      </dialog>
+      <input id="lm-image-picker" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" aria-hidden="true" />
+      <div id="lm-toast" class="lm-toast" role="status" aria-live="polite" hidden></div>
+    </div>
+    <script type="module" src="./lora-manager.mjs"></script>
+  </body>
+</html>

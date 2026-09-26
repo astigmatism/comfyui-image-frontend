@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { loraStackError, loraStackMarkup, moveLora, soloLora } from "../src/lora-stack.mjs";
+import {
+  loraStackError,
+  loraStackMarkup,
+  loraDefaultPositiveStrength,
+  strongestLoraTrigger,
+  moveLora,
+} from "../src/lora-stack.mjs";
+import { loraManagerMarkup } from "../src/lora-manager.mjs";
 import { parametersForRequest, overwriteWithRecall, clientValidate } from "../src/lib.mjs";
 
 const control = { id: "loras", type: "lora_stack", label: "LoRAs", semantic_role: "lora", required: false, advanced: false, group: "LoRAs", order: 150, items: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }], minimum: 0, maximum: 2, step: 0.05, default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }] };
@@ -20,65 +27,64 @@ test("LoRA identity survives ordering, request snapshots and exact recall", () =
   assert.deepEqual(clientValidate(contract, requested), {});
 });
 
-test("Quick Picks select one LoRA at strength 1 without changing order or input", () => {
-  const original = [{ id: "b", strength: 0.65 }, { id: "a", strength: 1.5 }];
-  assert.deepEqual(soloLora(original, "a"), [{ id: "b", strength: 0 }, { id: "a", strength: 1 }]);
-  assert.deepEqual(original, [{ id: "b", strength: 0.65 }, { id: "a", strength: 1.5 }]);
-});
-
-test("Quick Picks require a valid 1.0 and mixer enable uses a valid fallback", () => {
+test("a newly enabled LoRA starts at a valid positive workflow strength", () => {
   const limited = { ...control, maximum: 0.8, step: 0.1 };
-  const markup = loraStackMarkup(limited, limited.default, false, null, true);
-  assert.match(markup, /Strength 1.0 unavailable/);
-  assert.match(markup, /data-lora-solo="a"[^>]*disabled/);
-  assert.match(markup, /data-lora-enable-strength="0.1"/);
-  const multi = loraStackMarkup(control, [{ id: "a", strength: 1 }, { id: "b", strength: 0.5 }]);
-  assert.match(multi, /data-lora-solo="a"[^>]*aria-pressed="false"/);
-  assert.match(multi, /data-lora-solo="b"[^>]*aria-pressed="false"/);
+  assert.equal(loraDefaultPositiveStrength(control), 1);
+  assert.equal(loraDefaultPositiveStrength(limited), 0.1);
 });
 
-test("LoRA client validation rejects malformed entries and Quick Picks retain zero choices", () => {
+test("LoRA client validation rejects malformed entries", () => {
   for (const strength of [null, "1", true, NaN, Infinity, 1e-12, -0.05, 2.05, 0.051]) {
     assert.ok(loraStackError(control, [{ id: "a", strength }, { id: "b", strength: 0 }]));
   }
   for (const value of [null, [], "[]", [{ id: "a", strength: 0 }, { id: "a", strength: 0 }]]) assert.ok(loraStackError(control, value));
-  const markup = loraStackMarkup(control, [...control.default].reverse());
-  assert.ok(markup.indexOf('data-lora-solo="b"') < markup.indexOf('data-lora-solo="a"'));
-  assert.match(markup, /Use only Beta at strength 1/);
-  assert.match(markup, /Use only Alpha at strength 1/);
-  assert.match(markup, /Mix & adjust/);
-  assert.match(markup, /0 active/);
-  assert.doesNotMatch(markup, /data-lora-id=|data-lora-move|lora-movement/);
-  assert.match(markup, /aria-live="polite"/);
 });
 
-test("expanded mixer keeps exact controls and escapes usage tooltips", () => {
+test("control panel summarizes only enabled LoRAs in application order", () => {
+  const rows = [{ id: "b", strength: 0.65 }, { id: "a", strength: 1.5 }];
+  const markup = loraStackMarkup(control, rows);
+  assert.match(markup, /lm-summary-list/);
+  assert.ok(markup.indexOf("Beta") < markup.indexOf("Alpha"));
+  assert.doesNotMatch(markup, /data-lora-solo|data-lora-mixer|data-lora-range|data-lora-number/);
+
+  const empty = loraStackMarkup(control, control.default);
+  assert.match(empty, /No LoRAs enabled/);
+  assert.doesNotMatch(empty, /lm-summary-item/);
+});
+
+test("manager lists all LoRAs with enable, strength, image and reorder controls", () => {
   const withUsage = structuredClone(control);
   withUsage.items[0].description = 'Use: <character> & "style". <script>alert(1)</script>';
-  const markup = loraStackMarkup(withUsage, withUsage.default, false, null, true);
-  assert.match(markup, /data-lora-enabled/);
-  assert.match(markup, /data-lora-strength/);
-  assert.match(markup, /Reorder Alpha/);
-  assert.match(markup, /Reorder Beta/);
-  assert.match(markup, /data-lora-id="b"/);
-  assert.match(markup, /role="tooltip" popover="manual"/);
-  assert.match(markup, /aria-describedby="lora-usage-loras-a"/);
+  const rows = [{ id: "b", strength: 0 }, { id: "a", strength: 1.25 }];
+  const markup = loraManagerMarkup({ control: withUsage, values: rows, memory: { b: 0.65 }, sourceName: "Example workflow" });
+  assert.ok(markup.indexOf('data-lora-id="b"') < markup.indexOf('data-lora-id="a"'));
+  for (const id of ["a", "b"]) {
+    assert.match(markup, new RegExp(`data-lora-enable="${id}"`));
+    assert.match(markup, new RegExp(`data-lora-range="${id}"`));
+    assert.match(markup, new RegExp(`data-lora-number="${id}"`));
+    assert.match(markup, new RegExp(`data-lora-image-change="${id}"`));
+    assert.match(markup, /data-lora-handle/);
+  }
+  assert.match(markup, /data-lora-image-remove="a"/);
+  assert.match(markup, /0\.65/);
+  assert.match(markup, /Example workflow/);
   assert.match(markup, /Use: &lt;character&gt; &amp; &quot;style&quot;/);
   assert.doesNotMatch(markup, /<script>/);
-  assert.match(markup, /trigger words have not been verified/);
-  assert.match(markup, /no &lt;lora:\.\.\.&gt; tag is needed/);
+  assert.doesNotMatch(markup, /Quick pick|Mix &amp; adjust|data-lora-solo/);
 });
 
-test("Quick Picks use only published trigger words and escape them", () => {
+test("strongest enabled LoRA supplies only its verified trigger", () => {
   const withTrigger = structuredClone(control);
   withTrigger.items[0].trigger_word = '<Alpha & "Character">';
-  const markup = loraStackMarkup(withTrigger, [{ id: "a", strength: 1 }, { id: "b", strength: 0 }]);
+  const rows = [{ id: "a", strength: 1 }, { id: "b", strength: 0 }];
+  const markup = loraManagerMarkup({ control: withTrigger, values: rows });
   assert.match(markup, /&lt;Alpha &amp; &quot;Character&quot;&gt;/);
-  assert.match(markup, /data-lora-trigger-word="&lt;Alpha &amp; &quot;Character&quot;&gt;"/);
-  assert.match(markup, /data-lora-trigger-word=""/);
-  assert.match(markup, /data-lora-quick-strength="a"/);
-  assert.match(markup, /value="1"/);
+  assert.match(loraManagerMarkup({ control: withTrigger, values: rows, subjectAvailable: false }), /Subject unchanged · Prompt Generation subject is unavailable/);
   assert.doesNotMatch(markup, /<Alpha/);
+  assert.equal(strongestLoraTrigger(withTrigger, rows).triggerWord, '<Alpha & "Character">');
+  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1.5 }, { id: "a", strength: 1 }]).triggerWord, null);
+  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1 }, { id: "a", strength: 1 }]).triggerWord, null);
+  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "a", strength: 0 }, { id: "b", strength: 0 }]).triggerWord, null);
 });
 
 const publisherSource = await readFile(new URL("../../comfyui_extension/comfyui-image-frontend-interface/web/publication.js", import.meta.url), "utf8");

@@ -1530,9 +1530,13 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
 
   const loraSection = page.getByRole("button", { name: "LoRAs", exact: true });
   if (await loraSection.getAttribute("aria-expanded") !== "true") await loraSection.click();
-  await page.getByRole("button", { name: "Mix & adjust" }).click();
-  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await page.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  const loraDialog = page.locator("#lora-manager-dialog");
+  await loraDialog.getByRole("checkbox", { name: "Enable Beta" }).check();
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await loraDialog.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
+  await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
   const submittedStack = [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }];
   const trigger = page.locator("#workflow-source");
   await trigger.click();
@@ -1595,7 +1599,10 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   ).toEqual(["cutie_x_int8", "tyjr_mxfp8", "v4_bf16", "v4_int8", "v5_bf16"]);
   expect(new Set(generationRequests.map((request) => request.parameters.seed)).size).toBe(1);
   for (const request of generationRequests) expect(request.parameters.loras).toEqual(submittedStack);
-  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("0.25");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("0.25");
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
   for (const request of generationRequests) expect(request.parameters.loras).toEqual(submittedStack);
   expect(
     generationRequests.every(
@@ -1606,7 +1613,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   ).toBe(true);
 });
 
-test("LoRA Quick Picks set the published trigger as prompt subject and keep exact mixer control", async ({ page }, testInfo) => {
+test("LoRA manager applies the strongest published trigger and preserves remembered strength", async ({ page }, testInfo) => {
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
@@ -1622,27 +1629,35 @@ test("LoRA Quick Picks set the published trigger as prompt subject and keep exac
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toBeVisible();
   await ensureControlSectionExpanded(page, "LoRAs");
 
-  await page.getByRole("button", { name: "Use only AlphaCharacter at strength 1" }).click();
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  const manager = page.locator("#lora-manager-dialog");
+  if (await manager.getByRole("button", { name: "All off" }).isEnabled()) await manager.getByRole("button", { name: "All off" }).click();
+  await manager.getByRole("checkbox", { name: "Enable Alpha" }).check();
+  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("AlphaCharacter");
+  await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
-  await expect(page.locator("[data-lora-quick-strength]")).toHaveValue("1");
-  await page.locator('[data-lora-control="loras"]').screenshot({ path: testInfo.outputPath("lora-quick-picks.png"), animations: "disabled" });
+  await expect(page.locator(".lm-summary-item")).toHaveCount(1);
+  await page.locator('[data-lora-control="loras"]').screenshot({ path: testInfo.outputPath("lora-summary.png"), animations: "disabled" });
   await expect.poll(async () => {
     const preferences = await (await page.request.get("/api/preferences")).json();
     return preferences.settings.sources?.[sourceKey]?.values?.loras ?? null;
-  }).toEqual([{ id: "a", strength: 1 }, { id: "b", strength: 0 }]);
+  }).toEqual(expect.arrayContaining([{ id: "a", strength: 1 }, { id: "b", strength: 0 }]));
 
-  await page.getByRole("button", { name: "Use only Beta at strength 1" }).click();
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await manager.getByRole("checkbox", { name: "Enable Beta" }).check();
+  await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject unchanged");
+  await manager.screenshot({ path: testInfo.outputPath("lora-manager.png"), animations: "disabled" });
+  await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
-  await page.getByRole("button", { name: "Mix & adjust" }).click();
-  await page.getByRole("checkbox", { name: "Enable AlphaCharacter" }).check();
-  await expect(page.getByRole("checkbox", { name: "Enable AlphaCharacter" })).toBeFocused();
-  await expect(page.getByRole("slider", { name: "AlphaCharacter strength slider" })).toBeVisible();
-  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1");
-  await expect(page.getByRole("button", { name: "Use only Beta at strength 1" })).toHaveAttribute("aria-pressed", "false");
-  await page.locator('[data-lora-control="loras"]').screenshot({ path: testInfo.outputPath("lora-mixer.png"), animations: "disabled" });
-  await page.getByRole("button", { name: "All off" }).click();
-  await expect(page.getByRole("button", { name: "Close mixer" })).toBeFocused();
-  await expect(page.locator("[data-lora-active-count]")).toHaveText("0 active");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await manager.getByRole("button", { name: "All off" }).click();
+  await manager.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.locator(".lm-summary-item")).toHaveCount(0);
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await manager.getByRole("checkbox", { name: "Enable Beta" }).check();
+  await expect(manager.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
 });
 
 

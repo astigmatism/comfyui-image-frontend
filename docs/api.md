@@ -10,7 +10,7 @@ All routes are same-origin and served beneath `/api`. The application never inje
 X-CSRF-Token: <csrf_token>
 ```
 
-Content lookups are scoped to the current owner. Cross-user requests, including administrator attempts, return not found rather than revealing existence.
+Generation, upload, and gallery content lookups are scoped to the current owner. Cross-user requests, including administrator attempts, return not found rather than revealing existence. Workflow LoRA thumbnails are a deliberate exception: they are shared with all signed-in users of that workflow.
 
 Errors use a safe machine-readable envelope:
 
@@ -70,11 +70,38 @@ Items follow deployment-configuration order. `configuration_mode` is `explicit` 
 |---|---|---|
 | `GET` | `/api/workflows` | List current ready, cached/offline, and known unavailable publication summaries |
 | `GET` | `/api/workflows/{source_key}` | Get the selected source's allowlisted public interface |
+| `GET` | `/api/workflows/{source_key}/lora-images/{control_id}` | Get versioned shared images for one published `lora_stack` control |
+| `POST` | `/api/workflows/{source_key}/lora-images/{control_id}` | Atomically set/remove selected LoRA images with per-item version checks |
+| `GET` | `/api/workflows/{source_key}/lora-images/{control_id}/{item_id}/content?v={version}` | Read one authenticated WebP thumbnail |
 | `GET` | `/api/services` | Restrained ComfyUI/Ollama availability state |
 | `POST` | `/api/admin/workflows/refresh` | Administrator: rediscover and atomically validate publications |
 | `GET` | `/api/admin/workflows/diagnostics` | Administrator: safe per-transport/per-candidate diagnostics |
 
 The historical route name `workflows` is retained, but objects now represent deliberately published sources.
+
+### Shared LoRA images
+
+Image metadata is separate from the public workflow interface and generation parameters. A signed-in user may read or update images for LoRAs in the selected workflow's published `lora_stack` catalog. The lookup returns every published item in catalog order:
+
+```json
+{
+  "items": [
+    {"id": "tifa", "version": "<opaque-version-token>", "image_url": "/api/workflows/<source-key>/lora-images/loras/tifa/content?v=<opaque-version-token>"},
+    {"id": "claire", "version": "<opaque-version-token>", "image_url": null}
+  ]
+}
+```
+
+To save staged changes, send one `multipart/form-data` POST with a `changes` JSON field and a named file part for each `set` action. Example `changes` value:
+
+```json
+[
+  {"id": "tifa", "version": "<version-from-GET>", "action": "set", "file_key": "image_0"},
+  {"id": "claire", "version": "<version-from-GET>", "action": "remove"}
+]
+```
+
+The multipart part named `image_0` contains the local file. Static PNG, JPEG, and WebP files are accepted within the configured upload byte and pixel limits; the server stores only a small normalized WebP thumbnail. The request requires the session CSRF header and returns the same shape as the metadata GET. The batch is conditional on every item's opaque `version`. If any changed item has a stale version, the entire update returns HTTP 409 with `lora_image_conflict`; the client must reload and let the user review the latest images. Unknown control or catalog IDs and malformed parts are rejected. Content URLs require authentication and use a versioned private cache policy. Images are scoped to the logical published workflow and retained across compatible revisions; a removed or rebound catalog member loses its prior image.
 
 The `instance_id` on a workflow summary identifies its authoritative catalog and execution service: the image assignment for `/api/workflows`, the prompt assignment for `/api/workflows?output_kind=text`. Other copies appear only in safe `replicas` metadata. Old source keys may resolve to the authoritative profile by logical identity; controls and submitted revisions are checked against that profile.
 

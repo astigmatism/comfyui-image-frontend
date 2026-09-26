@@ -28,8 +28,10 @@ from ..models import (
     WorkflowProfile,
     WorkflowState,
 )
+from .assets import AssetStore
 from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
+from .lora_images import catalog_bindings, prune_lora_images
 
 logger = logging.getLogger(__name__)
 PUBLIC_DEPENDENCY_MESSAGE = "Required ComfyUI node classes are unavailable for this source."
@@ -467,6 +469,7 @@ class WorkflowRegistry:
         diagnostics: list[WorkflowDiagnostic],
         object_info: dict[str, Any],
     ) -> list[WorkflowDiagnostic]:
+        pruned_paths: list[str] = []
         with self.session_factory() as session:
             session.execute(
                 delete(WorkflowDiagnostic).where(WorkflowDiagnostic.instance_id == self.instance_id)
@@ -498,6 +501,18 @@ class WorkflowRegistry:
                     row.state = WorkflowState.STALE
             for publication in validated:
                 self._publish_revision(session, publication, now)
+                if self.instance_id == self.assigned_instance_id(
+                    publication_kind(publication.private_contract)
+                ):
+                    pruned_paths.extend(
+                        prune_lora_images(
+                            session,
+                            workflow_key=source_key_for("", publication.source_id),
+                            current_bindings=catalog_bindings(
+                                publication.private_contract, publication.api_document
+                            ),
+                        )
+                    )
             dependency_unavailable_source_keys = self._current_dependency_failures(
                 session, object_info
             )
@@ -531,7 +546,9 @@ class WorkflowRegistry:
                 },
             )
             session.commit()
-            return diagnostics
+        if pruned_paths:
+            AssetStore(self.adapter.settings).delete_paths(pruned_paths)
+        return diagnostics
 
     async def _fetch_candidate_artifact(
         self,

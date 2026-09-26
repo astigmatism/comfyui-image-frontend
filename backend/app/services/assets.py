@@ -107,6 +107,35 @@ class AssetStore:
     async def store_reference_content_async(self, content: bytes) -> StoredImage:
         return await self._store_async(lambda: self.store_reference_content(content))
 
+    def store_lora_thumbnail(self, source: BinaryIO) -> StoredImage:
+        """Keep only a small shared display image, never the uploaded original."""
+
+        content = _read_limited(source, self.settings.upload_max_bytes)
+        image = self._decode_image(content, require_static=True)
+        if str(image.format or "").upper() not in {"PNG", "JPEG", "WEBP"}:
+            raise AppError("upload_invalid", "LoRA images must be static PNG, JPEG, or WebP files.")
+        thumb = ImageOps.exif_transpose(image)
+        thumb = thumb.convert("RGBA" if "A" in thumb.getbands() else "RGB")
+        edge = min(self.settings.thumbnail_max_edge, 320)
+        thumb.thumbnail((edge, edge))
+        buffer = io.BytesIO()
+        thumb.save(buffer, format="WEBP", quality=82, method=4)
+        encoded = buffer.getvalue()
+        relative = f"lora-images/{uuid.uuid4()}.webp"
+        self._atomic_write(relative, encoded)
+        return StoredImage(
+            relative_path=relative,
+            thumbnail_path=None,
+            mime_type="image/webp",
+            byte_size=len(encoded),
+            width=thumb.width,
+            height=thumb.height,
+            sha256=hashlib.sha256(encoded).hexdigest(),
+        )
+
+    async def store_lora_thumbnail_async(self, source: BinaryIO) -> StoredImage:
+        return await self._store_async(lambda: self.store_lora_thumbnail(source))
+
     def store_artifact(
         self, content: bytes, *, generation_id: str, kind: str = "image"
     ) -> StoredImage:
