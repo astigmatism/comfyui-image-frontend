@@ -1180,7 +1180,7 @@ test("photo viewer download control downloads the image being viewed", async ({ 
   expect(download.suggestedFilename()).not.toBe("");
 });
 
-test("photo viewer offers generate and batch progress without leaving the viewer", async ({
+test("photo viewer shows batch progress without a generate button", async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -1198,32 +1198,23 @@ test("photo viewer offers generate and batch progress without leaving the viewer
 
   const photoViewer = page.locator("#photo-viewer");
   await expect(photoViewer).toHaveAttribute("open", "");
-  const viewerGenerate = photoViewer.locator("#photo-generate-button");
-  await expect(viewerGenerate).toBeVisible();
-  await expect(viewerGenerate).toBeEnabled();
+  await expect(photoViewer.locator('[data-action="generate"]')).toHaveCount(0);
+  await photoViewer.getByRole("button", { name: "Full screen", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement !== null)).toBe(true);
+  await expect(photoViewer.locator('[data-action="generate"]')).toHaveCount(0);
+  await photoViewer.getByRole("button", { name: "Exit full screen", exact: true }).click();
   const activityWidget = photoViewer.locator(".photo-viewer-activity-host .generation-activity");
   await expect(activityWidget).toHaveCount(0);
 
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/generations" &&
-      response.request().method() === "POST",
-  );
-  // The dock fades on idle; re-trigger activity so the control is clickable.
-  await page.mouse.move(80, 80);
-  await viewerGenerate.click();
-  const response = await responsePromise;
-  expect(response.status(), await response.text()).toBe(201);
+  await photoViewer.getByRole("button", { name: "Close image viewer" }).click();
+  await prompt.fill("slow viewer dock progress");
+  const response = await generateAndExpectAccepted(page);
   const queued = await response.json();
+  await baselineCard.locator(".card-media").click();
   await expect(photoViewer).toHaveAttribute("open", "");
-  // The batch is in flight: the top-bar-style progress widget reports in the viewer.
+  // The batch is in flight: the top-bar-style activity widget reports in the viewer.
   await expect(activityWidget).toBeVisible();
-  await expect(activityWidget).toHaveAttribute("role", "progressbar");
-
-  // Controls fade on idle while the progress keeps reporting.
-  await expect(photoViewer).not.toHaveClass(/controls-visible/, { timeout: 6000 });
-  await expect(viewerGenerate).toHaveCSS("opacity", "0");
-  await expect(activityWidget).toHaveCSS("opacity", "1");
+  await expect(activityWidget).toHaveAttribute("aria-label", "Generation time estimates");
 
   // After the batch resolves, the widget clears following the top bar's grace period.
   const queuedCard = page.locator(`.gallery-card[data-generation-id="${queued.id}"]`);

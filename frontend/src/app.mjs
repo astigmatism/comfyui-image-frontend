@@ -3923,9 +3923,7 @@ function syncGenerationButtons() {
     // Preserve the spinner node/animation during polling and settings updates.
     if (button.innerHTML !== markup) button.innerHTML = markup;
   };
-  for (const button of document.querySelectorAll("#generate-button, #photo-generate-button")) {
-    sync(button, generationButtonPresentation(state), disabled);
-  }
+  sync(document.querySelector("#generate-button"), generationButtonPresentation(state), disabled);
   sync(document.querySelector('[data-action="generate-prompt"]'), promptGenerationButtonPresentation(state),
     !state.promptGeneratorSource || Boolean(promptRuntimeError(state)) || state.submitting || state.promptGenerationBusy || Boolean(state.pendingSubmission));
   const promptSource = document.querySelector("#prompt-generation-source");
@@ -5435,19 +5433,8 @@ function photoViewerNavigation(id) {
 
 function photoViewerGenerationDock() {
   syncSubmissionSnapshot();
-  const contract = sourceInterface(state.activeSource);
-  const errors = {
-    ...validateImageParameters(contract, state.parameters),
-    ...withoutNulls(state.serverFieldErrors),
-  };
-  const selected =
-    state.activeSource ||
-    state.sources.find((item) => sourceKey(item) === state.activeSourceKey);
   return {
     activity: generationActivityMarkup(generationActivitySnapshot()),
-    generateDisabled: generationSubmissionDisabled(state, selected, contract, errors),
-    generateLabel: generationButtonPresentation(state).label,
-    generateBusy: generationButtonPresentation(state).busy,
   };
 }
 
