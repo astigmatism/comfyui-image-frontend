@@ -1053,7 +1053,7 @@ function seedMarkup(control, value, common, disabled, hideSwitch = false) {
   const random = seed.mode === "random";
   return `<div class="seed-control">
     ${hideSwitch ? "" : seedSwitchMarkup(control, value, disabled)}
-    <input ${common} type="text" inputmode="numeric" pattern="-?[0-9]*" value="${random ? "" : escapeHtml(seed.value)}" ${random ? "disabled" : ""} data-minimum="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" data-maximum="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" aria-label="${escapeHtml(control.label)} value" />
+    <input ${common} type="text" inputmode="numeric" pattern="-?[0-9]*" value="${escapeHtml(seed.value)}" ${random ? "disabled" : ""} data-minimum="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" data-maximum="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" aria-label="${escapeHtml(control.label)} value" />
   </div>`;
 }
 

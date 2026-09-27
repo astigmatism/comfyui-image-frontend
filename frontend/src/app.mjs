@@ -22,6 +22,7 @@ import {
   MIN_GENERATION_QUANTITY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
+  applyRecallSeedMode,
   clampGenerationQuantity,
   clientValidate,
   choiceOptions,
@@ -5240,6 +5241,7 @@ async function recall(id) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
   }
+  const preRecallParameters = structuredClone(state.parameters);
   state.promptEditorDirty = true;
   persistBrowserDraft();
   syncServerControls();
@@ -5248,6 +5250,7 @@ async function recall(id) {
   if (recalled.source_available === false) {
     const recalledState = overwriteWithRecall(state, recalled, sourceInterface(state.activeSource));
     state.parameters = recalledState.parameters;
+    state.parameters = applyRecallSeedMode(preRecallParameters, sourceInterface(state.activeSource), state.parameters);
     state.explicitParameterIds = recalledState.explicitParameterIds;
     state.promptAssistant = recalledState.promptAssistant;
     state.compositionId = null;
@@ -5293,6 +5296,7 @@ async function recall(id) {
     null,
     state.explicitParameterIds,
   );
+  state.parameters = applyRecallSeedMode(preRecallParameters, sourceInterface(state.activeSource), state.parameters);
   state.promptAssistant = recalledState.promptAssistant;
   state.compositionId = null;
   state.serverFieldErrors = {};

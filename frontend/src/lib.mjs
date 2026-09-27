@@ -864,6 +864,23 @@ export function migrateInterfaceState(
   };
 }
 
+export function applyRecallSeedMode(currentParameters, contract, parameters) {
+  for (const input of interfaceInputs(contract)) {
+    if (!isSeedInput(input)) continue;
+    const current = currentParameters?.[input.id];
+    if (!current || typeof current !== "object") continue;
+    const mode = current.mode;
+    if (
+      (mode === "fixed" || mode === "random") &&
+      parameters[input.id] &&
+      typeof parameters[input.id] === "object"
+    ) {
+      parameters[input.id].mode = mode;
+    }
+  }
+  return parameters;
+}
+
 export function overwriteWithRecall(current, recall, currentContract = null) {
   const sourceKey = recall.source_key ?? recall.profile_id;
   const sourceAvailable = recall.source_available !== false;

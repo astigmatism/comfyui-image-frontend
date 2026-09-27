@@ -2716,6 +2716,12 @@ test("recall restores the creative direction section from the generation snapsho
   await direction.fill("changed after generation");
   await instructions.fill("Changed instructions that were never used.");
   await thinking.check();
+  await ensureControlSectionExpanded(page, "Seed Randomizer");
+  const seedRandom = page.getByLabel("Random seed", { exact: true });
+  const seedValue = page.getByLabel("Seed value", { exact: true });
+  await seedRandom.uncheck();
+  await seedRandom.check();
+  await expect(seedValue).toBeDisabled();
 
   const recallResponsePromise = page.waitForResponse(
     (response) =>
@@ -2730,12 +2736,33 @@ test("recall restores the creative direction section from the generation snapsho
   expect(recalled.prompt_assistant.creative_direction).toBe("lone lighthouse in a winter storm");
   expect(recalled.prompt_assistant.instructions).toBe("Describe one dramatic coastal scene.");
   expect(recalled.prompt_assistant.thinking_enabled).toBe(false);
+  expect(recalled.parameters.seed).toMatch(/^[0-9]+$/);
 
   // The panel shows the generation-time values, not the current ones.
   await expect(direction).toHaveValue("lone lighthouse in a winter storm");
   await expect(createMode).toBeChecked();
   await expect(instructions).toHaveValue("Describe one dramatic coastal scene.");
   await expect(thinking).not.toBeChecked();
+  await expect(seedRandom).toBeChecked();
+  await expect(seedValue).toBeDisabled();
+  await expect(seedValue).toHaveValue(recalled.parameters.seed);
+  await seedRandom.uncheck();
+  await expect(seedValue).toBeEnabled();
+  await expect(seedValue).toHaveValue(recalled.parameters.seed);
+
+  // A missing historical publication uses migration but keeps the same seed presentation.
+  await seedRandom.check();
+  await page.route(`**/api/generations/${accepted.id}/recall`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      json: { ...(await response.json()), source_available: false },
+    });
+  });
+  await clickGalleryControl(card.getByRole("button", { name: "Recall settings" }));
+  await expect(seedRandom).toBeChecked();
+  await expect(seedValue).toBeDisabled();
+  await expect(seedValue).toHaveValue(recalled.parameters.seed);
 });
 
 test("cancelling a queued generation removes its card and history", async ({ page }) => {

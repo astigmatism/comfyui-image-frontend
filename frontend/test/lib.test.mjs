@@ -11,6 +11,7 @@ import {
   MIN_GENERATION_QUANTITY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
+  applyRecallSeedMode,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
   clampGenerationQuantity,
@@ -814,6 +815,50 @@ test("recall preserves the current source and migrates compatible historical met
     new Set(recalled.explicitParameterIds),
     new Set(["current_prompt", "current_width", "current_seed", "current_style"]),
   );
+});
+
+test("recall keeps the current seed mode without replacing the recalled value", () => {
+  const contract = {
+    inputs: [
+      { id: "seed", type: "seed" },
+      { id: "role_seed", type: "integer", semantic_role: "seed" },
+      { id: "prompt", type: "text" },
+    ],
+  };
+  const recalled = {
+    seed: { mode: "fixed", value: "424242" },
+    role_seed: { mode: "fixed", value: "777" },
+    prompt: { mode: "fixed", value: "historical prompt" },
+  };
+  assert.equal(
+    applyRecallSeedMode(
+      {
+        seed: { mode: "random", value: "old seed" },
+        role_seed: { mode: "fixed", value: "old seed" },
+        prompt: { mode: "random", value: "current prompt" },
+      },
+      contract,
+      recalled,
+    ),
+    recalled,
+  );
+  assert.deepEqual(recalled, {
+    seed: { mode: "random", value: "424242" },
+    role_seed: { mode: "fixed", value: "777" },
+    prompt: { mode: "fixed", value: "historical prompt" },
+  });
+  assert.deepEqual(parametersForRequest({ inputs: [contract.inputs[0]] }, { seed: recalled.seed }), {});
+
+  const fixed = { seed: { mode: "random", value: "424242" } };
+  applyRecallSeedMode({ seed: { mode: "fixed", value: "old seed" } }, contract, fixed);
+  assert.deepEqual(fixed.seed, { mode: "fixed", value: "424242" });
+  assert.deepEqual(parametersForRequest({ inputs: [contract.inputs[0]] }, fixed), { seed: "424242" });
+
+  for (const current of [undefined, { seed: "random" }, { seed: { mode: "invalid" } }]) {
+    const fallback = { seed: { mode: "fixed", value: "424242" } };
+    applyRecallSeedMode(current, contract, fallback);
+    assert.deepEqual(fallback.seed, { mode: "fixed", value: "424242" });
+  }
 });
 
 test("contract defaults are cloned and capabilities disable rather than hide controls", () => {

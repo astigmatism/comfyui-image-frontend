@@ -2222,6 +2222,19 @@ test("fixed-mode seed renders no random choice and exposes its exact default", (
   assert.match(html, /<input[^>]*value="1125899906842624"[^>]*aria-label="Seed value"/);
 });
 
+test("seed input shows its stored value in both modes and stays disabled only in Random", () => {
+  const control = { id: "seed", label: "Seed", type: "seed", default_mode: "random" };
+  const contract = { inputs: [control] };
+  const random = controlMarkup(control, { seed: { mode: "random", value: "424242" } }, contract);
+  assert.match(random, /data-seed-mode="seed"[^>]*checked/);
+  assert.match(random, /value="424242"[^>]*disabled[^>]*aria-label="Seed value"/);
+
+  const fixed = controlMarkup(control, { seed: { mode: "fixed", value: "424242" } }, contract);
+  assert.doesNotMatch(fixed, /data-seed-mode="seed"[^>]*checked/);
+  assert.match(fixed, /value="424242"[^>]*aria-label="Seed value"/);
+  assert.doesNotMatch(fixed, /value="424242"[^>]*disabled/);
+});
+
 test("paired width and height omit source descriptions and tooltips", () => {
   const describedInterface = {
     ...publishedInterface,
