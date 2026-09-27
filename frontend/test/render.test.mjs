@@ -677,8 +677,8 @@ test("creative direction renders as its own collapsible section beneath the prom
   const advancedSectionIndex = html.indexOf('data-control-section="advanced"');
   assert.ok(promptSectionIndex >= 0);
   assert.ok(
-    promptSectionIndex < assistantSectionIndex &&
-      assistantSectionIndex < advancedSectionIndex,
+    advancedSectionIndex < promptSectionIndex &&
+      promptSectionIndex < assistantSectionIndex,
   );
   assert.doesNotMatch(html, /control-section-creative-direction is-expanded/);
   assert.match(
@@ -686,7 +686,7 @@ test("creative direction renders as its own collapsible section beneath the prom
     /data-control-section="creative-direction"[\s\S]*?data-action="toggle-control-section"[^>]*aria-expanded="false"/,
   );
   assert.match(html, /<span class="control-section-title">Creative Direction<\/span>/);
-  const section = html.slice(assistantSectionIndex, advancedSectionIndex);
+  const section = html.slice(assistantSectionIndex, html.indexOf('id="shared-settings-status-host"'));
   assert.match(section, /<section class="prompt-assistant" id="prompt-assistant"/);
   assert.match(section, /data-speech-target="creative-direction"/);
   assert.doesNotMatch(section, />Mode</);
@@ -1996,7 +1996,9 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.match(html, /<div class="resolution-preview">/);
   assert.doesNotMatch(html, /<span aria-hidden="true">×<\/span>/);
   assert.ok(html.indexOf('data-control-block="seed"') < html.indexOf('data-control-block="prompt"'));
-  assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf("data-resolution-pair-block"));
+  assert.ok(html.indexOf("data-resolution-pair-block") < html.indexOf('data-control-section="prompt-generation"'));
+  assert.ok(html.indexOf('data-control-section="prompt-generation"') < html.indexOf('data-control-block="prompt"'));
+  assert.ok(html.indexOf('data-control-block="prompt"') < html.indexOf('data-control-section="creative-direction"'));
   assert.ok(html.indexOf('data-control-block="width"') < html.indexOf('data-control-block="height"'));
   assert.match(html, /data-control-id="seed"[^>]*type="text"[^>]*inputmode="numeric"/);
   assert.match(html, /<input type="checkbox"[^>]*data-seed-mode="seed"[^>]*checked/);
@@ -2036,6 +2038,31 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.doesNotMatch(html, /negative.prompt|Negative prompt/i);
   const button = html.match(/<button id="generate-button"[^>]*>/)?.[0] || "";
   assert.doesNotMatch(button, /disabled/);
+});
+
+test("control panel puts loaders, seed, and resolution before the prompt sections", () => {
+  const inputs = [
+    { id: "prompt", label: "Prompt", type: "string", semantic_role: "positive_prompt", order: 10 },
+    { id: "seed", label: "Seed", type: "seed", order: 20 },
+    { id: "width", label: "Width", type: "integer", semantic_role: "width", order: 30 },
+    { id: "height", label: "Height", type: "integer", semantic_role: "height", order: 40 },
+    { id: "upscale", label: "Upscale", type: "boolean", order: 50 },
+    { id: "loader", label: "Model", type: "choice", group: "Loaders", choices: ["model"], order: 60 },
+    { id: "steps", label: "Steps", type: "integer", advanced: true, order: 70 },
+  ];
+  const state = {
+    sources: [publishedSource],
+    activeSourceKey: publishedSource.source_key,
+    parameters: { prompt: "portrait", seed: { mode: "random", value: "0" }, width: 1024, height: 1024, upscale: false, loader: "model" },
+    fieldErrors: {},
+  };
+  const html = generationPanelMarkup(state, publishedSource, { inputs });
+  const sections = [...html.slice(html.indexOf('id="panel-scroll"')).matchAll(/data-control-section="([^"]+)"/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(sections, [
+    "group-loaders", "seed", "resolution", "upscaling", "advanced",
+    "prompt-generation", "prompt", "creative-direction",
+  ]);
 });
 
 test("minimal sections open by default; stored open state and validation errors override", () => {

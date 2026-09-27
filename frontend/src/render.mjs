@@ -161,6 +161,15 @@ export function generationPanelMarkup(state, profile, contract) {
   const presets = contract?.presets || [];
   const sourceSelectorDisabled =
     !sources.length || (state.submitting && !state.autoGenerate);
+  const advancedMarkup = advanced.length
+    ? controlSectionMarkup({
+        key: "advanced",
+        title: "Advanced",
+        content: `<div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors, { omitGroupHeadings: true })}</div>`,
+        open: advancedHasError || controlSectionIsOpen(state.controlSectionOpen, "advanced", false),
+        className: "advanced-group",
+      })
+    : "";
   return `
     <div class="panel-layout">
       <div class="panel-fixed">
@@ -191,18 +200,7 @@ export function generationPanelMarkup(state, profile, contract) {
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
-        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions, state)}
-        ${
-          advanced.length
-            ? controlSectionMarkup({
-                key: "advanced",
-                title: "Advanced",
-                content: `<div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors, { omitGroupHeadings: true })}</div>`,
-                open: advancedHasError || controlSectionIsOpen(state.controlSectionOpen, "advanced", false),
-                className: "advanced-group",
-              })
-            : ""
-        }
+        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions, state, advancedMarkup)}
         ${controlEmptyStateMarkup(state, profile, contract)}
       </div>
       <div id="shared-settings-status-host" class="panel-footer">${sharedSettingsStatusMarkup(state)}</div>
@@ -591,7 +589,7 @@ function controlEmptyStateMarkup(state, source, contract) {
   return '<p class="empty-copy">Choose an available generation source to load its controls.</p>';
 }
 
-function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = [], state = {}) {
+function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = [], state = {}, advancedMarkup = "") {
   const resolutionPair = pairedResolutionInputs(inputs, values, contract);
   const firstResolutionInput = resolutionPair
     ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
@@ -629,8 +627,22 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
       controls: [],
     });
   }
+  const sectionOrder = (section) => {
+    if (section.title.toLowerCase() === "loaders") return 0;
+    if (section.kind === "seed") return 1;
+    if (section.kind === "resolution") return 2;
+    if (section.kind === "prompt") return 4;
+    if (section.kind === "creative-direction") return 5;
+    return 3;
+  };
+  sections.sort((first, second) => sectionOrder(first) - sectionOrder(second));
+  if (advancedMarkup) {
+    const promptIndex = sections.findIndex((section) => section.kind === "prompt");
+    sections.splice(promptIndex === -1 ? sections.length : promptIndex, 0, { markup: advancedMarkup });
+  }
   return sections
     .map((section) => {
+      if (section.markup) return section.markup;
       const first = section.controls[0];
       const content =
         section.kind === "creative-direction"
