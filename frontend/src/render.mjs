@@ -628,7 +628,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
     });
   }
   const sectionOrder = (section) => {
-    if (section.title.toLowerCase() === "loaders") return 0;
+    if (section.kind === "lora") return 0;
     if (section.kind === "seed") return 1;
     if (section.kind === "resolution") return 2;
     if (section.kind === "prompt") return 4;

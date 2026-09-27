@@ -2040,28 +2040,25 @@ test("published source pairs scalar dimensions in the resolution picker and rend
   assert.doesNotMatch(button, /disabled/);
 });
 
-test("control panel puts loaders, seed, and resolution before the prompt sections", () => {
+test("control panel puts LoRAs, seed, and resolution before the prompt sections", () => {
   const inputs = [
     { id: "prompt", label: "Prompt", type: "string", semantic_role: "positive_prompt", order: 10 },
     { id: "seed", label: "Seed", type: "seed", order: 20 },
     { id: "width", label: "Width", type: "integer", semantic_role: "width", order: 30 },
     { id: "height", label: "Height", type: "integer", semantic_role: "height", order: 40 },
-    { id: "upscale", label: "Upscale", type: "boolean", order: 50 },
-    { id: "loader", label: "Model", type: "choice", group: "Loaders", choices: ["model"], order: 60 },
-    { id: "steps", label: "Steps", type: "integer", advanced: true, order: 70 },
+    { id: "loras", label: "LoRAs", type: "lora_stack", items: [{ id: "model", label: "Model" }], default: [{ id: "model", strength: 0 }], minimum: 0, maximum: 2, step: 0.05, order: 60 },
   ];
   const state = {
     sources: [publishedSource],
     activeSourceKey: publishedSource.source_key,
-    parameters: { prompt: "portrait", seed: { mode: "random", value: "0" }, width: 1024, height: 1024, upscale: false, loader: "model" },
+    parameters: { prompt: "portrait", seed: { mode: "random", value: "0" }, width: 1024, height: 1024, loras: [{ id: "model", strength: 0 }] },
     fieldErrors: {},
   };
   const html = generationPanelMarkup(state, publishedSource, { inputs });
   const sections = [...html.slice(html.indexOf('id="panel-scroll"')).matchAll(/data-control-section="([^"]+)"/g)]
     .map((match) => match[1]);
   assert.deepEqual(sections, [
-    "group-loaders", "seed", "resolution", "upscaling", "advanced",
-    "prompt-generation", "prompt", "creative-direction",
+    "lora-loras", "seed", "resolution", "prompt-generation", "prompt", "creative-direction",
   ]);
 });
 
