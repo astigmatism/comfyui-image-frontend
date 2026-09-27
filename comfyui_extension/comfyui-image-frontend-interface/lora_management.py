@@ -669,6 +669,8 @@ class LoraManagement:
                 }
             if current_journal.get("state") != "staged":
                 raise ManagementError("Operation is already in progress")
+            if change.get("action") != "install":
+                raise ManagementError("Staged upload belongs to an install operation")
         raw = self._bundle(source)
         old = _revision(raw)
         if old != expected:
@@ -735,6 +737,36 @@ class LoraManagement:
                 raise ManagementError("LoRA is used by another loader in this authoring workflow")
             self._references(source, filename)
             catalog.remove(found[0])
+        elif action == "edit":
+            lora_id, label, trigger = (
+                change.get("id"),
+                change.get("label"),
+                change.get("trigger_word"),
+            )
+            if not isinstance(lora_id, str) or not PUBLIC_ID.fullmatch(lora_id):
+                raise ManagementError("Invalid LoRA ID", 400)
+            if (
+                not isinstance(label, str)
+                or not label.strip()
+                or len(label) > 120
+                or not isinstance(trigger, str)
+                or len(trigger) > 120
+            ):
+                raise ManagementError("Invalid LoRA title or trigger word", 400)
+            found = [item for item in catalog if item.get("id") == lora_id]
+            if len(found) != 1:
+                raise ManagementError("LoRA is not uniquely present in this publication", 404)
+            item = found[0]
+            filename = _safe_model_name(item["filename"])
+            _file_under(self.root, filename)
+            next_label, next_trigger = label.strip(), trigger.strip()
+            if item["label"] == next_label and item.get("trigger_word", "") == next_trigger:
+                raise ManagementError("LoRA title and trigger word are unchanged", 400)
+            item["label"] = next_label
+            if next_trigger:
+                item["trigger_word"] = next_trigger
+            else:
+                item.pop("trigger_word", None)
         else:
             raise ManagementError("Unsupported LoRA change", 400)
         default = [{"id": item["id"], "strength": 0} for item in catalog]

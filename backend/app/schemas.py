@@ -276,7 +276,7 @@ class AdminLoraCatalog(APIModel):
 
 
 class LoraOperationCreate(APIModel):
-    kind: Literal["install", "remove"]
+    kind: Literal["install", "remove", "edit"]
     source_key: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
     expected_revision: SourceRevision
     idempotency_key: str = Field(pattern=r"^[a-f0-9-]{36}$")
@@ -303,6 +303,17 @@ class LoraOperationCreate(APIModel):
                 raise ValueError(
                     "Installation requires one .safetensors filename, title, and trigger word."
                 )
+            self.display_name = self.display_name.strip()
+            self.trigger_word = self.trigger_word.strip()
+        elif self.kind == "edit":
+            if (
+                self.lora_id is None
+                or self.filename is not None
+                or self.display_name is None
+                or not self.display_name.strip()
+                or self.trigger_word is None
+            ):
+                raise ValueError("Editing requires a published LoRA ID, title, and trigger word.")
             self.display_name = self.display_name.strip()
             self.trigger_word = self.trigger_word.strip()
         elif self.lora_id is None or any(

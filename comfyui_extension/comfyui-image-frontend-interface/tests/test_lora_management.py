@@ -48,7 +48,7 @@ def publication(userdata: Path, catalog: list[dict], *, node_id: int = 42) -> No
     names = management.WIDGETS
     defaults = [{"id": item["id"], "strength": 0} for item in catalog]
     public = [
-        {key: item[key] for key in ("id", "label", "trigger_word") if key in item}
+        {key: item[key] for key in ("id", "label", "description", "trigger_word") if key in item}
         for item in catalog
     ]
     widgets = [
@@ -116,7 +116,7 @@ def publication(userdata: Path, catalog: list[dict], *, node_id: int = 42) -> No
         },
     }
     folder = userdata / "workflows" / "team"
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     w = management._json_bytes(workflow)
     a = management._json_bytes(api)
     manifest["workflow"]["sha256"] = management._sha(w)
@@ -158,6 +158,12 @@ class ManagementTests(unittest.TestCase):
             "publication_id": publication_id or str(uuid.uuid4()),
             "published_at": "2026-09-26T12:00:00Z",
         }
+
+    def _publish_catalog(self, catalog):
+        publication(self.primary_user, catalog)
+        for name in ("test.json", "test.api.json", "test.interface.json"):
+            path = Path("workflows/team") / name
+            (self.mirror_user / path).write_bytes((self.primary_user / path).read_bytes())
 
     def test_install_then_remove_across_shared_read_only_replica(self):
         upload = safetensors()
@@ -232,6 +238,160 @@ class ManagementTests(unittest.TestCase):
         self.primary.rollback(operation_id)
         self.assertEqual(self.primary._bundle(SOURCE), before)
         self.assertFalse((self.models / staged["filename"]).exists())
+
+    def test_edit_publishes_metadata_on_both_replicas_without_changing_model(self):
+        original = {
+            "id": "existing",
+            "label": "Old title",
+            "description": "Keep this description",
+            "trigger_word": "old trigger",
+            "filename": "existing.safetensors",
+        }
+        self._publish_catalog([original])
+        model = self.models / original["filename"]
+        model.write_bytes(safetensors())
+        before_model = (model.stat().st_ino, model.read_bytes())
+
+        operation_id = str(uuid.uuid4())
+        change = {
+            "action": "edit",
+            "id": "existing",
+            "label": "New title",
+            "trigger_word": "new trigger",
+        }
+        request = self._request(self.primary, change, operation_id)
+        first = self.primary.prepare(operation_id, request)
+        second = self.mirror.prepare(operation_id, request)
+        self.assertEqual(first["candidate_hashes"], second["candidate_hashes"])
+        for service in (self.primary, self.mirror):
+            self.assertEqual(service.commit(operation_id)["state"], "committed")
+            result = service.bundle(SOURCE)
+            self.assertEqual(result["loras"][0]["label"], "New title")
+            self.assertEqual(result["loras"][0]["trigger_word"], "new trigger")
+            self.assertEqual(result["loras"][0]["description"], original["description"])
+            self.assertEqual(
+                result["files"], [{"id": "existing", "filename": original["filename"]}]
+            )
+            workflow, api, manifest = (
+                json.loads(service._bundle(SOURCE)[key]) for key in ("workflow", "api", "manifest")
+            )
+            catalog = json.loads(workflow["nodes"][0]["widgets_values"][0])
+            self.assertEqual(catalog[0]["id"], original["id"])
+            self.assertEqual(catalog[0]["filename"], original["filename"])
+            self.assertEqual(catalog[0]["description"], original["description"])
+            self.assertEqual(json.loads(api["42"]["inputs"]["catalog_json"]), catalog)
+            self.assertEqual(
+                json.loads(api["42"]["inputs"]["value"]), [{"id": "existing", "strength": 0}]
+            )
+            self.assertEqual(manifest["interface"]["inputs"][0]["items"], result["loras"])
+            self.assertEqual(manifest["technical_inventory"]["loras"][0]["items"], result["loras"])
+            service.finalize(operation_id)
+        self.assertEqual((model.stat().st_ino, model.read_bytes()), before_model)
+
+        clear_id = str(uuid.uuid4())
+        clear = {"action": "edit", "id": "existing", "label": "New title", "trigger_word": ""}
+        request = self._request(self.primary, clear, clear_id)
+        self.primary.prepare(clear_id, request)
+        self.mirror.prepare(clear_id, request)
+        for service in (self.primary, self.mirror):
+            service.commit(clear_id)
+            self.assertNotIn("trigger_word", service.bundle(SOURCE)["loras"][0])
+            service.finalize(clear_id)
+        self.assertEqual((model.stat().st_ino, model.read_bytes()), before_model)
+
+        rename_id = str(uuid.uuid4())
+        rename = {"action": "edit", "id": "existing", "label": "Renamed only", "trigger_word": ""}
+        request = self._request(self.primary, rename, rename_id)
+        self.primary.prepare(rename_id, request)
+        self.mirror.prepare(rename_id, request)
+        for service in (self.primary, self.mirror):
+            service.commit(rename_id)
+            self.assertEqual(service.bundle(SOURCE)["loras"][0]["label"], "Renamed only")
+            self.assertNotIn("trigger_word", service.bundle(SOURCE)["loras"][0])
+            service.finalize(rename_id)
+        self.assertEqual((model.stat().st_ino, model.read_bytes()), before_model)
+
+    def test_edit_rejects_invalid_values_duplicate_ids_and_noop(self):
+        original = {"id": "existing", "label": "Existing", "filename": "existing.safetensors"}
+        self._publish_catalog([original])
+        (self.models / original["filename"]).write_bytes(safetensors())
+        cases = [
+            ({"id": "../bad", "label": "Updated", "trigger_word": "word"}, "Invalid LoRA ID"),
+            ({"id": "missing", "label": "Updated", "trigger_word": "word"}, "not uniquely present"),
+            ({"id": "existing", "label": " ", "trigger_word": "word"}, "Invalid LoRA title"),
+            ({"id": "existing", "label": "x" * 121, "trigger_word": "word"}, "Invalid LoRA title"),
+            ({"id": "existing", "label": "Updated", "trigger_word": None}, "Invalid LoRA title"),
+            (
+                {"id": "existing", "label": "Updated", "trigger_word": "x" * 121},
+                "Invalid LoRA title",
+            ),
+            ({"id": "existing", "label": " Existing ", "trigger_word": " "}, "unchanged"),
+        ]
+        for fields, error in cases:
+            with self.subTest(fields=fields):
+                operation_id = str(uuid.uuid4())
+                with self.assertRaisesRegex(management.ManagementError, error):
+                    self.primary.prepare(
+                        operation_id,
+                        self._request(self.primary, {"action": "edit", **fields}, operation_id),
+                    )
+        self._publish_catalog([original, dict(original)])
+        operation_id = str(uuid.uuid4())
+        with self.assertRaisesRegex(management.ManagementError, "not uniquely present"):
+            self.primary.prepare(
+                operation_id,
+                self._request(
+                    self.primary,
+                    {"action": "edit", "id": "existing", "label": "Updated", "trigger_word": ""},
+                    operation_id,
+                ),
+            )
+
+    def test_edit_cannot_reuse_staged_upload_operation_id(self):
+        original = {"id": "existing", "label": "Existing", "filename": "existing.safetensors"}
+        self._publish_catalog([original])
+        (self.models / original["filename"]).write_bytes(safetensors())
+        operation_id = str(uuid.uuid4())
+        upload = safetensors()
+        asyncio.run(
+            self.primary.stage(
+                operation_id,
+                Stream(upload),
+                content_length=len(upload),
+                filename="unused.safetensors",
+            )
+        )
+        with self.assertRaisesRegex(management.ManagementError, "Staged upload belongs"):
+            self.primary.prepare(
+                operation_id,
+                self._request(
+                    self.primary,
+                    {"action": "edit", "id": "existing", "label": "New", "trigger_word": ""},
+                    operation_id,
+                ),
+            )
+        self.primary.rollback(operation_id)
+
+    def test_edit_rollback_restores_exact_publication_without_touching_model(self):
+        original = {"id": "existing", "label": "Existing", "filename": "existing.safetensors"}
+        self._publish_catalog([original])
+        model = self.models / original["filename"]
+        model.write_bytes(safetensors())
+        before_model = (model.stat().st_ino, model.read_bytes())
+        before = self.primary._bundle(SOURCE)
+        operation_id = str(uuid.uuid4())
+        self.primary.prepare(
+            operation_id,
+            self._request(
+                self.primary,
+                {"action": "edit", "id": "existing", "label": "Updated", "trigger_word": "word"},
+                operation_id,
+            ),
+        )
+        self.primary.commit(operation_id)
+        self.assertEqual(self.primary.rollback(operation_id), {"state": "rolled_back"})
+        self.assertEqual(self.primary._bundle(SOURCE), before)
+        self.assertEqual((model.stat().st_ino, model.read_bytes()), before_model)
 
     def test_rejects_bad_upload_stale_revision_and_unsafe_filename(self):
         operation_id = str(uuid.uuid4())

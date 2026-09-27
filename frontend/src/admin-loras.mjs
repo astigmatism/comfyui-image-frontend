@@ -25,12 +25,22 @@ export function validateLoraInstall({ file, displayName, triggerWord }) {
   return null;
 }
 
+export function validateLoraEdit({ item, displayName, triggerWord }) {
+  const title = String(displayName ?? "").trim();
+  const trigger = String(triggerWord ?? "").trim();
+  if (!title) return "Enter the display title.";
+  if (title.length > 120) return "Keep the display title to 120 characters or fewer.";
+  if (trigger.length > 120) return "Keep the trigger word to 120 characters or fewer.";
+  if (title === String(item?.label ?? "").trim() && trigger === String(item?.trigger_word ?? "").trim()) return "Change the title or trigger word before saving.";
+  return null;
+}
+
 export function reconcileLoraStrengthMemory(contract, memory) {
   const controls = new Map((contract?.inputs || contract?.controls || []).filter((input) => input.type === "lora_stack").map((input) => [input.id, new Set((input.items || []).map((item) => item.id))]));
   return Object.fromEntries(Object.entries(memory || {}).filter(([id]) => controls.has(id)).map(([id, strengths]) => [id, Object.fromEntries(Object.entries(strengths || {}).filter(([itemId, strength]) => controls.get(id).has(itemId) && typeof strength === "number" && Number.isFinite(strength) && strength > 0))]));
 }
 
-export function adminLoraMarkup({ sources = [], selectedSourceKey = null, catalog = null, loading = false, busy = false, uploadPercent = null, operation = null, operationSourceKey = null, canRetryUpload = false, status = "", error = "" } = {}) {
+export function adminLoraMarkup({ sources = [], selectedSourceKey = null, catalog = null, loading = false, busy = false, uploadPercent = null, operation = null, operationSourceKey = null, canRetryUpload = false, editingLoraId = null, editDraft = null, status = "", error = "" } = {}) {
   const selected = sources.find((source) => sourceKey(source) === selectedSourceKey);
   const catalogReady = Boolean(catalog?.eligible && catalog?.revision && !loading);
   const currentOperation = operationSourceKey === selectedSourceKey ? operation : null;
@@ -47,10 +57,17 @@ export function adminLoraMarkup({ sources = [], selectedSourceKey = null, catalo
           : currentOperation?.status === "awaiting_upload" ? "An installation is waiting for its file upload."
             : currentOperation?.status === "running" ? "A LoRA change is still running for this workflow."
         : `${items.length} LoRA${items.length === 1 ? "" : "s"} published for this workflow.`;
-  const rows = items.map((item) => `<li class="admin-lora-row"><div><strong>${escape(item.label || item.id)}</strong><span>${escape(item.trigger_word || "No published trigger word")}</span></div><button type="button" class="button destructive low" data-admin-lora-remove="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Remove ${escape(item.label || item.id)}">Remove</button></li>`).join("");
+  const rows = items.map((item) => {
+    if (editingLoraId === item.id) {
+      const title = editDraft?.displayName ?? item.label ?? "";
+      const trigger = editDraft?.triggerWord ?? item.trigger_word ?? "";
+      return `<li class="admin-lora-row is-editing"><form class="admin-lora-edit" data-admin-lora-edit-form="${escape(item.id)}" aria-label="Edit ${escape(item.label || item.id)} LoRA"><div class="admin-lora-edit-fields"><label class="field"><span>Display title</span><input name="display_name" maxlength="120" required value="${escape(title)}" ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Trigger word (optional)</span><input name="trigger_word" maxlength="120" value="${escape(trigger)}" ${busy || !available ? "disabled" : ""} /></label></div><div class="admin-lora-actions"><button type="submit" class="button primary" ${busy || !available ? "disabled" : ""}>Save</button><button type="button" class="button low" data-admin-lora-edit-cancel="${escape(item.id)}" ${busy ? "disabled" : ""}>Cancel</button></div></form></li>`;
+    }
+    return `<li class="admin-lora-row"><div class="admin-lora-summary"><strong>${escape(item.label || item.id)}</strong><span>${escape(item.trigger_word || "No published trigger word")}</span></div><div class="admin-lora-actions"><button type="button" class="button low" data-admin-lora-edit="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Edit ${escape(item.label || item.id)}">Edit</button><button type="button" class="button destructive low" data-admin-lora-remove="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Remove ${escape(item.label || item.id)}">Remove</button></div></li>`;
+  }).join("");
   const progress = busy && uploadPercent !== null ? `<progress max="100" value="${Math.max(0, Math.min(100, Number(uploadPercent) || 0))}" aria-label="LoRA upload progress"></progress>` : "";
   return `<div class="section-heading"><h3>LoRA library</h3></div>
-    <p class="muted">Install or remove LoRAs in the selected ComfyUI published workflow.</p>
+    <p class="muted">Install, edit, or remove LoRAs in the selected ComfyUI published workflow.</p>
     <label class="field admin-lora-source"><span>Published workflow</span><select data-admin-lora-source ${busy || !sources.length ? "disabled" : ""}>${options}</select></label>
     <p class="admin-lora-message" role="status">${escape(message)}</p>
     ${catalogReady ? `<ul class="admin-lora-list" aria-label="Published LoRAs">${rows || '<li class="muted">No LoRAs published yet.</li>'}</ul>
@@ -88,7 +105,7 @@ export function uploadLoraFile(path, file, { csrfToken, onProgress, XMLHttpReque
 }
 
 export function createAdminLoraController({ api, getCsrfToken, refreshSources, notify, confirm = (message) => window.confirm(message), uploadFile = uploadLoraFile, createId = newLoraOperationKey, readForm = (form) => new FormData(form), storage = () => null, actorId = () => null, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
-  const state = { host: null, sources: [], selectedSourceKey: null, catalog: null, loading: false, busy: false, uploadPercent: null, status: "", error: "", operation: null, operationSourceKey: null, operationsBySource: new Map(), operationKinds: new Map(), pendingUploads: new Map(), recoveringSources: new Set(), restoredKey: null, requestToken: 0 };
+  const state = { host: null, sources: [], selectedSourceKey: null, catalog: null, loading: false, busy: false, uploadPercent: null, status: "", error: "", editingLoraId: null, editDraft: null, operation: null, operationSourceKey: null, operationsBySource: new Map(), operationKinds: new Map(), pendingUploads: new Map(), recoveringSources: new Set(), restoredKey: null, requestToken: 0 };
   const currentOperation = () => state.operationsBySource.get(state.selectedSourceKey);
   const storageKey = () => actorId() ? `cif-admin-lora-operations:${actorId()}` : null;
   const persistOperations = () => {
@@ -123,7 +140,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     try {
       const saved = JSON.parse(storage()?.getItem(key) || "{}");
       for (const [source, entry] of Object.entries(saved || {})) {
-        if (!/^[a-f0-9]{64}$/.test(source) || !/^[a-f0-9-]{36}$/.test(entry?.id) || !["install", "remove"].includes(entry?.kind)) continue;
+        if (!/^[a-f0-9]{64}$/.test(source) || !/^[a-f0-9-]{36}$/.test(entry?.id) || !["install", "remove", "edit"].includes(entry?.kind)) continue;
         state.operationsBySource.set(source, { id: entry.id, status: "running" });
         state.operationKinds.set(source, entry.kind);
       }
@@ -141,6 +158,8 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
   async function loadCatalog() {
     const token = ++state.requestToken;
     state.catalog = null;
+    state.editingLoraId = null;
+    state.editDraft = null;
     state.loading = Boolean(state.selectedSourceKey);
     state.error = "";
     render();
@@ -202,8 +221,10 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       render();
       return;
     }
-    state.status = kind === "install" ? "LoRA installed and published." : "LoRA removed from ComfyUI and the published workflow.";
+    state.status = kind === "install" ? "LoRA installed and published." : kind === "edit" ? "LoRA details updated and published." : "LoRA removed from ComfyUI and the published workflow.";
     state.error = "";
+    state.editingLoraId = null;
+    state.editDraft = null;
     try {
       const sources = await refreshSources(source);
       if (Array.isArray(sources)) setSources(sources);
@@ -223,7 +244,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     state.busy = true;
     state.uploadPercent = null;
     state.error = "";
-    state.status = kind === "install" ? "Creating installation operation…" : "Checking dependencies before removal…";
+    state.status = kind === "install" ? "Creating installation operation…" : kind === "edit" ? "Updating LoRA details…" : "Checking dependencies before removal…";
     render();
     try {
       const request = { method: "POST", body: JSON.stringify({ kind, source_key: source, expected_revision: state.catalog.revision, idempotency_key: idempotencyKey, ...data }) };
@@ -278,6 +299,34 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     if (!item || state.busy) return;
     if (!confirm(`Remove “${item.label || item.id}” from this workflow and delete its weight file? Historical generations stay visible, but exact regeneration with that weight will no longer be possible.`)) return;
     await runOperation("remove", { lora_id: id });
+  }
+  function beginEdit(id) {
+    const item = state.catalog?.items?.find((candidate) => candidate.id === id);
+    if (!item || state.busy || !state.catalog?.eligible || ["awaiting_upload", "running", "repair_required"].includes(currentOperation()?.status)) return;
+    state.editingLoraId = id;
+    state.editDraft = { displayName: item.label || "", triggerWord: item.trigger_word || "" };
+    state.error = "";
+    render();
+    state.host?.querySelector?.(".admin-lora-edit input[name=display_name]")?.focus();
+  }
+  function cancelEdit(id) {
+    if (state.busy || state.editingLoraId !== id) return;
+    state.editingLoraId = null;
+    state.editDraft = null;
+    state.error = "";
+    render();
+    state.host?.querySelector?.(`[data-admin-lora-edit="${id}"]`)?.focus();
+  }
+  async function edit(id, form) {
+    const item = state.catalog?.items?.find((candidate) => candidate.id === id);
+    if (!item || state.editingLoraId !== id || state.busy) return;
+    const fields = readForm(form);
+    const displayName = String(fields.get("display_name") ?? "").trim();
+    const triggerWord = String(fields.get("trigger_word") ?? "").trim();
+    state.editDraft = { displayName, triggerWord };
+    const error = validateLoraEdit({ item, displayName, triggerWord });
+    if (error) { state.error = error; render(); return; }
+    await runOperation("edit", { lora_id: id, display_name: displayName, trigger_word: triggerWord });
   }
   async function retryUpload() {
     const source = state.selectedSourceKey;
@@ -364,7 +413,14 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       void loadCatalog();
       void recoverSource(state.selectedSourceKey);
     });
+    host.addEventListener("input", (event) => {
+      if (!state.editingLoraId || !state.editDraft || !event.target.closest?.("[data-admin-lora-edit-form]")) return;
+      if (event.target.name === "display_name") state.editDraft.displayName = event.target.value;
+      if (event.target.name === "trigger_word") state.editDraft.triggerWord = event.target.value;
+    });
     host.addEventListener("submit", (event) => {
+      const editId = event.target.dataset?.adminLoraEditForm;
+      if (editId) { event.preventDefault(); void edit(editId, event.target); return; }
       if (event.target.id !== "admin-lora-install-form") return;
       event.preventDefault();
       void install(event.target);
@@ -372,6 +428,10 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     host.addEventListener("click", (event) => {
       if (event.target.closest("[data-admin-lora-retry-upload]")) { void retryUpload(); return; }
       if (event.target.closest("[data-admin-lora-cancel-upload]")) { void cancelPendingUpload(); return; }
+      const editButton = event.target.closest("[data-admin-lora-edit]");
+      if (editButton) { beginEdit(editButton.dataset.adminLoraEdit); return; }
+      const cancelButton = event.target.closest("[data-admin-lora-edit-cancel]");
+      if (cancelButton) { cancelEdit(cancelButton.dataset.adminLoraEditCancel); return; }
       const button = event.target.closest("[data-admin-lora-remove]");
       if (button) void remove(button.dataset.adminLoraRemove);
     });

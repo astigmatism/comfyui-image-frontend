@@ -137,6 +137,149 @@ def test_lora_operation_idempotency_and_stale_revision(fake_state, settings_fact
         assert stale.json()["error"]["code"] == "source_republished"
 
 
+def test_lora_edit_validates_metadata_and_rejects_unchanged_or_stale_requests(
+    fake_state, settings_factory
+):
+    fake_state.workflow_files = dict(
+        build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
+    )
+    with TestClient(create_app(settings_factory(lora_management_secret=SECRET))) as client:
+        ready_admin(client)
+        source = _source(client)
+        service = client.app.state.container.lora_operations
+        _mock_preflight(service, client)
+        service._schedule = lambda _operation_id: None
+        headers = {"X-CSRF-Token": csrf(client)}
+        request = _request_payload(
+            source, "edit", lora_id="a", display_name=" Alpha ", trigger_word="  "
+        )
+        unchanged = client.post("/api/admin/lora-operations", json=request, headers=headers)
+        assert unchanged.status_code == 409
+        assert unchanged.json()["error"]["code"] == "lora_edit_unchanged"
+        for invalid in (
+            {"display_name": "   "},
+            {"trigger_word": None},
+            {"filename": "a.safetensors"},
+        ):
+            rejected = client.post(
+                "/api/admin/lora-operations",
+                json={**request, **invalid},
+                headers=headers,
+            )
+            assert rejected.status_code == 422, rejected.text
+        missing = client.post(
+            "/api/admin/lora-operations",
+            json={**request, "lora_id": "missing", "display_name": "Updated"},
+            headers=headers,
+        )
+        assert missing.status_code == 409
+        assert missing.json()["error"]["code"] == "lora_not_found"
+        stale = client.post(
+            "/api/admin/lora-operations",
+            json={
+                **request,
+                "display_name": "Updated",
+                "expected_revision": {**source["revision"], "api_sha256": "0" * 64},
+            },
+            headers=headers,
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "source_republished"
+        trigger_only = client.post(
+            "/api/admin/lora-operations",
+            json={**request, "trigger_word": "  NewTrigger  "},
+            headers=headers,
+        )
+        assert trigger_only.status_code == 201, trigger_only.text
+        with client.app.state.container.db.session_factory() as session:
+            row = session.get(LoraOperation, trigger_only.json()["id"])
+            assert row.request_json["display_name"] == "Alpha"
+            assert row.request_json["trigger_word"] == "NewTrigger"
+
+
+def test_lora_edit_republishes_metadata_without_upload_or_weight_removal(
+    fake_state, settings_factory
+):
+    fake_state.workflow_files = dict(
+        build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
+    )
+    with TestClient(create_app(settings_factory(lora_management_secret=SECRET))) as client:
+        ready_admin(client)
+        source = _source(client)
+        service = client.app.state.container.lora_operations
+        _mock_preflight(service, client)
+        service._schedule = lambda _operation_id: None
+        request = _request_payload(
+            source, "edit", lora_id="a", display_name="  New Alpha  ", trigger_word="  "
+        )
+        headers = {"X-CSRF-Token": csrf(client)}
+        created = client.post("/api/admin/lora-operations", json=request, headers=headers)
+        assert created.status_code == 201, created.text
+        operation_id = created.json()["id"]
+        assert created.json()["status"] == "running"
+        assert (
+            client.post("/api/admin/lora-operations", json=request, headers=headers).json()["id"]
+            == operation_id
+        )
+        upload = client.put(
+            f"/api/admin/lora-operations/{operation_id}/file",
+            content=b"weight",
+            headers={**headers, "Content-Type": "application/octet-stream"},
+        )
+        assert upload.status_code == 409
+
+        candidate = {**source["revision"], "publication_id": str(uuid.uuid4())}
+        calls: list[tuple[str, str, dict[str, Any] | None]] = []
+        inventory: list[tuple[str, bool]] = []
+
+        async def fake_request(_adapter, method, path, *, json_body=None, **_kwargs):
+            calls.append((method, path, json_body))
+            if path.endswith("/prepare"):
+                return {"candidate_revision": candidate}
+            if path.endswith(("/commit", "/finalize")):
+                return {}
+            raise AssertionError((method, path))
+
+        async def fake_candidate(*_args):
+            return candidate
+
+        async def fake_verify(*_args, **_kwargs):
+            return None
+
+        async def fake_inventory(filename, _profiles, *, present):
+            inventory.append((filename, present))
+
+        async def fake_refresh(*_args, **_kwargs):
+            return []
+
+        service._request = fake_request
+        service._candidate = fake_candidate
+        service._verify_publication = fake_verify
+        service._verify_model_inventory = fake_inventory
+        service._check_active_generations = lambda _filename: pytest.fail(
+            "Metadata edits should not block on active generations."
+        )
+        service.container.registry.refresh = fake_refresh
+        service._reconcile_after_success = lambda *_args: None
+        asyncio.run(service._run_guarded(operation_id))
+        assert [path.rsplit("/", 1)[-1] for _, path, _ in calls] == [
+            "prepare",
+            "commit",
+            "finalize",
+        ]
+        assert calls[0][2]["change"] == {
+            "action": "edit",
+            "id": "a",
+            "label": "New Alpha",
+            "trigger_word": "",
+        }
+        assert inventory == [("private/a.safetensors", True)]
+        finished = client.get(f"/api/admin/lora-operations/{operation_id}").json()
+        assert finished["status"] == "succeeded"
+        assert finished["message"] == "LoRA details updated."
+        assert finished["result"] == {"revision": candidate, "lora_id": "a"}
+
+
 def test_lora_upload_streams_to_companion_without_app_file(fake_state, settings_factory):
     fake_state.workflow_files = dict(
         build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
@@ -309,7 +452,7 @@ def test_lost_prepare_reply_still_rolls_back_removal(fake_state, settings_factor
         assert client.get(f"/api/admin/lora-operations/{operation_id}").json()["status"] == "failed"
 
 
-@pytest.mark.parametrize("kind", ["remove", "install"])
+@pytest.mark.parametrize("kind", ["remove", "install", "edit"])
 @pytest.mark.parametrize("failure_point", ["refresh", "reconcile"])
 def test_finalized_lora_change_stays_recoverable_after_app_failure(
     fake_state, settings_factory, kind, failure_point
@@ -324,14 +467,19 @@ def test_finalized_lora_change_stays_recoverable_after_app_failure(
         _mock_preflight(service, client)
         service._schedule = lambda _operation_id: None
         request = (
-            _request_payload(source, "remove", lora_id="a")
-            if kind == "remove"
-            else _request_payload(
+            _request_payload(
                 source,
                 "install",
                 filename="new.safetensors",
                 display_name="New LoRA",
                 trigger_word="newlora",
+            )
+            if kind == "install"
+            else _request_payload(
+                source,
+                kind,
+                lora_id="a",
+                **({"display_name": "New Alpha", "trigger_word": ""} if kind == "edit" else {}),
             )
         )
         created = client.post(

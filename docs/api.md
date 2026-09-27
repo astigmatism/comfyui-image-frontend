@@ -77,7 +77,7 @@ Items follow deployment-configuration order. `configuration_mode` is `explicit` 
 | `POST` | `/api/admin/workflows/refresh` | Administrator: rediscover and atomically validate publications |
 | `GET` | `/api/admin/workflows/diagnostics` | Administrator: safe per-transport/per-candidate diagnostics |
 | `GET` | `/api/admin/workflows/{source_key}/loras` | Administrator: inspect LoRA management eligibility, full revision, and public catalog |
-| `POST` | `/api/admin/lora-operations` | Administrator: reserve a conditional install or removal |
+| `POST` | `/api/admin/lora-operations` | Administrator: reserve a conditional install, metadata edit, or removal |
 | `PUT` | `/api/admin/lora-operations/{id}/file` | Administrator: stream one raw `.safetensors` body for a reserved install |
 | `GET` | `/api/admin/lora-operations/{id}` | Administrator: read operation progress and result |
 | `POST` | `/api/admin/lora-operations/{id}/cancel` | Administrator: cancel an install that is still awaiting its file |
@@ -112,6 +112,8 @@ To install, first reserve an operation with `POST /api/admin/lora-operations`:
 The `filename` is the name of the local file being uploaded; it is not a destination path. The server assigns the public catalog ID. A successful reservation returns an operation ID and `awaiting_upload` status. Send the file once as the raw `application/octet-stream` body of `PUT /api/admin/lora-operations/{id}/file` with a bounded `Content-Length`. The application streams it to the authorized ComfyUI model writer; neither the browser nor the app chooses a model directory. Poll the operation GET until it reports `succeeded`, `failed`, or `repair_required`.
 
 An `awaiting_upload` install can be cancelled with the CSRF-protected cancel POST. This clears any matching companion stage and releases the reservation; after upload processing starts, the operation must finish or be recovered instead. When a new operation is requested for the source, the server clears reservations that have waited more than one hour after verifying companion rollback.
+
+To change an existing title or trigger word, use the same POST with `kind: "edit"`, `source_key`, `expected_revision`, `idempotency_key`, the published `lora_id`, `display_name`, and `trigger_word`. The title must be nonblank; send an empty trigger word to clear it. An edit has no file PUT: it preserves the catalog ID, private filename, model bytes, and description while publishing a new revision on every replica. The request is rejected if neither normalized field changes. Reload the catalog after success or a revision conflict.
 
 Removal uses the same POST with `kind: "remove"`, `source_key`, `expected_revision`, `idempotency_key`, and the published `lora_id`; there is no file PUT. A removal can report `failed` with safe `blockers` when the file is still referenced by another publication, an active job, native ComfyUI work, or an authoring workflow. The catalog revision is conditional, so the client must reload after a conflict or source refresh. Reusing the same idempotency key for a different request is a conflict. A `repair_required` operation needs operator reconciliation before further changes to the source.
 

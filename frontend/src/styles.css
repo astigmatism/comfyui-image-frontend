@@ -4535,6 +4535,33 @@ dialog::backdrop {
   font-size: 0.82rem;
 }
 
+.admin-lora-row .admin-lora-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.admin-lora-row.is-editing {
+  display: block;
+}
+
+.admin-lora-edit {
+  display: grid;
+  width: 100%;
+  gap: var(--space-3);
+}
+
+.admin-lora-edit-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.admin-lora-edit .admin-lora-actions {
+  justify-content: flex-end;
+}
+
 .admin-lora-install {
   display: grid;
   gap: var(--space-3);
@@ -4776,6 +4803,10 @@ tr:last-child td {
   }
 
   .admin-lora-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-lora-edit-fields {
     grid-template-columns: 1fr;
   }
 

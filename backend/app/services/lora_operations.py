@@ -526,10 +526,27 @@ class LoraOperationService:
                 status_code=409,
             )
         items = controls[0].get("items", [])
-        if payload.kind == "remove" and not any(
-            isinstance(item, Mapping) and item.get("id") == payload.lora_id for item in items
-        ):
+        current_item = next(
+            (
+                item
+                for item in items
+                if isinstance(item, Mapping) and item.get("id") == payload.lora_id
+            ),
+            None,
+        )
+        if payload.kind in {"remove", "edit"} and current_item is None:
             raise AppError("lora_not_found", "LoRA is no longer in this catalog.", status_code=409)
+        if (
+            payload.kind == "edit"
+            and current_item is not None
+            and current_item.get("label") == payload.display_name
+            and (current_item.get("trigger_word") or "") == payload.trigger_word
+        ):
+            raise AppError(
+                "lora_edit_unchanged",
+                "This LoRA already has that title and trigger word.",
+                status_code=409,
+            )
         if payload.kind == "install" and len(items) >= 100:
             raise AppError("lora_catalog_full", "This LoRA catalog is full.", status_code=409)
 
@@ -590,7 +607,7 @@ class LoraOperationService:
                 return _public(row)
 
         public = await run_blocking(reserve)
-        if payload.kind == "remove" and public.status == "running":
+        if payload.kind in {"remove", "edit"} and public.status == "running":
             self._schedule(public.id)
         return public
 
@@ -981,7 +998,7 @@ class LoraOperationService:
         writer = self.container.comfyui_instances.get(writer_id)
         request = row.request_json
         filename: str | None = None
-        if row.action == "remove":
+        if row.action in {"remove", "edit"}:
             files = bundles[writer_id].get("files")
             filename = next(
                 (
@@ -996,7 +1013,8 @@ class LoraOperationService:
                     "lora_not_found", "LoRA is no longer in this catalog.", status_code=409
                 )
             await run_blocking(self._update, operation_id, internal={"model_filename": filename})
-            await run_blocking(self._check_active_generations, filename)
+            if row.action == "remove":
+                await run_blocking(self._check_active_generations, filename)
         finalized = 0
         candidate_revision: dict[str, str] | None = None
         publication_id = str(uuid.uuid4())
@@ -1019,8 +1037,15 @@ class LoraOperationService:
                     "filename": filename,
                     "sha256": model_sha256,
                 }
-            else:
+            elif row.action == "remove":
                 change = {"action": "remove", "id": request["lora_id"]}
+            else:
+                change = {
+                    "action": "edit",
+                    "id": request["lora_id"],
+                    "label": request["display_name"],
+                    "trigger_word": request["trigger_word"],
+                }
             # Prepare every publication before any commit. Writer first establishes the journal.
             order = [row for row in replicas if row.instance_id == writer_id] + [
                 row for row in replicas if row.instance_id != writer_id
@@ -1095,7 +1120,11 @@ class LoraOperationService:
                 self._update,
                 operation_id,
                 status="succeeded",
-                message="LoRA installed." if row.action == "install" else "LoRA removed.",
+                message={
+                    "install": "LoRA installed.",
+                    "remove": "LoRA removed.",
+                    "edit": "LoRA details updated.",
+                }[row.action],
                 result={"revision": candidate_revision, "lora_id": change["id"]},
             )
         except BaseException:
@@ -1259,7 +1288,7 @@ class LoraOperationService:
                             status_code=503,
                         )
                     await self._verify_model_inventory(
-                        filename, profiles, present=row.action == "install"
+                        filename, profiles, present=row.action != "remove"
                     )
                     await run_blocking(self._reconcile_after_success, row.source_id, change)
                     await run_blocking(
