@@ -282,6 +282,36 @@ class LoraImage(Base):
     )
 
 
+class LoraOperation(Base):
+    """Durable coordination record; ComfyUI owns the publication and weight journal."""
+
+    __tablename__ = "lora_operations"
+    __table_args__ = (
+        UniqueConstraint("actor_id", "idempotency_key", name="uq_lora_operation_actor_key"),
+        Index("ix_lora_operations_source_status", "source_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    # Keep the coordination journal if an administrator account is removed mid-operation.
+    actor_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(36), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    expected_revision_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    internal_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    message: Mapped[str | None] = mapped_column(Text)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    blockers_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class WorkflowDiagnostic(Base):
     __tablename__ = "workflow_diagnostics"
 

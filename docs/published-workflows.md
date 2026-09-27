@@ -4,7 +4,7 @@ This document is the current application-side contract for discovering and runni
 
 ## Publication boundary
 
-A workflow becomes a generation source only when its author deliberately chooses **File → Save & Publish for Image Frontend** in ComfyUI. A normal save is not publication. The external ComfyUI custom-node/publisher package owns publication; this repository only consumes its output and never repairs, rewrites, or republishes it.
+A workflow becomes a generation source when its author chooses **File → Save & Publish for Image Frontend** in ComfyUI. A normal save is not publication. The bundled ComfyUI custom-node/publisher package owns publication. When explicitly enabled, its authenticated administrator LoRA operation can publish a narrowly edited catalog for an already accepted `CIFLoraStack`; the application coordinates that operation and still consumes the resulting three-file bundle through normal discovery. See [LoRA administration](lora-administration.md).
 
 A committed publication is one adjacent bundle beneath ComfyUI userdata `workflows/`:
 

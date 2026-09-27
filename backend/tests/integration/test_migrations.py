@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "5e1b9c7d4a20"
+HEAD_REVISION = "d6a2f9c3b481"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -392,6 +392,7 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "favorites",
         "collections",
         "collection_favorites",
+        "lora_operations",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
@@ -426,6 +427,27 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     assert "ix_collections_owner_parent" in {
         index["name"] for index in inspect(engine).get_indexes("collections")
     }
+    assert {
+        "actor_id",
+        "idempotency_key",
+        "request_digest",
+        "source_key",
+        "source_id",
+        "action",
+        "status",
+        "expected_revision_json",
+        "request_json",
+        "internal_json",
+    }.issubset({column["name"] for column in inspect(engine).get_columns("lora_operations")})
+    assert "ix_lora_operations_source_status" in {
+        index["name"] for index in inspect(engine).get_indexes("lora_operations")
+    }
+    assert ["actor_id", "idempotency_key"] in [
+        constraint["column_names"]
+        for constraint in inspect(engine).get_unique_constraints("lora_operations")
+    ]
+    # The journal must outlive an administrator account removed during an operation.
+    assert inspect(engine).get_foreign_keys("lora_operations") == []
 
     favorites_indexes = {
         index["name"]: index["column_names"]

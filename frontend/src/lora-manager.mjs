@@ -7,6 +7,11 @@ export function loraImagePath(sourceKey, controlId) {
   return `/api/workflows/${encoded(sourceKey)}/lora-images/${encoded(controlId)}`;
 }
 
+export function loraPublicationRevisionMatches(first, second) {
+  if (!first || !second) return !first && !second;
+  return ["publication_id", "workflow_sha256", "api_sha256", "manifest_sha256"].every((key) => first[key] === second[key]);
+}
+
 function subjectPreview(control, values, subjectAvailable = true) {
   const strongest = strongestLoraTrigger(control, values);
   if (!strongest.entry) return "Subject unchanged · no LoRA enabled";
@@ -66,7 +71,7 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
     const ctx = context(button.dataset.loraControlId);
     if (!ctx || dialog()?.open) return;
     returnFocus = button;
-    draft = { ...ctx, values: structuredClone(ctx.values), memory: { ...ctx.memory }, images: structuredClone(ctx.images || {}), changes: new Map(), error: "", busy: false };
+    draft = { ...ctx, publicationRevision: structuredClone(ctx.publicationRevision || null), values: structuredClone(ctx.values), memory: { ...ctx.memory }, images: structuredClone(ctx.images || {}), changes: new Map(), error: "", busy: false };
     render();
     dialog().showModal();
     dialog().querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
@@ -105,7 +110,8 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
   }
   async function save() {
     if (!draft || draft.busy) return;
-    if (context(draft.control.id)?.sourceKey !== draft.sourceKey) {
+    const current = context(draft.control.id);
+    if (current?.sourceKey !== draft.sourceKey || !loraPublicationRevisionMatches(current?.publicationRevision, draft.publicationRevision)) {
       draft.error = "The workflow changed. Reopen the LoRA manager.";
       render();
       return;
@@ -271,5 +277,12 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     else if (controlId) root.querySelector(`[data-lora-open][data-lora-control-id="${CSS.escape(controlId)}"]`)?.focus({ preventScroll: true });
   }, true);
-  return { close, isOpen: () => Boolean(dialog()?.open) };
+  return {
+    close,
+    isOpen: () => Boolean(dialog()?.open),
+    invalidateSource: (sourceKey) => {
+      if (draft?.sourceKey !== sourceKey) return;
+      close();
+    },
+  };
 }

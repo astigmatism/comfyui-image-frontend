@@ -260,6 +260,66 @@ class SourceRevision(APIModel):
     manifest_sha256: str
 
 
+class AdminLoraItem(APIModel):
+    id: str
+    label: str
+    description: str | None = None
+    trigger_word: str | None = None
+
+
+class AdminLoraCatalog(APIModel):
+    source_key: str
+    revision: SourceRevision
+    eligible: bool
+    reason: str | None = None
+    items: list[AdminLoraItem] = Field(default_factory=list)
+
+
+class LoraOperationCreate(APIModel):
+    kind: Literal["install", "remove"]
+    source_key: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    expected_revision: SourceRevision
+    idempotency_key: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    filename: str | None = Field(default=None, max_length=255)
+    display_name: str | None = Field(default=None, max_length=120)
+    trigger_word: str | None = Field(default=None, max_length=120)
+    lora_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+
+    @model_validator(mode="after")
+    def validate_action(self) -> LoraOperationCreate:
+        if self.kind == "install":
+            if (
+                not self.filename
+                or self.filename != self.filename.split("/")[-1]
+                or "\\" in self.filename
+                or self.filename in {".", ".."}
+                or not self.filename.lower().endswith(".safetensors")
+                or not self.display_name
+                or not self.display_name.strip()
+                or not self.trigger_word
+                or not self.trigger_word.strip()
+                or self.lora_id is not None
+            ):
+                raise ValueError(
+                    "Installation requires one .safetensors filename, title, and trigger word."
+                )
+            self.display_name = self.display_name.strip()
+            self.trigger_word = self.trigger_word.strip()
+        elif self.lora_id is None or any(
+            value is not None for value in (self.filename, self.display_name, self.trigger_word)
+        ):
+            raise ValueError("Removal requires only a published LoRA ID.")
+        return self
+
+
+class LoraOperationPublic(APIModel):
+    id: str
+    status: Literal["awaiting_upload", "running", "succeeded", "failed", "repair_required"]
+    message: str | None = None
+    result: dict[str, Any] | None = None
+    blockers: list[str] = Field(default_factory=list)
+
+
 class ModelSelectorChoice(APIModel):
     value: str
     label: str

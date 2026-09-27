@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "lora-manager.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "app.mjs"];
+const modules = ["prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "lora-manager.mjs", "admin-loras.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -85,6 +85,7 @@ const assets = {
   user_settings: `${assetPrefix}/user-settings.mjs`,
   lora_stack: `${assetPrefix}/lora-stack.mjs`,
   lora_manager: `${assetPrefix}/lora-manager.mjs`,
+  admin_loras: `${assetPrefix}/admin-loras.mjs`,
   app: `${assetPrefix}/app.mjs`,
   api: `${assetPrefix}/api.mjs`,
   server_clock: `${assetPrefix}/server-clock.mjs`,

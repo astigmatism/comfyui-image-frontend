@@ -2,7 +2,7 @@
 
 ## Scope and invariants
 
-This is one application container for a small trusted network, not a public multi-tenant platform. It uses one FastAPI process, one SQLite database, application-owned files, and in-process asynchronous workers. There is no broker, separate database, workflow editor, model installer, ComfyUI filesystem mount, or direct browser connection to ComfyUI, Ollama, or the speech-to-text service.
+This is one application container for a small trusted network, not a public multi-tenant platform. It uses one FastAPI process, one SQLite database, application-owned files, and in-process asynchronous workers. There is no broker, separate database, general workflow editor, ComfyUI filesystem mount, or direct browser connection to ComfyUI, Ollama, or the speech-to-text service. Optional administrator LoRA management delegates a narrowly scoped model installation and publication edit to an authenticated ComfyUI companion operation.
 
 The principal invariants are:
 
@@ -52,7 +52,7 @@ SQLite owns structured state and authorization. Binary data is beneath the confi
 
 Prompts and user/ComfyUI filenames are never storage paths. Application paths are generated, stored relative to the data root, and resolved beneath that root before open/delete. SQLite uses foreign keys, WAL, `synchronous=NORMAL`, and a busy timeout. Network work, hashing, decoding, and thumbnails occur outside long write transactions where practical.
 
-Publication documents are durably snapshotted as JSON in `workflow_profiles`; the exact frozen-API and manifest SHA-256 values plus the manifest-recorded editable hash preserve identity even though current editable bytes and all source files remain externally owned by ComfyUI. Generations copy the source revision and result structures needed for historical display.
+Publication documents are durably snapshotted as JSON in `workflow_profiles`; the exact frozen-API and manifest SHA-256 values plus the manifest-recorded editable hash preserve identity while current editable bytes and model files remain owned by ComfyUI. Generations copy the source revision and result structures needed for historical display. The optional LoRA administrator command asks ComfyUI to produce a new publication, then follows normal discovery and validation; operation state in SQLite is not an alternative model catalog.
 
 ## Authentication and authorization
 

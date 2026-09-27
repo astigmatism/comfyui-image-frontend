@@ -44,6 +44,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 WEB_DIRECTORY = "./web"
 
+# Registration is intentionally unconditional; each handler returns 404 until a
+# backend-only management secret is configured on this ComfyUI process.
+from . import lora_management_routes as _lora_management_routes  # noqa: E402,F401
+
 __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",

@@ -18,7 +18,10 @@ from ..errors import AppError
 from ..models import User, UserRole
 from ..schemas import (
     AdminDiagnostic,
+    AdminLoraCatalog,
     CreateUserRequest,
+    LoraOperationCreate,
+    LoraOperationPublic,
     ResetPasswordRequest,
     UserPublic,
 )
@@ -147,3 +150,50 @@ def workflow_diagnostics(
         )
         for item in get_container(request).registry.diagnostics(session)
     ]
+
+
+@router.get("/workflows/{source_key}/loras", response_model=AdminLoraCatalog)
+async def admin_lora_catalog(
+    source_key: str,
+    request: Request,
+    _: Annotated[AuthContext, Depends(require_admin)],
+) -> AdminLoraCatalog:
+    return await get_container(request).lora_operations.catalog(source_key)
+
+
+@router.post("/lora-operations", response_model=LoraOperationPublic, status_code=201)
+async def create_lora_operation(
+    payload: LoraOperationCreate,
+    request: Request,
+    context: Annotated[AuthContext, Depends(_admin_csrf)],
+) -> LoraOperationPublic:
+    return await get_container(request).lora_operations.create(payload, context.user.id)
+
+
+@router.put("/lora-operations/{operation_id}/file", response_model=LoraOperationPublic)
+async def upload_lora_operation_file(
+    operation_id: str,
+    request: Request,
+    context: Annotated[AuthContext, Depends(_admin_csrf)],
+) -> LoraOperationPublic:
+    return await get_container(request).lora_operations.upload(
+        operation_id, context.user.id, request
+    )
+
+
+@router.get("/lora-operations/{operation_id}", response_model=LoraOperationPublic)
+def get_lora_operation(
+    operation_id: str,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_admin)],
+) -> LoraOperationPublic:
+    return get_container(request).lora_operations.status(operation_id, context.user.id)
+
+
+@router.post("/lora-operations/{operation_id}/cancel", response_model=LoraOperationPublic)
+async def cancel_lora_operation(
+    operation_id: str,
+    request: Request,
+    context: Annotated[AuthContext, Depends(_admin_csrf)],
+) -> LoraOperationPublic:
+    return await get_container(request).lora_operations.cancel(operation_id, context.user.id)

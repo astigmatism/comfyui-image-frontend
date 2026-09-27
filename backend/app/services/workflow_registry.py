@@ -22,6 +22,7 @@ from ..domain.publication import (
 )
 from ..errors import AppError, ContractError
 from ..models import (
+    LoraOperation,
     ServiceHealth,
     WorkflowCatalogHealth,
     WorkflowDiagnostic,
@@ -252,17 +253,21 @@ class WorkflowRegistry:
             )
             session.commit()
 
-    async def refresh(self, instance_id: str | None = None) -> list[WorkflowDiagnostic]:
+    async def refresh(
+        self, instance_id: str | None = None, *, prune_images: bool = True
+    ) -> list[WorkflowDiagnostic]:
         targets = (
             [self._registries[instance_id]] if instance_id else list(self._registries.values())
         )
-        results = await asyncio.gather(*(target._refresh_one() for target in targets))
+        results = await asyncio.gather(
+            *(target._refresh_one(prune_images=prune_images) for target in targets)
+        )
         return [diagnostic for result in results for diagnostic in result]
 
-    async def _refresh_one(self) -> list[WorkflowDiagnostic]:
+    async def _refresh_one(self, *, prune_images: bool = True) -> list[WorkflowDiagnostic]:
         async with self._refresh_lock:
             try:
-                return await self._refresh_unlocked()
+                return await self._refresh_unlocked(prune_images=prune_images)
             except Exception:
                 logger.exception(
                     "workflow_catalog_refresh_failed", extra={"instance_id": self.instance_id}
@@ -274,7 +279,7 @@ class WorkflowRegistry:
                     message="ComfyUI source discovery failed.",
                 )
 
-    async def _refresh_unlocked(self) -> list[WorkflowDiagnostic]:
+    async def _refresh_unlocked(self, *, prune_images: bool = True) -> list[WorkflowDiagnostic]:
         now = datetime.now(UTC)
         try:
             capabilities = await self.adapter.probe()
@@ -458,6 +463,7 @@ class WorkflowRegistry:
             validated=validated,
             diagnostics=diagnostics,
             object_info=capabilities.object_info,
+            prune_images=prune_images,
         )
 
     def _commit_refresh(
@@ -468,6 +474,7 @@ class WorkflowRegistry:
         validated: list[ValidatedPublication],
         diagnostics: list[WorkflowDiagnostic],
         object_info: dict[str, Any],
+        prune_images: bool = True,
     ) -> list[WorkflowDiagnostic]:
         pruned_paths: list[str] = []
         with self.session_factory() as session:
@@ -501,8 +508,20 @@ class WorkflowRegistry:
                     row.state = WorkflowState.STALE
             for publication in validated:
                 self._publish_revision(session, publication, now)
-                if self.instance_id == self.assigned_instance_id(
-                    publication_kind(publication.private_contract)
+                changing_loras = session.scalar(
+                    select(LoraOperation.id)
+                    .where(
+                        LoraOperation.source_id == publication.source_id,
+                        LoraOperation.action == "remove",
+                        LoraOperation.status.in_(("running", "repair_required")),
+                    )
+                    .limit(1)
+                )
+                if (
+                    prune_images
+                    and not changing_loras
+                    and self.instance_id
+                    == self.assigned_instance_id(publication_kind(publication.private_contract))
                 ):
                     pruned_paths.extend(
                         prune_lora_images(

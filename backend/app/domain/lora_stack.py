@@ -15,8 +15,8 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
         raise ValueError("LoRA constraints must be finite numbers.")
     if minimum != 0 or maximum <= minimum or step <= 0:
         raise ValueError("LoRA constraints must start at zero with positive maximum and step.")
-    if not isinstance(items, list) or not 1 <= len(items) <= 100:
-        raise ValueError("Publish between 1 and 100 LoRAs.")
+    if not isinstance(items, list) or len(items) > 100:
+        raise ValueError("Publish at most 100 LoRAs.")
     ids = set()
     for item in items:
         if (
@@ -77,23 +77,26 @@ def validate_lora_runtime(api_document: Mapping[str, Any], object_info: Mapping[
     stacks = [node for node in api_document.values() if node.get("class_type") == "CIFLoraStack"]
     if not stacks:
         return
+    if "CIFLoraStack" not in object_info:
+        raise ValueError("The assigned runtime needs the Image Frontend LoRA Stack node.")
+    filenames = [
+        item["filename"] for node in stacks for item in json.loads(node["inputs"]["catalog_json"])
+    ]
+    if not filenames:
+        return
     spec = (
         object_info.get("LoraLoaderModelOnly", {})
         .get("input", {})
         .get("required", {})
         .get("lora_name", [])
     )
-    if "CIFLoraStack" not in object_info or not spec or not isinstance(spec[0], list):
+    if not spec or not isinstance(spec[0], list):
         raise ValueError(
             "The assigned runtime needs the Image Frontend LoRA Stack node "
             "and native model-only loader."
         )
     installed = set(spec[0])
-    if any(
-        item["filename"] not in installed
-        for node in stacks
-        for item in json.loads(node["inputs"]["catalog_json"])
-    ):
+    if any(filename not in installed for filename in filenames):
         raise ValueError(
             "The assigned runtime is missing files required by this workflow's LoRA catalog."
         )

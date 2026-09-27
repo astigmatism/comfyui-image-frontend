@@ -76,8 +76,44 @@ Items follow deployment-configuration order. `configuration_mode` is `explicit` 
 | `GET` | `/api/services` | Restrained ComfyUI/Ollama availability state |
 | `POST` | `/api/admin/workflows/refresh` | Administrator: rediscover and atomically validate publications |
 | `GET` | `/api/admin/workflows/diagnostics` | Administrator: safe per-transport/per-candidate diagnostics |
+| `GET` | `/api/admin/workflows/{source_key}/loras` | Administrator: inspect LoRA management eligibility, full revision, and public catalog |
+| `POST` | `/api/admin/lora-operations` | Administrator: reserve a conditional install or removal |
+| `PUT` | `/api/admin/lora-operations/{id}/file` | Administrator: stream one raw `.safetensors` body for a reserved install |
+| `GET` | `/api/admin/lora-operations/{id}` | Administrator: read operation progress and result |
+| `POST` | `/api/admin/lora-operations/{id}/cancel` | Administrator: cancel an install that is still awaiting its file |
 
 The historical route name `workflows` is retained, but objects now represent deliberately published sources.
+
+### Administrator LoRA operations
+
+The management routes require an administrator session and the session CSRF header on mutations. The browser sends no request to ComfyUI. These routes are unavailable until the application and every participating ComfyUI companion have the backend-only management secret configured. They expose public IDs and labels, never private model filenames, graph bindings, or model paths. See [Administrator LoRA management](lora-administration.md) for ownership and failure behavior.
+
+The catalog GET returns the source's full four-part `revision`, an `eligible` flag and safe `reason`, and `items` containing the published `id`, `label`, optional `description`, and optional `trigger_word`. Existing items without trigger words remain valid. An eligible source has exactly one supported published `lora_stack`, matching healthy publication replicas and shared model inventory.
+
+To install, first reserve an operation with `POST /api/admin/lora-operations`:
+
+```json
+{
+  "kind": "install",
+  "source_key": "<source-key>",
+  "expected_revision": {
+    "publication_id": "<publication-id>",
+    "workflow_sha256": "<sha256>",
+    "api_sha256": "<sha256>",
+    "manifest_sha256": "<sha256>"
+  },
+  "idempotency_key": "<client-generated-uuid>",
+  "filename": "character.safetensors",
+  "display_name": "Character",
+  "trigger_word": "character_token"
+}
+```
+
+The `filename` is the name of the local file being uploaded; it is not a destination path. The server assigns the public catalog ID. A successful reservation returns an operation ID and `awaiting_upload` status. Send the file once as the raw `application/octet-stream` body of `PUT /api/admin/lora-operations/{id}/file` with a bounded `Content-Length`. The application streams it to the authorized ComfyUI model writer; neither the browser nor the app chooses a model directory. Poll the operation GET until it reports `succeeded`, `failed`, or `repair_required`.
+
+An `awaiting_upload` install can be cancelled with the CSRF-protected cancel POST. This clears any matching companion stage and releases the reservation; after upload processing starts, the operation must finish or be recovered instead. When a new operation is requested for the source, the server clears reservations that have waited more than one hour after verifying companion rollback.
+
+Removal uses the same POST with `kind: "remove"`, `source_key`, `expected_revision`, `idempotency_key`, and the published `lora_id`; there is no file PUT. A removal can report `failed` with safe `blockers` when the file is still referenced by another publication, an active job, native ComfyUI work, or an authoring workflow. The catalog revision is conditional, so the client must reload after a conflict or source refresh. Reusing the same idempotency key for a different request is a conflict. A `repair_required` operation needs operator reconciliation before further changes to the source.
 
 ### Shared LoRA images
 

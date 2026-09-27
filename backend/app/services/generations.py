@@ -34,6 +34,7 @@ from ..models import (
     GenerationEvent,
     GenerationStatus,
     GenerationUpload,
+    LoraOperation,
     PromptAssistantRun,
     ServiceHealth,
     Upload,
@@ -196,6 +197,7 @@ class GenerationService:
         )
         collection = self._collection_for_owner(session, user.id, request.collection_id)
         profile = frozen_profile or self._profile_for_request(session, request)
+        self._require_no_lora_maintenance(session, profile)
         if publication_kind(profile.resolved_contract_json) != "image":
             raise AppError(
                 "source_kind_invalid", "Choose an image generation source.", status_code=422
@@ -338,6 +340,7 @@ class GenerationService:
             output_kind="image",
             require_dependencies=require_dependencies,
         )
+        self._require_no_lora_maintenance(session, profile)
         revision = request.revision
         if revision and (
             revision.publication_id != profile.publication_id
@@ -367,6 +370,25 @@ class GenerationService:
                 status_code=409,
             )
         return profile
+
+    @staticmethod
+    def _require_no_lora_maintenance(session: Session, profile: WorkflowProfile) -> None:
+        if profile.source_id and session.scalar(
+            select(LoraOperation.id)
+            .where(
+                LoraOperation.source_id == profile.source_id,
+                or_(
+                    LoraOperation.status == "repair_required",
+                    and_(LoraOperation.action == "remove", LoraOperation.status == "running"),
+                ),
+            )
+            .limit(1)
+        ):
+            raise AppError(
+                "lora_maintenance",
+                "This source is temporarily unavailable while its LoRA catalog is being changed.",
+                status_code=409,
+            )
 
     def _compile(
         self,

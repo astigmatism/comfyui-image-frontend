@@ -915,8 +915,8 @@ class CIFLoraStack:
         if not isinstance(value, str) or len(value) > 20000:
             raise ValueError("Invalid ordered LoRA configuration.")
         catalog = json.loads(catalog_json)
-        if not isinstance(catalog, list) or not 1 <= len(catalog) <= 100:
-            raise ValueError("Publish between 1 and 100 LoRAs.")
+        if not isinstance(catalog, list) or len(catalog) > 100:
+            raise ValueError("Publish at most 100 LoRAs.")
         for item in catalog:
             if (
                 not isinstance(item, dict)

@@ -576,7 +576,7 @@ function validateTypedParameter(
   if (type === "lora_stack") {
     try {
       const catalog = JSON.parse(inputs.catalog_json);
-      if (!Array.isArray(catalog) || !catalog.length || catalog.length > 100) throw new Error("Publish 1 to 100 LoRAs");
+      if (!Array.isArray(catalog) || catalog.length > 100) throw new Error("Publish at most 100 LoRAs");
       const ids = new Set();
       for (const item of catalog) {
         if (!isObject(item) || Object.keys(item).some((key) => !["id", "label", "filename", "description", "trigger_word"].includes(key)) ||
@@ -590,7 +590,7 @@ function validateTypedParameter(
         ids.add(item.id);
       }
       const installed = nodeDefs.LoraLoaderModelOnly?.input?.required?.lora_name?.[0];
-      if (!Array.isArray(installed)) throw new Error("Native model-only LoRA loader inventory is unavailable");
+      if (catalog.length && !Array.isArray(installed)) throw new Error("Native model-only LoRA loader inventory is unavailable");
       if (catalog.some((item) => !installed.includes(item.filename))) throw new Error("A catalog LoRA is not installed on this runtime");
       const { minimum, maximum, step } = inputs;
       if (![minimum, maximum, step].every((n) => typeof n === "number" && Number.isFinite(n)) ||
@@ -1864,7 +1864,50 @@ function notify(app, severity, summary, detail, life) {
   }
 }
 
+async function publisherLease(app, action, sourcePath, token) {
+  if (typeof app.api.fetchApi !== "function") return null;
+  const response = await app.api.fetchApi(`/cif/publisher/lock/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CIF-Publisher-Lease": "1" },
+    body: JSON.stringify({ source_path: sourcePath, ...(token ? { token } : {}) }),
+  });
+  if (response.status === 404) return null; // Management is not configured.
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.message || `Save & Publish lease failed (${response.status})`);
+  }
+  return response.json();
+}
+
 export async function publishCurrentWorkflow(app) {
+  const current = activeWorkflow(app);
+  let lease = null;
+  let leaseError = null;
+  let renewal = null;
+  if (current?.path && !current.isTemporary) {
+    const path = publicationPaths(current.path).workflow;
+    lease = await publisherLease(app, "acquire", path);
+    if (lease?.token) {
+      renewal = setInterval(() => {
+        publisherLease(app, "renew", path, lease.token).catch((error) => {
+          leaseError = error;
+        });
+      }, 120000);
+    }
+  }
+  const assertLease = () => { if (leaseError) throw leaseError; };
+  try {
+    return await publishCurrentWorkflowUnlocked(app, assertLease);
+  } finally {
+    if (renewal !== null) clearInterval(renewal);
+    if (lease?.token) {
+      await publisherLease(app, "release", publicationPaths(current.path).workflow, lease.token)
+        .catch((error) => console.warn("[comfyui-image-frontend] lease release failed", error));
+    }
+  }
+}
+
+async function publishCurrentWorkflowUnlocked(app, assertLease) {
   const hasDeclaration = (app.rootGraph?._nodes ?? []).some((node) =>
     String(node.type ?? "").startsWith("CIF"),
   );
@@ -1872,6 +1915,7 @@ export async function publishCurrentWorkflow(app) {
     throw new Error("The active workflow has no Image Frontend declaration nodes");
   }
 
+  assertLease();
   await saveWithCoreCommand(app);
   const workflowRecord = activeWorkflow(app);
   if (!workflowRecord?.path || workflowRecord.isTemporary) {
@@ -1962,11 +2006,13 @@ export async function publishCurrentWorkflow(app) {
   // written last and indicates that the publisher completed the adjacent pair.
   // Recorded hashes identify the revision for diagnostics; local discovery
   // must not reject an otherwise valid bundle solely because a hash differs.
+  assertLease();
   await app.api.storeUserData(paths.api, apiText, {
     overwrite: true,
     stringify: false,
     throwOnError: true,
   });
+  assertLease();
   await app.api.storeUserData(paths.manifest, manifestText, {
     overwrite: true,
     stringify: false,

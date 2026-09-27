@@ -8,6 +8,7 @@ import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from app.api.workflows import _public_interface
@@ -72,6 +73,34 @@ def test_order_default_private_projection_and_isolation():
             {"id": "a", "label": "Alpha"},
             {"id": "b", "label": "Beta"},
         ]
+
+
+def test_empty_catalog_is_a_published_model_passthrough():
+    def empty(public, private):
+        public["items"] = []
+        public["default"] = []
+        private["catalog_json"] = "[]"
+        private["value"] = "[]"
+
+    selected = source(empty)
+    assert selected.public_interface["inputs"][-1]["items"] == []
+    compiled = compile_stack(selected)
+    assert compiled.effective_controls["loras"] == []
+    assert json.loads(compiled.compiled_graph["99"]["inputs"]["value"]) == []
+
+    from app.domain.lora_stack import validate_lora_runtime
+
+    validate_lora_runtime(selected.api_document, {"CIFLoraStack": {}})
+    with pytest.raises(ValueError, match="LoRA Stack node"):
+        validate_lora_runtime(selected.api_document, {})
+
+    from app.services.lora_images import control_bindings
+
+    profile = SimpleNamespace(
+        resolved_contract_json=selected.private_contract,
+        source_api_json=selected.api_document,
+    )
+    assert control_bindings(profile, "loras") == {}
 
 
 def test_usage_description_is_public_and_does_not_change_execution():

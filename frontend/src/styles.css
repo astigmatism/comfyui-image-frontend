@@ -4479,6 +4479,90 @@ dialog::backdrop {
   min-width: 0;
 }
 
+.admin-lora-source {
+  max-width: 560px;
+}
+
+.admin-lora-message,
+.admin-lora-status {
+  margin: var(--space-3) 0;
+  color: var(--muted);
+}
+
+.admin-lora-status:empty {
+  display: none;
+}
+
+.admin-lora-list {
+  display: grid;
+  gap: 0;
+  max-height: 260px;
+  margin: var(--space-3) 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  list-style: none;
+}
+
+.admin-lora-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-lora-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-lora-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.admin-lora-row strong,
+.admin-lora-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-lora-row span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.admin-lora-install {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.admin-lora-install h4 {
+  margin: 0;
+}
+
+.admin-lora-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.admin-lora-install .button {
+  justify-self: start;
+}
+
+#admin-lora-host progress {
+  display: block;
+  width: min(440px, 100%);
+}
+
 .inline-form {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) minmax(200px, 1fr) auto;
@@ -4688,6 +4772,10 @@ tr:last-child td {
   }
 
   .inline-form {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-lora-fields {
     grid-template-columns: 1fr;
   }
 

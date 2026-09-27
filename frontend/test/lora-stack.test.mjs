@@ -8,10 +8,16 @@ import {
   strongestLoraTrigger,
   moveLora,
 } from "../src/lora-stack.mjs";
-import { loraManagerMarkup } from "../src/lora-manager.mjs";
+import { loraManagerMarkup, loraPublicationRevisionMatches } from "../src/lora-manager.mjs";
 import { parametersForRequest, overwriteWithRecall, clientValidate } from "../src/lib.mjs";
 
 const control = { id: "loras", type: "lora_stack", label: "LoRAs", semantic_role: "lora", required: false, advanced: false, group: "LoRAs", order: 150, items: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }], minimum: 0, maximum: 2, step: 0.05, default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }] };
+
+test("LoRA draft rejects any changed publication hash", () => {
+  const revision = { publication_id: "one", workflow_sha256: "ui", api_sha256: "api", manifest_sha256: "manifest" };
+  assert.equal(loraPublicationRevisionMatches(revision, { ...revision }), true);
+  for (const field of Object.keys(revision)) assert.equal(loraPublicationRevisionMatches(revision, { ...revision, [field]: "changed" }), false);
+});
 
 test("LoRA identity survives ordering, request snapshots and exact recall", () => {
   const original = [{ id: "a", strength: 0.05 }, { id: "b", strength: 2 }];

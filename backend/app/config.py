@@ -139,6 +139,9 @@ class Settings(BaseSettings):
     comfyui_text_instance_id: str | None = None
     comfyui_workflow_directory: str = "workflows"
     comfyui_concurrency: int = Field(default=1, ge=1, le=32)
+    # A matching secret must be configured on ComfyUI before model administration is exposed.
+    lora_management_secret: SecretStr | None = None
+    lora_upload_max_bytes: int = Field(default=4 * 1024 * 1024 * 1024, gt=0)
     comfyui_listing_max_bytes: int = 4 * 1024 * 1024
     comfyui_object_info_max_bytes: int = 64 * 1024 * 1024
     comfyui_manifest_max_bytes: int = 1024 * 1024

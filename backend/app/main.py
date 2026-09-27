@@ -254,6 +254,7 @@ def create_app(
                 container.auth.ensure_bootstrap_admin(session)
 
         await run_blocking(bootstrap)
+        await container.lora_operations.recover()
         lag_monitor = asyncio.create_task(monitor_loop(), name="event-loop-lag")
         try:
             await container.generation_eta.start()

@@ -20,6 +20,7 @@ from .services.comfyui_instances import ComfyUIInstances
 from .services.event_broker import EventBroker
 from .services.generation_eta import GenerationEtaEstimator
 from .services.generations import GenerationService
+from .services.lora_operations import LoraOperationService
 from .services.ollama import OllamaAdapter
 from .services.prompt_generation import PromptGenerationService
 from .services.queue_worker import QueueWorker
@@ -55,6 +56,7 @@ class AppContainer:
         self.registry = WorkflowRegistry(
             self.db.session_factory, self.comfyui, instances=self.comfyui_instances
         )
+        self.lora_operations = LoraOperationService(self)
         self.compiler = WorkflowCompiler()
         self.generation_eta = GenerationEtaEstimator(self.db.session_factory)
         self.activity_estimator = ActivityEstimator(self.generation_eta, self.comfyui_instances)
@@ -175,6 +177,7 @@ class AppContainer:
         logger.info("generation_eta_maintenance_stopped")
         await self._stop_startup_discovery()
         logger.info("startup_discovery_cancellation_complete")
+        await self.lora_operations.close()
         await asyncio.gather(
             self.comfyui_instances.close(),
             self.ollama.close(),

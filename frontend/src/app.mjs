@@ -10,7 +10,8 @@ import { automaticPromptUpdate, olderAutomaticProgress } from "./auto-generation
 import { bindGalleryGroups } from "./gallery-groups.mjs";
 import { strongestLoraTrigger } from "./lora-stack.mjs";
 import { installLoraManager, loraImagePath } from "./lora-manager.mjs";
-import { api, isTransientError, setCsrfToken, upload } from "./api.mjs";
+import { createAdminLoraController, reconcileLoraStrengthMemory } from "./admin-loras.mjs";
+import { api, getCsrfToken, isTransientError, setCsrfToken, upload } from "./api.mjs";
 import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
@@ -106,6 +107,18 @@ import {
 const root = document.querySelector("#app");
 const galleryHover = bindGalleryCardHover(root);
 let disposeThumbnails = null;
+let loraManagerController = null;
+const adminLoraController = createAdminLoraController({
+  api, getCsrfToken, notify: toast,
+  actorId: () => state.session?.user?.id,
+  storage: () => { try { return window.sessionStorage; } catch { return null; } },
+  refreshSources: async (sourceKey) => {
+    loraManagerController?.invalidateSource(sourceKey);
+    await api("/api/admin/workflows/refresh", { method: "POST" });
+    await loadSources();
+    return state.sources;
+  },
+});
 
 let autoSettingsSync = null;
 
@@ -385,7 +398,7 @@ function bindDelegatedEvents() {
     refresh: refreshAfterGalleryOperation,
     notify: toast,
   });
-  installLoraManager(root, {
+  loraManagerController = installLoraManager(root, {
     api,
     context: (id) => {
       const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
@@ -395,6 +408,7 @@ function bindDelegatedEvents() {
         && interfaceInputs(subjectSource?.interface).some((item) => item.id === "subject_name" && item.type === "string")
         && state.promptGeneration.sources[subjectSource?.source_key]);
       return { control, sourceKey: state.activeSourceKey, sourceName: state.activeSource?.display_name || "Workflow",
+        publicationRevision: sourceRevision(state.activeSource),
         values: state.parameters[id], memory: state.loraStrengthMemory[id] || {}, images: state.loraImages[id] || {}, subjectAvailable };
     },
     onImages: (sourceKey, id, images) => {
@@ -3282,6 +3296,9 @@ async function loadSources({ signal, diagnostic = false } = {}) {
       renderPanel();
       return;
     }
+    if (state.activeSource && (sourceKey(next) !== sourceKey(state.activeSource) || !revisionsMatch(next, state.activeSource))) {
+      loraManagerController?.invalidateSource(sourceKey(state.activeSource));
+    }
     if (
       state.activeSource &&
       sourceKey(next) === state.activeSourceKey &&
@@ -3304,6 +3321,8 @@ async function loadSources({ signal, diagnostic = false } = {}) {
 async function selectSource(key, { summary = null, signal, diagnostic = false } = {}) {
   const canonical = reconcileSourceKey(state.sources, key, state.parameterStateBySource);
   if (canonical !== key) { key = canonical; summary = null; }
+  const previousSource = state.activeSource;
+  if (previousSource && sourceKey(previousSource) !== key) loraManagerController?.invalidateSource(sourceKey(previousSource));
   syncServerControls();
   const activeMigration = sourceInterface(state.activeSource)
     ? {
@@ -3352,6 +3371,9 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
     if (signal?.aborted || token !== state.sourceLoadToken) return;
     const contract = sourceInterface(detail);
     if (!contract) throw new Error("The selected source has no public interface.");
+    if (previousSource && sourceKey(previousSource) === key && !revisionsMatch(detail, previousSource)) {
+      loraManagerController?.invalidateSource(key);
+    }
     state.activeSource = { ...(resolvedSummary || {}), ...detail, interface: contract };
     settingsInterfaces.set(key, state.activeSource);
     const baseValues = reconcileInterfaceValues(
@@ -3369,6 +3391,7 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
       saved?.explicitInputIds || [],
     );
     state.parameters = migrated.values;
+    state.loraStrengthMemory = reconcileLoraStrengthMemory(contract, state.loraStrengthMemory);
     state.explicitParameterIds = new Set(migrated.explicitInputIds);
     const savedPresetId = saved?.selectedPreset || null;
     if (savedPresetId && (contract.presets || []).some((preset) => preset.id === savedPresetId)) {
@@ -6344,15 +6367,17 @@ async function openAdmin() {
   const dialog = document.querySelector("#admin-dialog");
   dialog.innerHTML = adminMarkup(users, diagnostics);
   if (!dialog.open) dialog.showModal();
+  adminLoraController.mount(dialog.querySelector("#admin-lora-host"), state.sources, state.activeSourceKey);
 }
 
 function adminMarkup(users, diagnostics) {
   const ordinary = users.filter((item) => item.role === "user");
   return `<div class="dialog-frame admin-frame">
-    <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts and published-source discovery.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
+    <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts, published sources, and LoRAs.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
     <div class="admin-content">
       <section><h3>Users</h3><form id="create-user-form" class="inline-form"><label class="field"><span>Username</span><input name="username" required /></label><label class="field"><span>Temporary password</span><input name="temporary_password" type="password" minlength="8" required /></label><button class="button primary" type="submit">Create user</button></form>
       <div class="table-wrap"><table><thead><tr><th>Username</th><th>State</th><th>Created</th><th>Account actions</th></tr></thead><tbody>${ordinary.map((user) => `<tr><td>${escapeForAdmin(user.username)}</td><td>${user.must_change_password ? "Temporary password" : "Active"}</td><td>${new Date(user.created_at).toLocaleDateString()}</td><td><div class="button-row"><button type="button" class="button low" data-action="reset-user-password" data-user-id="${user.id}">Reset password</button><button type="button" class="button destructive low" data-action="delete-user" data-user-id="${user.id}" data-username="${escapeForAdmin(user.username)}">Delete</button></div></td></tr>`).join("") || '<tr><td colspan="4">No ordinary users.</td></tr>'}</tbody></table></div></section>
+      <section id="admin-lora-host" aria-label="LoRA administration"></section>
       <section><div class="section-heading"><h3>Published-source diagnostics</h3><button type="button" class="button secondary" data-action="refresh-workflows">Refresh discovery</button></div><div class="diagnostic-list">${diagnostics.map((item) => `<article class="diagnostic ${item.accepted ? "accepted" : "rejected"}"><strong>${escapeForAdmin(item.display_name || item.basename || item.source_key || "Published source")}</strong><span>${item.accepted ? "Accepted" : "Rejected"}</span><p>${escapeForAdmin(item.message)}</p><code>${escapeForAdmin(item.code)}</code></article>`).join("") || '<p class="muted">No discovery diagnostics yet.</p>'}</div></section>
     </div>
     <footer class="dialog-actions"><button type="button" class="button primary" data-action="close-admin">Close</button></footer>

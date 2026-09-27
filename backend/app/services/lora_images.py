@@ -76,8 +76,6 @@ def control_bindings(profile: WorkflowProfile, control_id: str) -> dict[str, str
         for (candidate_control, item_id), binding in full.items()
         if candidate_control == control_id
     }
-    if not bindings:
-        raise AppError("lora_control_unavailable", "LoRA catalog is unavailable.", status_code=409)
     return bindings
 
 
