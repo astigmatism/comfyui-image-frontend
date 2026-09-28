@@ -46,6 +46,7 @@ from .config import Settings, get_settings
 from .container import AppContainer
 from .db import run_migrations
 from .errors import AppError
+from .services.gallery import sweep_download_staging
 
 logger = logging.getLogger(__name__)
 _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z")
@@ -254,6 +255,9 @@ def create_app(
                 container.auth.ensure_bootstrap_admin(session)
 
         await run_blocking(bootstrap)
+        # A client that disconnects mid-download leaves its staged archive behind on the
+        # data volume, where nothing else reclaims it.
+        await asyncio.to_thread(sweep_download_staging, settings)
         await container.lora_operations.recover()
         lag_monitor = asyncio.create_task(monitor_loop(), name="event-loop-lag")
         try:

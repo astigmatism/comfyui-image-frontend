@@ -69,6 +69,13 @@ expand it and use **Load more in group** to retrieve its remaining cards.
 6. Choose **Download selection** (the down arrow) to save one ZIP containing every available image
    from selected cards and folders, including batches and nested folders. Overlapping selections
    appear once. Both Favorites and Download keep the selection so you can use another action next.
+   The archive is assembled under `CIF_TEMP_DIR` (by default `$CIF_DATA_DIR/tmp`, on the data
+   volume) rather than the container's `/tmp`, which deployments mount as a small tmpfs under a
+   read-only root filesystem. Images are stored uncompressed, so the archive needs roughly the sum
+   of its image sizes: a selection above `CIF_DOWNLOAD_MAX_BYTES`, or one that would not fit in the
+   staging filesystem, is refused up front with the size it needs instead of failing part-way
+   through. A missing or pruned image file is skipped rather than failing the whole archive, and an
+   archive abandoned by a disconnected client is reclaimed on the next startup.
 
 Blue checks and outlines identify selected cards; existing gold favorite indicators remain
 distinct. In Grouped view, **Select loaded** applies to loaded cards, while **Select group** includes

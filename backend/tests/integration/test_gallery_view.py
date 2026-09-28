@@ -224,3 +224,56 @@ def test_scoped_download_respects_exclusions_and_selected_folder_contents(
             names = archive.namelist()
             assert len(names) == inside_detail["image_count"]
             assert all(inside["id"] in name and outside["id"] not in name for name in names)
+
+
+def test_whole_favorites_view_download_reports_capacity_without_a_server_error(
+    settings_factory,
+    fake_state,
+):
+    """Filtering to favorites, selecting the whole view, then downloading it.
+
+    This reproduces the reported failure: the archive is staged in the container's
+    temporary directory, which deployments cap at a small tmpfs, so an oversized
+    selection used to surface as HTTP 500 from a bare OSError.
+    """
+
+    del fake_state
+    app = create_app(settings_factory(enable_background_worker=True))
+    with TestClient(app) as client:
+        settings = app.state.container.settings
+        provision_user(client)
+        inside = folder(client, "Keepers")
+        images = [create_generation(client, f"favorite keeper {index}") for index in range(3)]
+        details = [wait_for_status(client, image["id"], "succeeded") for image in images]
+        assert (
+            transfer(client, "move", [images[0]["id"]], destination=inside["id"]).status_code == 200
+        )
+        headers = {"X-CSRF-Token": csrf(client)}
+        assert (
+            client.post(
+                "/api/gallery/favorite",
+                headers=headers,
+                json={"generation_ids": [image["id"] for image in images[1:]]},
+            ).status_code
+            == 200
+        )
+        inventory = client.get("/api/gallery/items?favorites_only=true").json()
+        selected = [item["id"] for item in inventory["generations"]]
+        assert sorted(selected) == sorted(image["id"] for image in images[1:])
+        payload = {
+            "scope": {"collection_id": None, "favorites_only": True},
+            "generation_ids": selected,
+        }
+
+        response = client.post("/api/gallery/download", headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        expected = sum(detail["image_count"] for detail in details[1:])
+        with ZipFile(BytesIO(response.content)) as archive:
+            assert len(archive.namelist()) == expected
+
+        # The staging ceiling is reported as an actionable error, never HTTP 500.
+        settings.download_max_bytes = 1
+        refused = client.post("/api/gallery/download", headers=headers, json=payload)
+        assert refused.status_code == 507, refused.text
+        assert refused.json()["error"]["code"] == "download_too_large"
+        assert not list(settings.staging_dir.iterdir())

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import copy
+import errno
+import logging
 import re
+import shutil
+import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -13,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..blocking import run_blocking
+from ..config import Settings
 from ..errors import AppError
 from ..models import (
     TERMINAL_STATUSES,
@@ -39,6 +45,60 @@ from ..schemas import (
 )
 from .collections import MAX_COLLECTION_DEPTH, CollectionService
 from .generations import GenerationService
+
+logger = logging.getLogger(__name__)
+
+# SQLite binds one parameter per identifier, so every IN clause is chunked.
+BATCH_SIZE = 500
+DOWNLOAD_STAGING_PREFIX = "gallery-download-"
+DOWNLOAD_STAGING_MAX_AGE_SECONDS = 3600
+_ZIP_ENTRY_OVERHEAD_BYTES = 512
+_ZIP_TRAILER_BYTES = 64 * 1024
+_OUT_OF_SPACE_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT, errno.EFBIG})
+_DOWNLOAD_LOG = {"operation": "gallery_download"}
+
+
+def _batched(ids: Iterable[str], size: int = BATCH_SIZE) -> Iterator[list[str]]:
+    batch: list[str] = []
+    for item in ids:
+        batch.append(item)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _human_bytes(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit in {"bytes", "KB"} else f"{size:.1f} {unit}"
+        size /= 1024
+    raise AssertionError("Unreachable byte formatting")
+
+
+def sweep_download_staging(settings: Settings) -> int:
+    """Remove archives abandoned by a disconnected client before the response finished."""
+
+    staging = settings.staging_dir
+    try:
+        staging.mkdir(parents=True, exist_ok=True)
+        candidates = list(staging.glob(f"{DOWNLOAD_STAGING_PREFIX}*.zip"))
+    except OSError:
+        logger.warning("gallery_download_staging_unavailable", extra={"operation": "startup"})
+        return 0
+    removed = 0
+    cutoff = time.time() - DOWNLOAD_STAGING_MAX_AGE_SECONDS
+    for candidate in candidates:
+        try:
+            if candidate.stat().st_mtime > cutoff:
+                continue
+            candidate.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 @dataclass
@@ -116,8 +176,7 @@ class GalleryService:
             model: type[Item], ids: list[str]
         ) -> list[Item]:
             result: list[Item] = []
-            for offset in range(0, len(ids), 500):
-                batch = ids[offset : offset + 500]
+            for batch in _batched(ids):
                 rows = list(
                     session.scalars(
                         select(model).where(model.owner_id == owner_id, model.id.in_(batch))
@@ -143,8 +202,7 @@ class GalleryService:
                     (Favorite, Favorite.generation_id, payload.generation_ids),
                     (CollectionFavorite, CollectionFavorite.collection_id, payload.collection_ids),
                 ):
-                    for offset in range(0, len(ids), 500):
-                        batch = ids[offset : offset + 500]
+                    for batch in _batched(ids):
                         favorites = set(
                             session.scalars(
                                 select(column).where(model.owner_id == owner_id, column.in_(batch))
@@ -190,11 +248,13 @@ class GalleryService:
                 (Favorite, Favorite.generation_id, payload.generation_ids),
                 (CollectionFavorite, CollectionFavorite.collection_id, payload.collection_ids),
             ):
-                existing = set(
-                    session.scalars(
-                        select(column).where(model.owner_id == owner_id, column.in_(ids))
+                existing = {
+                    item
+                    for batch in _batched(ids)
+                    for item in session.scalars(
+                        select(column).where(model.owner_id == owner_id, column.in_(batch))
                     )
-                )
+                }
                 additions.extend(
                     model(owner_id=owner_id, **{column.key: item})
                     for item in ids
@@ -211,29 +271,44 @@ class GalleryService:
         raise AssertionError("Unreachable favorite retry")
 
     def download(self, session: Session, *, owner_id: str, payload: GallerySelection) -> Path:
+        # Resolve everything the archive needs, release the database connection, and
+        # only then write to disk: assembly can take many seconds for large folders.
+        entries, total_bytes = self._download_manifest(session, owner_id, payload)
+        staging = self.assets.settings.staging_dir
+        self._require_download_capacity(staging, entries, total_bytes)
+        session.close()
+        return self._write_download_archive(staging, entries)
+
+    def _download_manifest(
+        self, session: Session, owner_id: str, payload: GallerySelection
+    ) -> tuple[list[tuple[str, str]], int]:
         chosen = self.selection(session, owner_id, payload)
-        contents = list(
-            session.scalars(
+        contents = [
+            item
+            for batch in _batched(chosen.subtree_ids)
+            for item in session.scalars(
                 select(Generation).where(
                     Generation.owner_id == owner_id,
-                    Generation.collection_id.in_(chosen.subtree_ids),
+                    Generation.collection_id.in_(batch),
                 )
             )
-        )
+        ]
         sources = {item.id: item for item in [*chosen.generations, *contents]}
-        artifacts = list(
-            session.scalars(
+        artifacts = [
+            item
+            for batch in _batched(sources)
+            for item in session.scalars(
                 select(Artifact)
                 .where(
                     Artifact.owner_id == owner_id,
-                    Artifact.generation_id.in_(sources),
+                    Artifact.generation_id.in_(batch),
                     Artifact.kind == "image",
                 )
                 .order_by(
                     Artifact.generation_id, Artifact.sequence, Artifact.batch_index, Artifact.id
                 )
             )
-        )
+        ]
         if not artifacts:
             raise AppError(
                 "download_empty",
@@ -242,10 +317,9 @@ class GalleryService:
             )
         folders = {
             item.id: item
+            for batch in _batched(chosen.subtree_ids)
             for item in session.scalars(
-                select(Collection).where(
-                    Collection.owner_id == owner_id, Collection.id.in_(chosen.subtree_ids)
-                )
+                select(Collection).where(Collection.owner_id == owner_id, Collection.id.in_(batch))
             )
         }
         folder_paths: dict[str, Path] = {}
@@ -257,23 +331,93 @@ class GalleryService:
                     folder_paths[item_id] = folder_paths.get(folder.parent_id or "", Path()) / (
                         f"{name or 'Collection'}-{folder.id}"
                     )
-        with NamedTemporaryFile(prefix="gallery-download-", suffix=".zip", delete=False) as temp:
+        entries: list[tuple[str, str]] = []
+        total_bytes = 0
+        for artifact in artifacts:
+            generation = sources[artifact.generation_id]
+            directory = folder_paths.get(generation.collection_id or "", Path())
+            suffix = Path(artifact.storage_path).suffix
+            archive_name = (
+                directory / f"generation-{generation.id}" / f"image-{artifact.id}{suffix}"
+            )
+            entries.append((artifact.storage_path, archive_name.as_posix()))
+            total_bytes += max(0, int(artifact.byte_size or 0))
+        return entries, total_bytes
+
+    def _require_download_capacity(
+        self, staging: Path, entries: list[tuple[str, str]], total_bytes: int
+    ) -> None:
+        settings = self.assets.settings
+        # ZIP_STORED copies every image verbatim, so the archive is the sum of its
+        # images plus a small per-entry header.
+        required = total_bytes + len(entries) * _ZIP_ENTRY_OVERHEAD_BYTES + _ZIP_TRAILER_BYTES
+        if required > settings.download_max_bytes:
+            raise AppError(
+                "download_too_large",
+                f"This selection would produce about {_human_bytes(required)}, more than the "
+                f"{_human_bytes(settings.download_max_bytes)} download limit. "
+                "Download fewer items, or one folder at a time.",
+                status_code=507,
+                details={"required_bytes": required, "limit_bytes": settings.download_max_bytes},
+            )
+        staging.mkdir(parents=True, exist_ok=True)
+        available = shutil.disk_usage(staging).free - settings.download_free_space_margin_bytes
+        if required > available:
+            raise AppError(
+                "download_too_large",
+                f"This selection needs about {_human_bytes(required)} of temporary space and "
+                f"only {_human_bytes(max(0, available))} is free. "
+                "Download fewer items, or one folder at a time.",
+                status_code=507,
+                details={"required_bytes": required, "available_bytes": max(0, available)},
+            )
+
+    def _write_download_archive(self, staging: Path, entries: list[tuple[str, str]]) -> Path:
+        staging.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            prefix=DOWNLOAD_STAGING_PREFIX, suffix=".zip", dir=staging, delete=False
+        ) as temp:
             path = Path(temp.name)
         try:
             # Image formats are already compressed. Build on disk so large folder
             # downloads do not require holding their contents in server memory.
-            with ZipFile(path, "w", compression=ZIP_STORED) as archive:
-                for artifact in artifacts:
-                    source = self.assets.open(artifact.storage_path)
-                    generation = sources[artifact.generation_id]
-                    directory = folder_paths.get(generation.collection_id or "", Path())
-                    archive_name = (
-                        directory
-                        / f"generation-{generation.id}"
-                        / (f"image-{artifact.id}{source.suffix}")
-                    )
-                    archive.write(source, arcname=archive_name.as_posix())
+            written = skipped = 0
+            with ZipFile(path, "w", compression=ZIP_STORED, allowZip64=True) as archive:
+                for storage_path, archive_name in entries:
+                    try:
+                        source = self.assets.open(storage_path)
+                    except AppError:
+                        # A single pruned or missing file must not fail the whole archive.
+                        skipped += 1
+                        continue
+                    archive.write(source, arcname=archive_name)
+                    written += 1
+            if skipped:
+                logger.warning(
+                    "gallery_download_skipped_missing_artifacts=%d", skipped, extra=_DOWNLOAD_LOG
+                )
+            if not written:
+                raise AppError(
+                    "download_empty",
+                    "No images are available to download in this selection.",
+                    status_code=409,
+                )
             return path
+        except OSError as error:
+            path.unlink(missing_ok=True)
+            if error.errno in _OUT_OF_SPACE_ERRNOS:
+                raise AppError(
+                    "download_failed",
+                    "The appliance ran out of temporary space while preparing this download. "
+                    "Download fewer items, or one folder at a time.",
+                    status_code=507,
+                ) from error
+            logger.exception("gallery_download_archive_failed", extra=_DOWNLOAD_LOG)
+            raise AppError(
+                "download_failed",
+                "The download could not be prepared. Try again, or select fewer items.",
+                status_code=500,
+            ) from error
         except BaseException:
             path.unlink(missing_ok=True)
             raise
@@ -327,14 +471,16 @@ class GalleryService:
                 collection_ids=[item.id for item in chosen.roots],
             )
 
-        contents = list(
-            session.scalars(
+        contents = [
+            item
+            for batch in _batched(chosen.subtree_ids)
+            for item in session.scalars(
                 select(Generation).where(
                     Generation.owner_id == owner_id,
-                    Generation.collection_id.in_(chosen.subtree_ids),
+                    Generation.collection_id.in_(batch),
                 )
             )
-        )
+        ]
         sources = [*chosen.generations, *contents]
         if any(item.status not in TERMINAL_STATUSES or item.pending_delete for item in sources):
             raise AppError(

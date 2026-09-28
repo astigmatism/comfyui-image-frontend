@@ -20,6 +20,11 @@ services:
         required: false
     volumes:
       - application-data:/data
+    # Gallery selection downloads assemble their ZIP under CIF_TEMP_DIR, which
+    # defaults to /data/tmp on this volume. Keep it that way when the service runs
+    # with `read_only: true` and a small `/tmp` tmpfs: an archive can be many
+    # gigabytes because images are stored uncompressed, and a tmpfs would have to
+    # hold all of it in memory.
     # Allows host.docker.internal URLs to reach services running directly on
     # the Docker host. The household worker default uses its supplied LAN URL
     # while the CPU prompt service uses the shared ComfyUI Docker network.

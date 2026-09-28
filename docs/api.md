@@ -486,8 +486,17 @@ and `collection_ids` with status 200.
 batch image and nested folder contents, with overlapping selections included once. Folder paths
 use sanitized names and IDs; generation and artifact IDs prevent filename collisions. Cards without
 images contribute no files; a selection with no images returns 409 `download_empty`. Active
-generations contribute only images already available. The archive is built on disk and the temporary
-file is removed after the response or if archive creation fails.
+generations contribute only images already available. An image whose stored file is missing is
+skipped; when nothing remains the response is 409 `download_empty`.
+
+The archive is assembled on disk under `CIF_TEMP_DIR` (default `$CIF_DATA_DIR/tmp`), not the
+container `/tmp`, and the temporary file is removed after the response, if archive creation fails,
+or on the next startup when a disconnected client abandoned it. Images are stored uncompressed, so
+the archive needs approximately the sum of the selected image sizes. A selection larger than
+`CIF_DOWNLOAD_MAX_BYTES`, or one that would not leave `CIF_DOWNLOAD_FREE_SPACE_MARGIN_BYTES` free in
+the staging filesystem, returns 507 `download_too_large` before any file is written, with
+`details.required_bytes`. Running out of space while writing returns 507 `download_failed`. The
+database session is released before assembly begins, so a large archive does not hold a connection.
 
 ## Generation summaries and detail
 

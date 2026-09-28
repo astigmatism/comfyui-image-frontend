@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import errno
+import os
+import time
 from functools import partial
 from io import BytesIO
-from pathlib import PurePosixPath
-from tempfile import NamedTemporaryFile
+from pathlib import Path, PurePosixPath
+from tempfile import gettempdir
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
 from app.main import create_app
 from app.models import Artifact, Generation
+from app.services import gallery as gallery_service
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from tests.conftest import csrf
@@ -79,14 +84,18 @@ def test_bulk_favorites_bookmark_explicit_cards_without_recursing(settings_facto
 def test_bulk_download_includes_nested_batches_once_and_cleans_up(
     settings_factory, fake_state, monkeypatch, tmp_path
 ):
-    del fake_state
-    downloads = tmp_path / "downloads"
-    downloads.mkdir()
-    monkeypatch.setattr(
-        "app.services.gallery.NamedTemporaryFile", partial(NamedTemporaryFile, dir=downloads)
-    )
+    del fake_state, tmp_path
+    staged: list[Path] = []
+    original = gallery_service.NamedTemporaryFile
+
+    def record_staging(*args, **kwargs):
+        staged.append(Path(kwargs["dir"]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.gallery.NamedTemporaryFile", record_staging)
     app = create_app(settings_factory(enable_background_worker=True))
     with TestClient(app) as client:
+        staging = app.state.container.settings.staging_dir
         provision_user(client)
         parent = folder(client, "Studies")
         child = folder(client, "Winter", parent["id"])
@@ -105,6 +114,11 @@ def test_bulk_download_includes_nested_batches_once_and_cleans_up(
         assert response.status_code == 200, response.text
         assert response.headers["content-type"] == "application/zip"
         assert 'filename="gallery-selection.zip"' in response.headers["content-disposition"]
+        # Archives are staged inside the writable data volume, never the container /tmp,
+        # which deployments mount as a small tmpfs under a read-only root filesystem.
+        assert staged == [staging]
+        assert staging.is_relative_to(app.state.container.settings.data_dir)
+        assert staging != Path(gettempdir())
         expected = [
             item
             for detail in (batch_detail, outside_detail)
@@ -124,17 +138,145 @@ def test_bulk_download_includes_nested_batches_once_and_cleans_up(
                 name.startswith(f"Studies-{parent['id']}/Winter-{child['id']}/") for name in names
             )
             assert any(name.startswith(f"generation-{outside['id']}/") for name in names)
-        assert not list(downloads.iterdir())
+        assert not list(staging.iterdir())
 
-        def fail_write(*args, **kwargs):
-            raise OSError("simulated full disk")
+        # A batched manifest must not drop or duplicate rows when the selection spans
+        # more IN-clause chunks than a single statement can bind.
+        monkeypatch.setattr("app.services.gallery.BATCH_SIZE", 1)
+        chunked = client.post(
+            "/api/gallery/download", headers={"X-CSRF-Token": csrf(client)}, json=payload
+        )
+        assert chunked.status_code == 200, chunked.text
+        with ZipFile(BytesIO(chunked.content)) as archive:
+            assert sorted(archive.namelist()) == sorted(names)
+        assert not list(staging.iterdir())
 
-        monkeypatch.setattr("app.services.gallery.ZipFile.write", fail_write)
-        with pytest.raises(OSError, match="simulated full disk"):
-            client.post(
-                "/api/gallery/download", headers={"X-CSRF-Token": csrf(client)}, json=payload
+
+def test_download_reports_capacity_limits_instead_of_failing(
+    settings_factory, fake_state, monkeypatch
+):
+    del fake_state
+    app = create_app(settings_factory(enable_background_worker=True))
+    with TestClient(app) as client:
+        settings = app.state.container.settings
+        staging = settings.staging_dir
+        provision_user(client)
+        image = create_generation(client, "capacity guard")
+        wait_for_status(client, image["id"], "succeeded")
+        headers = {"X-CSRF-Token": csrf(client)}
+        payload = {"generation_ids": [image["id"]]}
+        post = partial(client.post, "/api/gallery/download", headers=headers, json=payload)
+
+        # A selection larger than the configured ceiling is refused before any file exists.
+        monkeypatch.setattr(settings, "download_max_bytes", 1)
+        refused = post()
+        assert refused.status_code == 507, refused.text
+        assert refused.json()["error"]["code"] == "download_too_large"
+        assert "Download fewer items" in refused.json()["error"]["message"]
+        assert not list(staging.iterdir()) if staging.is_dir() else True
+        monkeypatch.undo()
+
+        # So is a selection that would not fit in the staging filesystem.
+        monkeypatch.setattr(
+            "app.services.gallery.shutil.disk_usage",
+            lambda _: SimpleNamespace(total=0, used=0, free=0),
+        )
+        cramped = post()
+        assert cramped.status_code == 507, cramped.text
+        assert cramped.json()["error"]["code"] == "download_too_large"
+        assert "is free" in cramped.json()["error"]["message"]
+        monkeypatch.undo()
+
+        # Running out of space mid-archive is reported, not raised as HTTP 500.
+        def no_space(*args, **kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr("app.services.gallery.ZipFile.write", no_space)
+        full = post()
+        assert full.status_code == 507, full.text
+        assert full.json()["error"]["code"] == "download_failed"
+        assert "temporary space" in full.json()["error"]["message"]
+        assert not list(staging.iterdir())
+        monkeypatch.undo()
+
+        # Any other archive failure also stays inside the error envelope.
+        def broken(*args, **kwargs):
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr("app.services.gallery.ZipFile.write", broken)
+        denied = post()
+        assert denied.status_code == 500, denied.text
+        assert denied.json()["error"]["code"] == "download_failed"
+        assert not list(staging.iterdir())
+        monkeypatch.undo()
+
+        assert post().status_code == 200
+
+
+def test_download_tolerates_missing_artifact_files(settings_factory, fake_state):
+    del fake_state
+    app = create_app(settings_factory(enable_background_worker=True))
+    with TestClient(app) as client:
+        container = app.state.container
+        provision_user(client)
+        kept = create_generation(client, "kept image")
+        pruned = create_generation(client, "pruned image")
+        kept_detail = wait_for_status(client, kept["id"], "succeeded")
+        wait_for_status(client, pruned["id"], "succeeded")
+        headers = {"X-CSRF-Token": csrf(client)}
+        payload = {"generation_ids": [kept["id"], pruned["id"]]}
+        with container.db.session_factory() as session:
+            paths = list(
+                session.scalars(
+                    select(Artifact.storage_path).where(Artifact.generation_id == pruned["id"])
+                )
             )
-        assert not list(downloads.iterdir())
+        assert paths
+        for relative in paths:
+            (container.settings.data_dir / relative).unlink()
+
+        # One pruned file must not fail an otherwise complete archive.
+        response = client.post("/api/gallery/download", headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        with ZipFile(BytesIO(response.content)) as archive:
+            names = archive.namelist()
+        assert all(pruned["id"] not in name for name in names)
+        assert any(kept["id"] in name for name in names)
+        assert len(names) == kept_detail["image_count"]
+
+        # When nothing survives, the selection reports the same empty result as before.
+        empty = client.post(
+            "/api/gallery/download", headers=headers, json={"generation_ids": [pruned["id"]]}
+        )
+        assert empty.status_code == 409, empty.text
+        assert empty.json()["error"]["code"] == "download_empty"
+        assert not list(container.settings.staging_dir.iterdir())
+
+
+def test_sweep_download_staging_reclaims_abandoned_archives(settings_factory, fake_state):
+    del fake_state
+    settings = settings_factory()
+    staging = settings.staging_dir
+    staging.mkdir(parents=True, exist_ok=True)
+    stale = staging / f"{gallery_service.DOWNLOAD_STAGING_PREFIX}stale.zip"
+    fresh = staging / f"{gallery_service.DOWNLOAD_STAGING_PREFIX}fresh.zip"
+    unrelated = staging / "keep-me.txt"
+    for item in (stale, fresh, unrelated):
+        item.write_bytes(b"x")
+    aged = time.time() - gallery_service.DOWNLOAD_STAGING_MAX_AGE_SECONDS - 60
+    os.utime(stale, (aged, aged))
+
+    assert gallery_service.sweep_download_staging(settings) == 1
+    assert not stale.exists()
+    assert fresh.exists()
+    assert unrelated.exists()
+
+    # A missing staging directory is created rather than failing startup.
+    for item in (fresh, unrelated):
+        item.unlink()
+    staging.rmdir()
+    assert gallery_service.sweep_download_staging(settings) == 0
+    assert staging.is_dir()
 
 
 @pytest.mark.parametrize("operation", ["favorite", "download"])

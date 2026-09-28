@@ -169,6 +169,13 @@ class Settings(BaseSettings):
     upload_max_pixels: int = 50_000_000
     thumbnail_max_edge: int = 640
 
+    # Staging area for request-scoped temporary files that can be far larger than
+    # the container's /tmp. Deployments run with a read-only root filesystem and a
+    # small tmpfs, so this defaults inside the writable data volume.
+    temp_dir: Path | None = None
+    download_max_bytes: int = Field(default=8 * 1024 * 1024 * 1024, gt=0)
+    download_free_space_margin_bytes: int = Field(default=256 * 1024 * 1024, ge=0)
+
     login_max_attempts: int = 6
     login_window_seconds: int = 300
     login_block_seconds: int = 300
@@ -248,6 +255,7 @@ class Settings(BaseSettings):
     def derive_paths_and_validate(self) -> Settings:
         self.data_dir = self.data_dir.resolve()
         self.database_path = (self.database_path or self.data_dir / "app.db").resolve()
+        self.temp_dir = (self.temp_dir or self.data_dir / "tmp").resolve()
         self.frontend_dist = self.frontend_dist.resolve()
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
@@ -336,6 +344,13 @@ class Settings(BaseSettings):
     @property
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
+
+    @property
+    def staging_dir(self) -> Path:
+        """Writable location for request-scoped temporary files, never the container /tmp."""
+
+        assert self.temp_dir is not None
+        return self.temp_dir
 
     @property
     def configured_comfyui_instances(self) -> tuple[ComfyUIInstanceConfig, ...]:

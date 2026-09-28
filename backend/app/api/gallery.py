@@ -117,7 +117,6 @@ def download_selection(
     path = GalleryService(container.generations, container.collections).download(
         session, owner_id=context.user.id, payload=payload
     )
-    session.close()
     return FileResponse(
         path,
         media_type="application/zip",
