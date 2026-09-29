@@ -1563,13 +1563,17 @@ test("active generation ETA anchors the server estimate to the client clock", ()
   );
 });
 
-test("galleryMarkup shows the favorites empty state only while the filter is on", () => {
-  const empty = galleryMarkup([], { favoritesFilter: true });
+test("galleryMarkup shows a filter-specific empty state and folder tiles only unfiltered", () => {
+  const empty = galleryMarkup([], { favoritesMode: "favorites" });
   assert.match(empty, /No favorites in this view/);
   assert.match(empty, /turn off the favorites filter/);
   assert.doesNotMatch(empty, /No generations yet|This collection is empty/);
   assert.doesNotMatch(galleryMarkup([]), /No favorites in this view/);
   assert.doesNotMatch(galleryMarkup([], { currentCollectionId: "c1" }), /No favorites in this view/);
+  const unfavoritedEmpty = galleryMarkup([], { favoritesMode: "unfavorited" });
+  assert.match(unfavoritedEmpty, /No unfavorited items in this view/);
+  assert.match(unfavoritedEmpty, /Everything here is already a favorite/);
+  assert.doesNotMatch(unfavoritedEmpty, /No favorites in this view|No generations yet/);
   const collection = { id: "c1", name: "Saved <folder>", is_favorite: true, generation_count: 2 };
   const generation = {
     id: "g1", workflow_display_name: "Portrait Workflow", status: "succeeded",
@@ -1578,40 +1582,54 @@ test("galleryMarkup shows the favorites empty state only while the filter is on"
   };
   const filtered = galleryMarkup([generation], {
     currentCollectionId: null,
-    favoritesFilter: true,
+    favoritesMode: "favorites",
     collections: [collection],
   });
-  assert.match(filtered, /class="collection-tile is-favorited"/);
   assert.match(filtered, /class="gallery-card is-favorited status-succeeded"/);
-  assert.match(filtered, /Saved &lt;folder&gt;/);
   assert.doesNotMatch(filtered, /No favorites in this view/);
+  // Folder tiles belong to the unfiltered view only; both filtered states show
+  // generation cards, because a folder subtree ignores the filter.
+  const unfiltered = galleryMarkup([generation], { currentCollectionId: null, collections: [collection] });
+  assert.match(unfiltered, /class="collection-tile is-favorited"/);
+  assert.match(unfiltered, /Saved &lt;folder&gt;/);
 });
 
-test("topbar favorites button is an SVG toggle with a pressed state", () => {
-  const shell = shellMarkup({
+test("topbar favorites button cycles three states under one accessible name", () => {
+  const shellFor = (favoritesMode) => shellMarkup({
     session: { user: { role: "user", username: "artist" } },
     collections: [],
-    favoritesFilter: false,
+    favoritesMode,
   });
-  const button = shell.match(/<button[^>]*data-action="toggle-favorites-filter"[^>]*>/)?.[0] ?? "";
+  const buttonOf = (shell) => shell.match(/<button[^>]*data-action="toggle-favorites-filter"[^>]*>/)?.[0] ?? "";
+  const shell = shellFor("all");
+  const button = buttonOf(shell);
   assert.match(button, /aria-label="Favorites"/);
   assert.match(button, /aria-pressed="false"/);
   assert.match(button, /title="Show only favorites"/);
+  assert.match(button, /data-favorites-mode="all"/);
   assert.match(
     shell,
     /<button[^>]*data-action="toggle-favorites-filter"[^>]*><svg viewBox="0 0 24 24"[^>]*><path d="M12 21s-7\.2-4\.4-9\.5-8\.7/
   );
+  // The slash ships with every copy of the icon and is revealed by CSS, so cycling
+  // states only rewrites attributes and the label.
+  assert.match(shell, /class="favorites-slash-backing"/);
+  assert.match(shell, /class="favorites-slash"/);
   assert.doesNotMatch(shell, /♡/);
   assert.match(shell, /class="favorites-launch-label">Favorites/);
-  const pressed = shellMarkup({
-    session: { user: { role: "user", username: "artist" } },
-    collections: [],
-    favoritesFilter: true,
-  });
-  assert.match(
-    pressed.match(/<button[^>]*data-action="toggle-favorites-filter"[^>]*>/)?.[0] ?? "",
-    /aria-pressed="true"/,
-  );
+
+  const favorites = shellFor("favorites");
+  assert.match(buttonOf(favorites), /aria-pressed="true"/);
+  assert.match(buttonOf(favorites), /title="Showing only favorites"/);
+  assert.match(buttonOf(favorites), /aria-label="Favorites"/);
+  assert.match(favorites, /class="favorites-launch-label">Favorites/);
+
+  const unfavorited = shellFor("unfavorited");
+  assert.match(buttonOf(unfavorited), /aria-pressed="mixed"/);
+  assert.match(buttonOf(unfavorited), /title="Showing only unfavorited items"/);
+  assert.match(buttonOf(unfavorited), /aria-label="Favorites"/);
+  assert.match(buttonOf(unfavorited), /data-favorites-mode="unfavorited"/);
+  assert.match(unfavorited, /class="favorites-launch-label">Unfavorited/);
 });
 
 test("one generation renders one card while progressive media changes in place", () => {

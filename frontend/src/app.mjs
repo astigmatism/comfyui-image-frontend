@@ -16,6 +16,13 @@ import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoVi
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
 import {
+  favoritesFilterActive,
+  favoritesFilterPresentation,
+  favoritesMode,
+  favoritesModeMatches,
+  nextFavoritesMode,
+} from "./gallery-view.mjs";
+import {
   CHECKPOINT_TIER_DEFINITIONS,
   MAX_BATCH_GENERATION_ITEMS,
   MAX_GENERATION_QUANTITY,
@@ -191,7 +198,7 @@ const state = {
   generations: [],
   nextCursor: null,
   loadingMore: false,
-  favoritesFilter: false,
+  favoritesMode: "all",
   photoViewerDetachedGeneration: null,
   galleryScale: 45,
   galleryLayout: "grouped",
@@ -621,7 +628,7 @@ async function handleClick(event) {
     else if (action === "recall") await recall(target.dataset.generationId);
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
     else if (action === "toggle-collection-favorite") await toggleCollectionFavorite(target.dataset.collectionId, target);
-    else if (action === "toggle-favorites-filter") toggleFavoritesFilter(target);
+    else if (action === "toggle-favorites-filter") toggleFavoritesFilter();
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
@@ -2422,6 +2429,7 @@ async function enterApplication() {
   state.collectionsMessage = null;
   setGalleryRoute(collectionIdFromHash());
   state.galleryLayout = "grouped";
+  state.favoritesMode = "all";
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
@@ -2805,8 +2813,9 @@ function galleryNextCursor() {
 }
 
 function visibleGenerations() {
-  return state.favoritesFilter
-    ? state.generations.filter((generation) => generation.is_favorite)
+  const mode = favoritesMode(state);
+  return favoritesFilterActive(mode)
+    ? state.generations.filter((generation) => favoritesModeMatches(mode, generation))
     : state.generations;
 }
 
@@ -2889,7 +2898,22 @@ function renderCollectionBarHost() {
   host.innerHTML = renderCollectionBar(state.collections, state.currentCollectionId, {
     collectionsStatus: state.collectionsStatus,
   });
-  document.querySelector('[data-action="toggle-favorites-filter"]')?.setAttribute("aria-pressed", String(state.favoritesFilter));
+  syncFavoritesFilterControl();
+}
+
+// One button cycles three states. The accessible name stays "Favorites" so the
+// control keeps one identity; aria-pressed carries the tri-state, while the title
+// and the visible label say which way the view is filtered.
+function syncFavoritesFilterControl() {
+  const button = document.querySelector('[data-action="toggle-favorites-filter"]');
+  if (!button) return;
+  const mode = favoritesMode(state);
+  const presentation = favoritesFilterPresentation(mode);
+  button.dataset.favoritesMode = mode;
+  button.setAttribute("aria-pressed", presentation.pressed);
+  button.setAttribute("title", presentation.title);
+  const label = button.querySelector(".favorites-launch-label");
+  if (label && label.textContent !== presentation.label) label.textContent = presentation.label;
 }
 
 function galleryPageUrl(cursor = null, collectionId = currentGalleryRoute()) {
@@ -4859,14 +4883,15 @@ function renderGallery() {
   const focusedCard = focused?.closest("[data-gallery-card]");
   const focusedIndex = focusedCard ? [...gallery.querySelectorAll("[data-gallery-card]")].indexOf(focusedCard) : -1;
   galleryHover.preserveDuring(() => {
+    const mode = favoritesMode(state);
     reconcileGallery(gallery, galleryMarkup(visibleGenerations(), {
       status: state.galleryStatus,
       message: state.galleryMessage,
-      collections: state.favoritesFilter
-        ? state.collections.filter((item) => item.is_favorite)
-        : state.collections,
+      // A filtered view is generation cards only: a folder tile would offer a
+      // subtree whose contents ignore the filter.
+      collections: favoritesFilterActive(mode) ? [] : state.collections,
       currentCollectionId: state.currentCollectionId,
-      favoritesFilter: state.favoritesFilter,
+      favoritesMode: mode,
       promptGroups: state.galleryLayout === "classic" ? null : galleryGroups?.options(),
       galleryLayout: state.galleryLayout,
     }));
@@ -5240,7 +5265,7 @@ async function refreshGeneration(
       inserted ||
       state.generations[index]?.id !== id ||
       previous?.prompt_fingerprint !== detail.prompt_fingerprint ||
-      (state.favoritesFilter && Boolean(previous?.is_favorite) !== Boolean(detail.is_favorite));
+      (favoritesFilterActive(favoritesMode(state)) && Boolean(previous?.is_favorite) !== Boolean(detail.is_favorite));
     if (galleryStructureChanged) renderGallery();
     else upsertGalleryCard(detail);
     syncServerControls();
@@ -5391,7 +5416,7 @@ async function toggleFavorite(id, button) {
     const updated = { ...generation, ...(favorite?.generation || {}), is_favorite: !wasFavorite };
     state.generations = state.generations.map((item) => item.id === id ? updated : item);
     if (state.photoViewerGenerationId === id) state.photoViewerDetachedGeneration = updated;
-    if (state.favoritesFilter) renderGallery();
+    if (favoritesFilterActive(favoritesMode(state))) renderGallery();
     else if (state.generations.some((item) => item.id === id)) upsertGalleryCard(updated);
     updatePhotoViewerFavoriteControl();
     toast(wasFavorite ? "Removed from Favorites." : "Added to Favorites.", "success");
@@ -5416,7 +5441,7 @@ async function toggleCollectionFavorite(id, button) {
       updated = await api(`/api/collections/${encodeURIComponent(id)}/favorite`, { method: "PUT" });
     }
     state.collections = state.collections.map((item) => item.id === id ? updated : item);
-    if (state.favoritesFilter) renderGallery();
+    if (favoritesFilterActive(favoritesMode(state))) renderGallery();
     else {
       const tile = document.querySelector(`#gallery .collection-tile[data-collection-id="${CSS.escape(id)}"]`);
       if (tile) galleryHover.preserveDuring(() => reconcileGalleryCard(tile, collectionTileMarkup(updated)));
@@ -5429,10 +5454,9 @@ async function toggleCollectionFavorite(id, button) {
   }
 }
 
-function toggleFavoritesFilter(button) {
-  state.favoritesFilter = !state.favoritesFilter;
-  button.setAttribute("aria-pressed", String(state.favoritesFilter));
-  button.setAttribute("title", state.favoritesFilter ? "Showing only favorites" : "Show only favorites");
+function toggleFavoritesFilter() {
+  state.favoritesMode = nextFavoritesMode(favoritesMode(state));
+  syncFavoritesFilterControl();
   renderGallery();
 }
 

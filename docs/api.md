@@ -447,6 +447,7 @@ them. They resolve only to current validated publications and do not restore leg
 | `PATCH` | `/api/collections/{id}` | Rename and/or move a collection |
 | `DELETE` | `/api/collections/{id}` | Recursively delete a collection subtree and its generations; `202` while active deletion reconciles |
 | `POST` | `/api/generations/{id}/move` | Move an owned generation to a collection or to unfiled root |
+| `GET` | `/api/gallery/items?collection_id=&favorites_only=&unfavorited_only=` | Whole-view inventory of one gallery view, for selecting everything including unloaded items |
 | `POST` | `/api/gallery/transfer` | Move or copy a mixed selection of generations and collection subtrees |
 | `POST` | `/api/gallery/delete` | Delete a mixed selection using the existing cancellation and cleanup lifecycle |
 | `POST` | `/api/gallery/favorite` | Add explicitly selected image and folder cards to Favorites |
@@ -488,6 +489,22 @@ before any mutation or download; inaccessible IDs return 404, including for admi
 For transfer, delete, and download, a selected folder
 subsumes its descendants and separately selected generations inside it, so overlapping Favorites
 selections affect each item once.
+
+`GET /api/gallery/items` returns the inventory of one gallery view — `generations` (id,
+`collection_id`, `status`, `image_count`, `is_favorite`) and `collection_ids` — so a client can
+select an entire view, including items it has not paged in yet. `collection_id` follows the same
+empty-versus-absent convention as the listing above. `favorites_only=true` restricts the inventory
+to favorited generations and `unfavorited_only=true` to generations with no favorite; requesting
+both returns 422 `invalid_scope`. Either filtered mode returns an empty `collection_ids`, because a
+filtered gallery view shows generation cards only: a folder would carry contents that ignore the
+filter. New arrivals are never added to a selection retroactively; the snapshot is what the client
+selected.
+
+A selection may carry that view as an explicit `scope` (`collection_id`, `favorites_only`,
+`unfavorited_only`). The server re-validates the snapshot before mutating anything and returns 409
+`selection_changed` when an item has moved, is pending delete, no longer matches the scope's
+favorite filter, or — for either filtered scope — when the request names a folder at all. A scope
+requesting both filters is rejected as 422.
 
 `POST /api/gallery/transfer` also takes `operation` (`"move"` or `"copy"`) and `collection_id`
 (destination folder ID, or null for Home). The destination cannot be inside a selected subtree;

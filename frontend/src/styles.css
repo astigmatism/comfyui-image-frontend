@@ -207,6 +207,13 @@ code {
   stroke-width: 1.8;
 }
 
+/* The slash only belongs to the unfavorited state; it ships in every copy of the
+   icon so cycling states never rewrites the button's markup. */
+.favorites-launch-button .favorites-slash-backing,
+.favorites-launch-button .favorites-slash {
+  display: none;
+}
+
 .new-collection-launch-button {
   display: flex;
   align-items: center;
@@ -5054,6 +5061,30 @@ tr:last-child td {
 
 .favorites-launch-button[aria-pressed="true"] > svg path {
   fill: currentColor;
+}
+
+/* Unfavorited-only filter: an active filter, deliberately not gold, because gold
+   means "is a favorite" on cards and tiles. A hollow slashed heart on slate. */
+.favorites-launch-button[aria-pressed="mixed"] {
+  border-color: var(--border-strong);
+  color: var(--text-soft);
+  background: var(--surface-2);
+}
+
+.favorites-launch-button[aria-pressed="mixed"] > svg {
+  color: inherit;
+}
+
+.favorites-launch-button[aria-pressed="mixed"] .favorites-slash-backing,
+.favorites-launch-button[aria-pressed="mixed"] .favorites-slash {
+  display: initial;
+  stroke-linecap: round;
+}
+
+/* A backing stroke in the button surface keeps the slash legible across the heart. */
+.favorites-launch-button[aria-pressed="mixed"] .favorites-slash-backing {
+  stroke: var(--surface-2);
+  stroke-width: 3.4;
 }
 
 .collection-tile:has(.collection-tile-open:focus-visible),

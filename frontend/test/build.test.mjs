@@ -45,7 +45,7 @@ test("production build emits one content-addressed frontend module graph", async
   assert.doesNotMatch(index, /(?:href|src)="\/assets\/(?:styles\.css|app\.mjs)"/u);
 
   const expectedImports = {
-    app: new Set([first.assets.prompt_routing, first.assets.photo_viewer_images, first.assets.photo_viewer_preload, first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.lora_manager, first.assets.admin_loras, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.generation_countdown]),
+    app: new Set([first.assets.prompt_routing, first.assets.photo_viewer_images, first.assets.photo_viewer_preload, first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.lora_manager, first.assets.admin_loras, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.gallery_view, first.assets.generation_countdown]),
     prompt_routing: new Set(),
     image_cleanup: new Set(),
     photo_viewer_images: new Set([first.assets.image_cleanup]),

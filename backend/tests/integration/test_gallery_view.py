@@ -117,10 +117,28 @@ def test_view_inventory_scope_favorites_and_ownership(app_client):
     )
     favorites = client.get("/api/gallery/items?favorites_only=true").json()
     assert [item["id"] for item in favorites["generations"]] == [home["id"]]
-    assert favorites["collection_ids"] == [parent["id"]]
+    # A filtered view lists generation cards only: a folder would carry contents
+    # that ignore the filter, so no whole-view selection can include one.
+    assert favorites["collection_ids"] == []
+    unfavorited = client.get("/api/gallery/items?unfavorited_only=true").json()
+    assert [item["id"] for item in unfavorited["generations"]] == []
+    assert unfavorited["collection_ids"] == []
     inner = client.get("/api/gallery/items", params={"collection_id": parent["id"]}).json()
     assert [item["id"] for item in inner["generations"]] == [hidden["id"]]
     assert inner["collection_ids"] == [child["id"]]
+    inner_unfavorited = client.get(
+        "/api/gallery/items",
+        params={"collection_id": parent["id"], "unfavorited_only": True},
+    ).json()
+    assert [item["id"] for item in inner_unfavorited["generations"]] == [hidden["id"]]
+    assert inner_unfavorited["collection_ids"] == []
+    assert (
+        client.get(
+            "/api/gallery/items",
+            params={"favorites_only": True, "unfavorited_only": True},
+        ).status_code
+        == 422
+    )
     assert client.get(
         "/api/gallery/items",
         params={
@@ -137,6 +155,61 @@ def test_view_inventory_scope_favorites_and_ownership(app_client):
                 "generation_ids": [hidden["id"]],
             },
         ).status_code
+        == 409
+    )
+    # An unfavorited-view selection must still be unfavorited, and a filtered view
+    # never holds a folder, so either drift is rejected before any mutation.
+    assert (
+        client.post(
+            "/api/gallery/delete",
+            headers=headers,
+            json={
+                "scope": {"collection_id": None, "unfavorited_only": True},
+                "generation_ids": [home["id"]],
+            },
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            "/api/gallery/transfer",
+            headers=headers,
+            json={
+                "scope": {"collection_id": None, "unfavorited_only": True},
+                "collection_ids": [parent["id"]],
+                "operation": "move",
+                "collection_id": child["id"],
+            },
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            "/api/gallery/favorite",
+            headers=headers,
+            json={
+                "scope": {
+                    "collection_id": None,
+                    "favorites_only": True,
+                    "unfavorited_only": True,
+                },
+                "generation_ids": [home["id"]],
+            },
+        ).status_code
+        == 422
+    )
+    # Favoriting an unfavorited-view selection is the one bulk action that ends the
+    # view's own membership: it succeeds once, then the same snapshot is stale.
+    unfavorited_scope = {
+        "scope": {"collection_id": parent["id"], "unfavorited_only": True},
+        "generation_ids": [hidden["id"]],
+    }
+    assert (
+        client.post("/api/gallery/favorite", headers=headers, json=unfavorited_scope).status_code
+        == 200
+    )
+    assert (
+        client.post("/api/gallery/favorite", headers=headers, json=unfavorited_scope).status_code
         == 409
     )
     login_ready_admin(client)
@@ -215,7 +288,7 @@ def test_scoped_download_respects_exclusions_and_selected_folder_contents(
             "/api/gallery/download",
             headers=headers,
             json={
-                "scope": {"collection_id": None, "favorites_only": True},
+                "scope": {"collection_id": None},
                 "collection_ids": [parent["id"]],
             },
         )
@@ -224,6 +297,20 @@ def test_scoped_download_respects_exclusions_and_selected_folder_contents(
             names = archive.namelist()
             assert len(names) == inside_detail["image_count"]
             assert all(inside["id"] in name and outside["id"] not in name for name in names)
+        # Folder tiles exist in the unfiltered view only, so a folder can never be
+        # part of a filtered view's snapshot, favorited or not.
+        for scope in ({"favorites_only": True}, {"unfavorited_only": True}):
+            assert (
+                client.post(
+                    "/api/gallery/download",
+                    headers=headers,
+                    json={
+                        "scope": {"collection_id": None, **scope},
+                        "collection_ids": [parent["id"]],
+                    },
+                ).status_code
+                == 409
+            )
 
 
 def test_whole_favorites_view_download_reports_capacity_without_a_server_error(

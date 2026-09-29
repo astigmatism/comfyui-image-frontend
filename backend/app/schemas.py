@@ -751,6 +751,17 @@ class GenerationMove(APIModel):
 class GallerySelectionScope(APIModel):
     collection_id: str | None = None
     favorites_only: bool = False
+    unfavorited_only: bool = False
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> GallerySelectionScope:
+        if self.favorites_only and self.unfavorited_only:
+            raise ValueError("A view is filtered to favorites or to unfavorited items, not both.")
+        return self
+
+    @property
+    def filtered(self) -> bool:
+        return self.favorites_only or self.unfavorited_only
 
 
 class GallerySelectionGeneration(APIModel):

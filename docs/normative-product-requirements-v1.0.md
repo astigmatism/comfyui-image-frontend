@@ -82,7 +82,7 @@ The first release MUST NOT include:
 - A shared filesystem mount used by the application to read ComfyUI workflows.
 - Deleting ComfyUI history or unrelated/source-workflow files when application records are deleted.
 - Deleting or modifying anything in Ollama when application records are deleted.
-- Search, filtering, comments, notes, social features, or public links unless later added as a separate requirement. Private favorites are covered by GAL-031–GAL-034.
+- Search, filtering, comments, notes, social features, or public links unless later added as a separate requirement. Private favorites are covered by GAL-031–GAL-035.
 - A guarantee of bit-for-bit image reproduction after workflow, model, dependency, runtime, GPU, or hardware changes.
 
 ---
@@ -511,9 +511,9 @@ The authenticated application uses a two-dimensional shell:
 
 - **GAL-001:** The gallery is the main content area of the application.
 - **GAL-002:** One accepted generation MUST produce exactly one primary gallery card, regardless of terminal status, number of progressive checkpoints, or number of final batch images.
-- **GAL-003:** Newest submissions MUST appear first in gallery views, including while the favorites filter in GAL-033 is active.
+- **GAL-003:** Newest submissions MUST appear first in gallery views, including while either favorites filter state in GAL-033 is active.
 - **GAL-004:** The gallery MUST use lazy loading and cursor-based pagination or equivalent progressive loading suitable for thousands of images.
-- **GAL-005:** Search, filters other than the favorites filter, tags, and alternate gallery modes remain out of scope. Private favorites, originally excluded from the first release, are now covered by GAL-031–GAL-034.
+- **GAL-005:** Search, filters other than the three-state favorites filter, tags, and alternate gallery modes remain out of scope. Private favorites, originally excluded from the first release, are now covered by GAL-031–GAL-035.
 
 ### 17.2 Scale slider
 
@@ -558,8 +558,9 @@ The card footer is intentionally minimal.
 
 - **GAL-031:** A heart button on every generation card and collection tile MUST toggle a private binary favorite with an accessible pressed state. Favorites are the single save mechanism; there MUST NOT be separate likes or frequency counts. Favoriting a folder MUST bookmark only that folder, without favoriting its contents.
 - **GAL-032:** Favorited generation cards and collection tiles MUST show a static gold-gradient ring without hover, preserving rounded corners and visible keyboard focus. The active heart MUST retain its pink treatment.
-- **GAL-033:** The toolbar Favorites button MUST be a pressed-state toggle that filters the current gallery view to favorited items rather than a destination route. While active, the view MUST show only the favorited generation cards and favorited folder tiles among the direct contents of the open view, MUST NOT descend into subfolder trees, MUST hide prompt groups with no favorited members, MUST keep the view's cursor pagination and group controls functional, and MUST show an explicit empty state when the view has no favorites. The filter MUST persist across collection navigation within a session and MUST reset on reload and re-login without persistence storage. Unfavoriting a visible item MUST remove it from the filtered view immediately.
+- **GAL-033:** The toolbar Favorites button MUST be a single control that cycles three states — all items, favorites only, unfavorited only — filtering the current gallery view rather than acting as a destination route. It MUST keep one accessible name across the cycle and express the three states as an accessible tri-state pressed value, with a distinct visible treatment and title per state. While either filter is active, the view MUST show only the matching generation cards among the direct contents of the open view, MUST NOT show folder tiles, MUST NOT descend into subfolder trees, MUST hide prompt groups with no matching members, MUST keep the view's cursor pagination and group controls functional, and MUST show an explicit empty state naming the active filter. The state MUST persist across collection navigation within a session and MUST reset on reload and re-login without persistence storage. Favoriting or unfavoriting a visible item MUST remove it from a filtered view that no longer matches it, immediately.
 - **GAL-034:** Favorites MUST be owner-scoped and private, including against administrator content access. Writes MUST require CSRF protection and be idempotent. Deleting a generation, collection, or owning user MUST cascade its bookmarks; removing a bookmark MUST preserve the underlying content.
+- **GAL-035:** The unfavorited-only state exists so that everything without a favorite can be selected and then deleted, moved, copied, downloaded, or favorited in one bulk action. A whole-view selection in either filtered state MUST resolve server-side to matching generations only and MUST never include folders, so a bulk action started from a filtered view can never reach a favorite held inside a folder. A bulk request carrying a filtered view's scope snapshot MUST be rejected with the existing selection-changed conflict when it names a folder or a generation whose favorite membership no longer matches that filter. A scope MUST NOT request both filters at once.
 
 ---
 

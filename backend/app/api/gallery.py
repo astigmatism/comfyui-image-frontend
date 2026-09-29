@@ -13,6 +13,7 @@ from ..dependencies import (
     require_ready_csrf,
     require_ready_user,
 )
+from ..errors import AppError
 from ..schemas import (
     GalleryDeleteResult,
     GallerySelection,
@@ -39,12 +40,23 @@ def view_items(
     context: Annotated[AuthContext, Depends(require_ready_user)],
     collection_id: str | None = None,
     favorites_only: bool = False,
+    unfavorited_only: bool = False,
 ) -> GalleryViewItems:
+    if favorites_only and unfavorited_only:
+        raise AppError(
+            "invalid_scope",
+            "A view is filtered to favorites or to unfavorited items, not both.",
+            status_code=422,
+        )
     container = get_container(request)
     return GalleryService(container.generations, container.collections).view_items(
         session,
         context.user.id,
-        GallerySelectionScope(collection_id=collection_id or None, favorites_only=favorites_only),
+        GallerySelectionScope(
+            collection_id=collection_id or None,
+            favorites_only=favorites_only,
+            unfavorited_only=unfavorited_only,
+        ),
     )
 
 

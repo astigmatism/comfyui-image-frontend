@@ -36,26 +36,32 @@ test("already-favorited selections disable the bulk favorite tool and downloads 
   assert.equal(selectionPlan(new Set(["collection:parent", "generation:inside"]), state).favorites.allFavorited, false);
 });
 
-test("the favorites filter limits the selection plan to visible favorited generations", () => {
+test("each filter limits the selection plan to the generations that view shows", () => {
   const state = {
     collections,
-    favoritesFilter: true,
+    favoritesMode: "favorites",
     generations: [
       { ...generations[0], is_favorite: true, image_count: 1 },
       { ...generations[1], is_favorite: false },
     ],
   };
-  const plan = selectionPlan(new Set(["generation:inside", "generation:outside"]), state);
+  const keys = new Set(["generation:inside", "generation:outside"]);
+  const plan = selectionPlan(keys, state);
   assert.deepEqual(plan.generation_ids, ["inside"]);
   assert.deepEqual(plan.favorites.generation_ids, ["inside"]);
   assert.equal(plan.count, 1);
   assert.equal(plan.downloadable, true);
-  const unfiltered = selectionPlan(new Set(["generation:inside", "generation:outside"]), {
-    ...state,
-    favoritesFilter: false,
-  });
+  const unfiltered = selectionPlan(keys, { ...state, favoritesMode: "all" });
   assert.deepEqual(unfiltered.generation_ids, ["inside", "outside"]);
   assert.deepEqual(unfiltered.favorites.generation_ids, ["inside", "outside"]);
+  // The unfavorited view is the mirror image: the favorited card is not selectable,
+  // and what remains can still be favorited in bulk.
+  const unfavorited = selectionPlan(keys, { ...state, favoritesMode: "unfavorited" });
+  assert.deepEqual(unfavorited.generation_ids, ["outside"]);
+  assert.deepEqual(unfavorited.favorites.generation_ids, ["outside"]);
+  assert.equal(unfavorited.count, 1);
+  assert.equal(unfavorited.favorites.allFavorited, false);
+  assert.equal(unfavorited.downloadable, false);
 });
 
 test("destination dialog supports both operations and excludes selected subtree", () => {

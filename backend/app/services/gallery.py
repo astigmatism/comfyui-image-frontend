@@ -148,24 +148,28 @@ class GalleryService:
             Generation.collection_id == scope.collection_id,
             Generation.pending_delete.is_(False),
         )
-        folders = select(Collection.id).where(
-            Collection.owner_id == owner_id, Collection.parent_id == scope.collection_id
-        )
         if scope.favorites_only:
             query = query.where(favorite)
-            folders = folders.where(
-                select(CollectionFavorite.id)
-                .where(
-                    CollectionFavorite.owner_id == owner_id,
-                    CollectionFavorite.collection_id == Collection.id,
+        elif scope.unfavorited_only:
+            query = query.where(~favorite)
+        # A filtered view shows generation cards only, so its whole-view selection
+        # never carries folders: a folder would drag favorites (or non-favorites)
+        # out of the filter through its contents.
+        folder_ids: list[str] = []
+        if not scope.filtered:
+            folder_ids = list(
+                session.scalars(
+                    select(Collection.id).where(
+                        Collection.owner_id == owner_id,
+                        Collection.parent_id == scope.collection_id,
+                    )
                 )
-                .exists()
             )
         return GalleryViewItems(
             generations=[
                 GallerySelectionGeneration.model_validate(row) for row in session.execute(query)
             ],
-            collection_ids=list(session.scalars(folders)),
+            collection_ids=folder_ids,
         )
 
     def _selected_items(
@@ -197,18 +201,21 @@ class GalleryService:
                 item.collection_id != scope.collection_id or item.pending_delete
                 for item in generations
             ) or any(item.parent_id != scope.collection_id for item in collections)
-            if scope.favorites_only:
-                for model, column, ids in (
-                    (Favorite, Favorite.generation_id, payload.generation_ids),
-                    (CollectionFavorite, CollectionFavorite.collection_id, payload.collection_ids),
-                ):
-                    for batch in _batched(ids):
-                        favorites = set(
-                            session.scalars(
-                                select(column).where(model.owner_id == owner_id, column.in_(batch))
+            # A filtered view renders generation cards only, so a folder can never
+            # have been part of that view's selection.
+            changed = changed or (scope.filtered and bool(payload.collection_ids))
+            if scope.filtered:
+                for batch in _batched(payload.generation_ids):
+                    favorites = set(
+                        session.scalars(
+                            select(Favorite.generation_id).where(
+                                Favorite.owner_id == owner_id,
+                                Favorite.generation_id.in_(batch),
                             )
                         )
-                        changed = changed or not set(batch) <= favorites
+                    )
+                    matched = favorites if scope.favorites_only else set(batch) - favorites
+                    changed = changed or matched != set(batch)
             if changed:
                 raise AppError(
                     "selection_changed",

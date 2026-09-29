@@ -15,7 +15,7 @@ Install the included [`comfyui_extension/cif_artifact_cleanup`](comfyui_extensio
 - Optional server-side Prompt Assistant through an Ollama-compatible router with persisted effective-model provenance.
 - Optional browser voice input through a server-side OpenAI-compatible speech-to-text proxy; service credentials never reach the browser.
 - Persistent overall generation progress, animated folder activity including nested folders, and an auto-generation status indicator; server-owned auto generation stays pinned to its captured settings and folder across browsers, sign-out, and application restarts.
-- A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, private image and folder favorites with gold indicators and a per-view favorites filter, detail/recall, cancellation, and deletion.
+- A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, private image and folder favorites with gold indicators and a three-state per-view favorites filter (all items, favorites only, unfavorited only — so every card without a heart can be selected and bulk-deleted, moved, or copied in one action), detail/recall, cancellation, and deletion.
 - Image and folder multiselect with shared Move / Copy and Delete actions, recursive folder operations, and independent image copies. Try the [local gallery preview](docs/gallery-selection-preview.md).
 - Deterministic fake services, backend/frontend/browser tests, production image, Compose example, validation scripts, and maintained API/architecture/schema documentation.
 

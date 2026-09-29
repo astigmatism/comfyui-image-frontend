@@ -26,10 +26,14 @@ Use **Grouped / Classic** between Favorites and Gallery scale to change the gall
 Grouped is the default; the choice is saved with your account settings. Classic keeps the existing
 thumbnail proportions and scale in one continuous grid, with folder tiles above it. Its **All items**
 header counts the entire current view. **Select all** includes unloaded generations and matching
-folder tiles, including collections with more than 500 items. Favorites restricts this selection to
-matching cards and folders. Individual deselection produces a mixed checkbox. Switching layouts
+folder tiles, including collections with more than 500 items. The Favorites button cycles three
+states — all items, favorites only, unfavorited only. Either filtered state lists generation cards
+alone (no folder tiles), so **Select all** there resolves to matching images only: that is how every
+card without a heart is selected in one gesture and then deleted, moved, copied, or favorited, with
+no risk of touching a favorite stored inside a folder. Individual deselection produces a mixed
+checkbox. Switching layouts
 preserves selection, while new arrivals stay unselected. Classic also resumes any history skipped
-by collapsed prompt groups. Changing location or the Favorites filter clears selection.
+by collapsed prompt groups. Changing location or the Favorites state clears selection.
 
 Prompt groups have neutral headers with a generation count, collapse arrow, **Prompt changes**,
 and **Select group**. Hover or focus Prompt changes to compare with the immediately older group;
@@ -68,7 +72,9 @@ expand it and use **Load more in group** to retrieve its remaining cards.
    remain set, and the action is disabled when every selected card is already a favorite.
 6. Choose **Download selection** (the down arrow) to save one ZIP containing every available image
    from selected cards and folders, including batches and nested folders. Overlapping selections
-   appear once. Both Favorites and Download keep the selection so you can use another action next.
+   appear once. Both Favorites and Download keep the selection so you can use another action next,
+   except in the unfavorited-only state, where favoriting empties that view of the selected cards and
+   clears the selection with them.
    The archive is assembled under `CIF_TEMP_DIR` (by default `$CIF_DATA_DIR/tmp`, on the data
    volume) rather than the container's `/tmp`, which deployments mount as a small tmpfs under a
    read-only root filesystem. Images are stored uncompressed, so the archive needs roughly the sum

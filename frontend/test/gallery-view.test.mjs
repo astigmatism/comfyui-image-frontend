@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { galleryMarkup } from "../src/render.mjs";
-import { galleryLayoutMarkup, galleryViewChecked, galleryViewKeys, galleryViewScope } from "../src/gallery-view.mjs";
+import {
+  favoritesFilterActive,
+  favoritesFilterPresentation,
+  favoritesMode,
+  favoritesModeMatches,
+  galleryLayoutMarkup,
+  galleryViewChecked,
+  galleryViewKeys,
+  galleryViewScope,
+  nextFavoritesMode,
+} from "../src/gallery-view.mjs";
 
 test("classic removes prompt boundaries while retaining card order, folders and image proportions", () => {
   const generations = [
@@ -36,7 +46,29 @@ test("whole-view checked state includes unloaded items and never selects a new a
 test("layout defaults to grouped; scope restricts Home and Favorites explicitly", () => {
   assert.match(galleryLayoutMarkup(), /data-gallery-layout="grouped" aria-pressed="true"/);
   assert.match(galleryLayoutMarkup("classic"), /data-gallery-layout="classic" aria-pressed="true"/);
-  assert.deepEqual(galleryViewScope({}), { collection_id: null, favorites_only: false });
-  assert.deepEqual(galleryViewScope({ currentCollectionId: "studies", favoritesFilter: true }), { collection_id: "studies", favorites_only: true });
+  assert.deepEqual(galleryViewScope({}), { collection_id: null, favorites_only: false, unfavorited_only: false });
+  assert.deepEqual(galleryViewScope({ currentCollectionId: "studies", favoritesMode: "favorites" }), { collection_id: "studies", favorites_only: true, unfavorited_only: false });
+  assert.deepEqual(galleryViewScope({ currentCollectionId: "studies", favoritesMode: "unfavorited" }), { collection_id: "studies", favorites_only: false, unfavorited_only: true });
   assert.match(galleryMarkup([], { galleryLayout: "classic" }), /data-select-view/);
+});
+
+test("the favorites control cycles all, favorites, unfavorited and filters each way", () => {
+  assert.equal(favoritesMode({}), "all");
+  assert.equal(favoritesMode({ favoritesMode: "nonsense" }), "all");
+  assert.equal(nextFavoritesMode("all"), "favorites");
+  assert.equal(nextFavoritesMode("favorites"), "unfavorited");
+  assert.equal(nextFavoritesMode("unfavorited"), "all");
+  assert.equal(nextFavoritesMode(undefined), "favorites");
+  assert.deepEqual(["all", "favorites", "unfavorited"].map(favoritesFilterActive), [false, true, true]);
+
+  const favorited = { id: "a", is_favorite: true };
+  const plain = { id: "b", is_favorite: false };
+  assert.deepEqual([favorited, plain].filter((item) => favoritesModeMatches("all", item)), [favorited, plain]);
+  assert.deepEqual([favorited, plain].filter((item) => favoritesModeMatches("favorites", item)), [favorited]);
+  assert.deepEqual([favorited, plain].filter((item) => favoritesModeMatches("unfavorited", item)), [plain]);
+
+  // One accessible name across the cycle; aria-pressed carries the tri-state.
+  assert.deepEqual(favoritesFilterPresentation("all"), { pressed: "false", title: "Show only favorites", label: "Favorites" });
+  assert.deepEqual(favoritesFilterPresentation("favorites"), { pressed: "true", title: "Showing only favorites", label: "Favorites" });
+  assert.deepEqual(favoritesFilterPresentation("unfavorited"), { pressed: "mixed", title: "Showing only unfavorited items", label: "Unfavorited" });
 });

@@ -31,7 +31,13 @@ async function fixture(page, { count = 525, activity = false } = {}) {
     } else if (path === "/api/gallery/items") {
       if (data.failInventory) return route.fulfill({ status: 503, json: { error: { message: "Unavailable" } } });
       const favorites = url.searchParams.get("favorites_only") === "true";
-      result = { generations: [...data.arrivals, ...data.items].filter((item) => !favorites || item.is_favorite), collection_ids: folders.filter((item) => !favorites || item.is_favorite).map((item) => item.id) };
+      const unfavorited = url.searchParams.get("unfavorited_only") === "true";
+      const matches = (item) => (favorites ? item.is_favorite : unfavorited ? !item.is_favorite : true);
+      // A filtered view lists generation cards only, so it carries no folders.
+      result = {
+        generations: [...data.arrivals, ...data.items].filter(matches),
+        collection_ids: favorites || unfavorited ? [] : folders.map((item) => item.id),
+      };
     } else if (path.endsWith("/lookup")) {
       result = request.postDataJSON().generation_ids.map((id) => ({ generation_id: id, group: { id: Number(id.slice(1)) < 100 ? "g0" : "g100", generation_count: Number(id.slice(1)) < 100 ? Math.min(count, 100) : count - 100, previous_generation_id: null, after_cursor: Number(id.slice(1)) < 100 ? "100" : String(count) } }));
     } else if (/^\/api\/generations\/[^/]+$/.test(path)) result = [...data.arrivals, ...data.items].find((item) => item.id === path.split("/").at(-1));
@@ -80,7 +86,7 @@ test("classic selection spans unloaded cards, supports exclusions, and persists 
   expect(data.operations[0].generation_ids).toHaveLength(524);
   expect(data.operations[0].generation_ids).not.toContain("g0");
   expect(data.operations[0].collection_ids).toEqual(["folder"]);
-  expect(data.operations[0].scope).toEqual({ collection_id: null, favorites_only: false });
+  expect(data.operations[0].scope).toEqual({ collection_id: null, favorites_only: false, unfavorited_only: false });
   await page.getByRole("button", { name: "Grouped", exact: true }).click();
   await expect(selectedCount(page)).toHaveText("525 selected");
   await page.getByRole("button", { name: "Classic", exact: true }).click();
@@ -94,8 +100,9 @@ test("classic selection spans unloaded cards, supports exclusions, and persists 
   await expect(page.locator(".classic-gallery-header")).toBeVisible();
 });
 
-test("new arrivals remain unselected; Favorites selects only matching unloaded items", async ({ page }) => {
+test("new arrivals remain unselected; each filter selects only its matching unloaded items", async ({ page }) => {
   const data = await fixture(page);
+  const filter = page.getByRole("button", { name: "Favorites", exact: true });
   await page.getByRole("button", { name: "Classic", exact: true }).click();
   await all(page).click();
   await expect(selectedCount(page)).toHaveText("526 selected");
@@ -104,16 +111,43 @@ test("new arrivals remain unselected; Favorites selects only matching unloaded i
   await expect(all(page)).toHaveAttribute("aria-checked", "mixed");
   await expect(selectedCount(page)).toHaveText("526 selected");
   await expect(page.locator('[data-generation-id="arrival"] .card-select-button')).toHaveAttribute("aria-checked", "false");
-  await page.getByRole("button", { name: "Favorites", exact: true }).click();
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#gallery-selection-toolbar")).toBeHidden();
-  await expect(page.locator(".classic-gallery-count")).toHaveText("175 generations · 1 folder");
+  // Folder tiles belong to the unfiltered view only, so the count and the whole-view
+  // selection are generations alone.
+  await expect(page.locator('[data-gallery-card="collection"]')).toHaveCount(0);
+  await expect(page.locator(".classic-gallery-count")).toHaveText("175 generations");
   await all(page).click();
-  await expect(selectedCount(page)).toHaveText("176 selected");
+  await expect(selectedCount(page)).toHaveText("175 selected");
   await page.keyboard.press("Escape");
   await expect(all(page)).toHaveAttribute("aria-checked", "false");
   await all(page).focus();
   await page.keyboard.press("Control+a");
-  await expect(selectedCount(page)).toHaveText("176 selected");
+  await expect(selectedCount(page)).toHaveText("175 selected");
+  await page.keyboard.press("Escape");
+
+  // The third state is the mirror image: every non-favorite, including the arrival,
+  // and still no folders — so selecting all of it can never reach a favorite.
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "mixed");
+  await expect(filter).toHaveAttribute("title", "Showing only unfavorited items");
+  await expect(page.locator('[data-gallery-card="collection"]')).toHaveCount(0);
+  await expect(page.locator(".classic-gallery-count")).toHaveText("351 generations");
+  await expect(page.locator('[data-gallery-card="generation"].is-favorited')).toHaveCount(0);
+  await all(page).click();
+  await expect(selectedCount(page)).toHaveText("351 selected");
+  await page.getByRole("button", { name: "Delete…", exact: true }).click();
+  await expect(page.locator("#gallery-delete-dialog")).toBeVisible();
+  await expect(page.locator("#gallery-delete-dialog")).toContainText("Delete 351 items?");
+  await page.locator('#gallery-delete-dialog [data-bulk-action="close"]').first().click();
+  await page.keyboard.press("Escape");
+
+  // A fourth click returns to the unfiltered view, folder tile included.
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('[data-gallery-card="collection"]')).toHaveCount(1);
+  await expect(page.locator(".classic-gallery-count")).toHaveText("526 generations · 1 folder");
 });
 
 test("classic resumes pagination through a previously skipped collapsed group", async ({ page }) => {

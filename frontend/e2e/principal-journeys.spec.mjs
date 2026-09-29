@@ -397,9 +397,18 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   expect(goldRing.mask).toContain("exclude");
   expect(goldRing.pointer).toBe("none");
   expect(goldRing.animation).toBe("none");
+  // The same button carries a third state: everything without a heart, which is how
+  // a whole batch of unfavorited cards gets selected for one bulk action.
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "mixed");
+  await expect(favoritesFilterButton).toHaveAttribute("title", "Showing only unfavorited items");
+  await expect(favoritesFilterButton).toContainText("Unfavorited");
+  await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "No unfavorited items in this view" })).toBeVisible();
   await favoritesFilterButton.click();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
   await expect(favoritesFilterButton).toHaveAttribute("title", "Show only favorites");
+  await expect(favoritesFilterButton).toContainText("Favorites");
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(1);
   await page.getByRole("button", { name: "New collection" }).click();
   const folderDialog = page.locator("#collection-dialog");
@@ -419,20 +428,28 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page).toHaveURL(new RegExp(`#\\/c\\/${folderId}$`));
   await expect(page.getByRole("heading", { name: "This collection is empty" })).toBeVisible();
   await page.goBack();
+  // Neither filtered state offers a folder tile: a folder subtree ignores the filter,
+  // so a filtered whole-view selection could otherwise reach the wrong items.
   await favoritesFilterButton.click();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(2);
-  await expect(page.locator("#gallery .collection-tile")).toHaveCount(1);
-  await expect(folder).toHaveClass(/is-favorited/);
+  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(1);
+  await expect(page.locator("#gallery .collection-tile")).toHaveCount(0);
+  await expect(page.locator("#gallery .gallery-card")).toHaveClass(/is-favorited/);
   await page.mouse.move(10, 10);
   await page.screenshot({ path: test.info().outputPath("favorites-filter.png") });
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "mixed");
+  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "No unfavorited items in this view" })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("unfavorited-filter.png") });
+  // A reload drops the filter, and the unfiltered view is the only place a folder
+  // tile can be favorited or unfavorited.
   await page.reload();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(2);
-  await favoritesFilterButton.click();
-  await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(2);
   await clickGalleryControl(folder.getByRole("button", { name: "Remove from Favorites" }));
-  await expect(folder).toHaveCount(0);
+  await expect(folder).not.toHaveClass(/is-favorited/);
+  await favoritesFilterButton.click();
   await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(1);
   await page.locator("#gallery .card-media").click();
   await expect(photoViewer).toHaveAttribute("open", "");
@@ -463,6 +480,10 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
 
   await clickGalleryControl(actions.getByRole("button", { name: "Remove from Favorites" }));
   await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  // What just left the favorites view is exactly what the next state shows.
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "mixed");
+  await expect(page.locator(".gallery-card")).toHaveCount(cardCountBeforeCompose);
   await favoritesFilterButton.click();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
   await expect(actions.getByRole("button", { name: "Add to Favorites" })).toHaveAttribute("aria-pressed", "false");
@@ -570,7 +591,15 @@ test("Favorites filter follows the view sentinel and ignores stale cursor pages"
   await expect(cards).toHaveCount(20);
   await expect(page.locator('#gallery .gallery-card[data-generation-id="g-40"]')).toHaveCount(0);
 
+  // Two more clicks complete the cycle back to the unfiltered view, the only state
+  // with folder tiles; in between, the same page shows its non-favorites instead.
   await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "mixed");
+  await expect(cards).toHaveCount(20);
+  await expect(cards.first()).toHaveAttribute("data-generation-id", "g-1");
+  await expect(folder).toHaveCount(0);
+  await favoritesFilterButton.click();
+  await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
   await deleteSelectedCard(page, folder);
   await expect(folder).toHaveCount(0);
 });

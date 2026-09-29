@@ -1,6 +1,6 @@
 import { api } from "./api.mjs";
 import { collectionSubtree, collectionTreeRows, escapeHtml } from "./lib.mjs";
-import { galleryViewChecked, galleryViewKeys, galleryViewScope } from "./gallery-view.mjs";
+import { favoritesFilterActive, favoritesMode, favoritesModeMatches, galleryViewChecked, galleryViewKeys, galleryViewScope } from "./gallery-view.mjs";
 
 const terminal = new Set(["succeeded", "cancelled_with_artifacts", "cancelled_without_artifacts", "failed_with_artifacts", "failed_without_artifacts", "interrupted"]);
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -8,8 +8,9 @@ const keyFor = (card) => `${card.dataset.galleryCard}:${card.dataset.generationI
 
 export function selectionPlan(keys, state) {
   const collections = state.collections || [];
-  const visibleGenerations = state.favoritesFilter
-    ? (state.generations || []).filter((item) => item.is_favorite)
+  const mode = favoritesMode(state);
+  const visibleGenerations = favoritesFilterActive(mode)
+    ? (state.generations || []).filter((item) => favoritesModeMatches(mode, item))
     : (state.generations || []);
   const generations = [...new Map([...(state.selectionGenerations || []), ...visibleGenerations].map((item) => [item.id, item])).values()];
   const chosenFolders = collections.filter((item) => keys.has(`collection:${item.id}`));
@@ -111,7 +112,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     inventoryError = false;
     const scope = galleryViewScope(getState());
     try {
-      const result = await api(`/api/gallery/items?${new URLSearchParams({ collection_id: scope.collection_id || "", favorites_only: String(scope.favorites_only) })}`, { signal: controller.signal });
+      const result = await api(`/api/gallery/items?${new URLSearchParams({ collection_id: scope.collection_id || "", favorites_only: String(scope.favorites_only), unfavorited_only: String(scope.unfavorited_only) })}`, { signal: controller.signal });
       if (controller.signal.aborted || requestedRoute !== viewRoute()) return null;
       inventory = result;
       if (selectedScope) {
@@ -181,7 +182,7 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
     for (const id of extraGenerations.keys()) if (!selectedScope && visibleKeys.has(`generation:${id}`)) extraGenerations.delete(id);
     selected = new Set([...selected].filter((key) => visibleKeys.has(key) || extraGenerations.has(key.slice("generation:".length))));
     for (const [id] of extraGenerations) if (!selected.has(`generation:${id}`)) extraGenerations.delete(id);
-    if (state.favoritesFilter && !selectedScope) {
+    if (favoritesFilterActive(favoritesMode(state)) && !selectedScope) {
       for (const id of [...extraGenerations.keys()]) {
         if (!visibleKeys.has(`generation:${id}`)) {
           extraGenerations.delete(id);
@@ -364,6 +365,11 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
           if (item) extraGenerations.set(id, { ...item, is_favorite: true });
         }
         succeeded = true;
+        // Every favorited item just left an unfavorited view, so the snapshot that
+        // backed a whole-view selection no longer describes anything selectable.
+        if (favoritesMode(getState()) === "unfavorited") {
+          selected.clear(); selecting = false; selectedScope = null; extraGenerations.clear();
+        }
         await refresh({ operation, plan, result });
         notify(`Added ${plural(plan.favorites.count, "item")} to Favorites.`, "success");
       }
@@ -382,8 +388,9 @@ export function bindGallerySelection(root, { getState, refresh, notify }) {
   root.addEventListener("gallery-select-group", (event) => {
     if (busy) return;
     const { id, generations } = event.detail;
-    const visibleGenerations = getState().favoritesFilter
-      ? generations.filter((item) => item.is_favorite)
+    const mode = favoritesMode(getState());
+    const visibleGenerations = favoritesFilterActive(mode)
+      ? generations.filter((item) => favoritesModeMatches(mode, item))
       : generations;
     const ids = visibleGenerations.map((item) => item.id);
     const all = ids.length && ids.every((item) => selected.has(`generation:${item}`));
