@@ -242,12 +242,17 @@ class LoraOperationService:
                 raise AppError(
                     "source_unavailable", "Source has no publication path.", status_code=409
                 )
-            replicas = self.container.registry.current_replicas(session, source_id=source_id)
+            pool_ids = set(self.container.image_pool.member_ids)
+            replicas = [
+                row
+                for row in self.container.registry.current_replicas(session, source_id=source_id)
+                if str(row.instance_id) in pool_ids
+            ]
             by_instance = {str(row.instance_id): row for row in replicas}
-            if set(by_instance) != set(self.container.comfyui_instances.configured_ids):
+            if set(by_instance) != pool_ids:
                 raise AppError(
                     "lora_replicas_missing",
-                    "This source must be published on every configured ComfyUI instance.",
+                    "This source must be published on every configured image worker.",
                     status_code=409,
                 )
             expected = _revision(profile)
@@ -449,7 +454,7 @@ class LoraOperationService:
                     session.commit()
 
             await run_blocking(claim)
-            instance_ids = [config.id for config in self.container.comfyui_instances.configs]
+            instance_ids = list(self.container.image_pool.member_ids)
             try:
                 capabilities = [
                     await self._request(
@@ -510,9 +515,7 @@ class LoraOperationService:
         source_id, replicas, _, _ = await self._preflight(payload.source_key, revision)
         await self._expire_uploads(source_id)
         primary = next(
-            row
-            for row in replicas
-            if row.instance_id == self.container.comfyui_instances.default_id
+            row for row in replicas if row.instance_id == self.container.image_pool.primary_id
         )
         controls = [
             item
@@ -614,15 +617,16 @@ class LoraOperationService:
     async def _expire_uploads(self, source_id: str) -> None:
         def expired() -> list[tuple[str, str]]:
             with self.container.db.session_factory() as session:
-                return list(
-                    session.execute(
+                return [
+                    (str(operation_id), str(actor_id))
+                    for operation_id, actor_id in session.execute(
                         select(LoraOperation.id, LoraOperation.actor_id).where(
                             LoraOperation.source_id == source_id,
                             LoraOperation.status == "awaiting_upload",
                             LoraOperation.updated_at < datetime.now(UTC) - timedelta(hours=1),
                         )
                     )
-                )
+                ]
 
         for operation_id, owner_id in await run_blocking(expired):
             await self.cancel(operation_id, owner_id)
@@ -963,7 +967,7 @@ class LoraOperationService:
             row = await run_blocking(self._row, operation_id)
             if row.action == "install" and row.internal_json.get("model_filename"):
                 writer_id = row.internal_json.get("model_writer_instance_id")
-                replica_ids = [config.id for config in self.container.comfyui_instances.configs]
+                replica_ids = list(self.container.image_pool.member_ids)
                 if not isinstance(writer_id, str) or not await self._rollback(
                     operation_id, replica_ids, writer_id
                 ):
@@ -1222,7 +1226,7 @@ class LoraOperationService:
 
         for row in await run_blocking(pending):
             try:
-                replica_ids = [config.id for config in self.container.comfyui_instances.configs]
+                replica_ids = list(self.container.image_pool.member_ids)
                 capabilities = [
                     await self._request(
                         self.container.comfyui_instances.get(instance_id), "GET", "/capabilities"

@@ -10,17 +10,17 @@ from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session, aliased, load_only
 
 from ..models import (
     ACTIVE_STATUSES,
-    ComfyUIInstanceHealth,
     Generation,
     GenerationPreparation,
     GenerationStatus,
     PromptGenerationRun,
     SchedulerState,
+    WorkflowProfile,
 )
 from .comfyui_instances import ComfyUIInstances
 from .generation_eta import (
@@ -30,12 +30,19 @@ from .generation_eta import (
     eta_payload,
     execution_start,
 )
+from .worker_pool import IMAGE_POOL_SCHEDULER_SCOPE, ImageWorkerPool, scheduler_state_key
 
 
 class ActivityEstimator:
-    def __init__(self, estimator: GenerationEtaEstimator, instances: ComfyUIInstances) -> None:
+    def __init__(
+        self,
+        estimator: GenerationEtaEstimator,
+        instances: ComfyUIInstances,
+        pool: ImageWorkerPool | None = None,
+    ) -> None:
         self.estimator = estimator
         self.instances = instances
+        self.pool = pool or ImageWorkerPool(instances)
         self._cache: OrderedDict[str, tuple[str, dict[str, Any]]] = OrderedDict()
         self._lock = threading.RLock()
 
@@ -52,6 +59,7 @@ class ActivityEstimator:
                         Generation.queue_seq,
                         Generation.comfyui_prompt_id,
                         Generation.comfyui_instance_id,
+                        Generation.workflow_profile_id,
                         Generation.execution_timing_json,
                         Generation.timing_batch_id,
                         Generation.auto_cycle_id,
@@ -97,9 +105,8 @@ class ActivityEstimator:
                 .where(PromptGenerationRun.status.in_(["queued", "dispatching", "running"]))
             )
         )
-        health = {
-            h.instance_id: h.available for h in session.scalars(select(ComfyUIInstanceHealth))
-        }
+        health = self.pool.health(session)
+        pool_snapshot = self.pool.snapshot(session)
         last_owners = {s.key: s.last_user_id for s in session.scalars(select(SchedulerState))}
         queues = {}
         for config in self.instances.configs:
@@ -119,6 +126,7 @@ class ActivityEstimator:
                 health,
                 queues,
                 last_owners,
+                pool_snapshot.payload(),
             ],
             sort_keys=True,
             default=str,
@@ -134,7 +142,12 @@ class ActivityEstimator:
             if execution_start(g) and not (g.execution_timing_json or {}).get("finished_at")
         ]
         current_estimates = [
-            (g, self.estimator.estimate(g, now=now) if health.get(g.comfyui_instance_id) else None)
+            (
+                g,
+                self.estimator.estimate(g, now=now)
+                if g.comfyui_instance_id and health.get(g.comfyui_instance_id)
+                else None,
+            )
             for g in running
         ]
         current_estimates.sort(
@@ -148,6 +161,7 @@ class ActivityEstimator:
             current_estimates.sort(key=lambda pair: pair[1] is not None)
         current_job, current_eta = current_estimates[0] if current_estimates else (None, None)
         result: dict[str, Any] = {
+            "worker_pool": pool_snapshot.payload(),
             "current_eta": current_eta,
             "queue_eta": None,
             "current_generation_id": current_job.id if current_job else None,
@@ -161,7 +175,15 @@ class ActivityEstimator:
         finishes: list[tuple[float, DurationEstimate]] = []
         blocker_ends: list[datetime] = []
         evidence: list[DurationEstimate] = []
-        for runtime in {g.comfyui_instance_id for g in own}:
+        own_pending = [g for g in own if g.status == GenerationStatus.QUEUED]
+        # Queued images are unassigned, so every pool member is a candidate host
+        # for them in addition to any runtime already holding this account's work.
+        runtimes = {g.comfyui_instance_id for g in own if g.comfyui_instance_id}
+        if own_pending:
+            runtimes.update(self.pool.member_ids)
+        # Seconds from now until each modeled runtime finishes its submitted work.
+        timeline: dict[str, float] = {}
+        for runtime in sorted(runtimes):
             group = [g for g in jobs if g.comfyui_instance_id == runtime]
             queue = queues.get(runtime)
             if (
@@ -185,7 +207,9 @@ class ActivityEstimator:
                 if prompt in mapped and mapped[prompt].owner_id == owner
             ]
             cutoff = max(owned_positions, default=len(native_order))
-            if any(g.owner_id == owner and g.comfyui_prompt_id not in native_order for g in group):
+            if own_pending or any(
+                g.owner_id == owner and g.comfyui_prompt_id not in native_order for g in group
+            ):
                 cutoff = len(native_order)
             if any(prompt not in mapped for prompt in native_order[: cutoff + 1]):
                 known = False
@@ -200,27 +224,10 @@ class ActivityEstimator:
                     g.queue_seq,
                 ),
             )
-            pending = [g for g in group if g.status == GenerationStatus.QUEUED]
-            state_key = "instance:" + hashlib.sha256(runtime.encode()).hexdigest()[:40]
-            last = last_owners.get(state_key)
-            while pending:
-                first = {
-                    o: min(g.queue_seq for g in pending if g.owner_id == o)
-                    for o in {g.owner_id for g in pending}
-                }
-                owners = sorted(first, key=lambda o: (first[o], o))
-                next_owner = (
-                    owners[(owners.index(last) + 1) % len(owners)] if last in owners else owners[0]
-                )
-                job = min(
-                    (g for g in pending if g.owner_id == next_owner),
-                    key=lambda g: (g.auto_cycle_id is not None, g.queue_seq),
-                )
-                accepted.append(job)
-                pending.remove(job)
-                last = next_owner
+            last_owned = next((g for g in reversed(accepted) if g.owner_id == owner), None)
             elapsed = 0.0
             anchored = False
+            complete = True
             for job in accepted:
                 duration = self.estimator.duration(job)
                 start = execution_start(job)
@@ -230,12 +237,14 @@ class ActivityEstimator:
                     or (job.execution_timing_json or {}).get("finished_at")
                 ):
                     known = False
+                    complete = False
                     break
                 evidence.append(duration)
                 if start:
                     remaining = (start + timedelta(seconds=duration.seconds) - now).total_seconds()
                     if anchored or remaining <= 0:
                         known = False
+                        complete = False
                         break
                     elapsed = remaining
                     blocker_ends.append(start + timedelta(seconds=duration.seconds))
@@ -244,11 +253,28 @@ class ActivityEstimator:
                     elapsed += duration.seconds
                 if job.owner_id == owner:
                     finishes.append((elapsed, duration))
-                # Work after the account's final accepted item cannot delay its completion.
-                if job == next((g for g in reversed(accepted) if g.owner_id == owner), None):
+                # Work after the account's final accepted item cannot delay its
+                # completion, unless queued work still has to follow it here.
+                if not own_pending and job is last_owned:
                     break
-            if not anchored:
+            if accepted and not anchored:
+                # A submitted job that ComfyUI has not started leaves an unknown
+                # head start; the account-wide total stays unavailable.
                 known = False
+            elif not complete:
+                continue
+            # An idle worker is free now; that is certainty, not missing evidence.
+            timeline[runtime] = elapsed
+        if known and own_pending:
+            known = self._simulate_pending(
+                session,
+                owner=owner,
+                jobs=jobs,
+                timeline=timeline,
+                last_owners=last_owners,
+                finishes=finishes,
+                evidence=evidence,
+            )
         if known and finishes:
             seconds = max(f[0] for f in finishes)
             confidence = min(
@@ -271,6 +297,123 @@ class ActivityEstimator:
             while len(self._cache) > 128:
                 self._cache.popitem(last=False)
         return self._age(result, now)
+
+    def _simulate_pending(
+        self,
+        session: Session,
+        *,
+        owner: str,
+        jobs: list[Generation],
+        timeline: dict[str, float],
+        last_owners: dict[str, Any],
+        finishes: list[tuple[float, DurationEstimate]],
+        evidence: list[DurationEstimate],
+    ) -> bool:
+        """Place queued images on the worker that frees first, like the dispatcher.
+
+        Returns False when any required duration or host is unknown, which keeps
+        the account-wide total unavailable instead of guessing.
+        """
+
+        pending = [
+            job
+            for job in jobs
+            if job.status == GenerationStatus.QUEUED
+            and (job.comfyui_instance_id is None or job.comfyui_instance_id in timeline)
+        ]
+        if not pending:
+            return True
+        hosts = self._eligible_hosts(session, pending)
+        remaining_owned = sum(1 for job in pending if job.owner_id == owner)
+        last = last_owners.get(scheduler_state_key(IMAGE_POOL_SCHEDULER_SCOPE))
+        order = list(self.pool.member_ids)
+        while pending and remaining_owned:
+            first = {
+                candidate: min(job.queue_seq for job in pending if job.owner_id == candidate)
+                for candidate in {job.owner_id for job in pending}
+            }
+            owners = sorted(first, key=lambda candidate: (first[candidate], candidate))
+            next_owner = (
+                owners[(owners.index(last) + 1) % len(owners)] if last in owners else owners[0]
+            )
+            job = min(
+                (candidate for candidate in pending if candidate.owner_id == next_owner),
+                key=lambda candidate: (candidate.auto_cycle_id is not None, candidate.queue_seq),
+            )
+            pending.remove(job)
+            last = next_owner
+            candidates = [runtime for runtime in hosts.get(job.id, ()) if runtime in timeline]
+            if not candidates:
+                return False
+            runtime = min(
+                candidates,
+                key=lambda candidate: (
+                    timeline[candidate],
+                    order.index(candidate) if candidate in order else len(order),
+                ),
+            )
+            duration = self.estimator.duration(job, instance_id=runtime)
+            if duration is None:
+                return False
+            evidence.append(duration)
+            timeline[runtime] += duration.seconds
+            if job.owner_id == owner:
+                finishes.append((timeline[runtime], duration))
+                remaining_owned -= 1
+        return True
+
+    def _eligible_hosts(
+        self,
+        session: Session,
+        pending: list[Generation],
+    ) -> dict[str, tuple[str, ...]]:
+        """Map each queued generation to the workers that carry its revision."""
+
+        pinned: dict[str, tuple[str, ...]] = {
+            job.id: (str(job.comfyui_instance_id),)
+            for job in pending
+            if job.comfyui_instance_id is not None
+        }
+        unassigned = [job for job in pending if job.comfyui_instance_id is None]
+        if not unassigned:
+            return pinned
+        profile_ids = {job.workflow_profile_id for job in unassigned}
+        accepted = aliased(WorkflowProfile)
+        replica = aliased(WorkflowProfile)
+        carried: dict[str, list[str]] = {}
+        legacy: set[str] = set()
+        for profile_id, has_revision, instance_id in session.execute(
+            select(accepted.id, accepted.source_id.is_not(None), replica.instance_id)
+            .select_from(accepted)
+            .outerjoin(
+                replica,
+                and_(
+                    replica.instance_id.in_(self.pool.member_ids),
+                    replica.source_id.is_not(None),
+                    replica.source_id == accepted.source_id,
+                    replica.publication_id == accepted.publication_id,
+                    replica.ui_graph_sha256 == accepted.ui_graph_sha256,
+                    replica.api_graph_sha256 == accepted.api_graph_sha256,
+                    replica.manifest_sha256 == accepted.manifest_sha256,
+                ),
+            )
+            .where(accepted.id.in_(profile_ids))
+        ):
+            if not has_revision:
+                legacy.add(str(profile_id))
+            elif instance_id is not None:
+                carried.setdefault(str(profile_id), []).append(str(instance_id))
+        hosts: dict[str, tuple[str, ...]] = dict(pinned)
+        for job in unassigned:
+            profile_id = str(job.workflow_profile_id)
+            if profile_id in legacy:
+                hosts[job.id] = (self.pool.primary_id,)
+            else:
+                available = carried.get(profile_id, ())
+                hosts[job.id] = tuple(
+                    runtime for runtime in self.pool.member_ids if runtime in available
+                )
+        return hosts
 
     @staticmethod
     def _age(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:

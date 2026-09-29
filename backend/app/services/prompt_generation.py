@@ -197,11 +197,11 @@ class PromptGenerationService:
         if publication_kind(profile.resolved_contract_json) != "image":
             raise AppError("source_kind_invalid", "Choose an image source.", status_code=422)
         captured = item.model_copy(deep=True)
-        runtime = service._instance_for_request(
-            session, captured.generation, require_available=False
-        )
+        # Validates the runtime assertion only; the prepared image is accepted
+        # into the worker pool and bound to a worker at dispatch.
+        service._instance_for_request(session, captured.generation, require_available=False)
         service._collection_for_owner(session, owner_id, captured.generation.collection_id)
-        captured.generation.comfyui_instance_id = runtime.id
+        captured.generation.comfyui_instance_id = None
         captured.generation.source_key = profile.source_key
         captured.generation.profile_id = None
         prompt_id = next(

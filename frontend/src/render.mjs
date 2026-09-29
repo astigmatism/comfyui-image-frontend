@@ -184,6 +184,7 @@ export function generationPanelMarkup(state, profile, contract) {
               </div>
             </div>
           </div>
+          <p id="worker-pool-status" class="worker-pool-status" role="status" aria-live="polite" aria-atomic="true" title="${escapeHtml(imageWorkerPoolTooltip(state))}">${imageWorkerPoolMarkup(state)}</p>
           <p id="prompt-pipeline-flow" class="prompt-pipeline-flow" role="status" aria-live="polite" aria-atomic="true">${promptPipelineMarkup(state)}</p>
           ${controlSectionMarkup({ key: "auto-generation", title: "Auto-generation",
             open: controlSectionIsOpen(state.controlSectionOpen, "auto-generation", false),
@@ -246,14 +247,13 @@ export function generationRequestBlocked(state, profile, contract, clientErrors 
   const services = state.services || [];
   const comfy = services.find((item) => item.service === "comfyui");
   const usesInstanceCatalog = state.comfyuiInstancesStatus !== undefined;
-  const selectedInstance = usesInstanceCatalog
-    ? (state.comfyuiInstances || []).find(
-        (item) => item.id === state.defaultComfyuiInstanceId,
-      )
-    : null;
+  // Generation needs a configured image pool rather than one specific runtime.
+  // An offline pool still accepts work: validated cached publications queue
+  // until a worker recovers, exactly as a single offline instance did.
+  const imageWorkers = usesInstanceCatalog ? imagePoolWorkers(state) : [];
   const serviceStateBlocksGeneration = usesInstanceCatalog
     ? state.comfyuiInstancesStatus !== "ready" ||
-      !selectedInstance ||
+      !imageWorkers.length ||
       Boolean(state.comfyuiInstanceError)
     : state.servicesStatus === undefined
       ? comfy?.available === false
@@ -774,6 +774,59 @@ function controlSectionStatus(section, values) {
     return seedFormValue(control, values[control.id]).mode === "random" ? "" : "Fixed";
   }
   return "";
+}
+
+export function imagePoolWorkers(state) {
+  const instances = state.comfyuiInstances || [];
+  const members = instances.filter((item) => item.in_image_pool);
+  // A server that predates the pool reports only its assigned image instance.
+  return members.length
+    ? members
+    : instances.filter((item) => item.id === state.defaultComfyuiInstanceId);
+}
+
+export function imageWorkerPoolState(state) {
+  const pool = state.generationActivity?.worker_pool || state.comfyuiImagePool || null;
+  const total = Number(pool?.worker_count) || 0;
+  // A single-worker deployment has nothing to report and stays visually unchanged.
+  if (total < 2) return null;
+  const available = Math.max(0, Math.min(total, Number(pool.available_count) || 0));
+  const idle = Math.max(0, Math.min(available, Number(pool.idle_count) || 0));
+  return {
+    total,
+    available,
+    idle,
+    offline: total - available,
+    queued: Math.max(0, Number(pool.unassigned_queued_count) || 0),
+  };
+}
+
+export function imageWorkerPoolLabel(state) {
+  const pool = imageWorkerPoolState(state);
+  if (!pool) return "";
+  const summary = pool.available === 0
+    ? `No image worker available${pool.queued ? ` — ${pool.queued} waiting` : ""}`
+    : pool.idle === 0
+      ? `All ${pool.available} workers busy — new images queue`
+      : pool.idle === pool.total
+        ? `${pool.idle} workers idle`
+        : `${pool.idle} of ${pool.total} workers idle`;
+  return pool.offline ? `${summary} · ${pool.offline} offline` : summary;
+}
+
+export function imageWorkerPoolTooltip(state) {
+  const pool = imageWorkerPoolState(state);
+  if (!pool) return "";
+  return [
+    `${pool.idle} of ${pool.total} image workers are free for the next image.`,
+    ...(state.comfyuiInstances || [])
+      .filter((item) => item.in_image_pool)
+      .map((item) => `${item.label}: ${item.available ? (item.busy ? "busy" : "idle") : "offline"}`),
+  ].join("\n");
+}
+
+export function imageWorkerPoolMarkup(state) {
+  return escapeHtml(imageWorkerPoolLabel(state));
 }
 
 export function promptPipelineMarkup(state) {
@@ -2234,14 +2287,21 @@ export function serviceBannerMarkup(
     if (comfyuiInstances.status === "error") {
       return `<div class="service-banner" role="status"><strong>Runtime status unavailable.</strong><span>${escapeHtml(comfyuiInstances.message || "Generation remains paused; history is still available.")}</span></div>`;
     }
-    const selected = instances.find(
-      (item) => item.id === comfyuiInstances.selectedInstanceId,
-    );
-    if (!selected) {
+    const workers = instances.filter((item) => item.in_image_pool);
+    const pool = workers.length
+      ? workers
+      : instances.filter((item) => item.id === comfyuiInstances.selectedInstanceId);
+    if (!pool.length) {
       return '<div class="service-banner" role="status"><strong>Image service is not configured.</strong><span>Check the server environment; history remains available.</span></div>';
     }
-    if (selected?.available === false) {
-      return `<div class="service-banner" role="status"><strong>${escapeHtml(selected.label || selected.id)} unavailable.</strong><span>${escapeHtml(selected.message || "Image jobs wait for the GPU service to recover; prompt generation and history remain available.")}</span></div>`;
+    const availableWorkers = pool.filter((item) => item.available !== false);
+    // A partially degraded pool still generates, so it stays banner-free.
+    if (!availableWorkers.length) {
+      const first = pool[0];
+      const heading = pool.length > 1
+        ? "Image workers unavailable."
+        : `${first.label || first.id} unavailable.`;
+      return `<div class="service-banner" role="status"><strong>${escapeHtml(heading)}</strong><span>${escapeHtml(first.message || "Image jobs wait for a worker to recover; prompt generation and history remain available.")}</span></div>`;
     }
     return "";
   }

@@ -363,3 +363,166 @@ def test_stage_assignments_must_be_distinct():
 def test_empty_text_assignment_is_image_only():
     settings = Settings(_env_file=None, test_mode=True, comfyui_text_instance_id="")
     assert settings.comfyui_text_instance_id is None
+
+
+def test_appended_worker_urls_become_pool_members_inheriting_primary_settings() -> None:
+    settings = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_instance_id="primary",
+        comfyui_user="local-user",
+        comfyui_concurrency=2,
+        comfyui_image_workers="http://192.168.1.21:8189, http://192.168.1.22:8188/",
+    )
+
+    assert settings.image_pool_instance_ids == (
+        "primary",
+        "w-192-168-1-21-8189",
+        "w-192-168-1-22-8188",
+    )
+    # Appending one URL is a deliberate topology statement, so the deployment
+    # remains "explicit" for the Service Portal update gate.
+    assert settings.comfyui_instance_configuration_mode == "explicit"
+    workers = {item.id: item for item in settings.configured_comfyui_instances}
+    assert workers["w-192-168-1-21-8189"].base_url == "http://192.168.1.21:8189"
+    assert workers["w-192-168-1-21-8189"].label == "ComfyUI 192.168.1.21:8189"
+    assert workers["w-192-168-1-22-8188"].base_url == "http://192.168.1.22:8188"
+    for worker in workers.values():
+        assert worker.user == "local-user"
+        assert worker.concurrency == 2
+        assert worker.ws_url is None
+
+
+def test_worker_urls_accept_a_json_array_and_ignore_blank_configuration() -> None:
+    settings = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_instance_id="primary",
+        comfyui_image_workers='["http://worker-a:8188", "http://worker-a:8188"]',
+    )
+    assert settings.image_pool_instance_ids == ("primary", "w-worker-a-8188")
+
+    blank = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_instance_id="primary",
+        comfyui_image_workers="   ",
+        comfyui_image_worker_ids="",
+    )
+    assert blank.image_pool_instance_ids == ("primary",)
+    assert blank.comfyui_instance_configuration_mode == "legacy"
+
+
+def test_pool_membership_is_opt_in_for_already_configured_instances() -> None:
+    household = {
+        "comfyui_instances": [
+            {"id": "primary", "label": "GPU", "base_url": "http://comfyui:8188"},
+            {"id": "worker-2", "label": "Secondary", "base_url": "http://192.168.1.21:8189"},
+            {"id": "promptgen", "label": "CPU", "base_url": "http://comfyui-promptgen:8188"},
+        ],
+        "comfyui_default_instance_id": "primary",
+        "comfyui_text_instance_id": "promptgen",
+    }
+
+    # An anticipatory or unrelated instance never receives image work silently.
+    unenrolled = Settings(_env_file=None, test_mode=True, **household)
+    assert unenrolled.image_pool_instance_ids == ("primary",)
+
+    enrolled = Settings(
+        _env_file=None, test_mode=True, comfyui_image_worker_ids="worker-2", **household
+    )
+    assert enrolled.image_pool_instance_ids == ("primary", "worker-2")
+
+    # A URL that matches a configured instance enrolls it instead of duplicating it.
+    by_url = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_image_workers="http://192.168.1.21:8189",
+        **household,
+    )
+    assert by_url.image_pool_instance_ids == ("primary", "worker-2")
+    assert len(by_url.configured_comfyui_instances) == 3
+
+
+def test_pool_membership_follows_a_settings_copy_that_changes_the_assignment() -> None:
+    settings = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_instances=[
+            {"id": "primary", "label": "GPU", "base_url": "http://comfyui:8188"},
+            {"id": "promptgen", "label": "CPU", "base_url": "http://comfyui-promptgen:8188"},
+        ],
+        comfyui_default_instance_id="primary",
+        comfyui_text_instance_id="promptgen",
+    )
+    assert settings.image_pool_instance_ids == ("primary",)
+
+    swapped = settings.model_copy(
+        update={"comfyui_default_instance_id": "promptgen", "comfyui_text_instance_id": "primary"}
+    )
+    assert swapped.image_pool_instance_ids == ("promptgen",)
+
+
+def test_image_pool_rejects_unknown_members_the_prompt_service_and_bad_urls() -> None:
+    household = {
+        "comfyui_instances": [
+            {"id": "primary", "label": "GPU", "base_url": "http://comfyui:8188"},
+            {"id": "promptgen", "label": "CPU", "base_url": "http://comfyui-promptgen:8188"},
+        ],
+        "comfyui_default_instance_id": "primary",
+        "comfyui_text_instance_id": "promptgen",
+    }
+    with pytest.raises(ValidationError, match="must name configured instances"):
+        Settings(_env_file=None, test_mode=True, comfyui_image_worker_ids="missing", **household)
+    with pytest.raises(ValidationError, match="prompt instance cannot also be an image worker"):
+        Settings(_env_file=None, test_mode=True, comfyui_image_worker_ids="promptgen", **household)
+    with pytest.raises(ValidationError, match="prompt instance cannot also be an image worker"):
+        Settings(
+            _env_file=None,
+            test_mode=True,
+            comfyui_image_workers="http://comfyui-promptgen:8188",
+            **household,
+        )
+    with pytest.raises(ValidationError, match="credential-free"):
+        Settings(
+            _env_file=None, test_mode=True, comfyui_image_workers="ftp://worker.test", **household
+        )
+    with pytest.raises(ValidationError, match="credential-free"):
+        Settings(
+            _env_file=None,
+            test_mode=True,
+            comfyui_image_workers="http://user:secret@worker.test:8188",
+            **household,
+        )
+
+
+def test_derived_worker_identity_cannot_hijack_a_configured_instance_id() -> None:
+    with pytest.raises(ValidationError, match="derives instance ID"):
+        Settings(
+            _env_file=None,
+            test_mode=True,
+            comfyui_instances=[
+                {"id": "primary", "label": "GPU", "base_url": "http://comfyui:8188"},
+                {
+                    "id": "w-192-168-1-21-8189",
+                    "label": "Imposter",
+                    "base_url": "http://elsewhere:8188",
+                },
+            ],
+            comfyui_default_instance_id="primary",
+            comfyui_image_workers="http://192.168.1.21:8189",
+        )
+
+
+def test_long_worker_host_falls_back_to_a_safe_hashed_identity() -> None:
+    host = "worker-" + "a" * 80
+    settings = Settings(
+        _env_file=None,
+        test_mode=True,
+        comfyui_instance_id="primary",
+        comfyui_image_workers=f"http://{host}:8188",
+    )
+    worker_id = settings.image_pool_instance_ids[1]
+    assert worker_id.startswith("w-")
+    assert len(worker_id) <= 64
+    assert host not in worker_id

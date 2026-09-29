@@ -198,13 +198,14 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
             event.remove(container.db.engine, "before_cursor_execute", capture_sql)
 
         assert prompt_jobs == ((monitored["id"], "test-instance", "native-recovery-prompt"),)
+        # The dispatching row returns to the queue, and the row pinned to a
+        # removed runtime is released back to the image worker pool instead of
+        # being failed, because a configured worker still carries its revision.
         assert len(notifications) == 2
-        owner_id, payload = next(
-            item for item in notifications if item[1]["type"] == "generation.requeued"
-        )
-        assert owner_id
-        assert payload["type"] == "generation.requeued"
-        assert payload["generation_id"] == requeued["id"]
+        by_generation = {payload["generation_id"]: payload for _, payload in notifications}
+        assert all(owner_id for owner_id, _ in notifications)
+        assert by_generation[requeued["id"]]["type"] == "generation.requeued"
+        assert by_generation[orphaned["id"]]["type"] == "generation.requeued"
 
         assert len(statements) == 1
         recovery_select = statements[0]
@@ -234,9 +235,18 @@ def test_startup_recovery_uses_a_narrow_primitive_plan(settings_factory, fake_st
             assert cancelled_row.completed_at is not None
             orphaned_row = session.get(Generation, orphaned["id"])
             assert orphaned_row is not None
-            assert orphaned_row.status == GenerationStatus.FAILED_WITHOUT_ARTIFACTS
-            assert orphaned_row.error_code == "comfyui_instance_unconfigured"
-            assert "not redirected" in str(orphaned_row.error_message)
+            assert orphaned_row.status == GenerationStatus.QUEUED
+            assert orphaned_row.comfyui_instance_id is None
+            assert orphaned_row.error_code is None
+            assert (
+                session.scalar(
+                    select(GenerationEvent).where(
+                        GenerationEvent.generation_id == orphaned["id"],
+                        GenerationEvent.event_type == "generation.requeued",
+                    )
+                )
+                is not None
+            )
             assert (
                 session.scalar(
                     select(GenerationEvent).where(

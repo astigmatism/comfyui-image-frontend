@@ -18,8 +18,14 @@ def setup_queue(tmp_path, *, runtimes=("test-instance",)):
         )
         for r in runtimes
     }
+    configs = {r: SimpleNamespace(id=r, label=r, concurrency=1) for r in runtimes}
     instances = SimpleNamespace(
-        configs=[SimpleNamespace(id=r) for r in runtimes], get=adapters.__getitem__
+        configs=list(configs.values()),
+        get=adapters.__getitem__,
+        config=configs.get,
+        default_id=runtimes[0],
+        image_pool_ids=tuple(runtimes),
+        settings=SimpleNamespace(comfyui_text_instance_id=None),
     )
     for runtime in runtimes:
         learn(estimator, _generation(generation_id="learned-" + runtime, instance_id=runtime), 60)

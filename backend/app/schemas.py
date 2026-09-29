@@ -394,12 +394,33 @@ class ComfyUIInstanceStatus(APIModel):
     available: bool
     message: str | None = None
     checked_at: datetime | None = None
+    # Stage this instance serves, and whether it currently executes image work.
+    role: Literal["image", "text", "unused"] = "unused"
+    in_image_pool: bool = False
+    busy: bool = False
+
+
+class ImageWorkerPoolStatus(APIModel):
+    """Aggregate image-pool occupancy.
+
+    Per-entry concurrency stays private; these aggregates exist so the browser
+    can report how many workers are free without exposing routing controls.
+    """
+
+    worker_count: int = 0
+    available_count: int = 0
+    idle_count: int = 0
+    busy_count: int = 0
+    free_slot_count: int = 0
+    unassigned_queued_count: int = 0
 
 
 class ComfyUIInstanceList(APIModel):
     default_instance_id: str
     text_instance_id: str | None = None
     configuration_mode: Literal["explicit", "legacy"]
+    image_pool: ImageWorkerPoolStatus = Field(default_factory=ImageWorkerPoolStatus)
+    image_pool_instance_ids: list[str] = Field(default_factory=list)
     items: list[ComfyUIInstanceStatus]
 
 
@@ -549,8 +570,9 @@ class GenerationSummary(APIModel):
     status: str
     workflow_display_name: str
     checkpoint_label: str | None = None
-    comfyui_instance_id: str
-    comfyui_instance_label: str
+    # Null until an image worker claims the generation.
+    comfyui_instance_id: str | None = None
+    comfyui_instance_label: str | None = None
     accepted_at: datetime
     generation_duration_seconds: float | None = None
     current_stage_id: str | None = None
@@ -647,6 +669,7 @@ class GenerationRunProgress(APIModel):
 
 
 class GenerationActivity(APIModel):
+    worker_pool: ImageWorkerPoolStatus | None = None
     current_eta: GenerationEta | None = None
     queue_eta: GenerationEta | None = None
     current_generation_id: str | None = None
@@ -822,6 +845,9 @@ class RecallResponse(APIModel):
     comfyui_instance_configured: bool = False
     comfyui_instance_available: bool = False
     comfyui_instance_warning: str | None = None
+    # New images use the pool, not the historical worker, so the panel only
+    # warns when no worker can execute.
+    comfyui_pool_available: bool = False
 
 
 class FavoriteSummary(APIModel):

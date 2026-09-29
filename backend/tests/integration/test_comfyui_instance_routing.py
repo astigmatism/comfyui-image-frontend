@@ -163,7 +163,9 @@ def test_cached_image_catalog_waits_for_gpu_without_using_healthy_copy(
                 "/api/generations", headers={"X-CSRF-Token": csrf(client)}, json=payload
             )
             assert accepted.status_code == 201, accepted.text
-            assert accepted.json()["comfyui_instance_id"] == "primary"
+            # A validated cached publication still queues during the outage, now
+            # without naming a worker: the pool binds one when it recovers.
+            assert accepted.json()["comfyui_instance_id"] is None
             assert accepted.json()["status"] == "queued"
             assert worker.state.submitted == []
             fake_state.service_available = True

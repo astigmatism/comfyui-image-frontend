@@ -944,11 +944,14 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
 }
 
 export function recalledComfyuiInstanceState(current, recall) {
-  const historicalId = recall?.comfyui_instance_id;
+  // New images are dispatched to the first free image worker, so a historical
+  // worker is only worth mentioning when no worker can run the recalled source.
+  const poolUnavailable = recall?.comfyui_pool_available === false;
   return {
     state: {},
-    notice: historicalId && historicalId !== current.defaultComfyuiInstanceId
-      ? "These images used a different historical service. New images use the server's assigned GPU service."
+    notice: poolUnavailable
+      ? recall?.comfyui_instance_warning ||
+        "No image worker is currently available. New images queue until one recovers."
       : null,
   };
 }

@@ -39,6 +39,15 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
   "default_instance_id": "primary",
   "text_instance_id": "promptgen",
   "configuration_mode": "explicit",
+  "image_pool": {
+    "worker_count": 2,
+    "available_count": 2,
+    "idle_count": 1,
+    "busy_count": 1,
+    "free_slot_count": 1,
+    "unassigned_queued_count": 3
+  },
+  "image_pool_instance_ids": ["primary", "w-192-168-1-21-8189"],
   "items": [
     {
       "id": "primary",
@@ -47,7 +56,22 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
       "is_default": true,
       "available": true,
       "message": null,
-      "checked_at": "2026-08-06T20:00:00Z"
+      "checked_at": "2026-08-06T20:00:00Z",
+      "role": "image",
+      "in_image_pool": true,
+      "busy": true
+    },
+    {
+      "id": "w-192-168-1-21-8189",
+      "label": "ComfyUI 192.168.1.21:8189",
+      "description": null,
+      "is_default": false,
+      "available": true,
+      "message": null,
+      "checked_at": "2026-08-06T20:00:00Z",
+      "role": "image",
+      "in_image_pool": true,
+      "busy": false
     },
     {
       "id": "promptgen",
@@ -56,13 +80,20 @@ Every response carries a sanitized `X-Request-ID` that matches the structured `h
       "is_default": false,
       "available": false,
       "message": "ComfyUI is unreachable.",
-      "checked_at": "2026-08-06T20:00:00Z"
+      "checked_at": "2026-08-06T20:00:00Z",
+      "role": "text",
+      "in_image_pool": false,
+      "busy": false
     }
   ]
 }
 ```
 
-Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog or `CIF_COMFYUI_ADDITIONAL_INSTANCES` was supplied (including an empty deliberate opt-out), and `legacy` when the backend synthesized only the one-item **Primary** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients cannot select runtimes. `default_instance_id` fixes the image service and `text_instance_id` fixes the prompt service. A null text assignment disables prompt generation. Validated cached publications may queue during an outage; accepted jobs wait for their recorded service.
+Items follow deployment-configuration order. `configuration_mode` is `explicit` when `CIF_COMFYUI_INSTANCES` supplied the catalog, when `CIF_COMFYUI_ADDITIONAL_INSTANCES` was supplied (including an empty deliberate opt-out), or when an image-worker pool was named, and `legacy` when the backend synthesized only the one-item **Primary** fallback. Before the first background check, an item is unavailable with a null `checked_at` and an explicit not-yet-checked message. This route is a database/configuration projection, not a request-time external probe. Clients cannot select runtimes. `default_instance_id` fixes the primary, which owns the authoritative publication catalog and is always image worker one. `text_instance_id` fixes the prompt service; a null text assignment disables prompt generation.
+
+`role` is `image` for image-pool members, `text` for the assigned prompt service, and `unused` for a configured instance that executes neither. `in_image_pool` and `image_pool_instance_ids` report opt-in membership: a configured instance receives image work only when the deployment names it through `CIF_COMFYUI_IMAGE_WORKERS` or `CIF_COMFYUI_IMAGE_WORKER_IDS`. `busy` means that worker currently holds at least one dispatching, running, or cancel-requested generation of any account.
+
+`image_pool` is an aggregate occupancy summary for the user-facing idle-worker readout. `idle_count` counts available workers with at least one free slot and `free_slot_count` sums those slots, so aggregate capacity is deliberately disclosed while per-entry `concurrency`, `base_url`, `ws_url`, `user`, and credentials remain private. `unassigned_queued_count` is the number of queued images no worker has claimed yet, across all accounts. Validated cached publications may queue while every worker is offline; a dispatched job waits for the worker recorded on it.
 
 ## Published generation sources
 
@@ -263,7 +294,7 @@ The selector portion of this example uses the current Moody Krea 2 public values
 }
 ```
 
-`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. A last-valid cached/offline entry remains available from its frozen graph; dispatch waits for the assigned execution service reported by `/api/comfyui-instances`.
+`readiness` is `loading` before health is known, `ready`, `ready_with_warnings`, `cached_offline`, or a safe unavailable state such as `dependency_missing`. Recorded/observed workflow or API hash drift remains available as `ready_with_warnings`; the revision's `api_sha256` identifies the exact observed, validated graph used for execution. A last-valid cached/offline entry remains available from its frozen graph; dispatch waits for an image worker that carries the accepted revision, as reported by `image_pool` in `/api/comfyui-instances`.
 
 Recognized v1 `generation_source` and `technical_inventory` objects are typed, additive, and returned on both summary and detail responses so clients can plan later catalog/dropdown behavior without refetching every source. Older manifests and unrecognized/malformed section schemas return `null` for that section while the raw manifest remains retained server-side. Unknown v1 values, array entries, warning strings, and extra fields are preserved. Artifact basenames, class types, and counts are descriptive only and are never accepted as request selectors. `output_reachable + compiled_orphans = compiled_api` and the accepted API count are checked diagnostically, not as queue gates.
 
@@ -370,7 +401,7 @@ Canonical request:
 }
 ```
 
-New clients omit `comfyui_instance_id`. This deprecated compatibility field accepts only the assigned image ID from `GET /api/comfyui-instances`; any conflicting value is rejected with `runtime_assignment_conflict` (409). Prompt requests follow the same rule against `text_instance_id`. Missing prompt configuration returns `prompt_runtime_not_configured` (503). Unfinished discovery returns retryable `source_catalog_loading` (503); a validated cached publication can be accepted while its service is offline. Submission receipts are checked before these new-request rules, so accepted retries return their original result after configuration changes.
+New clients omit `comfyui_instance_id`. This deprecated compatibility field is an assertion only: it accepts the primary ID from `GET /api/comfyui-instances` and any conflicting value is rejected with `runtime_assignment_conflict` (409). It never selects a worker. An accepted image records no runtime; the dispatcher durably records the winning image worker in the same transaction that claims the job, before anything is sent to ComfyUI. A worker may claim a queued image only when it carries that exact accepted publication revision, so a source published on the primary alone always executes there. Prompt requests follow the same rule against `text_instance_id`. Missing prompt configuration returns `prompt_runtime_not_configured` (503). Unfinished discovery returns retryable `source_catalog_loading` (503); a validated cached publication can be accepted while its service is offline. Submission receipts are checked before these new-request rules, so accepted retries return their original result after configuration changes.
 
 `revision` is optional for a fresh caller but recommended for a UI selection. If the selected source was republished, a mismatch returns HTTP 409 with `source_republished`; the backend never compiles against a silently changed graph.
 
@@ -510,8 +541,9 @@ database session is released before assembly begins, so a large archive does not
 | `DELETE` | `/api/generations/{id}` | Delete owned history/files; may return 202 while active deletion reconciles |
 
 A summary contains lifecycle status, source display name, `checkpoint_label` (null when the
-source exposes no selectable checkpoint), `comfyui_instance_id`, the snapshotted
-`comfyui_instance_label`, acceptance/stage state, one optional
+source exposes no selectable checkpoint), `comfyui_instance_id` and the snapshotted
+`comfyui_instance_label` (both null while an image waits for an image worker, and set
+durably when the dispatcher claims it), acceptance/stage state, one optional
 active `progress` snapshot, total artifact count, image count, final-image count, one optional
 `display_artifact`, expected dimensions, safe error text, recall/favorite/cancel state, native
 `prompt_id`, `source_key`, and `publication_id`. The active snapshot may include a cached completion
@@ -579,8 +611,8 @@ Generation detail adds:
 
 ```json
 {
-  "comfyui_instance_id": "worker-2",
-  "comfyui_instance_label": "Secondary",
+  "comfyui_instance_id": "w-192-168-1-21-8189",
+  "comfyui_instance_label": "ComfyUI 192.168.1.21:8189",
   "generation_source": {
     "source_key": "...",
     "instance_id": "home",
@@ -647,7 +679,7 @@ Generation detail adds:
 
 `unmapped_outputs` remains node-keyed and copies every nonpublisher node result without field or class filtering. `interface.native_outputs` never filters runtime history. Public `raw_history` removes only top-level submitted graph envelopes such as `prompt` and `extra_data`; it retains the actual node results, publisher metadata, raw status/messages/errors, and execution metadata. Top-level `artifacts` is the compact downloadable set: the latest semantic stage while active, the authored final batch after success, or one best eligible image after cancellation/failure/interruption. Pruned image references remain in declared/unmapped/raw metadata with no application artifact summary. If optional retrieval fails, its logical locator likewise remains and the response carries a warning.
 
-Recall returns `available`, an unavailable reason when relevant, and—when exact—the `source_key`, full `revision`, and effective `parameters`. It also returns `comfyui_instance_id`, the historical `comfyui_instance_label`, `comfyui_instance_configured`, `comfyui_instance_available`, and an optional `comfyui_instance_warning`. A removed or unavailable runtime is reported instead of being replaced by the default. Recall never changes the server assignments, substitutes a newer publication, or submits automatically.
+Recall returns `available`, an unavailable reason when relevant, and—when exact—the `source_key`, full `revision`, and effective `parameters`. It also returns `comfyui_instance_id`, the historical `comfyui_instance_label`, `comfyui_instance_configured`, `comfyui_instance_available`, `comfyui_pool_available`, and an optional `comfyui_instance_warning`. The historical worker is reported for provenance and is never restored as a selection, so a removed or offline historical worker is not a warning; `comfyui_instance_warning` is set only when `comfyui_pool_available` is false, meaning no image worker can currently execute new work. Recall never changes the server assignments, substitutes a newer publication, or submits automatically.
 
 ## Artifact, upload, and result access
 
@@ -736,6 +768,12 @@ activity across all of their execution runtimes, independent of gallery paginati
 `cancelled_count`, and `completed_at` (null while work remains). Failed submissions,
 failed/interrupted jobs, and cancellations resolve planned work without counting as
 successful generation. Deleting a card preserves its outcome and original denominator.
+
+`worker_pool` repeats the aggregate image-pool occupancy from
+`GET /api/comfyui-instances` (`worker_count`, `available_count`, `idle_count`,
+`busy_count`, `free_slot_count`, `unassigned_queued_count`) so the browser can keep
+the idle-worker readout current on the same event-driven refresh that ages the
+countdowns. It is global, not owner-scoped, and contains no connection details.
 
 The top-level `remaining_count` includes queued, dispatching, running and
 cancel-requested generations. `collection_remaining_counts` maps every owned folder

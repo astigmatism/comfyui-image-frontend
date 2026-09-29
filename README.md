@@ -182,7 +182,47 @@ when adapting another deployment; do not replace the production Compose file wit
 the example Compose file.
 
 
-Every configured instance retains independent discovery, diagnostics, execution health, and queue capacity. Public image workflows come only from the assigned GPU catalog; prompt workflows come only from the assigned CPU catalog. Both assignments are fixed by the environment. Copies retain independent source keys and safe `replicas` metadata for compatibility, but they cannot become fallback sources or execution targets. See [CPU deployment](docs/comfyui-promptgen.md).
+Every configured instance retains independent discovery, diagnostics, execution health, and queue capacity. Public image workflows come only from the primary GPU catalog; prompt workflows come only from the assigned CPU catalog. Both assignments are fixed by the environment. A worker's copy retains its own source key and safe `replicas` metadata, but it cannot become a separate selectable source; its only execution role is proving that the worker carries the accepted revision. See [CPU deployment](docs/comfyui-promptgen.md).
+
+### Image worker pool
+
+Image generation runs on a pool of interchangeable ComfyUI workers behind the primary. When a
+generation is queued it is dispatched to the least-loaded available worker that carries that exact
+publication revision; when every worker is busy, the queue builds up and drains as workers free.
+The primary remains the authoritative publication catalog and is always worker one, so a
+single-instance deployment behaves exactly as before.
+
+Add a worker by appending its URL to `CIF_COMFYUI_IMAGE_WORKERS`, then recreating the application
+container (`docker compose up -d`; no image rebuild, no schema change):
+
+```sh
+# One or more credential-free base URLs, comma separated.
+CIF_COMFYUI_IMAGE_WORKERS=http://192.168.1.21:8189,http://192.168.1.22:8188
+```
+
+Each URL becomes a worker whose stable routing ID is derived from its host and port
+(`w-192-168-1-21-8189`), labelled `ComfyUI <host>:<port>`, inheriting the primary's `user` and
+`concurrency`. To enrol an instance that `CIF_COMFYUI_INSTANCES` already defines, name it in
+`CIF_COMFYUI_IMAGE_WORKER_IDS` instead. Membership is deliberately opt-in: a configured instance
+(including the image's bundled `worker-2` default) never receives image work until it is named, and
+the assigned prompt service can never be an image worker.
+
+A worker must be a true duplicate of the primary:
+
+- the same ComfyUI version and custom nodes;
+- the same published `workflows/` userdata files, byte for byte, so their hashes match — a worker
+  that lacks a publication simply never receives that source's jobs, and divergence is visible in
+  **Administration → Workflow diagnostics**;
+- the same model library, and the same `Comfy-User` namespace as the primary;
+- for LoRA administration, the management companion with `CIF_LORA_MANAGEMENT_ROOT` on the shared
+  model root and `CIF_LORA_MANAGEMENT_MODEL_WRITER` unset or `0`, because exactly one instance in
+  the pool may write models.
+
+The control panel reports idle capacity directly beneath **Generate** ("2 of 3 workers idle", "All
+3 workers busy — new images queue"), with a tooltip naming each worker's state. The readout is
+hidden on a one-worker deployment. Completion estimates stay per worker because workers may differ
+in speed, so the account-wide "All remaining" estimate is withheld for a while after a new worker
+joins; the current image's countdown is unaffected.
 
 When both instance arrays are absent, the legacy primary configuration remains the fixed image service. An unset or empty `CIF_COMFYUI_TEXT_INSTANCE_ID` disables prompt generation while images remain usable. A configured text ID must exist and differ from the image assignment. URLs and user selectors remain server-side.
 
@@ -417,7 +457,7 @@ Warnings are nonfatal publication or runtime diagnostics. They include workflow/
 
 ### Sources are cached/offline or Generate is disabled
 
-Validated cached publications remain usable during a transport outage. Accepted jobs wait for their assigned service to recover; neither catalogs nor execution switch to another container. Without a validated cache, unfinished discovery is retryable. Check the assigned instance in `CIF_COMFYUI_INSTANCES`, Docker network/DNS, WebSocket URL, `user`, userdata routing, `/object_info`, and byte limits. `/api/comfyui-instances` reports execution health separately from catalog health.
+Validated cached publications remain usable during a transport outage. A queued image waits for any eligible worker to recover, while a job already submitted waits for the worker recorded on it; catalogs never switch container. Without a validated cache, unfinished discovery is retryable. Check the primary instance in `CIF_COMFYUI_INSTANCES`, worker URLs in `CIF_COMFYUI_IMAGE_WORKERS`, Docker network/DNS, WebSocket URL, `user`, userdata routing, `/object_info`, and byte limits. `/api/comfyui-instances` reports execution health and pool occupancy separately from catalog health.
 
 ### A selected source was republished
 

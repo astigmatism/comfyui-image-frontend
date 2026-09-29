@@ -63,6 +63,9 @@ def test_installed_portal_runner_smoke_environment_boots_new_image_settings(
     assert [instance.id for instance in settings.configured_comfyui_instances] == ["smoke"]
     assert settings.comfyui_default_instance_id == "smoke"
     assert settings.comfyui_text_instance_id is None
+    # The pinned runner boots the candidate with no worker list, and image ENV
+    # defaults must never enroll extra workers into the isolated smoke pool.
+    assert settings.image_pool_instance_ids == ("smoke",)
 
 
 def test_production_stage_assignments_remain_explicit_and_strict(
@@ -83,6 +86,34 @@ def test_production_stage_assignments_remain_explicit_and_strict(
         "primary": "http://comfyui:8188",
         "promptgen": "http://comfyui-promptgen:8188",
     }
+    assert settings.image_pool_instance_ids == ("primary",)
     monkeypatch.setenv("CIF_COMFYUI_TEXT_INSTANCE_ID", "missing")
     with pytest.raises(ValidationError, match="must match a configured instance"):
         Settings(_env_file=None, test_mode=True)
+
+
+def test_image_env_defaults_never_enroll_bundled_instances_as_workers(
+    monkeypatch, image_settings_environment
+):
+    """The appliance's first deployment has one GPU instance.
+
+    The image records an anticipatory worker and the CPU prompt service as
+    ENV defaults. Neither may execute image work until the deployment opts in,
+    so a single-GPU host sees exactly one image worker and no phantom member.
+    """
+
+    monkeypatch.setenv("CIF_COMFYUI_INSTANCE_ID", "primary")
+    monkeypatch.setenv("CIF_COMFYUI_BASE_URL", "http://127.0.0.1:9")
+    settings = Settings(_env_file=None, test_mode=True)
+    assert [instance.id for instance in settings.configured_comfyui_instances] == [
+        "primary",
+        "worker-2",
+        "promptgen",
+    ]
+    assert settings.image_pool_instance_ids == ("primary",)
+
+    monkeypatch.setenv("CIF_COMFYUI_IMAGE_WORKER_IDS", "worker-2")
+    enrolled = Settings(_env_file=None, test_mode=True)
+    assert enrolled.image_pool_instance_ids == ("primary", "worker-2")
+    # Opting in remains an explicit topology for the portal update gate.
+    assert enrolled.comfyui_instance_configuration_mode == "explicit"

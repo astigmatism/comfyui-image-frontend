@@ -88,6 +88,9 @@ import {
   generationButtonPresentation,
   promptGenerationButtonPresentation,
   generationButtonContentMarkup,
+  imagePoolWorkers,
+  imageWorkerPoolLabel,
+  imageWorkerPoolTooltip,
   serverControlsMarkup,
   automationStatusMarkup,
   sharedSettingsStatusMarkup,
@@ -130,6 +133,8 @@ const state = {
   textComfyuiInstanceId: null,
   comfyuiInstancesStatus: "idle",
   comfyuiInstancesMessage: null,
+  comfyuiImagePool: null,
+  comfyuiImagePoolInstanceIds: [],
   comfyuiInstanceConfigurationMode: null,
   comfyuiInstanceError: null,
   comfyuiInstanceWarning: null,
@@ -2301,6 +2306,8 @@ async function logout() {
   stopLiveUpdates();
   stopApplicationStartup();
   state.comfyuiInstances = [];
+  state.comfyuiImagePool = null;
+  state.comfyuiImagePoolInstanceIds = [];
   state.defaultComfyuiInstanceId = null;
   state.textComfyuiInstanceId = null;
   state.comfyuiInstancesStatus = "idle";
@@ -2390,6 +2397,8 @@ async function enterApplication() {
   const controller = new AbortController();
   applicationStartupController = controller;
   state.comfyuiInstances = [];
+  state.comfyuiImagePool = null;
+  state.comfyuiImagePoolInstanceIds = [];
   state.defaultComfyuiInstanceId = null;
   state.textComfyuiInstanceId = null;
   state.comfyuiInstancesStatus = "loading";
@@ -2699,6 +2708,10 @@ function applyComfyuiInstanceCatalog(payload) {
     ? payload.items.map(normalizeComfyuiInstance).filter(Boolean)
     : [];
   state.comfyuiInstances = items;
+  state.comfyuiImagePool = normalizeWorkerPool(payload?.image_pool);
+  state.comfyuiImagePoolInstanceIds = Array.isArray(payload?.image_pool_instance_ids)
+    ? payload.image_pool_instance_ids.filter((value) => typeof value === "string")
+    : [];
   state.defaultComfyuiInstanceId = payload?.default_instance_id || null;
   state.textComfyuiInstanceId = payload?.text_instance_id || null;
   state.comfyuiInstanceConfigurationMode =
@@ -2708,7 +2721,7 @@ function applyComfyuiInstanceCatalog(payload) {
         ? "explicit"
         : null;
   const selected = imageComfyuiInstance();
-  if (selected?.available) {
+  if (imagePoolWorkers(state).some((item) => item.available)) {
     const previousInstanceError = state.comfyuiInstanceError;
     state.comfyuiInstanceError = null;
     state.comfyuiInstanceWarning = null;
@@ -2730,9 +2743,27 @@ function normalizeComfyuiInstance(value) {
       typeof value.description === "string" ? value.description.trim() : "",
     is_default: Boolean(value.is_default),
     available: value.available === true,
+    role: ["image", "text", "unused"].includes(value.role) ? value.role : "unused",
+    // A server that predates pooled execution reports no membership; its
+    // assigned image instance is inferred from default_instance_id below.
+    in_image_pool: value.in_image_pool === true,
+    busy: value.busy === true,
     message: typeof value.message === "string" ? value.message.trim() : "",
     checked_at:
       typeof value.checked_at === "string" ? value.checked_at : null,
+  };
+}
+
+function normalizeWorkerPool(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const count = (key) => Math.max(0, Number(value[key]) || 0);
+  return {
+    worker_count: count("worker_count"),
+    available_count: count("available_count"),
+    idle_count: count("idle_count"),
+    busy_count: count("busy_count"),
+    free_slot_count: count("free_slot_count"),
+    unassigned_queued_count: count("unassigned_queued_count"),
   };
 }
 
@@ -2872,6 +2903,7 @@ function comfyuiInstancePanelState() {
   return JSON.stringify({
     status: state.comfyuiInstancesStatus,
     message: state.comfyuiInstancesMessage,
+    pool: state.comfyuiImagePool,
     configurationMode: state.comfyuiInstanceConfigurationMode,
     textDefault: state.textComfyuiInstanceId,
     textRuntime: promptRuntimeId(state),
@@ -2885,6 +2917,8 @@ function comfyuiInstancePanelState() {
       available: item.available,
       message: item.message,
       isDefault: item.is_default,
+      role: item.role,
+      inImagePool: item.in_image_pool,
     })),
   });
 }
@@ -5960,6 +5994,16 @@ function generationActivitySnapshot() {
   };
 }
 
+function renderWorkerPoolStatus() {
+  const host = document.querySelector("#worker-pool-status");
+  if (!host) return;
+  // Patched in place so hover intent, focus and folder cards are undisturbed.
+  const label = imageWorkerPoolLabel(state);
+  if (host.textContent !== label) host.textContent = label;
+  const tooltip = imageWorkerPoolTooltip(state);
+  if (host.title !== tooltip) host.title = tooltip;
+}
+
 function renderGenerationActivity() {
   const snapshot = generationActivitySnapshot();
   const now = Date.now();
@@ -5977,6 +6021,7 @@ function renderGenerationActivity() {
     }
     if (badge.title !== info.description) badge.title = info.description;
   }
+  renderWorkerPoolStatus();
   document.title = generationActivityTitle(snapshot, now, state.session?.app_title || "ImageGen");
 }
 
@@ -6701,6 +6746,7 @@ function syncServerControls() {
     const markup = promptPipelineMarkup(state);
     if (flow.innerHTML !== markup) flow.innerHTML = markup;
   }
+  renderWorkerPoolStatus();
   for (const id of ["auto-generate", "auto-generate-creative-direction", "prompt-generation-enabled"]) {
     const toggle = document.getElementById(id);
     const label = toggle?.closest("label")?.querySelector("em");

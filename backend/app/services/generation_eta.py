@@ -90,7 +90,16 @@ class GenerationTimingFeatures:
         return 0.8 <= pixels <= 1.25 and 0.8 <= aspect <= 1.25
 
 
-def build_generation_timing_features(generation: Generation) -> GenerationTimingFeatures:
+def build_generation_timing_features(
+    generation: Generation, instance_id: str | None = None
+) -> GenerationTimingFeatures:
+    """Describe one execution for timing lookup.
+
+    ``instance_id`` overrides the recorded worker so the queue projection can ask
+    what a still-unassigned image would cost on a specific pool member. Timing
+    identity stays per worker because pool members may differ in speed.
+    """
+
     contract = generation.resolved_contract_json or {}
     effective = generation.effective_controls_json or {}
     source = generation.generation_source_json or {}
@@ -127,7 +136,7 @@ def build_generation_timing_features(generation: Generation) -> GenerationTiming
         compute_key=_digest(
             {
                 "version": TIMING_FEATURE_VERSION,
-                "instance": generation.comfyui_instance_id,
+                "instance": instance_id or generation.comfyui_instance_id,
                 "source": source.get("source_key", generation.workflow_id),
                 "revision": [
                     generation.api_graph_sha256,
@@ -439,8 +448,10 @@ class GenerationEtaEstimator:
                     self._profiles.popitem(last=False)
                 self.revision += 1
 
-    def duration(self, generation: Generation) -> DurationEstimate | None:
-        features = build_generation_timing_features(generation)
+    def duration(
+        self, generation: Generation, instance_id: str | None = None
+    ) -> DurationEstimate | None:
+        features = build_generation_timing_features(generation, instance_id)
         with self._lock:
             samples = list(self._profiles.get(features.compute_key, []))
         compatible = [

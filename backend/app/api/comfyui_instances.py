@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
 from ..models import ComfyUIInstanceHealth, ServiceHealth
-from ..schemas import ComfyUIInstanceList, ComfyUIInstanceStatus
+from ..schemas import ComfyUIInstanceList, ComfyUIInstanceStatus, ImageWorkerPoolStatus
 
 router = APIRouter(prefix="/api", tags=["comfyui-instances"])
 
@@ -19,8 +19,12 @@ def list_comfyui_instances(
     session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> ComfyUIInstanceList:
-    instances = get_container(request).comfyui_instances
+    container = get_container(request)
+    instances = container.comfyui_instances
+    pool = container.image_pool
     catalog_health = session.get(ServiceHealth, "comfyui")
+    snapshot = pool.snapshot(session)
+    occupancy = {worker.id: worker for worker in snapshot.workers}
     items: list[ComfyUIInstanceStatus] = []
     for config in instances.configs:
         health = session.get(ComfyUIInstanceHealth, config.id)
@@ -49,11 +53,16 @@ def list_comfyui_instances(
                 available=available,
                 message=message,
                 checked_at=checked_at,
+                role=pool.role(config.id),
+                in_image_pool=pool.is_member(config.id),
+                busy=bool(occupancy[config.id].busy) if config.id in occupancy else False,
             )
         )
     return ComfyUIInstanceList(
         default_instance_id=instances.default_id,
         text_instance_id=instances.settings.comfyui_text_instance_id,
         configuration_mode=instances.configuration_mode,
+        image_pool=ImageWorkerPoolStatus.model_validate(snapshot.payload()),
+        image_pool_instance_ids=list(pool.member_ids),
         items=items,
     )

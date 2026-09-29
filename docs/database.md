@@ -98,16 +98,17 @@ Private `source_id`, the raw manifest, graph, bindings, and runtime dependency s
 
 At acceptance, a generation stores its profile foreign key, nullable owner-validated
 `collection_id`, display/compatibility identity fields, resolved interface, requested/effective
-parameter maps, seed map, final prompt, compiled graph/hash, selected `comfyui_instance_id`, and a
-snapshot of that target's safe `comfyui_instance_label`. It also stores a compact publication
-`generation_source_json` with:
+parameter maps, seed map, final prompt, and compiled graph/hash. `comfyui_instance_id` and its
+`comfyui_instance_label` snapshot are null for a newly accepted image and are written durably by
+the claim transaction, so the row records the image worker that actually ran it before anything is
+sent to ComfyUI. It also stores a compact publication `generation_source_json` with:
 
 ```text
 source_key, instance_id, publication_id,
 workflow_sha256, api_sha256, manifest_sha256
 ```
 
-The publication `instance_id` inside `generation_source_json` identifies where the source catalog was discovered; it need not equal the selected execution ID. The separate execution columns are the durable adapter-routing key and historical display label. Together with `comfyui_prompt_id`, they ensure recovery, polling, retrieval, and cancellation return to the same independent ComfyUI queue even if a user changes the current selector. Removing an execution ID from deployment configuration never rewrites or redirects old rows. On startup, a never-submitted queued job pinned to a removed ID fails explicitly; an in-flight prompt without its exact adapter is marked interrupted because it cannot be safely recovered, but the application does not send a remote cancellation. The source snapshot prevents later republishing from changing an in-flight or historical record. Seed values are stored as decimal strings in the public/effective maps to preserve integers beyond JavaScript's safe integer range.
+The publication `instance_id` inside `generation_source_json` identifies where the source catalog was discovered; it need not equal the selected execution ID. The separate execution columns are the durable adapter-routing key and historical display label. Together with `comfyui_prompt_id`, they ensure recovery, polling, retrieval, and cancellation return to the same independent ComfyUI queue even if a user changes the current selector. Removing an execution ID from deployment configuration never rewrites or redirects terminal or in-flight rows. On startup, a never-submitted queued job pinned to a removed ID is released back to the image pool when a configured worker still carries its revision, and fails explicitly only when none does; an in-flight prompt without its exact adapter is marked interrupted because it cannot be safely recovered, but the application does not send a remote cancellation. The source snapshot prevents later republishing from changing an in-flight or historical record. Seed values are stored as decimal strings in the public/effective maps to preserve integers beyond JavaScript's safe integer range.
 
 After ComfyUI history reconciliation, these columns retain the result without flattening it into one image:
 
@@ -121,7 +122,7 @@ After ComfyUI history reconciliation, these columns retain the result without fl
 | `comfyui_status_json` | Native bounded status/error metadata |
 | `progress_json` | Coalesced active current-operation label, safe node identity, counter/fraction, timestamp, and optional nested ETA; never a workflow-wide percentage |
 
-`comfyui_prompt_id` is meaningful only together with `comfyui_instance_id`; native prompt IDs and queues are not merged across instances. `artifacts` is the compact retrievable binary index: advancing stages replace older image rows/files, success keeps the final batch, and cancellation/failure keeps one best image. Logical publisher references remain in `declared_outputs_json` even when their binary was pruned or `/view` retrieval failed, so normalization is not reduced to the locally retained set. `canonical` / `best_available` and generation artifact pointers select that set without rewriting declared/unmapped/raw result structures. `internal_diagnostics_json` durably records transferred ComfyUI source locators and whether their terminal cleanup completed, allowing failed cleanup to retry after restart.
+`comfyui_prompt_id` is meaningful only together with `comfyui_instance_id`; native prompt IDs and queues are not merged across instances. Migration `e7b13c9a5d42_pooled_image_execution.py` makes both execution columns nullable for late binding and indexes `workflow_profiles` on `(instance_id, is_current, source_id)` for the claim-time revision check; existing rows keep their recorded runtime, and its downgrade refuses to run while a generation still awaits a worker. `artifacts` is the compact retrievable binary index: advancing stages replace older image rows/files, success keeps the final batch, and cancellation/failure keeps one best image. Logical publisher references remain in `declared_outputs_json` even when their binary was pruned or `/view` retrieval failed, so normalization is not reduced to the locally retained set. `canonical` / `best_available` and generation artifact pointers select that set without rewriting declared/unmapped/raw result structures. `internal_diagnostics_json` durably records transferred ComfyUI source locators and whether their terminal cleanup completed, allowing failed cleanup to retry after restart.
 
 ## Completion timing profiles
 

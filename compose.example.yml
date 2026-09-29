@@ -12,6 +12,8 @@ services:
       - "${CIF_BIND_IP:-192.168.1.5}:${CIF_HOST_PORT:-8000}:8000"
     env_file:
       # Non-secret defaults retain household runtimes and add the CPU service.
+      # Image workers are opt-in: append their URLs to CIF_COMFYUI_IMAGE_WORKERS
+      # in the private .env below, then `docker compose up -d` to apply.
       # The private .env is loaded last so an explicit operator configuration
       # wins. A missing .env is tolerated: the published defaults above carry
       # the stack until the operator supplies session and bootstrap values.

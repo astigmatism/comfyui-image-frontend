@@ -48,6 +48,8 @@ The publication/registry/adapter/compiler/result tests cover:
 - typed/lossless generation-source and technical-inventory recognition, legacy absence, open-ended values/entries/warnings/fields, six distinct node counts and diagnostic arithmetic, fixed/public-choice LoRAs, and non-executable artifact basenames;
 - recursive preferred/fallback userdata listing, `Comfy-User`, whole-path single-segment encoding, and bounded listing/object-info/artifact/history/output responses;
 - multi-instance JSON parsing, unique IDs, explicit/default selection, optional instance fields, global concurrency inheritance, and legacy single-instance synthesis;
+- image-worker pool configuration: delimited and JSON URL lists, derived stable IDs/labels, inherited user/concurrency, opt-in membership for already-configured instances, membership derived after a settings copy, hashed identities for long hosts, and refusal of unknown members, the prompt service, credentialed URLs, and colliding derived IDs;
+- pool occupancy counting (idle, busy, offline, free slots, unassigned queue) with the legacy default health fallback, and the claim predicate: revision-carrying workers only, survival of republication, pre-publication rows staying with their catalog, and pinned rows staying with their worker;
 - adapter lookup by execution ID, refusal to fall back for an unknown pin, and public instance-status projection without private URLs/users/capacity;
 - empty and multiple-source catalogs, independent candidate failures, safe diagnostics, warning readiness, missing dependencies, last-valid cache, bad republish retention, and revision retirement;
 - all six v1 input types, finite choice membership/labels/default-strength hints, public IDs, defaults/ranges/steps, required/optional rules, one positive prompt, and trusted CIF binding/class matching;
@@ -84,6 +86,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - validate/accept with dynamic parameters, random/fixed maximum seed, workflow `extra_pnginfo`, and native prompt ID;
 - durable acceptance, rapid submissions, per-user FIFO and round-robin fairness;
 - per-instance publication discovery and diagnostics, deduplicated catalogs, exact-copy text routing with independent image selection, per-instance health and lanes, and unavailable/unconfigured target rejection;
+- multi-worker image execution against two or three live fake ComfyUI servers: concurrent execution with one image per worker while further work queues unassigned, a freed worker claiming the next image, an offline worker never holding queued work and claiming again after recovery, a worker without the publication never receiving that source, a failed submission releasing the job to another worker, a queued row pinned to a removed worker returning to the pool at startup, pool counters in both status routes, no disclosure of worker URLs/users, refusal of client-supplied runtimes, acceptance while the whole pool is offline, and byte-for-byte single-worker behavior including recall;
 - generation pinning across input upload, prompt submission, history monitoring, result retrieval, cancellation, and independent target outages;
 - pre-submission WebSocket readiness, structured node-local progress with legacy fallback,
   coalescing, prompt/client isolation, and delayed/missing-event history reconciliation;
@@ -95,7 +98,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - last-valid cached catalogs queue only on their assigned service during outages and resume on recovery;
 - exact recall and unavailable/republished source behavior;
 - per-generation Prompt Assistant snapshots: run-derived values for linked runs, submitted drafts for manual rows, blank-instruction normalization to `null`, recall preference with the linked-run fallback (gaining the run's thinking mode) for legacy `null` rows, batch-item snapshot coverage without linked runs, and schema mode/instruction-boundary validation;
-- migration up/down/up with old rows, execution-ID/label backfill, per-instance health, and instance-queue indexes;
+- migration up/down/up with old rows, execution-ID/label backfill, nullable execution columns for late binding, per-instance health, and instance-queue indexes;
 - authentication, CSRF, IDOR/admin content denial, uploads, favorites/preferences, deletion, and Ollama provenance regressions.
 - collection CRUD/name/depth/cycle/subtree rules, owner isolation, direct counts/previews, scoped
   cursor pagination, generation filing/moves, preview preference migration/defaults, terminal and
@@ -130,6 +133,8 @@ overlapping subtrees, independent artifacts and recall, copy rollback, and folde
 
 `frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. It also covers collection creation/rename/navigation, in-collection generation, preview preference persistence, moving a completed card, recursive collection deletion, and recall restoring the Creative Direction panel (direction, mode, instructions, thinking mode) from the generation snapshot while preserving the current thinking mode when a snapshot carries none. Auto-generate journeys verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
+`frontend/e2e/image-worker-pool.spec.mjs` stubs the pool routes and verifies the idle-worker readout beside **Generate**: its text and per-worker tooltip, in-place updates when occupancy changes, the absence of any runtime selector or banner while the pool is only partially degraded, and that a one-worker deployment renders no readout at all. Real multi-worker execution is proven by `backend/tests/integration/test_image_worker_pool.py`, because the first appliance has a single GPU instance.
+
 `frontend/e2e/auto-generation-prefetch.spec.mjs` independently controls composition responses, queue acceptance, image completion events, and activity reads. It verifies one-prompt lookahead for single images and quantity × checkpoint batches, both completion orders, edits and restored values, off/on versions, source and session changes, retries, partial acceptance, and single-use composition provenance.
 
 `frontend/e2e/tls-edge.spec.mjs` is a second, standalone Playwright project that runs the principal journeys against a **real TLS origin**. Its global setup (`scripts/e2e-tls-stack.sh up`) starts the real Compose stack (`cif-tls-edge` + app) when a Docker daemon is reachable, otherwise a local Caddy edge in front of the in-process app, then waits for the edge to answer a 200 over `https://` with a valid, hostname-matching leaf. The suite uses an untrusted-CA-tolerant browser context (equivalent to an operator's one-time trust-store import) and verifies: the edge terminates TLS and proxies to the app over plaintext (the app receives no client-address / `X-Forwarded-For` header from the browser); the session cookie is `Secure` and is actually sent by a real browser over `https://`; and the clipboard-paste and microphone APIs are present in the secure context (the `mediaDevices` guard mirrors the app's own availability check, so the suite stays honest on browser builds without a media pipeline).
@@ -159,7 +164,9 @@ PYTHONPATH=backend pytest -q backend/tests/unit/test_results.py
 PYTHONPATH=backend pytest -q backend/tests/unit/test_collections.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_workflows_and_prompt_assistant.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_generation_lifecycle.py
+PYTHONPATH=backend pytest -q backend/tests/unit/test_worker_pool.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_comfyui_instance_routing.py
+PYTHONPATH=backend pytest -q backend/tests/integration/test_image_worker_pool.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_queue_and_recovery.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_gallery_query_performance.py
 PYTHONPATH=backend pytest -q backend/tests/integration/test_collections.py

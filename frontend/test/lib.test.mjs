@@ -746,18 +746,27 @@ test("recall preserves the current thinking mode when the recall carries none", 
   assert.equal(recalled.promptAssistant.creativeDirection, "historical direction");
 });
 
-test("recall never restores a historical runtime selection", () => {
+test("recall never restores a historical runtime and only warns when no worker is free", () => {
+  // A removed or offline historical worker is irrelevant: the pool binds a
+  // worker to the next image at dispatch.
   for (const configured of [true, false]) {
     const current = { defaultComfyuiInstanceId: "primary" };
     const result = recalledComfyuiInstanceState(current, {
       comfyui_instance_id: "old-worker", comfyui_instance_configured: configured,
-      comfyui_instance_available: false,
+      comfyui_instance_available: false, comfyui_pool_available: true,
     });
     assert.deepEqual(result.state, {});
-    assert.match(result.notice, /assigned GPU service/);
+    assert.equal(result.notice, null);
   }
+  const exhausted = recalledComfyuiInstanceState({ defaultComfyuiInstanceId: "primary" }, {
+    comfyui_instance_id: "old-worker", comfyui_instance_configured: false,
+    comfyui_pool_available: false,
+    comfyui_instance_warning: "No image worker is currently available.",
+  });
+  assert.deepEqual(exhausted.state, {});
+  assert.match(exhausted.notice, /No image worker/);
   assert.equal(recalledComfyuiInstanceState({ defaultComfyuiInstanceId: "primary" }, {
-    comfyui_instance_id: "primary",
+    comfyui_instance_id: "primary", comfyui_pool_available: true,
   }).notice, null);
 });
 

@@ -25,6 +25,9 @@ import {
   generationProgressMarkup,
   generationActivityMarkup,
   generationActivityTitle,
+  imagePoolWorkers,
+  imageWorkerPoolLabel,
+  imageWorkerPoolTooltip,
   collectionCountMarkup,
   shellMarkup,
   passwordChangeMarkup,
@@ -2742,4 +2745,143 @@ test("prompt button distinguishes submission, queueing, execution, and recovery"
     assert.deepEqual(promptGenerationButtonPresentation({ ...state, promptGenerationBusy: true }), { label, busy: true });
   }
   assert.deepEqual(promptGenerationButtonPresentation({}), { label: "Generate prompt", busy: false });
+});
+
+const poolContract = {
+  inputs: [
+    { id: "prompt.text", type: "multiline_string", label: "Prompt", semantic_role: "positive_prompt", required: true },
+  ],
+};
+
+function poolPanelState(overrides = {}) {
+  return {
+    submitting: false,
+    comfyuiInstancesStatus: "ready",
+    defaultComfyuiInstanceId: "primary",
+    comfyuiInstances: [],
+    workflows: [{ profile_id: "p1", display_name: "Portrait", available: true }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello" },
+    fieldErrors: {},
+    formError: null,
+    ...overrides,
+  };
+}
+
+function worker(id, { available = true, busy = false, pool = true, role = "image" } = {}) {
+  return { id, label: id === "primary" ? "Primary" : `Worker ${id}`, available, busy, in_image_pool: pool, role };
+}
+
+function pool(counts) {
+  return { generationActivity: { worker_pool: { unassigned_queued_count: 0, ...counts } } };
+}
+
+test("the worker indicator stays hidden on a one-worker deployment", () => {
+  const state = poolPanelState({
+    comfyuiInstances: [worker("primary")],
+    ...pool({ worker_count: 1, available_count: 1, idle_count: 1, busy_count: 0, free_slot_count: 1 }),
+  });
+  assert.equal(imageWorkerPoolLabel(state), "");
+  assert.equal(imageWorkerPoolTooltip(state), "");
+  const html = generationPanelMarkup(state, state.workflows[0], poolContract);
+  // The element exists for in-place patching but renders no text or box.
+  assert.match(html, /<p id="worker-pool-status"[^>]*><\/p>/);
+});
+
+test("the worker indicator reports idle, partial, busy and offline pools", () => {
+  const instances = [worker("primary"), worker("w2"), worker("w3")];
+  const allIdle = poolPanelState({
+    comfyuiInstances: instances,
+    ...pool({ worker_count: 3, available_count: 3, idle_count: 3, busy_count: 0, free_slot_count: 3 }),
+  });
+  assert.equal(imageWorkerPoolLabel(allIdle), "3 workers idle");
+  const partial = poolPanelState({
+    comfyuiInstances: instances,
+    ...pool({ worker_count: 3, available_count: 3, idle_count: 2, busy_count: 1, free_slot_count: 2 }),
+  });
+  assert.equal(imageWorkerPoolLabel(partial), "2 of 3 workers idle");
+  const busy = poolPanelState({
+    comfyuiInstances: instances,
+    ...pool({ worker_count: 3, available_count: 3, idle_count: 0, busy_count: 3, free_slot_count: 0, unassigned_queued_count: 4 }),
+  });
+  assert.equal(imageWorkerPoolLabel(busy), "All 3 workers busy — new images queue");
+  const degraded = poolPanelState({
+    comfyuiInstances: instances,
+    ...pool({ worker_count: 3, available_count: 2, idle_count: 1, busy_count: 1, free_slot_count: 1 }),
+  });
+  assert.equal(imageWorkerPoolLabel(degraded), "1 of 3 workers idle · 1 offline");
+  const exhausted = poolPanelState({
+    comfyuiInstances: instances,
+    ...pool({ worker_count: 3, available_count: 0, idle_count: 0, busy_count: 0, free_slot_count: 0, unassigned_queued_count: 2 }),
+  });
+  assert.equal(imageWorkerPoolLabel(exhausted), "No image worker available — 2 waiting · 3 offline");
+  const html = generationPanelMarkup(partial, partial.workflows[0], poolContract);
+  assert.match(html, /id="worker-pool-status"[^>]*>2 of 3 workers idle</);
+  assert.match(html, /aria-live="polite"/);
+});
+
+test("the worker tooltip names each pool member and its state without private details", () => {
+  const state = poolPanelState({
+    comfyuiInstances: [
+      worker("primary", { busy: true }),
+      worker("w2", { available: false }),
+      { id: "promptgen", label: "CPU", available: true, in_image_pool: false, role: "text" },
+    ],
+    ...pool({ worker_count: 2, available_count: 1, idle_count: 0, busy_count: 1, free_slot_count: 0 }),
+  });
+  const tooltip = imageWorkerPoolTooltip(state);
+  assert.match(tooltip, /0 of 2 image workers are free/);
+  assert.match(tooltip, /Primary: busy/);
+  assert.match(tooltip, /Worker w2: offline/);
+  assert.doesNotMatch(tooltip, /CPU/);
+});
+
+test("generation follows the configured pool, not one specific worker", () => {
+  const degraded = poolPanelState({
+    comfyuiInstances: [worker("primary", { available: false }), worker("w2")],
+  });
+  assert.equal(generationSubmissionDisabled(degraded, degraded.workflows[0], poolContract), false);
+  // An entirely offline pool still queues cached publications, as one offline
+  // instance did before pooled execution.
+  const exhausted = poolPanelState({
+    comfyuiInstances: [worker("primary", { available: false }), worker("w2", { available: false })],
+  });
+  assert.equal(generationSubmissionDisabled(exhausted, exhausted.workflows[0], poolContract), false);
+  // No configured image worker at all remains a blocking misconfiguration.
+  const unconfigured = poolPanelState({ comfyuiInstances: [], defaultComfyuiInstanceId: null });
+  assert.equal(
+    generationSubmissionDisabled(unconfigured, unconfigured.workflows[0], poolContract),
+    true,
+  );
+  // A server that predates pooled execution reports no membership at all.
+  const legacy = poolPanelState({
+    comfyuiInstances: [{ id: "primary", label: "Primary", available: true }],
+  });
+  assert.deepEqual(imagePoolWorkers(legacy).map((item) => item.id), ["primary"]);
+  assert.equal(generationSubmissionDisabled(legacy, legacy.workflows[0], poolContract), false);
+});
+
+test("the service banner appears only when every image worker is unavailable", () => {
+  const instances = { status: "ready", selectedInstanceId: "primary" };
+  const degraded = serviceBannerMarkup([], "ready", null, {
+    ...instances,
+    instances: [worker("primary", { available: false }), worker("w2")],
+  });
+  assert.equal(degraded, "");
+  const exhausted = serviceBannerMarkup([], "ready", null, {
+    ...instances,
+    instances: [
+      { ...worker("primary", { available: false }), message: "ComfyUI is unreachable." },
+      worker("w2", { available: false }),
+    ],
+  });
+  assert.match(exhausted, /Image workers unavailable/);
+  assert.match(exhausted, /ComfyUI is unreachable/);
+  const single = serviceBannerMarkup([], "ready", null, {
+    ...instances,
+    instances: [{ ...worker("primary", { available: false }), message: "ComfyUI is unreachable." }],
+  });
+  assert.match(single, /Primary unavailable/);
+  const unconfigured = serviceBannerMarkup([], "ready", null, { ...instances, instances: [] });
+  assert.match(unconfigured, /Image service is not configured/);
 });

@@ -104,6 +104,34 @@ assert instances[1].label == "Secondary"
 assert instances[1].base_url == "http://192.168.1.21:8189"
 assert instances[2].base_url == "http://comfyui-promptgen:8188"
 assert settings.comfyui_text_instance_id is None
+# Image-pool membership is opt-in: a bundled anticipatory worker and the CPU
+# prompt service never execute image work until the deployment names them.
+assert settings.image_pool_instance_ids == ("smoke-primary",)
+'
+
+# An appended worker URL joins the image pool, inherits the primary's user and
+# concurrency, and keeps the configuration explicit for the portal update gate.
+docker run --rm --network none --entrypoint python \
+  -e CIF_TEST_MODE=true \
+  -e CIF_COMFYUI_INSTANCE_ID=smoke-primary \
+  -e CIF_COMFYUI_BASE_URL=http://127.0.0.1:9 \
+  -e CIF_COMFYUI_USER=smoke-user \
+  -e CIF_COMFYUI_CONCURRENCY=2 \
+  -e 'CIF_COMFYUI_ADDITIONAL_INSTANCES=[]' \
+  -e 'CIF_COMFYUI_IMAGE_WORKERS=http://192.168.1.31:8188, http://192.168.1.32:8188' \
+  "$IMAGE" -c '
+from app.config import get_settings
+settings = get_settings()
+assert settings.comfyui_instance_configuration_mode == "explicit"
+assert settings.image_pool_instance_ids == (
+    "smoke-primary",
+    "w-192-168-1-31-8188",
+    "w-192-168-1-32-8188",
+), settings.image_pool_instance_ids
+workers = {item.id: item for item in settings.configured_comfyui_instances}
+assert workers["w-192-168-1-31-8188"].base_url == "http://192.168.1.31:8188"
+assert workers["w-192-168-1-32-8188"].user == "smoke-user"
+assert workers["w-192-168-1-32-8188"].concurrency == 2
 '
 
 # A full runtime list supplied by an operator remains authoritative over the

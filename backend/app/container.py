@@ -26,6 +26,7 @@ from .services.prompt_generation import PromptGenerationService
 from .services.queue_worker import QueueWorker
 from .services.speech_to_text import SpeechToTextAdapter
 from .services.user_deletion import UserDeletionService
+from .services.worker_pool import ImageWorkerPool
 from .services.workflow_registry import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class AppContainer:
         self.comfyui_instances = ComfyUIInstances(settings, transport=comfy_transport)
         # Compatibility alias for publication discovery and tests that exercise the default.
         self.comfyui: ComfyUIAdapter = self.comfyui_instances.default_adapter
+        self.image_pool = ImageWorkerPool(self.comfyui_instances)
         self.ollama = OllamaAdapter(settings, transport=ollama_transport)
         self.speech_to_text = SpeechToTextAdapter(
             settings,
@@ -59,7 +61,9 @@ class AppContainer:
         self.lora_operations = LoraOperationService(self)
         self.compiler = WorkflowCompiler()
         self.generation_eta = GenerationEtaEstimator(self.db.session_factory)
-        self.activity_estimator = ActivityEstimator(self.generation_eta, self.comfyui_instances)
+        self.activity_estimator = ActivityEstimator(
+            self.generation_eta, self.comfyui_instances, self.image_pool
+        )
         self.generations = GenerationService(
             session_factory=self.db.session_factory,
             registry=self.registry,
@@ -67,6 +71,7 @@ class AppContainer:
             assets=self.assets,
             comfyui=self.comfyui,
             comfyui_instances=self.comfyui_instances,
+            image_pool=self.image_pool,
             broker=self.broker,
         )
         self.collections = CollectionService(self.generations)
@@ -82,6 +87,7 @@ class AppContainer:
             session_factory=self.db.session_factory,
             comfyui=self.comfyui,
             comfyui_instances=self.comfyui_instances,
+            image_pool=self.image_pool,
             ollama=self.ollama,
             assets=self.assets,
             broker=self.broker,

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -15,9 +18,35 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 COMFYUI_INSTANCE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+
+
+def _string_list(value: Any) -> Any:
+    """Accept a JSON array or a comma/whitespace-delimited environment string.
+
+    Appending one more ComfyUI image worker must stay a trivial edit, so the
+    delimited form is first class. ``NoDecode`` keeps pydantic-settings from
+    rejecting a non-JSON value before this validator runs.
+    """
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                decoded = json.loads(text)
+            except ValueError as exc:
+                raise ValueError("must be a JSON array or a comma-separated list") from exc
+            if not isinstance(decoded, list):
+                raise ValueError("must be a JSON array or a comma-separated list")
+            return [str(item) for item in decoded]
+        return [part for part in re.split(r"[,\s]+", text) if part]
+    return value
 
 
 def _validate_comfyui_instance_id(value: str) -> str:
@@ -44,6 +73,22 @@ def _validate_service_url(value: str, *, schemes: set[str], context: str) -> str
         allowed = " or ".join(sorted(schemes))
         raise ValueError(f"{context} must be a credential-free {allowed} URL")
     return normalized
+
+
+def _derived_worker_identity(base_url: str) -> tuple[str, str]:
+    """Return a stable routing ID and safe presentation label for a URL-only worker.
+
+    The ID is derived from the host and port so it stays stable across restarts
+    and across additions or removals elsewhere in the list; execution history
+    keeps referring to the same worker identity.
+    """
+
+    netloc = urlparse(base_url).netloc
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "-", netloc).strip("-").lower()
+    candidate = f"w-{sanitized}"
+    if not sanitized or len(candidate) > 64:
+        candidate = "w-" + hashlib.sha256(base_url.encode()).hexdigest()[:20]
+    return _validate_comfyui_instance_id(candidate), f"ComfyUI {netloc}"[:120]
 
 
 class ComfyUIInstanceConfig(BaseModel):
@@ -99,6 +144,32 @@ class ComfyUIInstanceConfig(BaseModel):
         )
 
 
+def _image_pool_membership(
+    configured_instances: Sequence[ComfyUIInstanceConfig],
+    default_instance_id: str,
+    text_instance_id: str | None,
+    worker_urls: Sequence[str],
+    worker_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """Ordered opt-in image pool: the primary, then named workers."""
+
+    by_base_url = {instance.base_url: instance.id for instance in configured_instances}
+    known = {instance.id for instance in configured_instances}
+    pool = [default_instance_id]
+    candidates = [by_base_url.get(value.strip().rstrip("/")) for value in worker_urls] + list(
+        worker_ids
+    )
+    for candidate in candidates:
+        if (
+            candidate
+            and candidate in known
+            and candidate not in pool
+            and candidate != text_instance_id
+        ):
+            pool.append(candidate)
+    return tuple(pool)
+
+
 class Settings(BaseSettings):
     """Server-only configuration. No value in this object is serialized to the browser."""
 
@@ -135,6 +206,12 @@ class Settings(BaseSettings):
     comfyui_user: str | None = None
     comfyui_instances: list[ComfyUIInstanceConfig] | None = None
     comfyui_additional_instances: list[ComfyUIInstanceConfig] = Field(default_factory=list)
+    # Appendable image-worker pool. Each entry is a credential-free base URL of a
+    # ComfyUI container that duplicates the primary's publications and models.
+    # Membership is opt-in: an instance configured above never executes image
+    # work unless it appears here or in comfyui_image_worker_ids.
+    comfyui_image_workers: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    comfyui_image_worker_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
     comfyui_default_instance_id: str | None = None
     comfyui_text_instance_id: str | None = None
     comfyui_workflow_directory: str = "workflows"
@@ -232,6 +309,11 @@ class Settings(BaseSettings):
     def normalize_text_assignment(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
 
+    @field_validator("comfyui_image_workers", "comfyui_image_worker_ids", mode="before")
+    @classmethod
+    def normalize_delimited_list(cls, value: object) -> object:
+        return _string_list(value)
+
     @field_validator("comfyui_default_instance_id")
     @classmethod
     def validate_comfyui_default_instance_id(cls, value: str | None) -> str | None:
@@ -251,6 +333,58 @@ class Settings(BaseSettings):
         normalized = value.strip() if value else None
         return normalized or None
 
+    def _validate_image_pool(
+        self,
+        configured_instances: list[ComfyUIInstanceConfig],
+        default_instance_id: str,
+    ) -> None:
+        """Validate opt-in image-worker membership, synthesizing URL-only workers.
+
+        The primary is always worker one. A configured instance joins the pool
+        only when the operator names it, so an unrelated or anticipatory entry
+        never silently receives image work.
+        """
+
+        by_id = {instance.id: instance for instance in configured_instances}
+        by_base_url = {instance.base_url: instance for instance in configured_instances}
+        primary = by_id[default_instance_id]
+        for raw_url in self.comfyui_image_workers:
+            base_url = _validate_service_url(
+                raw_url, schemes={"http", "https"}, context="ComfyUI image worker URL"
+            )
+            if base_url in by_base_url:
+                continue
+            worker_id, label = _derived_worker_identity(base_url)
+            conflict = by_id.get(worker_id)
+            if conflict is not None:
+                raise ValueError(
+                    f"ComfyUI image worker {base_url} derives instance ID '{worker_id}', "
+                    f"which already belongs to {conflict.base_url}"
+                )
+            worker = ComfyUIInstanceConfig(
+                id=worker_id,
+                label=label,
+                base_url=base_url,
+                user=primary.user,
+                concurrency=primary.concurrency or self.comfyui_concurrency,
+            )
+            configured_instances.append(worker)
+            by_id[worker.id] = worker
+            by_base_url[base_url] = worker
+        requested = [
+            by_base_url[
+                _validate_service_url(raw_url, schemes={"http", "https"}, context="worker")
+            ].id
+            for raw_url in self.comfyui_image_workers
+        ]
+        for raw_id in self.comfyui_image_worker_ids:
+            worker_id = _validate_comfyui_instance_id(raw_id)
+            if worker_id not in by_id:
+                raise ValueError("comfyui_image_worker_ids must name configured instances")
+            requested.append(worker_id)
+        if self.comfyui_text_instance_id is not None and self.comfyui_text_instance_id in requested:
+            raise ValueError("The assigned prompt instance cannot also be an image worker")
+
     @model_validator(mode="after")
     def derive_paths_and_validate(self) -> Settings:
         self.data_dir = self.data_dir.resolve()
@@ -260,8 +394,11 @@ class Settings(BaseSettings):
         if self.comfyui_concurrency < 1:
             raise ValueError("comfyui_concurrency must be at least one")
         configured_instances = self.comfyui_instances
-        self._comfyui_instances_explicitly_configured = configured_instances is not None or (
-            "comfyui_additional_instances" in self.model_fields_set
+        self._comfyui_instances_explicitly_configured = (
+            configured_instances is not None
+            or "comfyui_additional_instances" in self.model_fields_set
+            or bool(self.comfyui_image_workers)
+            or bool(self.comfyui_image_worker_ids)
         )
         if configured_instances is None:
             configured_instances = [
@@ -276,6 +413,7 @@ class Settings(BaseSettings):
                 ),
                 *self.comfyui_additional_instances,
             ]
+        configured_instances = list(configured_instances)
         if not configured_instances:
             raise ValueError("comfyui_instances must configure at least one instance")
         instance_ids = [instance.id for instance in configured_instances]
@@ -293,6 +431,7 @@ class Settings(BaseSettings):
                 raise ValueError("comfyui_text_instance_id must match a configured instance")
             if self.comfyui_text_instance_id == default_instance_id:
                 raise ValueError("Image and prompt generation must use distinct ComfyUI instances")
+        self._validate_image_pool(configured_instances, default_instance_id)
         self.comfyui_instances = [
             instance.model_copy(
                 update={
@@ -368,6 +507,23 @@ class Settings(BaseSettings):
             instance
             for instance in self.configured_comfyui_instances
             if instance.id == self.comfyui_default_instance_id
+        )
+
+    @property
+    def image_pool_instance_ids(self) -> tuple[str, ...]:
+        """Ordered image-worker identities; the primary is always the first member.
+
+        Derived on access so a settings copy that changes stage assignments
+        reports the pool that copy actually describes.
+        """
+
+        assert self.comfyui_default_instance_id is not None
+        return _image_pool_membership(
+            self.configured_comfyui_instances,
+            self.comfyui_default_instance_id,
+            self.comfyui_text_instance_id,
+            self.comfyui_image_workers,
+            self.comfyui_image_worker_ids,
         )
 
 

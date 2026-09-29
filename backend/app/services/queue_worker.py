@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import logging
 import math
 import re
@@ -57,6 +56,7 @@ from .generation_eta import (
 from .generations import GenerationService
 from .ollama import OllamaAdapter
 from .user_state import lock_user_state
+from .worker_pool import IMAGE_POOL_SCHEDULER_SCOPE, ImageWorkerPool, scheduler_state_key
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,7 @@ class QueueWorker:
         session_factory: sessionmaker[Session],
         comfyui: ComfyUIAdapter,
         comfyui_instances: ComfyUIInstances,
+        image_pool: ImageWorkerPool | None = None,
         ollama: OllamaAdapter,
         assets: AssetStore,
         broker: EventBroker,
@@ -109,6 +110,7 @@ class QueueWorker:
         self.settings = settings
         self.session_factory = session_factory
         self.comfyui_instances = comfyui_instances
+        self.image_pool = image_pool or ImageWorkerPool(comfyui_instances)
         # Compatibility alias for focused tests and internal callers that inspect the catalog
         # adapter. Production execution routing always resolves the generation's persisted pin.
         self.comfyui = comfyui
@@ -312,15 +314,31 @@ class QueueWorker:
             if await self._wait_for_stop_or_backoff(self.settings.dispatch_poll_seconds):
                 return
 
+    def _active_count(self, instance_id: str) -> int:
+        return sum(
+            active_instance_id == instance_id
+            for active_instance_id in self._active_instance_ids.values()
+        )
+
+    def _dispatch_order(self) -> list[str]:
+        """Offer free capacity to the least-loaded image worker first.
+
+        Pool members are tried before the remaining configured instances, whose
+        claims can only rescue a job that is still pinned to them.
+        """
+
+        pool = list(self.image_pool.member_ids)
+        ranked = sorted(pool, key=lambda member: (self._active_count(member), pool.index(member)))
+        others = [config.id for config in self.comfyui_instances.configs if config.id not in pool]
+        return ranked + others
+
     async def _dispatch_iteration(self) -> None:
         self._reap_active_tasks()
-        for config in self.comfyui_instances.configs:
-            instance_id = config.id
-            active_count = sum(
-                active_instance_id == instance_id
-                for active_instance_id in self._active_instance_ids.values()
-            )
-            available_slots = int(config.concurrency or 1) - active_count
+        for instance_id in self._dispatch_order():
+            config = self.comfyui_instances.config(instance_id)
+            if config is None:
+                continue
+            available_slots = int(config.concurrency or 1) - self._active_count(instance_id)
             if available_slots <= 0 or not await _run_blocking(
                 self._comfyui_available, instance_id
             ):
@@ -432,6 +450,7 @@ class QueueWorker:
                 ):
                     generation.status = GenerationStatus.QUEUED
                     generation.progress_json = None
+                    _release_worker(generation)
                     event = add_generation_event(
                         session,
                         generation,
@@ -593,13 +612,21 @@ class QueueWorker:
 
     def _claim_next(self, instance_id: str | None = None) -> tuple[str, Any] | None:
         target_id = instance_id or self.comfyui_instances.default_id
+        pooled = self.image_pool.is_member(target_id)
+        # A pool member may take any unassigned image whose exact accepted
+        # revision it carries; every target may still rescue a job pinned to it.
+        claimable = (
+            self.image_pool.claimable_clause(target_id)
+            if pooled
+            else Generation.comfyui_instance_id == target_id
+        )
         with self.session_factory() as session:
             lock_user_state(session)
             rows = session.execute(
                 select(Generation.owner_id, func.min(Generation.queue_seq).label("first_seq"))
                 .where(
                     Generation.status == GenerationStatus.QUEUED,
-                    Generation.comfyui_instance_id == target_id,
+                    claimable,
                 )
                 .group_by(Generation.owner_id)
                 .order_by("first_seq", Generation.owner_id)
@@ -623,7 +650,9 @@ class QueueWorker:
             if not first_by_owner:
                 return None
             owner_ids = sorted(first_by_owner, key=lambda owner: (first_by_owner[owner], owner))
-            scheduler_key = "instance:" + hashlib.sha256(target_id.encode()).hexdigest()[:40]
+            # One fairness cursor spans the pool, so oldest-per-user FIFO and
+            # per-user round robin hold across workers instead of per worker.
+            scheduler_key = scheduler_state_key(IMAGE_POOL_SCHEDULER_SCOPE if pooled else target_id)
             state = session.get(SchedulerState, scheduler_key)
             if state is None:
                 state = SchedulerState(key=scheduler_key)
@@ -639,7 +668,7 @@ class QueueWorker:
                 .where(
                     Generation.owner_id == owner_id,
                     Generation.status == GenerationStatus.QUEUED,
-                    Generation.comfyui_instance_id == target_id,
+                    claimable,
                 )
                 .order_by(Generation.auto_cycle_id.is_not(None), Generation.queue_seq)
                 .limit(1)
@@ -668,12 +697,23 @@ class QueueWorker:
             generation.status = GenerationStatus.DISPATCHING
             generation.execution_timing_json = None
             generation.progress_json = None
+            # The winning worker is recorded durably in this same transaction,
+            # before anything is sent to ComfyUI.
+            config = self.comfyui_instances.config(target_id)
+            generation.comfyui_instance_id = target_id
+            generation.comfyui_instance_label = (
+                config.label if config is not None else generation.comfyui_instance_label
+            ) or target_id
             state.last_user_id = owner_id
             event = add_generation_event(
                 session,
                 generation,
                 "generation.dispatching",
-                {"status": GenerationStatus.DISPATCHING.value},
+                {
+                    "status": GenerationStatus.DISPATCHING.value,
+                    "comfyui_instance_id": generation.comfyui_instance_id,
+                    "comfyui_instance_label": generation.comfyui_instance_label,
+                },
             )
             session.commit()
             return generation.id, event
@@ -2435,7 +2475,7 @@ class QueueWorker:
             _values = await _run_blocking(cleanup_comfyui_sources_transaction)
             (instance_id,) = _values
             if instance_id is None:
-                return
+                instance_id = self.image_pool.primary_id
             try:
                 adapter = self._adapter_for_instance(instance_id)
             except Exception as exc:
@@ -2741,10 +2781,16 @@ class QueueWorker:
                     "generation.requeued",
                     {"reason": "ComfyUI is temporarily unavailable."},
                 )
+                # Record the unreachable worker before releasing the job, so a
+                # healthy pool member can take it on the next iteration.
                 instance_id = generation.comfyui_instance_id
-                self._set_instance_health(session, instance_id, False, "ComfyUI is unreachable.")
-                if instance_id == self.comfyui_instances.default_id:
-                    self._set_health(session, "comfyui", False, "ComfyUI is unreachable.")
+                _release_worker(generation)
+                if instance_id is not None:
+                    self._set_instance_health(
+                        session, instance_id, False, "ComfyUI is unreachable."
+                    )
+                    if instance_id == self.comfyui_instances.default_id:
+                        self._set_health(session, "comfyui", False, "ComfyUI is unreachable.")
                 session.commit()
                 return False, event
 
@@ -2974,7 +3020,14 @@ class QueueWorker:
                 diagnostics["archived_comfyui_sources"] = archived
                 diagnostics["comfyui_source_cleanup_complete"] = False
                 generation.internal_diagnostics_json = diagnostics
-                jobs.append((generation.id, generation.comfyui_instance_id))
+                # A row that never reached a worker (historical or interrupted
+                # before dispatch) still gets its cleanup attempted on the primary.
+                jobs.append(
+                    (
+                        generation.id,
+                        str(generation.comfyui_instance_id or self.image_pool.primary_id),
+                    )
+                )
             session.commit()
             return jobs
 
@@ -3088,21 +3141,73 @@ class QueueWorker:
         with self.session_factory() as session:
             notifications: list[RecoveryNotification] = []
             configured_ids = tuple(self.comfyui_instances.configured_ids)
+            # A queued image is never bound to one runtime: the claim transaction
+            # re-binds it. Release every pin an image worker can still execute,
+            # whether that runtime was removed, is merely unhealthy, or was
+            # recorded before pooled execution existed.
             orphaned_queued = list(
                 session.execute(
                     select(
                         Generation.id,
                         Generation.owner_id,
+                        Generation.comfyui_instance_id,
                         Generation.comfyui_instance_label,
                     ).where(
                         Generation.status == GenerationStatus.QUEUED,
-                        Generation.comfyui_instance_id.not_in(configured_ids),
+                        Generation.comfyui_instance_id.is_not(None),
                     )
                 )
             )
-            for generation_id, owner_id, instance_label in orphaned_queued:
-                generation_id = str(generation_id)
-                owner_id = str(owner_id)
+            releasable: set[str] = set()
+            if orphaned_queued:
+                orphan_ids = [str(row.id) for row in orphaned_queued]
+                for member in self.image_pool.member_ids:
+                    releasable.update(
+                        str(value)
+                        for value in session.scalars(
+                            select(Generation.id).where(
+                                Generation.id.in_(orphan_ids),
+                                self.image_pool.eligible_clause(member),
+                            )
+                        )
+                    )
+            for row in orphaned_queued:
+                generation_id = str(row.id)
+                owner_id = str(row.owner_id)
+                instance_label = row.comfyui_instance_label or row.comfyui_instance_id
+                configured = row.comfyui_instance_id in configured_ids
+                if generation_id in releasable:
+                    session.execute(
+                        update(Generation)
+                        .where(Generation.id == generation_id)
+                        .values(
+                            comfyui_instance_id=None,
+                            comfyui_instance_label=None,
+                            progress_json=None,
+                        )
+                    )
+                    event = GenerationEvent(
+                        generation_id=generation_id,
+                        owner_id=owner_id,
+                        event_type="generation.requeued",
+                        payload_json={
+                            "reason": (
+                                "The generation returned to the image worker pool."
+                                if configured
+                                else f"{instance_label} is no longer configured. "
+                                "The generation returned to the image worker pool."
+                            )
+                        },
+                        created_at=datetime.now(UTC),
+                    )
+                    session.add(event)
+                    session.flush()
+                    notifications.append((owner_id, event_payload(event)))
+                    continue
+                if configured:
+                    # Its own runtime remains configured; leave it pinned so the
+                    # dispatcher can still rescue it there.
+                    continue
                 message = (
                     f"{instance_label} is no longer configured. "
                     "The generation was not redirected to another runtime."
@@ -3180,6 +3285,8 @@ class QueueWorker:
                                 submitted_graph_json=None,
                                 submitted_graph_sha256=None,
                                 progress_json=None,
+                                comfyui_instance_id=None,
+                                comfyui_instance_label=None,
                             )
                         )
                         event = GenerationEvent(
@@ -3193,7 +3300,16 @@ class QueueWorker:
                         session.flush()
                         notifications.append((owner_id, event_payload(event)))
                 else:
-                    prompt_jobs.append((generation_id, str(instance_id), str(prompt_id)))
+                    # A submitted prompt always recorded its worker; a row from
+                    # before pooled execution falls back to the primary so its
+                    # history can still be reconciled.
+                    prompt_jobs.append(
+                        (
+                            generation_id,
+                            str(instance_id or self.image_pool.primary_id),
+                            str(prompt_id),
+                        )
+                    )
             session.commit()
             return tuple(notifications), tuple(prompt_jobs)
 
@@ -3359,6 +3475,13 @@ class QueueWorker:
         health.available = available
         health.message = message
         health.checked_at = datetime.now(UTC)
+
+
+def _release_worker(generation: Generation) -> None:
+    """Return an image generation to the pool by clearing its worker pin."""
+
+    generation.comfyui_instance_id = None
+    generation.comfyui_instance_label = None
 
 
 def _finite_number(value: Any) -> int | float | None:

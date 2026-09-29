@@ -184,7 +184,9 @@ class AutoGenerationService:
         assert user is not None
         request = snapshot.generation
         profile = service._profile_for_request(session, request)
-        runtime = service._instance_for_request(session, request, require_available=False)
+        # Validates any supplied runtime assertion without pinning one: an
+        # automatic cycle is accepted into the image worker pool like any image.
+        service._instance_for_request(session, request, require_available=False)
         service._collection_for_owner(session, user_id, request.collection_id)
         text_profile = None
         if snapshot.prompt_generation:
@@ -220,7 +222,7 @@ class AutoGenerationService:
             if not assistant.creative_direction.strip():
                 raise AppError("direction_required", "Enter Creative Direction before enabling it.")
         captured = snapshot.model_copy(deep=True)
-        captured.generation.comfyui_instance_id = runtime.id
+        captured.generation.comfyui_instance_id = None
         captured.generation.source_key = profile.source_key
         captured.generation.profile_id = None
         if captured.prompt_generation and text_profile:

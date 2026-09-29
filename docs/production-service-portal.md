@@ -150,6 +150,19 @@ Docker image defaults. This preserves the runner's intentionally image-only smok
 configuration while rejecting invalid explicit production assignments. See the
 [CPU rollout prerequisites](comfyui-promptgen.md) before this first deployment.
 
+Image-worker pool membership follows the same rule and is opt-in, so deploying pooled
+image execution needs **no** configuration change: with one GPU instance the pool is
+exactly the primary, the idle-worker readout stays hidden, and behavior is unchanged.
+Adding a worker later is a separate, ordered operation because the runner rejects saved
+environment changes that the running container does not already have:
+
+1. Append the worker URL to `CIF_COMFYUI_IMAGE_WORKERS` in the credential directory's
+   `runtime.env`. Never add worker URLs to image ENV defaults; the pinned runner smokes
+   the candidate image with no external environment and `--network none`.
+2. Recreate only the app with its **existing** pinned image so the running container
+   carries the new value.
+3. Verify `update_production --check-only`, then use the portal button normally.
+
 The runner rejects saved environment changes that are not yet present on the
 running container. Prepare configuration with an app-only recreation of the
 **existing** pinned image, then verify `update_production --check-only` before using

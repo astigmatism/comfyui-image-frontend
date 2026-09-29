@@ -229,6 +229,8 @@ class WorkflowProfile(Base):
     __table_args__ = (
         UniqueConstraint("identity_key", name="uq_workflow_identity"),
         Index("ix_workflow_profiles_current", "is_current", "state"),
+        # Resolves "does this worker carry that source?" during a pooled claim.
+        Index("ix_workflow_profiles_instance_source", "instance_id", "is_current", "source_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
@@ -492,8 +494,10 @@ class Generation(Base):
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=uuid_str)
     comfyui_client_id: Mapped[str] = mapped_column(String(64), nullable=False, default=uuid_str)
     comfyui_prompt_id: Mapped[str | None] = mapped_column(String(100))
-    comfyui_instance_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    comfyui_instance_label: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Null until the dispatcher claims the job for one image worker. Image
+    # execution is bound late so any idle pool member can take the next job.
+    comfyui_instance_id: Mapped[str | None] = mapped_column(String(64))
+    comfyui_instance_label: Mapped[str | None] = mapped_column(String(120))
 
     workflow_profile_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workflow_profiles.id", ondelete="RESTRICT"), nullable=False

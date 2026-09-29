@@ -67,6 +67,7 @@ from .events import add_generation_event, event_payload
 from .generation_activity import retain_deleted_outcome
 from .generation_eta import is_checkpoint_declaration, verified_duration
 from .user_state import asset_is_saved, lock_user_state
+from .worker_pool import ImageWorkerPool
 from .workflow_registry import WorkflowRegistry
 
 RECALL_SOURCE_WARNING = (
@@ -83,8 +84,8 @@ class _GenerationSummaryRow:
     status: GenerationStatus
     workflow_display_name: str
     checkpoint_label: str | None
-    comfyui_instance_id: str
-    comfyui_instance_label: str
+    comfyui_instance_id: str | None
+    comfyui_instance_label: str | None
     accepted_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -138,6 +139,7 @@ class GenerationService:
         comfyui: ComfyUIAdapter,
         comfyui_instances: ComfyUIInstances,
         broker: EventBroker,
+        image_pool: ImageWorkerPool | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.registry = registry
@@ -145,6 +147,7 @@ class GenerationService:
         self.assets = assets
         self.comfyui = comfyui
         self.comfyui_instances = comfyui_instances
+        self.image_pool = image_pool or ImageWorkerPool(comfyui_instances)
         self.broker = broker
 
     def validate(
@@ -189,7 +192,9 @@ class GenerationService:
         request: GenerationCreate,
         frozen_profile: WorkflowProfile | None = None,
     ) -> tuple[Generation, GenerationEvent]:
-        instance = self._instance_for_request(
+        # Validates the request's runtime assertion and pool readiness. Image
+        # execution is not bound here; the dispatcher records the winning worker.
+        self._instance_for_request(
             session,
             request,
             require_available=frozen_profile is not None,
@@ -202,17 +207,16 @@ class GenerationService:
             raise AppError(
                 "source_kind_invalid", "Choose an image generation source.", status_code=422
             )
-        if (
-            frozen_profile is not None
-            and not self.comfyui_instances.get(instance.id).cached_object_info()
-        ):
+        if frozen_profile is not None and not self._pool_object_info():
             raise AppError(
                 "comfyui_instance_unavailable",
-                "The captured runtime is still being checked.",
+                "The image worker pool is still being checked.",
                 status_code=503,
             )
         try:
-            object_info = self.comfyui_instances.get(instance.id).cached_object_info()
+            # The catalog instance is the acceptance authority; the dispatcher
+            # revalidates the live inventory of the worker that wins the job.
+            object_info = self._pool_object_info()
             if object_info:
                 validate_lora_runtime(profile.source_api_json, object_info)
             # After an offline restart the cached publication can still queue.
@@ -230,8 +234,10 @@ class GenerationService:
             collection_id=collection.id if collection is not None else None,
             status=GenerationStatus.QUEUED,
             queue_seq=queue_seq,
-            comfyui_instance_id=instance.id,
-            comfyui_instance_label=instance.label,
+            # Image execution binds late: the dispatcher records the winning
+            # worker when it claims this row.
+            comfyui_instance_id=None,
+            comfyui_instance_label=None,
             workflow_profile_id=profile.id,
             workflow_id=profile.workflow_id,
             workflow_display_name=profile.display_name,
@@ -281,8 +287,9 @@ class GenerationService:
             {
                 "status": generation.status.value,
                 "queue_seq": queue_seq,
-                "comfyui_instance_id": instance.id,
-                "comfyui_instance_label": instance.label,
+                "comfyui_instance_id": None,
+                "comfyui_instance_label": None,
+                "comfyui_worker_pool": True,
             },
         )
         return generation, event
@@ -295,14 +302,18 @@ class GenerationService:
         require_available: bool,
         captured: bool = False,
     ) -> ComfyUIInstanceConfig:
-        # Accepted preparations retain their recorded runtime through configuration changes.
-        instance = (
-            self.comfyui_instances.config(
-                request.comfyui_instance_id or self.comfyui_instances.default_id
-            )
-            if captured
-            else self.comfyui_instances.for_stage("image", request.comfyui_instance_id)
-        )
+        """Validate runtime selection and pool readiness for an image request.
+
+        Clients cannot choose a worker: a supplied ID is only an assertion that
+        the browser still agrees with the server assignment. The returned config
+        is the catalog primary, used for acceptance-time validation only; the
+        executing worker is chosen later by the dispatcher.
+        """
+
+        if not captured:
+            # Rejects any client-supplied runtime other than the assignment.
+            self.comfyui_instances.for_stage("image", request.comfyui_instance_id)
+        instance = self.comfyui_instances.config(self.comfyui_instances.default_id)
         if instance is None:
             raise AppError(
                 "comfyui_instance_unconfigured",
@@ -310,25 +321,38 @@ class GenerationService:
                 status_code=422,
                 fields={"comfyui_instance_id": "Choose a configured ComfyUI instance."},
             )
-        if not require_available:
-            return instance
-        health = session.get(ComfyUIInstanceHealth, instance.id)
-        if health is None and instance.id == self.comfyui_instances.default_id:
-            catalog_health = session.get(ServiceHealth, "comfyui")
-            available = bool(catalog_health and catalog_health.available)
-            message = catalog_health.message if catalog_health else None
-        else:
-            available = bool(health and health.available)
-            message = health.message if health else None
-        if not available:
-            suffix = message or "Its availability is still being checked."
-            raise AppError(
-                "comfyui_instance_unavailable",
-                f"{instance.label} is unavailable. {suffix}",
-                status_code=503,
-                details={"instance_id": instance.id},
-            )
+        if require_available:
+            self._require_available_worker(session)
         return instance
+
+    def _require_available_worker(self, session: Session) -> None:
+        if self.image_pool.available_member_ids(session):
+            return
+        snapshot = self.image_pool.snapshot(session)
+        offline = next((worker.label for worker in snapshot.workers), "The image service")
+        detail = (
+            "No image worker is available."
+            if snapshot.worker_count > 1
+            else f"{offline} is unavailable."
+        )
+        raise AppError(
+            "comfyui_instance_unavailable",
+            f"{detail} Its availability is still being checked.",
+            status_code=503,
+            details={"worker_count": snapshot.worker_count, "pool": True},
+        )
+
+    def _pool_object_info(self) -> Mapping[str, Any]:
+        """Capability data for acceptance checks, preferring the catalog primary."""
+
+        primary = self.comfyui_instances.get(self.image_pool.primary_id).cached_object_info()
+        if primary:
+            return primary
+        for member in self.image_pool.member_ids:
+            cached = self.comfyui_instances.get(member).cached_object_info()
+            if cached:
+                return cached
+        return {}
 
     def _profile_for_request(
         self, session: Session, request: GenerationCreate, *, require_dependencies: bool = True
@@ -1290,34 +1314,34 @@ class GenerationService:
         session: Session,
         generation: Generation,
     ) -> dict[str, Any]:
-        instance = self.comfyui_instances.config(generation.comfyui_instance_id)
-        if instance is None:
-            return {
-                "comfyui_instance_id": generation.comfyui_instance_id,
-                "comfyui_instance_label": generation.comfyui_instance_label,
-                "comfyui_instance_configured": False,
-                "comfyui_instance_available": False,
-                "comfyui_instance_warning": (
-                    f"{generation.comfyui_instance_label} is no longer configured. "
-                    "New images use the server-assigned GPU service."
-                ),
-            }
-        health = session.get(ComfyUIInstanceHealth, instance.id)
-        if health is None and instance.id == self.comfyui_instances.default_id:
+        """Report the historical worker plus whether the pool can run new work.
+
+        A recalled generation is never re-pinned to its historical worker, so a
+        removed or offline worker is reported without blocking recall; only an
+        exhausted pool is worth warning about.
+        """
+
+        historical_id = generation.comfyui_instance_id
+        instance = (
+            self.comfyui_instances.config(historical_id) if historical_id is not None else None
+        )
+        pool_available = bool(self.image_pool.available_member_ids(session))
+        health = session.get(ComfyUIInstanceHealth, instance.id) if instance else None
+        if instance is not None and health is None and instance.id == self.image_pool.primary_id:
             catalog_health = session.get(ServiceHealth, "comfyui")
             available = bool(catalog_health and catalog_health.available)
         else:
             available = bool(health and health.available)
+        warning = None
+        if not pool_available:
+            warning = "No image worker is currently available. New images queue until one recovers."
         return {
-            "comfyui_instance_id": generation.comfyui_instance_id,
+            "comfyui_instance_id": historical_id,
             "comfyui_instance_label": generation.comfyui_instance_label,
-            "comfyui_instance_configured": True,
+            "comfyui_instance_configured": instance is not None,
             "comfyui_instance_available": available,
-            "comfyui_instance_warning": (
-                None
-                if available
-                else f"{generation.comfyui_instance_label} is currently unavailable."
-            ),
+            "comfyui_instance_warning": warning,
+            "comfyui_pool_available": pool_available,
         }
 
     def _exact_profile(self, session: Session, generation: Generation) -> WorkflowProfile | None:
@@ -1403,7 +1427,7 @@ class GenerationService:
             )
             target = (
                 (generation.comfyui_instance_id, generation.comfyui_prompt_id)
-                if generation.comfyui_prompt_id
+                if generation.comfyui_prompt_id and generation.comfyui_instance_id
                 else None
             )
             session.commit()
@@ -1607,6 +1631,10 @@ def _summary_projection() -> tuple[Any, ...]:
     )
 
 
+def _optional_text(value: Any) -> str | None:
+    return str(value) if value is not None else None
+
+
 def _json_key_path(key: Any) -> Any:
     escaped = func.replace(key, literal('"'), literal('\\"'))
     return literal('$."').op("||")(escaped).op("||")(literal('"'))
@@ -1621,8 +1649,8 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),
         checkpoint_label=values["checkpoint_label"],
-        comfyui_instance_id=str(values["comfyui_instance_id"]),
-        comfyui_instance_label=str(values["comfyui_instance_label"]),
+        comfyui_instance_id=_optional_text(values["comfyui_instance_id"]),
+        comfyui_instance_label=_optional_text(values["comfyui_instance_label"]),
         accepted_at=values["accepted_at"],
         started_at=values["started_at"],
         completed_at=values["completed_at"],

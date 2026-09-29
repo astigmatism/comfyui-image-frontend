@@ -83,7 +83,7 @@ class UserDeletionService:
                     elif generation.status in ACTIVE_STATUSES:
                         generation.status = GenerationStatus.CANCEL_REQUESTED
                         generation.cancel_requested_at = datetime.now(UTC)
-                        if generation.comfyui_prompt_id:
+                        if generation.comfyui_prompt_id and generation.comfyui_instance_id:
                             prompt_targets.append(
                                 (
                                     generation.comfyui_instance_id,

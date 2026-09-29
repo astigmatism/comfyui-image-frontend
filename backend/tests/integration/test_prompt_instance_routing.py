@@ -161,7 +161,8 @@ def test_assignments_reject_overrides_and_preserve_idempotent_replay(routing):
     )
     assert conflict.status_code == 409
     image = create_generation(client, "image default")
-    assert image["comfyui_instance_id"] == "primary"
+    # Images are accepted into the worker pool; the runtime appears once a worker claims it.
+    assert image["comfyui_instance_id"] is None
     container.settings.comfyui_text_instance_id = "promptgen"
     unknown = post(client, "/api/prompt-generations", {**payload, "comfyui_instance_id": "gone"})
     assert unknown.json()["error"]["code"] == "runtime_assignment_conflict"
@@ -246,7 +247,8 @@ def test_automation_and_legacy_snapshots_pin_both_stages(routing):
     payload = text_payload(client)
     enabled = enable(client, prompt_generation=payload, quantity=2, max_generations=2)
     assert enabled["snapshot"]["prompt_generation"]["comfyui_instance_id"] == "promptgen"
-    assert enabled["snapshot"]["generation"]["comfyui_instance_id"] == "primary"
+    # Only the prompt stage is pinned; images are bound to a worker at dispatch.
+    assert enabled["snapshot"]["generation"]["comfyui_instance_id"] is None
     with container.db.session_factory() as session:
         row = session.get(AutoGeneration, owner)
         legacy = copy.deepcopy(row.snapshot_json)
@@ -268,7 +270,7 @@ def test_automation_and_legacy_snapshots_pin_both_stages(routing):
         prepared = list(session.scalars(select(GenerationPreparation)))
         assert len(prepared) == 2
         assert all(
-            row.request_json["generation"]["comfyui_instance_id"] == "primary" for row in prepared
+            row.request_json["generation"]["comfyui_instance_id"] is None for row in prepared
         )
         assert all(
             row.request_json["prompt_generation"]["comfyui_instance_id"] == "promptgen"
@@ -430,7 +432,7 @@ def test_missing_text_assignment_disables_only_prompt_generation(routing):
     rejected = post(client, "/api/prompt-generations", payload)
     assert rejected.status_code == 503
     assert rejected.json()["error"]["code"] == "prompt_runtime_not_configured"
-    assert create_generation(client, "images still work")["comfyui_instance_id"] == "primary"
+    assert create_generation(client, "images still work")["comfyui_instance_id"] is None
     assert not gpu.submitted and not cpu.submitted
 
 
@@ -522,7 +524,9 @@ def test_authoritative_catalog_ignores_other_revision_and_compiles_its_own_graph
     path = "/api/prompt-generations" if kind == "text" else "/api/generations"
     result = post(client, path, payload)
     assert result.status_code in {201, 202}, result.text
-    assert result.json()["comfyui_instance_id"] == authority
+    # A prompt run is pinned to its assigned CPU service at acceptance; an image
+    # is accepted into the worker pool and reports its worker after dispatch.
+    assert result.json()["comfyui_instance_id"] == (None if kind == "image" else authority)
     payload["revision"] = {**payload["revision"], "api_sha256": "d" * 64}
     assert post(client, path, payload).status_code == 409
 
@@ -586,7 +590,7 @@ def test_saved_runtime_preferences_are_discarded_without_losing_controls(routing
     assert "runtime_id" not in saved.json()["settings"]["prompt_generation"]
 
 
-def test_restart_preserves_accepted_preparation_pins_when_assignments_change(routing):
+def test_restart_keeps_text_pins_and_follows_the_current_image_pool(routing):
     from app.main import create_app
     from fastapi.testclient import TestClient
     from tests.helpers import generation_payload, restore_cookie
@@ -621,11 +625,13 @@ def test_restart_preserves_accepted_preparation_pins_when_assignments_change(rou
         )
         assert result["items"][0]["status"] == "accepted", result
         image = result["items"][0]["generation"]
-        assert image["comfyui_instance_id"] == "primary"
         text = restarted.get(
             "/api/prompt-generations/" + result["items"][0]["prompt_run_id"]
         ).json()
+        # The accepted prompt run keeps the CPU service recorded at capture, while
+        # the still-queued image follows the image pool this process configures.
         assert text["comfyui_instance_id"] == "promptgen"
-        wait_for_status(restarted, image["id"], "succeeded", timeout=10)
+        succeeded = wait_for_status(restarted, image["id"], "succeeded", timeout=10)
+        assert succeeded["comfyui_instance_id"] == "promptgen"
         assert post(restarted, "/api/generation-preparations", payload, key).json()["id"] == group
-        assert len(gpu.submitted) == len(cpu.submitted) == 1
+        assert not gpu.submitted and len(cpu.submitted) == 2
