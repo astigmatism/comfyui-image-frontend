@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "e7b13c9a5d42"
+HEAD_REVISION = "a4e1c7b9d206"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -409,6 +409,7 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     assert "previews_enabled" in {
         column["name"] for column in inspect(engine).get_columns("collections")
     }
+    assert "position" in {column["name"] for column in inspect(engine).get_columns("collections")}
     assert "collection_id" in {
         column["name"] for column in inspect(engine).get_columns("generations")
     }
@@ -712,4 +713,70 @@ def test_verified_timing_migration_invalidates_old_estimates_without_deleting_hi
             is None
         )
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
+def test_collection_order_migration_numbers_existing_folders_per_parent(tmp_path):
+    path = tmp_path / "collection-order-upgrade.sqlite3"
+    config = _config(path)
+    command.upgrade(config, LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    _insert_populated_legacy_rows(engine)
+    engine.dispose()
+    command.upgrade(config, "e7b13c9a5d42")
+
+    # Two sibling groups filed out of creation order, so the backfill cannot simply
+    # renumber the table as one list.
+    folders = [
+        ("root-c", None, datetime(2026, 7, 13, 12, 3, tzinfo=UTC)),
+        ("root-a", None, datetime(2026, 7, 13, 12, 1, tzinfo=UTC)),
+        ("root-b", None, datetime(2026, 7, 13, 12, 2, tzinfo=UTC)),
+        ("child-b", "root-a", datetime(2026, 7, 13, 12, 5, tzinfo=UTC)),
+        ("child-a", "root-a", datetime(2026, 7, 13, 12, 4, tzinfo=UTC)),
+    ]
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        for folder_id, parent_id, created_at in folders:
+            connection.execute(
+                text(
+                    "INSERT INTO collections "
+                    "(id, owner_id, parent_id, name, previews_enabled, created_at, updated_at) "
+                    "VALUES (:id, :owner, :parent, :name, 1, :created_at, :created_at)"
+                ),
+                {
+                    "id": folder_id,
+                    "owner": LEGACY_USER_ID,
+                    "parent": parent_id,
+                    "name": folder_id,
+                    "created_at": created_at,
+                },
+            )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT id, parent_id, position FROM collections ORDER BY parent_id, position")
+        ).all()
+        # Each parent's children keep the creation order their owner already saw.
+        assert [(row.id, row.position) for row in rows if row.parent_id is None] == [
+            ("root-a", 0),
+            ("root-b", 1),
+            ("root-c", 2),
+        ]
+        assert [(row.id, row.position) for row in rows if row.parent_id == "root-a"] == [
+            ("child-a", 0),
+            ("child-b", 1),
+        ]
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+    command.downgrade(config, "e7b13c9a5d42")
+    engine = create_engine(f"sqlite:///{path}")
+    assert "position" not in {
+        column["name"] for column in inspect(engine).get_columns("collections")
+    }
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM collections")).scalar_one() == 5
     engine.dispose()

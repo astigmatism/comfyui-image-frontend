@@ -142,6 +142,122 @@ def test_collection_previews_toggle_persists_independently_per_collection(
         )
 
 
+def test_folder_order_is_owner_chosen_csrf_guarded_and_survives_other_edits(
+    settings_factory, fake_state
+) -> None:
+    del fake_state
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        _, owner_cookie = provision_user(client, username="collections.order")
+        first = _create_collection(client, "Order first")
+        second = _create_collection(client, "Order second")
+        third = _create_collection(client, "Order third")
+        nested = _create_collection(client, "Order nested", str(first["id"]))
+        listed = client.get("/api/collections").json()
+        assert [item["id"] for item in listed if item["parent_id"] is None] == [
+            first["id"],
+            second["id"],
+            third["id"],
+        ]
+
+        order = [third["id"], first["id"], second["id"]]
+        reordered = client.put(
+            "/api/collections/order",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"parent_id": None, "collection_ids": order},
+        )
+        assert reordered.status_code == 200, reordered.text
+        body = reordered.json()
+        assert [item["id"] for item in body if item["parent_id"] is None] == order
+        assert [item["position"] for item in body if item["parent_id"] is None] == [0, 1, 2]
+        assert [item["id"] for item in body if item["parent_id"] == first["id"]] == [nested["id"]]
+        assert [item["id"] for item in client.get("/api/collections").json()][:1] == [third["id"]]
+
+        # Renaming, toggling previews, and filing a child never disturb the chosen order.
+        client.patch(
+            f"/api/collections/{first['id']}",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"name": "Order first renamed", "previews_enabled": False},
+        )
+        _create_collection(client, "Order fourth")
+        after = [
+            item["id"]
+            for item in client.get("/api/collections").json()
+            if item["parent_id"] is None
+        ]
+        assert after[:3] == order
+        assert len(after) == 4
+
+        # A write without the CSRF header is rejected before it can reorder anything.
+        assert (
+            client.put("/api/collections/order", json={"collection_ids": order}).status_code == 403
+        )
+
+        for invalid in (
+            {"parent_id": None, "collection_ids": []},
+            {"parent_id": None, "collection_ids": [first["id"], first["id"]]},
+            {"parent_id": None},
+        ):
+            assert (
+                client.put(
+                    "/api/collections/order",
+                    headers={"X-CSRF-Token": csrf(client)},
+                    json=invalid,
+                ).status_code
+                == 422
+            ), invalid
+
+        # An incomplete, unknown, or wrong-parent set is a stale order, not a partial write.
+        for stale in (
+            [third["id"], first["id"]],
+            [third["id"], first["id"], second["id"], "00000000-0000-4000-8000-000000000999"],
+            [nested["id"]],
+        ):
+            conflict = client.put(
+                "/api/collections/order",
+                headers={"X-CSRF-Token": csrf(client)},
+                json={"parent_id": None, "collection_ids": stale},
+            )
+            assert conflict.status_code == 409, conflict.text
+            assert conflict.json()["error"]["code"] == "collection_order_stale"
+        assert [
+            item["id"]
+            for item in client.get("/api/collections").json()
+            if item["parent_id"] is None
+        ] == after
+
+        client.cookies.clear()
+        login(client, "admin", ADMIN_PASSWORD)
+        create_user(client, "collections.order.other", USER_TEMP)
+        client.cookies.clear()
+        login(client, "collections.order.other", USER_TEMP)
+        change_password(client, "OtherOrderPermanent123!")
+        # Another owner's folders are never reorderable, and naming one of them reveals
+        # nothing beyond the same stale-order conflict.
+        assert (
+            client.put(
+                "/api/collections/order",
+                headers={"X-CSRF-Token": csrf(client)},
+                json={"parent_id": None, "collection_ids": order},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.put(
+                "/api/collections/order",
+                headers={"X-CSRF-Token": csrf(client)},
+                json={"parent_id": first["id"], "collection_ids": [nested["id"]]},
+            ).status_code
+            == 404
+        )
+        restore_cookie(client, owner_cookie, name=settings.session_cookie_name)
+        assert [
+            item["id"]
+            for item in client.get("/api/collections").json()
+            if item["parent_id"] is None
+        ] == after
+
+
 def test_generation_scopes_moves_and_cross_owner_targets_are_not_found(
     settings_factory, fake_state
 ) -> None:

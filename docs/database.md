@@ -36,6 +36,15 @@ foreign key uses `SET NULL` as a safety net; normal recursive collection deletio
 every contained generation through the established generation deletion lifecycle before removing
 collection rows deepest-first.
 
+Migration `a4e1c7b9d206_add_collection_order.py` adds non-null `collections.position`, the owner's
+chosen order among the siblings sharing one `parent_id`. It is additive: existing folders are
+numbered from zero within each `(owner_id, parent_id)` group by `created_at, id`, which is exactly
+the order their owners already saw, so no listing changes on upgrade. Created, reparented, moved,
+and copied folders append after their new siblings; `PUT /api/collections/order` rewrites one
+parent's numbering from a complete permutation. The existing `ix_collections_owner_parent` index
+already covers the sibling lookup, so no index is added. Its downgrade drops the column and loses
+only the chosen order.
+
 Migration `2f8d6a1c4b90_add_checkpoint_tiers.py` adds the JSON preference that stores ordered
 checkpoint values under each source and public selector ID. Existing users receive an empty object;
 the browser reconciles it with the currently published choices and initially places every choice in
@@ -70,7 +79,7 @@ root. Personal LoRA order, enabled states, and remembered strengths remain in ea
 | `comfyui_instance_health` | Last bounded availability result for each configured ComfyUI execution ID |
 | `uploads` | Owner-scoped application source/mask metadata |
 | `lora_images` | Shared, workflow-scoped LoRA thumbnail paths and per-item revisions |
-| `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) |
+| `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) carrying the owner's sibling order |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |
 | `collection_favorites` | Owner bookmark linking one owned collection; unique owner/collection pair |

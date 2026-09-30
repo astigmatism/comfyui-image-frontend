@@ -13,7 +13,7 @@ from ..dependencies import (
     require_ready_csrf,
     require_ready_user,
 )
-from ..schemas import Collection, CollectionCreate, CollectionUpdate
+from ..schemas import Collection, CollectionCreate, CollectionOrder, CollectionUpdate
 
 router = APIRouter(prefix="/api/collections", tags=["collections"])
 
@@ -37,6 +37,21 @@ def create_collection(
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> Collection:
     return get_container(request).collections.create(
+        session,
+        owner_id=context.user.id,
+        payload=payload,
+    )
+
+
+@router.put("/order", response_model=list[Collection])
+@database_handler
+def reorder_collections(
+    payload: CollectionOrder,
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> list[Collection]:
+    return get_container(request).collections.reorder(
         session,
         owner_id=context.user.id,
         payload=payload,

@@ -403,6 +403,52 @@ def test_nested_copy_and_delete_normalize_overlapping_selection(settings_factory
         assert client.get(copied_image["display_artifact"]["content_url"]).status_code == 200
 
 
+def test_moved_and_copied_folders_append_to_the_destination_order(settings_factory, fake_state):
+    del fake_state
+    with TestClient(create_app(settings_factory(enable_background_worker=False))) as client:
+        provision_user(client)
+        destination = folder(client, "Destination")
+        resident = folder(client, "Resident", destination["id"])
+        first = folder(client, "First")
+        second = folder(client, "Second")
+        nested_a = folder(client, "Nested A", second["id"])
+        nested_b = folder(client, "Nested B", second["id"])
+
+        def children(parent_id):
+            return [
+                item["id"]
+                for item in client.get("/api/collections").json()
+                if item["parent_id"] == parent_id
+            ]
+
+        moved = transfer(
+            client, "move", collections=[first["id"], second["id"]], destination=destination["id"]
+        )
+        assert moved.status_code == 200, moved.text
+        # Selection order decides where the moved folders land, after what was there.
+        assert children(destination["id"]) == [resident["id"], first["id"], second["id"]]
+        assert children(second["id"]) == [nested_a["id"], nested_b["id"]]
+
+        copied = transfer(client, "copy", collections=[second["id"], first["id"]], destination=None)
+        assert copied.status_code == 200, copied.text
+        copies = copied.json()["collection_ids"]
+        assert children(None) == [destination["id"], *copies]
+        # A copied subtree keeps the order it had inside the original.
+        listed = client.get("/api/collections").json()
+        copied_second = next(
+            item["id"] for item in listed if item["id"] in copies and item["name"] == "Second"
+        )
+        assert [item["name"] for item in listed if item["parent_id"] == copied_second] == [
+            "Nested A",
+            "Nested B",
+        ]
+
+        # Filing a folder back where it already is leaves the chosen order alone.
+        again = transfer(client, "move", collections=[first["id"]], destination=destination["id"])
+        assert again.status_code == 200, again.text
+        assert children(destination["id"]) == [resident["id"], first["id"], second["id"]]
+
+
 def test_transfer_validates_all_ids_before_moving_and_requires_csrf(settings_factory, fake_state):
     del fake_state
     with TestClient(create_app(settings_factory())) as client:

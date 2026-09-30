@@ -1462,6 +1462,12 @@ export function galleryMarkup(
 
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6.5h6l2 2H21v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 9h18" /></svg>`;
 
+// The caption strip is the reorder handle: it stays inside the open button so a plain click
+// still opens the folder, carries no data-action of its own, and explains the gesture on the
+// blank space beside a short name, where no child element owns the tooltip.
+const COLLECTION_REORDER_HINT =
+  "Drag to reorder this folder, or hold Alt with the Left and Right arrow keys.";
+
 export function collectionCountMarkup(collection) {
   const count = Math.max(0, Number(collection?.generation_count) || 0);
   const remaining = Math.max(0, Number(collection?.remaining_count) || 0);
@@ -1542,9 +1548,9 @@ export function collectionTileMarkup(collection) {
     : `<div class="collection-folder-glyph">${FOLDER_ICON}</div>`;
   const id = escapeHtml(collection?.id || "");
   return `<div class="collection-tile${collection.is_favorite ? " is-favorited" : ""}" data-gallery-card="collection" data-collection-id="${id}">
-    <button type="button" class="collection-tile-open" data-action="open-collection" data-collection-id="${id}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}">
+    <button type="button" class="collection-tile-open" data-action="open-collection" data-collection-id="${id}" aria-label="Open collection ${escapeHtml(name)}, ${count} ${count === 1 ? "generation" : "generations"}" aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight">
       <span class="collection-tile-preview">${preview}</span>
-      <span class="collection-caption"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>${collectionCountMarkup(collection)}</span>
+      <span class="collection-caption" data-collection-drag-handle data-collection-id="${id}" draggable="true" title="${COLLECTION_REORDER_HINT}"><span class="collection-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>${collectionCountMarkup(collection)}</span>
     </button>
     <div class="collection-tile-overlay">
       <div class="card-hover-scrim" aria-hidden="true"></div>

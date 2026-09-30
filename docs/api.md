@@ -445,6 +445,7 @@ them. They resolve only to current validated publications and do not restore leg
 | `GET` | `/api/collections` | Flat owner collection list with direct counts and up to four direct image previews |
 | `POST` | `/api/collections` | Create a named top-level or child collection |
 | `PATCH` | `/api/collections/{id}` | Rename and/or move a collection |
+| `PUT` | `/api/collections/order` | Rewrite the order of one parent's direct children from a complete permutation |
 | `DELETE` | `/api/collections/{id}` | Recursively delete a collection subtree and its generations; `202` while active deletion reconciles |
 | `POST` | `/api/generations/{id}/move` | Move an owned generation to a collection or to unfiled root |
 | `GET` | `/api/gallery/items?collection_id=&favorites_only=&unfavorited_only=` | Whole-view inventory of one gallery view, for selecting everything including unloaded items |
@@ -453,9 +454,10 @@ them. They resolve only to current validated publications and do not restore leg
 | `POST` | `/api/gallery/favorite` | Add explicitly selected image and folder cards to Favorites |
 | `POST` | `/api/gallery/download` | Download selected images and recursive folder contents as one ZIP |
 
-Collections are returned as a flat `created_at, id` ordered list; clients construct the tree from
-`parent_id`. Names are trimmed and must contain 1–100 characters. Duplicate sibling names are
-allowed. Parents are owner-scoped, nesting is limited to five collection levels, and moves reject
+Collections are returned as a flat list ordered by `position, created_at, id`; clients construct
+the tree from `parent_id` and render each parent's children in the order received. Names are
+trimmed and must contain 1–100 characters. Duplicate sibling names are allowed. Parents are
+owner-scoped, nesting is limited to five collection levels, and moves reject
 self-parenting, descendants, and any placement that would push the moved subtree below level five.
 Cross-owner collection, parent, generation, and move-target IDs return `not_found`/404 even for
 administrators.
@@ -465,6 +467,20 @@ A collection response includes `generation_count` for direct, non-pending-delete
 not contribute to either field. Collection deletion removes descendants deepest-first, reuses the
 normal generation deletion lifecycle (including owned artifact/upload cleanup), and writes one
 content-free `collection_deleted` audit record per removed collection.
+
+`position` is the owner's chosen order among the siblings sharing one `parent_id`, counted from
+zero. A created collection, one that `PATCH` files under a different parent, and a moved or copied
+folder from `/api/gallery/transfer` all append after their new siblings; renaming or toggling
+previews never changes it.
+
+`PUT /api/collections/order` takes `{"parent_id": <id|null>, "collection_ids": [...]}` and returns
+the same flat list as `GET /api/collections`. The array must be a complete permutation of that
+parent's direct children: 1–500 identifiers, each appearing once (otherwise 422). A set that is
+incomplete, carries an unknown identifier, names a child of another parent, or names another
+owner's folder returns 409 `collection_order_stale` and writes nothing, so a browser holding a
+stale view reloads instead of dropping folders; another owner's identifier is deliberately
+indistinguishable from a missing one. An unowned `parent_id` returns `not_found`/404. Reordering
+never changes nesting.
 
 `PATCH` distinguishes an omitted `parent_id` from explicit null: omission leaves the parent
 unchanged, while `{"parent_id": null}` moves the collection to the top level. `GenerationMove`
@@ -510,10 +526,13 @@ requesting both filters is rejected as 422.
 (destination folder ID, or null for Home). The destination cannot be inside a selected subtree;
 the five-level collection limit also applies to copies. Success returns 200 with `operation`,
 `generation_ids`, and `collection_ids`. Move returns the directly moved generation and root folder
-IDs; copy returns all new generation IDs and new root folder IDs.
+IDs; copy returns all new generation IDs and new root folder IDs. Both preserve the request's
+`collection_ids` order: root folders append to the destination's own order in that sequence, and a
+folder already filed in the destination keeps the position it had.
 
 Copy duplicates all retained artifacts into independent files, preserves controls, recall data,
-folder structure, preview preferences and favorites, and does not submit a new ComfyUI job.
+folder structure, preview preferences, sibling order inside the copied subtree, and favorites, and
+does not submit a new ComfyUI job.
 Input uploads retain the existing reference-counted lifetime. Active or pending-delete generations
 anywhere in the selection reject the copy with 409 `copy_generation_active`. Move permits active
 generations. Transfers commit once; a failed copy rolls back new rows and removes newly copied files.

@@ -189,6 +189,10 @@ class GalleryService:
                 if len(rows) != len(batch):
                     raise AppError("not_found", "A selected item was not found.", status_code=404)
                 result.extend(rows)
+            # Row order from IN () is incidental. Restoring the requested order makes a
+            # transfer's destination folder order, and its response, deterministic.
+            requested = {item_id: index for index, item_id in enumerate(ids)}
+            result.sort(key=lambda item: requested[item.id])
             return result
 
         generations = owned_items(Generation, payload.generation_ids)
@@ -456,7 +460,15 @@ class GalleryService:
         if payload.operation == "move":
             for generation in chosen.generations:
                 generation.collection_id = payload.collection_id
+            # Folders that really change parent append after the destination's existing
+            # children, in selection order. A folder already filed there keeps its place.
+            position = self.collections._next_position(
+                session, owner_id=owner_id, parent_id=payload.collection_id
+            )
             for collection in chosen.roots:
+                if collection.parent_id != payload.collection_id:
+                    collection.position = position
+                    position += 1
                 collection.parent_id = payload.collection_id
             session.add(
                 AuditLog(
@@ -500,6 +512,11 @@ class GalleryService:
         created_paths: list[str] = []
         collection_map: dict[str, str] = {}
         generation_ids: list[str] = []
+        # Root copies append after the destination's existing children, in selection
+        # order; nested copies keep the order they had inside the copied subtree.
+        root_position = self.collections._next_position(
+            session, owner_id=owner_id, parent_id=payload.collection_id
+        )
         try:
             for root in chosen.roots:
                 for level in chosen.levels[root.id]:
@@ -515,6 +532,7 @@ class GalleryService:
                             ),
                             name=source.name,
                             previews_enabled=source.previews_enabled,
+                            position=(root_position if source_id == root.id else source.position),
                         )
                         session.add(clone)
                         session.flush()
@@ -528,6 +546,7 @@ class GalleryService:
                             session.add(
                                 CollectionFavorite(owner_id=owner_id, collection_id=clone.id)
                             )
+                root_position += 1
             for source_generation in sources:
                 clone_id = self._copy_generation(
                     session,

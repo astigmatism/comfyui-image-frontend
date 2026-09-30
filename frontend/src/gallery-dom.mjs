@@ -20,7 +20,10 @@ function localKey(node) {
 function patchAttributes(current, desired) {
   const thumbnail = current.matches("img[data-thumbnail-src]");
   const selected = current.matches('[data-action="select-gallery-card"], [data-prompt-group-select]');
+  // Multiselect clears draggable on cards and on the folder reorder handle; keeping that
+  // runtime value stops a re-render from briefly re-arming a drag it already blocked.
   const owned = (name) => (thumbnail && ["src", "data-thumbnail-state", "draggable"].includes(name))
+    || (current.hasAttribute("data-collection-drag-handle") && name === "draggable")
     || (selected && name === "aria-checked")
     || (current.dataset.action === "select-gallery-card" && name === "title");
   for (const { name } of [...current.attributes]) {
@@ -31,7 +34,7 @@ function patchAttributes(current, desired) {
     let next = value;
     if (name === "class" && cardKey(current)) {
       const classes = new Set(value.split(/\s+/));
-      for (const runtime of ["is-selected", "card-controls-visible", "is-dragging"]) {
+      for (const runtime of ["is-selected", "card-controls-visible", "is-dragging", "is-drop-before", "is-drop-after"]) {
         if (current.classList.contains(runtime)) classes.add(runtime);
       }
       next = [...classes].join(" ");

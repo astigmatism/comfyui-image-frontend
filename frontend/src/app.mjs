@@ -29,12 +29,14 @@ import {
   MIN_GENERATION_QUANTITY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
+  applyCollectionOrder,
   applyRecallSeedMode,
   clampGenerationQuantity,
   clientValidate,
   choiceOptions,
   choiceStrengthCompanion,
   collectionDepth,
+  collectionSiblingIds,
   collectionSubtree,
   controlSectionStorageKey,
   createLatestRequestGate,
@@ -66,6 +68,7 @@ import {
   recordRecentResolution,
   reconcileInterfaceValues,
   removeRecentResolution,
+  reorderedCollectionIds,
   resolutionPresetForValue,
   resolutionSummary,
   scaleToLayout,
@@ -336,6 +339,7 @@ const TERMINAL_GENERATION_STATUSES = new Set([
 ]);
 const GALLERY_ARTIFACT_DRAG_TYPE = "application/x-comfyui-image-frontend-artifact";
 const CHECKPOINT_DRAG_TYPE = "application/x-comfyui-image-frontend-checkpoint";
+const COLLECTION_DRAG_TYPE = "application/x-comfyui-image-frontend-collection";
 
 const STARTUP_DEADLINES = {
   session: 10_000,
@@ -1748,6 +1752,13 @@ function handleKeyDown(event) {
     if (moveSourcePickerCheckpointFromKeyboard(checkpointHandle, event.key)) {
       event.preventDefault();
     }
+    return;
+  }
+  const collectionControl = event.target.closest(
+    "#gallery [data-action='open-collection'][data-collection-id]",
+  );
+  if (collectionControl && event.altKey) {
+    if (moveCollectionFromKeyboard(collectionControl, event.key)) event.preventDefault();
     return;
   }
   const handle = event.target.closest("[data-resolution-handle]");
@@ -4621,6 +4632,17 @@ function handleDragStart(event) {
     checkpointHandle.closest("[data-checkpoint-card]")?.classList.add("is-dragging");
     return;
   }
+  const collectionHandle = event.target.closest("[data-collection-drag-handle]");
+  if (collectionHandle && event.dataTransfer) {
+    const collectionId = collectionHandle.dataset.collectionId;
+    // Only the open view's own folders are reorderable: its grid holds exactly the
+    // children of the current location, so a drag can never cross parents.
+    if (!collectionId || !reorderableCollection(collectionId)) return;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(COLLECTION_DRAG_TYPE, collectionId);
+    collectionHandle.closest("[data-gallery-card='collection']")?.classList.add("is-dragging");
+    return;
+  }
   const image = event.target.closest("[data-gallery-artifact-id]");
   if (!image || !event.dataTransfer) return;
   event.dataTransfer.effectAllowed = "copy";
@@ -4631,6 +4653,11 @@ function handleDragStart(event) {
 function handleDragEnd(event) {
   event.target.closest("[data-checkpoint-card]")?.classList.remove("is-dragging");
   clearCheckpointDropIndicators();
+  event.target
+    .closest("[data-collection-drag-handle]")
+    ?.closest("[data-gallery-card='collection']")
+    ?.classList.remove("is-dragging");
+  clearCollectionDropIndicators();
   event.target.closest("[data-gallery-artifact-id]")?.classList.remove("is-dragging");
   document
     .querySelectorAll(".image-input-dropzone.is-drag-over")
@@ -4650,6 +4677,102 @@ function transferHasImageCandidate(dataTransfer) {
 
 function transferHasCheckpoint(dataTransfer) {
   return Array.from(dataTransfer?.types || []).includes(CHECKPOINT_DRAG_TYPE);
+}
+
+function transferHasCollection(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes(COLLECTION_DRAG_TYPE);
+}
+
+function reorderableCollection(collectionId) {
+  const collection = state.collections.find((item) => item.id === collectionId);
+  return Boolean(
+    collection &&
+      (collection.parent_id ?? null) === (state.currentCollectionId || null) &&
+      !favoritesFilterActive(favoritesMode(state)),
+  );
+}
+
+function collectionGridForEvent(event) {
+  const grid = event.target.closest("#gallery .collection-grid");
+  return grid && !favoritesFilterActive(favoritesMode(state)) ? grid : null;
+}
+
+function clearCollectionDropIndicators() {
+  document
+    .querySelectorAll(".collection-tile.is-drop-before, .collection-tile.is-drop-after")
+    .forEach((element) => element.classList.remove("is-drop-before", "is-drop-after"));
+}
+
+// One geometric rule covers a drop on a tile and a drop in the wrapping grid's own gaps:
+// the slot is the first tile that follows the pointer in row-major order, and null means
+// the end of the list.
+function collectionDropBeforeId(event, grid) {
+  for (const tile of grid.querySelectorAll("[data-gallery-card='collection']")) {
+    const rect = tile.getBoundingClientRect();
+    const laterRow = rect.top > event.clientY;
+    const sameRowAfter =
+      rect.bottom > event.clientY && event.clientX < rect.left + rect.width / 2;
+    if (laterRow || sameRowAfter) return tile.dataset.collectionId;
+  }
+  return null;
+}
+
+function showCollectionDropIndicator(event, grid) {
+  clearCollectionDropIndicators();
+  const tiles = [...grid.querySelectorAll("[data-gallery-card='collection']")];
+  const beforeId = collectionDropBeforeId(event, grid);
+  const target = beforeId
+    ? tiles.find((tile) => tile.dataset.collectionId === beforeId)
+    : tiles.at(-1);
+  target?.classList.add(beforeId ? "is-drop-before" : "is-drop-after");
+}
+
+async function reorderCollection(collectionId, beforeId) {
+  const parentId = state.currentCollectionId || null;
+  const previous = state.collections;
+  const order = reorderedCollectionIds(
+    collectionSiblingIds(previous, parentId),
+    collectionId,
+    beforeId,
+  );
+  const reordered = applyCollectionOrder(previous, parentId, order);
+  if (reordered === previous) return;
+  state.collections = reordered;
+  renderGallery();
+  try {
+    const collections = await api("/api/collections/order", {
+      method: "PUT",
+      body: JSON.stringify({ parent_id: parentId, collection_ids: order }),
+    });
+    // A refetch started before this write must not reinstate the old order.
+    collectionsRequestToken += 1;
+    state.collections = Array.isArray(collections) ? collections : state.collections;
+    applyCollectionActivity({ counts: false });
+    renderGallery();
+  } catch (error) {
+    state.collections = previous;
+    renderGallery();
+    toast(error.message || "The folder order could not be saved.", "error");
+    if (error.code === "collection_order_stale") await loadCollections();
+  }
+}
+
+function moveCollectionFromKeyboard(control, key) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return false;
+  const collectionId = control.dataset.collectionId;
+  if (!collectionId || !reorderableCollection(collectionId)) return false;
+  const ids = collectionSiblingIds(state.collections, state.currentCollectionId || null);
+  const index = ids.indexOf(collectionId);
+  if (index < 0) return false;
+  // Alt with an arrow key is browser history navigation, so every recognized gesture on
+  // a reorderable folder is consumed, including the no-op at either end of the row.
+  const beforeId =
+    key === "ArrowLeft" ? (ids[index - 1] ?? collectionId)
+    : key === "ArrowRight" ? (ids[index + 2] ?? null)
+    : key === "Home" ? ids[0]
+    : null;
+  void reorderCollection(collectionId, beforeId);
+  return true;
 }
 
 function checkpointTierForEvent(event) {
@@ -4703,6 +4826,12 @@ function handleDragEnter(event) {
     showCheckpointDropIndicator(event, checkpointTier);
     return;
   }
+  const collectionGrid = collectionGridForEvent(event);
+  if (collectionGrid && transferHasCollection(event.dataTransfer)) {
+    event.preventDefault();
+    showCollectionDropIndicator(event, collectionGrid);
+    return;
+  }
   const zone = imageDropzoneForEvent(event);
   if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
   event.preventDefault();
@@ -4717,6 +4846,13 @@ function handleDragOver(event) {
     showCheckpointDropIndicator(event, checkpointTier);
     return;
   }
+  const collectionGrid = collectionGridForEvent(event);
+  if (collectionGrid && transferHasCollection(event.dataTransfer)) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    showCollectionDropIndicator(event, collectionGrid);
+    return;
+  }
   const zone = imageDropzoneForEvent(event);
   if (!zone || !transferHasImageCandidate(event.dataTransfer)) return;
   event.preventDefault();
@@ -4728,6 +4864,11 @@ function handleDragLeave(event) {
   const checkpointTier = checkpointTierForEvent(event);
   if (checkpointTier && transferHasCheckpoint(event.dataTransfer)) {
     if (!checkpointTier.contains(event.relatedTarget)) clearCheckpointDropIndicators();
+    return;
+  }
+  const collectionGrid = collectionGridForEvent(event);
+  if (collectionGrid && transferHasCollection(event.dataTransfer)) {
+    if (!collectionGrid.contains(event.relatedTarget)) clearCollectionDropIndicators();
     return;
   }
   const zone = imageDropzoneForEvent(event);
@@ -4759,6 +4900,17 @@ async function handleDrop(event) {
           beforeValue,
         );
       }
+    }
+    return;
+  }
+  const collectionGrid = collectionGridForEvent(event);
+  if (collectionGrid && transferHasCollection(event.dataTransfer)) {
+    event.preventDefault();
+    const beforeId = collectionDropBeforeId(event, collectionGrid);
+    clearCollectionDropIndicators();
+    const collectionId = event.dataTransfer.getData(COLLECTION_DRAG_TYPE);
+    if (collectionId && reorderableCollection(collectionId)) {
+      await reorderCollection(collectionId, beforeId);
     }
     return;
   }

@@ -943,7 +943,11 @@ code {
   color: #526a86;
 }
 
+/* The caption strip is the folder reorder handle, so its whole area — including the
+   blank space beside a short name — shows the grab affordance. A plain click on it still
+   opens the folder, because it stays inside the tile's open button. */
 .collection-caption {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -951,10 +955,53 @@ code {
   min-height: 50px;
   padding: 9px 11px 9px 13px;
   background: var(--surface-1);
+  cursor: grab;
+}
+
+.collection-caption:active {
+  cursor: grabbing;
+}
+
+.collection-caption[draggable="false"] {
+  cursor: pointer;
+}
+
+.collection-tile.is-dragging {
+  opacity: 0.36;
+  transform: scale(0.985);
+}
+
+/* Drop markers live on the tiles rather than on the grid: the grid is a CSS grid, where
+   a pseudo-element would become an extra cell. Both use ::before, because ::after already
+   draws the favorite ring, and the tile clips overflow, so the marker is inset. */
+.collection-tile.is-drop-before::before,
+.collection-tile.is-drop-after::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 99px;
+  background: var(--accent-hover);
+  box-shadow: 0 0 8px rgb(91 156 245 / 70%);
+  content: "";
+  z-index: 5;
+  pointer-events: none;
+}
+
+.collection-tile.is-drop-before::before {
+  left: 0;
+}
+
+.collection-tile.is-drop-after::before {
+  right: 0;
 }
 
 .collection-name {
   overflow: hidden;
+  /* Hugging the text leaves the caption's own blank space uncovered, so hovering it shows
+     the reorder tooltip; a long name still fills the column and ellipsizes. */
+  justify-self: start;
+  max-width: 100%;
   color: var(--text);
   font-size: 0.9rem;
   font-weight: 700;

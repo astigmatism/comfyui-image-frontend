@@ -48,6 +48,13 @@ group checkbox. Loading more, collapsing, and ordinary gallery refreshes preserv
 new arrivals remain unselected. A large collapsed group can be skipped during gallery pagination;
 expand it and use **Load more in group** to retrieve its remaining cards.
 
+Drag a folder tile by its caption strip — the bar with its name and count — to rearrange the
+folders in the open view; a marker shows the slot before you release. Focus a tile and hold Alt
+with Left, Right, Home, or End for the same move without a pointer. The order is saved per folder
+level for your account, so reload the preview and it stays. Dragging a folder onto another folder
+does not file it inside; use **Move / Copy…** for that. Reordering is unavailable while cards are
+selected or while either Favorites filter hides folder tiles.
+
 1. Hover an image or folder and click the checkbox in its lower-right toolkit. It appears
    with the existing tools after the hover delay (or keyboard focus). Touch screens keep the
    existing toolkit available. Selection reveals checkboxes on every card. A small count and six

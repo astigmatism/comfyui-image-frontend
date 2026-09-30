@@ -416,6 +416,9 @@ class Collection(Base):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     previews_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Owner-chosen order among siblings sharing one parent. Newly created, moved, and
+    # copied folders append after the existing siblings.
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

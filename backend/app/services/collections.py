@@ -12,7 +12,7 @@ from ..blocking import run_blocking
 from ..errors import AppError
 from ..models import Artifact, AuditLog, AutoGeneration, Collection, CollectionFavorite, Generation
 from ..schemas import Collection as CollectionResponse
-from ..schemas import CollectionCreate, CollectionPreview, CollectionUpdate
+from ..schemas import CollectionCreate, CollectionOrder, CollectionPreview, CollectionUpdate
 
 if TYPE_CHECKING:
     from .generations import GenerationService
@@ -53,7 +53,9 @@ class CollectionService:
         if collection_ids is not None:
             statement = statement.where(Collection.id.in_(collection_ids))
         collections = list(
-            session.scalars(statement.order_by(Collection.created_at, Collection.id))
+            session.scalars(
+                statement.order_by(Collection.position, Collection.created_at, Collection.id)
+            )
         )
         collection_ids = [collection.id for collection in collections]
         if not collection_ids:
@@ -95,6 +97,7 @@ class CollectionService:
                 updated_at=collection.updated_at,
                 generation_count=generation_counts.get(collection.id, 0),
                 previews_enabled=collection.previews_enabled,
+                position=collection.position,
                 is_favorite=collection.id in favorite_ids,
                 previews=previews.get(collection.id, []),
             )
@@ -155,6 +158,22 @@ class CollectionService:
             )
         return result
 
+    @staticmethod
+    def _next_position(
+        session: Session,
+        *,
+        owner_id: str,
+        parent_id: str | None,
+    ) -> int:
+        """Return the position that appends one folder after its future siblings."""
+        highest = session.scalar(
+            select(func.max(Collection.position)).where(
+                Collection.owner_id == owner_id,
+                Collection.parent_id == parent_id,
+            )
+        )
+        return 0 if highest is None else int(highest) + 1
+
     def create(
         self,
         session: Session,
@@ -170,6 +189,7 @@ class CollectionService:
             owner_id=owner_id,
             parent_id=payload.parent_id,
             name=payload.name,
+            position=self._next_position(session, owner_id=owner_id, parent_id=payload.parent_id),
         )
         session.add(collection)
         session.commit()
@@ -206,10 +226,52 @@ class CollectionService:
             deepest_relative_level = len(levels) - 1
             if new_level + deepest_relative_level > MAX_COLLECTION_DEPTH:
                 self._raise_depth()
+            if new_parent_id != collection.parent_id:
+                # A folder that changes parent joins its new siblings at the end;
+                # its old position belonged to a different order.
+                collection.position = self._next_position(
+                    session, owner_id=owner_id, parent_id=new_parent_id
+                )
             collection.parent_id = new_parent_id
 
         session.commit()
         return self._response(session, owner_id=owner_id, collection_id=collection.id)
+
+    def reorder(
+        self,
+        session: Session,
+        *,
+        owner_id: str,
+        payload: CollectionOrder,
+    ) -> builtins.list[CollectionResponse]:
+        """Rewrite the order of one parent's direct children from a complete permutation.
+
+        Unknown and other owners' identifiers report the same stale-order conflict as a
+        missing sibling, so the response never reveals whether an identifier exists.
+        """
+        if payload.parent_id is not None:
+            self.get_owned(session, owner_id, payload.parent_id)
+        siblings = {
+            collection.id: collection
+            for collection in session.scalars(
+                select(Collection).where(
+                    Collection.owner_id == owner_id,
+                    Collection.parent_id == payload.parent_id,
+                )
+            )
+        }
+        if len(payload.collection_ids) != len(siblings) or any(
+            collection_id not in siblings for collection_id in payload.collection_ids
+        ):
+            raise AppError(
+                "collection_order_stale",
+                "Folders changed while you were reordering them. Reload and try again.",
+                status_code=409,
+            )
+        for position, collection_id in enumerate(payload.collection_ids):
+            siblings[collection_id].position = position
+        session.commit()
+        return self.project(session, owner_id=owner_id)
 
     def add_favorite(
         self, session: Session, *, owner_id: str, collection_id: str

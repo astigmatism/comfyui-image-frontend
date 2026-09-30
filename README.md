@@ -17,6 +17,7 @@ Install the included [`comfyui_extension/cif_artifact_cleanup`](comfyui_extensio
 - Persistent overall generation progress, animated folder activity including nested folders, and an auto-generation status indicator; server-owned auto generation stays pinned to its captured settings and folder across browsers, sign-out, and application restarts.
 - A dependency-free browser application with manifest-driven controls, precise seed handling, lazy cursor-paginated gallery, SSE updates, private image and folder favorites with gold indicators and a three-state per-view favorites filter (all items, favorites only, unfavorited only — so every card without a heart can be selected and bulk-deleted, moved, or copied in one action), detail/recall, cancellation, and deletion.
 - Image and folder multiselect with shared Move / Copy and Delete actions, recursive folder operations, and independent image copies. Try the [local gallery preview](docs/gallery-selection-preview.md).
+- Folder tiles rearrange by dragging their caption strip, or with Alt and the arrow keys on a focused tile. The order is per-user server state kept separately for each parent folder, so it survives reload, sign-out, and other browsers.
 - Deterministic fake services, backend/frontend/browser tests, production image, Compose example, validation scripts, and maintained API/architecture/schema documentation.
 
 ## Architecture at a glance

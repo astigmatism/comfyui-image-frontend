@@ -77,6 +77,45 @@ export function collectionTreeRows(collections) {
   return rows;
 }
 
+// Folder order is owner-chosen per parent and the server returns siblings already in it,
+// so the flat list's own order is the single source of truth for these three helpers.
+export function collectionSiblingIds(collections, parentId = null) {
+  return (Array.isArray(collections) ? collections : [])
+    .filter((collection) => (collection.parent_id ?? null) === (parentId ?? null))
+    .map((collection) => collection.id);
+}
+
+// beforeId names the sibling the folder lands in front of; null appends it last. A move
+// that changes nothing, or names an unknown folder, returns the input order untouched.
+export function reorderedCollectionIds(ids, collectionId, beforeId = null) {
+  const source = Array.isArray(ids) ? ids : [];
+  const from = source.indexOf(collectionId);
+  if (from < 0 || collectionId === beforeId) return source;
+  if (beforeId !== null && !source.includes(beforeId)) return source;
+  const remaining = source.filter((id) => id !== collectionId);
+  const at = beforeId === null ? remaining.length : remaining.indexOf(beforeId);
+  if (at === from) return source;
+  remaining.splice(at, 0, collectionId);
+  return remaining;
+}
+
+export function applyCollectionOrder(collections, parentId, orderedIds) {
+  const source = Array.isArray(collections) ? collections : [];
+  const order = Array.isArray(orderedIds) ? orderedIds : [];
+  const slots = [];
+  for (const [index, collection] of source.entries()) {
+    if ((collection.parent_id ?? null) === (parentId ?? null)) slots.push(index);
+  }
+  if (slots.length !== order.length) return source;
+  const byId = new Map(slots.map((index) => [source[index].id, source[index]]));
+  if (order.some((id) => !byId.has(id))) return source;
+  // Siblings are rewritten into the slots they already occupied, so entries filed under
+  // any other parent keep their place in the flat list.
+  const result = [...source];
+  for (const [position, index] of slots.entries()) result[index] = byId.get(order[position]);
+  return result;
+}
+
 const TIMELINE_MONTH_PATTERN = /^(?:19|20|21)\d{2}-(?:0[1-9]|1[0-2])$/u;
 
 export function validTimelineMonth(value) {

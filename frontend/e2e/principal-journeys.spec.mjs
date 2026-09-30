@@ -734,6 +734,46 @@ test("collections route generation, preview preference, move, and recursive dele
   await createCollection("E2E Source");
   await createCollection("E2E Destination");
 
+  // Folder tiles are rearranged by dragging the caption strip, and the chosen order is
+  // owner-owned server state, so it survives a reload.
+  const folderTiles = page.locator('#gallery .collection-grid [data-gallery-card="collection"]');
+  const folderOrder = () =>
+    folderTiles.evaluateAll((nodes) => nodes.map((node) => node.dataset.collectionId));
+  const orderWrite = () =>
+    page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/collections/order" &&
+        response.request().method() === "PUT",
+    );
+  const tile = (id) => page.locator(`[data-gallery-card="collection"][data-collection-id="${id}"]`);
+  const setGalleryScale = (value) =>
+    page.locator("#gallery-scale").evaluate((input, next) => {
+      input.value = next;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+  const created = await folderOrder();
+  expect(created).toHaveLength(2);
+  // A drag needs both captions on screen at once, so shrink the cards first: the
+  // persisted scale from the scale journey gives one folder per row.
+  const enlargedScale = await page.locator("#gallery-scale").inputValue();
+  await setGalleryScale("0");
+  const draggedOrder = orderWrite();
+  await tile(created[1])
+    .locator(".collection-caption")
+    .dragTo(tile(created[0]).locator(".collection-caption"), { targetPosition: { x: 4, y: 10 } });
+  expect((await draggedOrder).ok()).toBe(true);
+  await expect.poll(folderOrder).toEqual([created[1], created[0]]);
+  await page.reload();
+  await expect.poll(folderOrder).toEqual([created[1], created[0]]);
+
+  // Alt with an arrow key is the keyboard equivalent on the focused tile.
+  const keyboardOrder = orderWrite();
+  await tile(created[1]).locator(".collection-tile-open").focus();
+  await page.keyboard.press("Alt+ArrowRight");
+  expect((await keyboardOrder).ok()).toBe(true);
+  await expect.poll(folderOrder).toEqual(created);
+  await setGalleryScale(enlargedScale);
+
   const preRenameTile = page.locator(".collection-tile").filter({ hasText: "E2E Source" });
   await clickGalleryControl(preRenameTile.getByRole("button", { name: "Rename collection E2E Source" }));
   const renameDialog = page.locator("#collection-dialog");

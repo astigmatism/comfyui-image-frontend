@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from app.errors import AppError
 from app.models import Base, Generation, GenerationStatus, User
-from app.schemas import CollectionCreate, CollectionUpdate
+from app.schemas import CollectionCreate, CollectionOrder, CollectionUpdate
 from app.services.collections import CollectionService
 from app.services.generations import GenerationService
 from sqlalchemy import create_engine
@@ -99,6 +99,117 @@ def test_move_revalidates_deepest_descendant_level(collection_session: Session) 
         )
 
     assert exc.value.code == "collection_depth"
+
+
+def test_new_folders_append_after_their_siblings_per_parent(
+    collection_session: Session,
+) -> None:
+    service = _service()
+    owner_id = str(collection_session.info["owner_id"])
+    first = _create(service, collection_session, "First")
+    second = _create(service, collection_session, "Second")
+    nested_first = _create(service, collection_session, "Nested first", first)
+    nested_second = _create(service, collection_session, "Nested second", first)
+
+    listed = {item.id: item for item in service.list(collection_session, owner_id=owner_id)}
+    assert [listed[first].position, listed[second].position] == [0, 1]
+    assert [listed[nested_first].position, listed[nested_second].position] == [0, 1]
+
+
+def test_reorder_rewrites_one_parents_order_and_leaves_other_parents_alone(
+    collection_session: Session,
+) -> None:
+    service = _service()
+    owner_id = str(collection_session.info["owner_id"])
+    first = _create(service, collection_session, "First")
+    second = _create(service, collection_session, "Second")
+    third = _create(service, collection_session, "Third")
+    nested = _create(service, collection_session, "Nested", first)
+
+    result = service.reorder(
+        collection_session,
+        owner_id=owner_id,
+        payload=CollectionOrder(parent_id=None, collection_ids=[third, first, second]),
+    )
+
+    assert [item.id for item in result if item.parent_id is None] == [third, first, second]
+    assert [item.position for item in result if item.parent_id is None] == [0, 1, 2]
+    assert [(item.id, item.position) for item in result if item.parent_id == first] == [(nested, 0)]
+    # The stored order, not just this response, is what later listings return.
+    listed = service.list(collection_session, owner_id=owner_id)
+    assert [item.id for item in listed if item.parent_id is None] == [third, first, second]
+
+
+def test_reorder_rejects_partial_unknown_and_other_owners_folders(
+    collection_session: Session,
+) -> None:
+    service = _service()
+    owner_id = str(collection_session.info["owner_id"])
+    first = _create(service, collection_session, "First")
+    second = _create(service, collection_session, "Second")
+    other = User(
+        username="collection.other",
+        username_normalized="collection.other",
+        password_hash="test-hash",
+        must_change_password=False,
+    )
+    collection_session.add(other)
+    collection_session.commit()
+    foreign = service.create(
+        collection_session,
+        owner_id=other.id,
+        payload=CollectionCreate(name="Foreign"),
+    ).id
+
+    for collection_ids in ([first], [first, second, "missing"], [first, foreign]):
+        with pytest.raises(AppError) as exc:
+            service.reorder(
+                collection_session,
+                owner_id=owner_id,
+                payload=CollectionOrder(parent_id=None, collection_ids=collection_ids),
+            )
+        assert exc.value.code == "collection_order_stale"
+        assert exc.value.status_code == 409
+
+    with pytest.raises(AppError) as missing_parent:
+        service.reorder(
+            collection_session,
+            owner_id=owner_id,
+            payload=CollectionOrder(parent_id=foreign, collection_ids=[first]),
+        )
+    assert missing_parent.value.code == "not_found"
+    # A refused reorder changes nothing.
+    listed = service.list(collection_session, owner_id=owner_id)
+    assert [item.id for item in listed if item.parent_id is None] == [first, second]
+
+
+def test_a_folder_that_changes_parent_joins_its_new_siblings_last(
+    collection_session: Session,
+) -> None:
+    service = _service()
+    owner_id = str(collection_session.info["owner_id"])
+    destination = _create(service, collection_session, "Destination")
+    resident = _create(service, collection_session, "Resident", destination)
+    moved = _create(service, collection_session, "Moved")
+
+    updated = service.update(
+        collection_session,
+        owner_id=owner_id,
+        collection_id=moved,
+        payload=CollectionUpdate(parent_id=destination),
+    )
+    assert updated.position == 1
+
+    # Renaming in place keeps the position it already held.
+    renamed = service.update(
+        collection_session,
+        owner_id=owner_id,
+        collection_id=moved,
+        payload=CollectionUpdate(name="Moved and renamed"),
+    )
+    assert renamed.position == 1
+    listed = service.list(collection_session, owner_id=owner_id)
+    assert [item.id for item in listed if item.parent_id == destination] == [resident, moved]
 
 
 def test_flat_list_count_excludes_pending_delete_generations(

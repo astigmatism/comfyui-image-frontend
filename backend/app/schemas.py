@@ -726,6 +726,18 @@ class CollectionUpdate(APIModel):
         return self
 
 
+class CollectionOrder(APIModel):
+    parent_id: str | None = None
+    collection_ids: list[str] = Field(min_length=1, max_length=500)
+
+    @field_validator("collection_ids")
+    @classmethod
+    def validate_collection_ids(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("a folder order lists each folder once")
+        return value
+
+
 class CollectionPreview(APIModel):
     generation_id: str
     artifact_id: str
@@ -740,6 +752,7 @@ class Collection(APIModel):
     updated_at: datetime
     generation_count: int
     previews_enabled: bool = True
+    position: int = 0
     is_favorite: bool = False
     previews: list[CollectionPreview] = Field(default_factory=list)
 

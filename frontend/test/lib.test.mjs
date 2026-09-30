@@ -11,6 +11,7 @@ import {
   MIN_GENERATION_QUANTITY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
+  applyCollectionOrder,
   applyRecallSeedMode,
   autoGenerateCompositionRetryDelayMs,
   autoGenerationPromptAssistantFingerprint,
@@ -19,6 +20,7 @@ import {
   choiceStrengthCompanion,
   collectionAncestors,
   collectionDepth,
+  collectionSiblingIds,
   collectionSubtree,
   collectionTreeRows,
   controlPresentation,
@@ -54,6 +56,7 @@ import {
   recalledComfyuiInstanceState,
   removeRecentResolution,
   reconcileInterfaceValues,
+  reorderedCollectionIds,
   resolutionConstraints,
   resolutionGridConstraints,
   resolutionPresetForValue,
@@ -97,6 +100,50 @@ test("collection tree helpers resolve ancestry, subtree membership, depth, and d
       ["gamma", 3],
       ["other", 1],
     ],
+  );
+});
+
+test("folder reorder helpers move one sibling and leave every other entry in place", () => {
+  const collections = [
+    { id: "alpha", parent_id: null, name: "Alpha" },
+    { id: "child", parent_id: "alpha", name: "Child" },
+    { id: "beta", parent_id: null, name: "Beta" },
+    { id: "gamma", parent_id: null, name: "Gamma" },
+  ];
+  assert.deepEqual(collectionSiblingIds(collections, null), ["alpha", "beta", "gamma"]);
+  assert.deepEqual(collectionSiblingIds(collections, "alpha"), ["child"]);
+  assert.deepEqual(collectionSiblingIds(collections, "child"), []);
+  assert.deepEqual(collectionSiblingIds(undefined, null), []);
+
+  const ids = ["alpha", "beta", "gamma"];
+  assert.deepEqual(reorderedCollectionIds(ids, "gamma", "alpha"), ["gamma", "alpha", "beta"]);
+  assert.deepEqual(reorderedCollectionIds(ids, "alpha", "gamma"), ["beta", "alpha", "gamma"]);
+  assert.deepEqual(reorderedCollectionIds(ids, "alpha", null), ["beta", "gamma", "alpha"]);
+  // Dropping a folder where it already is, onto itself, or naming an unknown neighbour
+  // returns the very same array, so the caller can skip the request.
+  for (const [moved, before] of [
+    ["alpha", "beta"],
+    ["beta", "gamma"],
+    ["gamma", null],
+    ["beta", "beta"],
+    ["beta", "missing"],
+    ["missing", "alpha"],
+  ]) {
+    assert.equal(reorderedCollectionIds(ids, moved, before), ids);
+  }
+
+  const reordered = applyCollectionOrder(collections, null, ["gamma", "alpha", "beta"]);
+  assert.deepEqual(
+    reordered.map((item) => item.id),
+    ["gamma", "child", "alpha", "beta"],
+  );
+  assert.equal(reordered[1], collections[1]);
+  // A length or membership mismatch is refused rather than silently dropping folders.
+  assert.equal(applyCollectionOrder(collections, null, ["gamma", "alpha"]), collections);
+  assert.equal(applyCollectionOrder(collections, null, ["gamma", "alpha", "child"]), collections);
+  assert.deepEqual(
+    applyCollectionOrder(collections, "alpha", ["child"]).map((item) => item.id),
+    ["alpha", "child", "beta", "gamma"],
   );
 });
 

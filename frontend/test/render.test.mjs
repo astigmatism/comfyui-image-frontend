@@ -2580,7 +2580,7 @@ test("collection tiles escape names, cap previews at four, and collapse previews
   assert.match(overlay, /class="card-hover-scrim" aria-hidden="true"/);
   assert.match(overlay, /class="collection-tile-actions card-hover-reveal"/);
   assert.doesNotMatch(html, /<footer|collection-tile-footer/);
-  const caption = html.match(/<span class="collection-caption">[\s\S]*?<\/button>/)[0];
+  const caption = html.match(/<span class="collection-caption"[\s\S]*?<\/button>/)[0];
   assert.doesNotMatch(caption, /data-action|card-hover-reveal/);
   assert.match(
     overlay,
@@ -2602,6 +2602,43 @@ test("collection tiles escape names, cap previews at four, and collapse previews
 
   const gallery = galleryMarkup([], { collections: [collection] });
   assert.match(gallery, /<div class="collection-grid"><div[^>]+collection-tile/);
+});
+
+test("the folder caption is the reorder handle and tiles render in the order given", () => {
+  const collection = {
+    id: "collection-1",
+    name: "Alpine",
+    generation_count: 2,
+    previews_enabled: false,
+    previews: [],
+  };
+  const html = collectionTileMarkup(collection);
+  const caption = html.match(/<span class="collection-caption"[^>]*>/)[0];
+  assert.match(caption, /data-collection-drag-handle/);
+  assert.match(caption, /data-collection-id="collection-1"/);
+  assert.match(caption, /draggable="true"/);
+  assert.match(
+    caption,
+    /title="Drag to reorder this folder, or hold Alt with the Left and Right arrow keys\."/,
+  );
+  // The handle stays a plain span inside the open button: the click still opens the
+  // folder, and the caption never becomes a second action or a nested control.
+  assert.doesNotMatch(caption, /data-action|<button/);
+  assert.match(html, /aria-keyshortcuts="Alt\+ArrowLeft Alt\+ArrowRight"/);
+  // The big preview keeps its clean hover: only the handle explains the gesture.
+  assert.doesNotMatch(html.slice(0, html.indexOf("collection-caption")), /title=/);
+
+  // The flat list arrives in the owner's chosen order, so the grid must not re-sort it.
+  const order = ["gamma", "alpha", "beta"];
+  const gallery = galleryMarkup([], {
+    collections: order.map((id) => ({ ...collection, id, name: id })),
+  });
+  assert.deepEqual(
+    [...gallery.matchAll(/data-gallery-card="collection" data-collection-id="([^"]+)"/g)].map(
+      (match) => match[1],
+    ),
+    order,
+  );
 });
 
 test("collection bar renders escaped crumbs, current location, and no global preview switch", () => {
