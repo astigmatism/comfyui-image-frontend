@@ -112,7 +112,11 @@ production mounts, and disposable credentials supplied via a private env file.
 An existing SHA image can be reused only with a matching retained image receipt.
 
 Only after preparation succeeds does it stop the app, take a consistent full
-`data.tar`, and verify SQLite integrity including WAL. The app stays stopped
+`data.tar` of application state, and verify SQLite integrity including WAL. The
+top-level `data/backups/` (operator one-off backups) and `data/tmp/` (request
+scratch) are excluded; everything else, including all of `assets/` and
+`uploads/`, is archived, and verification still requires `app.db` and `assets/`.
+The app stays stopped
 between this backup and cutover. It updates only the app image and revision label,
 recreates only the app, and verifies database/worker readiness, the unchanged edge
 container, trusted `https://192.168.1.5:8443/`, and the served asset manifest against
@@ -125,7 +129,68 @@ starts/verifies the previous app once. The `data/` directory, assets, and upload
 are retained in place. Failure remains a failed portal job even after successful
 rollback. If candidate shutdown or recovery cannot be verified, it stops with
 `operator-required`; it does not run old code against an uncertain database.
-There are no prune, volume removal, edge restart, or backend restart operations.
+There are no volume removal, edge restart, backend restart, or blanket prune
+operations.
+
+## Rollback retention: exactly one rollback
+
+**Retention rule:** one pre-upgrade data archive (the rollback to the prior
+release) and the current + prior app image tags; older archives and tags are
+removed automatically after a successful update.
+
+`releases/<new>/data.tar` is the state before `<new>` was deployed. Together with
+the prior image (`previous` in `release-state.json`), it is a complete rollback.
+An older archive restores a release two or more steps back whose image is gone, so
+it is not a usable rollback. The runner enforces this itself; no host cleaner is
+required.
+
+- **When:** only on an update that fully succeeded, after `release-state.json` is
+  saved and final verification passed (`phase=complete`, `outcome=updated`). The
+  new archive has already been verified, so at most two archives exist at any
+  moment. The disk preflight (`free > 2 × size(data) + 2 GiB`) still runs before
+  the backup and covers that peak.
+- **Never** on a failed update, `rolled-back`, `original-preserved`, or
+  `operator-required` recovery, `--check-only`, `--restart`, `--install`, or a
+  same-SHA run. A failed deploy never reduces the number of usable rollbacks.
+- **Archives:** removes `data.tar`, `data.tar.sha256` and `data.tar.partial`
+  from every direct child of `releases/` named `<YYYYMMDDTHHMMSS…Z>-<sha12>` or
+  `…Z-preflight`, except the directory of this run. Symlinked directories or
+  files, non-regular files, and other names (for example `runner-<sha>`) are
+  skipped without being followed. Receipts, logs, `image.json`,
+  `source.tar.gz`, `*.previous`, and Compose snapshots are kept, and so are the
+  release directories themselves. Nothing under `data/` is touched.
+- **Image tags:** runs `docker image rm <ref>` on each
+  `local/comfyui-image-frontend:<40-hex>` tag except the new candidate, the recorded
+  previous tag, and the tag or ID of the image being replaced. It never removes an
+  image used by any running or stopped container, anything named in `compose.yaml`
+  (`image:` or `io.service-portal.update.image`), the `runner_image` in
+  `release-config.json`, or any non-fingerprinted tag (`-edge:*`, `-release:*`,
+  `samus-restored-*`). A refused removal is kept and logged. The runner never runs
+  `docker image prune`, `docker system prune`, or a forced removal.
+- **Reporting:** each removed path, its byte count, and each removed tag go to the
+  restricted `deployment.log`. The receipt gets
+  `"retention": {"archives_removed": N, "bytes_freed": B, "images_removed": [...]}`.
+  Retention runs under the run's `.deployment-update.lock`. If retention fails,
+  the release still ends with `outcome=updated` and gets `"retention": {"error": "<type>"}`
+  (other files and tags are still processed). A retention failure never triggers
+  a rollback.
+
+Why keep a full archive and not an `assets/` manifest: automatic rollback restores
+only SQLite, but a started candidate can delete asset files during normal work
+(workflow-registry and queue-worker pruning call `AssetStore.delete_paths`).
+After a failed cutover, the full archive is the only copy of those files that
+matches the restored database, so a path/size/hash manifest could not recover them.
+
+### Activating retention on Samus
+
+Retention lives in the pinned **release runner**, not the app image. An ordinary
+app deploy does not activate it. After this change is on `main`, the operator
+builds `local/comfyui-image-frontend-release:<new_runner_sha>` from
+`deployment/production-runner/Dockerfile` (see the installation block above) and
+runs `update_production --install <new_runner_sha>`. That updates
+`release-config.json` and the portal update label. The next app deploy after
+that enforces single-rollback retention. It prunes older archives only if that
+deploy succeeds. Align the host-side retention enforcer to keep one archive.
 
 An unchanged release gets verified; the portal also restarts its existing app
 container. A preflight recovery restart satisfies that request. It does not build
@@ -189,7 +254,9 @@ rewrites external configuration.
    preserves the original app; cutover failure restores config/image/database but
    reports failure; concurrent jobs are rejected. Keep receipts and archives.
 6. Check source scratch cleanup and retained release provenance. Do not delete
-   restore records, old images, or backups as part of acceptance.
+   restore records, images, or backups by hand as part of acceptance. After a
+   successful update, only the newest release keeps `data.tar`, and the receipt's
+   `retention` field reports what the runner removed.
 
 SIGKILL, host loss, or Docker daemon failure can require manual recovery. Consult
 the [current runbook](production-deployment-agent.md), inspect the lock owner and

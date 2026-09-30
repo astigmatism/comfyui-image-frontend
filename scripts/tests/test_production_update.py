@@ -21,9 +21,10 @@ spec = importlib.util.spec_from_file_location(
 deploy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy)
 OLD, NEW, RUNNER = "a" * 40, "b" * 40, "f" * 40
+REAL_REMOVE_IMAGE_TAG = deploy.remove_image_tag
 
 
-class DeploymentTests(unittest.TestCase):
+class DeploymentHarness(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -69,6 +70,10 @@ class DeploymentTests(unittest.TestCase):
         self.edge = {"Id": "edge", "Image": "edge-image"}
         self.original = (self.root / "compose.yaml").read_bytes()
         self.events, self.scratch = [], []
+        # (container id, image id, configured image) and (image ref, image id).
+        self.containers, self.images = [], []
+        self.removed_images, self.refused_images = [], set()
+        self.seeded = set()
         self.failure_kind = None
         self.stopped = False
         self.live = copy.deepcopy(self.app)
@@ -100,6 +105,9 @@ class DeploymentTests(unittest.TestCase):
         )
         self.stack.enter_context(patch.object(deploy.backup, "restart", side_effect=self.start))
         self.stack.enter_context(
+            patch.object(deploy, "remove_image_tag", side_effect=self.remove_image)
+        )
+        self.stack.enter_context(
             patch.object(deploy, "restart_application", side_effect=self.restart)
         )
         self.verify = self.stack.enter_context(
@@ -122,7 +130,20 @@ class DeploymentTests(unittest.TestCase):
             return "edge" if args[-1] == deploy.EDGE else self.live["Id"]
         if args[:3] == ("docker", "image", "inspect"):
             return json.dumps([{"Config": {"Labels": {deploy.REVISION: RUNNER}}}])
+        if args[:3] == ("docker", "container", "ls"):
+            return "\n".join(c[0] for c in self.containers)
+        if args[:3] == ("docker", "container", "inspect"):
+            by_id = {c[0]: c for c in self.containers}
+            return "".join(f"{by_id[i][1]} {by_id[i][2]}\n" for i in args[5:])
+        if args[:3] == ("docker", "image", "ls"):
+            self.assertEqual(args[-1], "local/comfyui-image-frontend")
+            return "".join(f"{ref} {image_id}\n" for ref, image_id in self.images)
         raise AssertionError(args)
+
+    def remove_image(self, ref):
+        self.assertTrue((self.root / ".deployment-update.lock").is_dir())
+        self.removed_images.append(ref)
+        return ref not in self.refused_images
 
     def fetch(self, source, sha, deployed, _log):
         self.scratch.append(source.parent)
@@ -143,14 +164,16 @@ class DeploymentTests(unittest.TestCase):
         if self.failure_kind == "smoke":
             raise RuntimeError("candidate unavailable")
 
-    def archive(self, _app, data, archive, _timeout, _health, report, *, keep_stopped, log):
+    def archive(
+        self, _app, data, archive, _timeout, _health, report, *, keep_stopped, log, exclude
+    ):
         self.assertTrue(keep_stopped)
+        self.assertEqual(tuple(exclude), ("backups", "tmp"))
         self.assertEqual((self.root / "compose.yaml").read_bytes(), self.original)
         self.events.append("backup")
         if self.failure_kind == "backup":
             raise RuntimeError("backup unavailable; original restarted")
-        with tarfile.open(archive, "w") as stream:
-            stream.add(data, arcname=".")
+        subprocess.run(deploy.backup.archive_command(data, archive, exclude), check=True)
         self.stopped = True
         self.live["State"]["Running"] = False
         report("archiving")
@@ -197,7 +220,15 @@ class DeploymentTests(unittest.TestCase):
         self.live["State"]["StartedAt"] = "restarted"
 
     def receipt(self):
-        return json.loads(next((self.root / "releases").glob("*/receipt.json")).read_text())
+        return json.loads(self.run_directory().joinpath("receipt.json").read_text())
+
+    def run_directory(self):
+        (directory,) = [
+            p
+            for p in (self.root / "releases").iterdir()
+            if p.name not in self.seeded and (p / "receipt.json").is_file()
+        ]
+        return directory
 
     def assert_restored(self):
         self.assertEqual((self.root / "compose.yaml").read_bytes(), self.original)
@@ -205,6 +236,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(all(not p.exists() for p in self.scratch))
         self.assertEqual((self.data / "assets/preserved").read_text(), "precious asset")
 
+
+class DeploymentTests(DeploymentHarness):
     def test_success_builds_and_smokes_before_stopped_backup(self):
         deploy.deploy(self.root, NEW)
         self.assertEqual(self.events, ["fetch", "build", "smoke", "backup", "up-new"])
@@ -342,6 +375,364 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.receipt()["outcome"], "installed")
         self.assertEqual((self.root / "update_production_portal").stat().st_mode & 0o777, 0o755)
         self.assertFalse(list((self.root / "releases").glob("*/data.tar")))
+
+
+PRIOR_SHAS = ("1" * 40, "2" * 40, "3" * 40)
+METADATA = (
+    "receipt.json",
+    "deployment.log",
+    "image.json",
+    "source.tar.gz",
+    "compose.yaml.previous",
+    "compose.previous.json",
+    "compose.candidate.json",
+)
+
+
+class RetentionTests(DeploymentHarness):
+    """Exactly one rollback survives a successful update; nothing else ever prunes."""
+
+    def setUp(self):
+        super().setUp()
+        releases = self.root / "releases"
+        releases.mkdir(mode=0o700)
+        self.archive_sizes = {}
+        for index, sha in enumerate(PRIOR_SHAS):
+            directory = releases / f"2026092{index}T120000123456Z-{sha[:12]}"
+            directory.mkdir(mode=0o700)
+            for name in METADATA:
+                (directory / name).write_text("provenance " + name)
+            (directory / "data.tar").write_bytes(b"x" * (1000 * (index + 1)))
+            (directory / "data.tar.sha256").write_text("0" * 64 + "  data.tar\n")
+            self.seeded.add(directory.name)
+            self.archive_sizes[directory.name] = 1000 * (index + 1) + 75
+        partial = releases / "20260923T120000Z-preflight"
+        partial.mkdir(mode=0o700)
+        (partial / "data.tar.partial").write_bytes(b"p" * 500)
+        (partial / "deployment.log").write_text("preflight")
+        self.seeded.add(partial.name)
+        self.archive_sizes[partial.name] = 500
+        self.initial = set(self.seeded)
+        self.fingerprint = self.snapshot()
+        # Installed runner and a current release state with a recorded previous tag.
+        self.runner_image = "local/comfyui-image-frontend-release:" + RUNNER
+        (self.root / "release-config.json").write_text(
+            json.dumps({"runner_revision": RUNNER, "runner_image": self.runner_image})
+        )
+        self.before["services"][deploy.APP]["labels"]["io.service-portal.update.image"] = (
+            self.runner_image
+        )
+        (self.root / "compose.yaml").write_text(json.dumps(self.before))
+        self.original = (self.root / "compose.yaml").read_bytes()
+        (self.root / "release-state.json").write_text(
+            json.dumps(
+                {
+                    "previous": PRIOR_SHAS[2],
+                    "candidate": OLD,
+                    "image": self.before["services"][deploy.APP]["image"],
+                    "image_id": "old-image",
+                    "status": "healthy",
+                }
+            )
+        )
+
+    def snapshot(self):
+        releases = self.root / "releases"
+        return {
+            str(p.relative_to(releases)): p.read_bytes()
+            for p in releases.rglob("*")
+            if p.parent.name in self.initial and p.is_file()
+        }
+
+    def assert_untouched(self):
+        self.assertEqual(self.snapshot(), self.fingerprint)
+        self.assertEqual(self.removed_images, [])
+
+    @staticmethod
+    def app_tag(sha):
+        return "local/comfyui-image-frontend:" + sha
+
+    def test_success_keeps_only_the_new_rollback_archive(self):
+        deploy.deploy(self.root, NEW)
+        releases = self.root / "releases"
+        current = self.run_directory()
+        self.assertTrue((current / "data.tar").is_file())
+        self.assertTrue((current / "data.tar.sha256").is_file())
+        self.assertEqual(
+            sorted(str(p.relative_to(releases)) for p in releases.glob("*/data.tar*")),
+            [f"{current.name}/data.tar", f"{current.name}/data.tar.sha256"],
+        )
+        for name in self.initial:
+            directory = releases / name
+            if name.endswith("-preflight"):
+                self.assertEqual((directory / "deployment.log").read_text(), "preflight")
+                continue
+            for metadata in METADATA:
+                self.assertEqual((directory / metadata).read_text(), "provenance " + metadata)
+        receipt = self.receipt()
+        self.assertEqual((receipt["phase"], receipt["outcome"]), ("complete", "updated"))
+        self.assertEqual(receipt["retention"]["archives_removed"], 7)
+        self.assertEqual(receipt["retention"]["bytes_freed"], sum(self.archive_sizes.values()))
+        self.assertNotIn("error", receipt["retention"])
+        log = (current / "deployment.log").read_text()
+        for name in self.initial:
+            self.assertIn(f"removed releases/{name}/", log)
+        self.assertIn("data.tar (1000 bytes)", log)
+
+    def test_new_archive_excludes_operator_backups_and_scratch_and_verifies(self):
+        (self.data / "backups").mkdir()
+        (self.data / "backups/app.db.manual").write_text("old copy")
+        (self.data / "tmp").mkdir()
+        (self.data / "tmp/staged.zip").write_text("scratch")
+        (self.data / "assets/backups").mkdir()
+        (self.data / "assets/backups/kept").write_text("nested asset")
+        (self.data / "uploads").mkdir()
+        (self.data / "uploads/kept").write_text("upload")
+        deploy.deploy(self.root, NEW)
+        archive = self.run_directory() / "data.tar"
+        with tarfile.open(archive) as stream:
+            names = {m.name.removeprefix("./") for m in stream.getmembers()}
+        self.assertFalse({n for n in names if n.split("/")[0] in ("backups", "tmp")})
+        self.assertTrue({"app.db", "assets", "assets/backups/kept", "uploads/kept"} <= names)
+        self.assertEqual(len(deploy.backup.verify_archive(archive)), 64)
+        # Excluded directories stay in the live data directory.
+        self.assertTrue((self.data / "backups/app.db.manual").is_file())
+        self.assertTrue((self.data / "tmp/staged.zip").is_file())
+
+    def test_failed_cutover_with_rollback_prunes_nothing(self):
+        self.images = [(self.app_tag(PRIOR_SHAS[0]), "sha256:stale")]
+        for kind in ("up", "verify"):
+            with self.subTest(kind=kind):
+                self.failure_kind = kind
+                with self.assertRaises(RuntimeError):
+                    deploy.deploy(self.root, NEW)
+                self.assertEqual(self.receipt()["recovery"], "rolled-back")
+                self.assertNotIn("retention", self.receipt())
+                self.assert_untouched()
+                self.seeded.add(self.run_directory().name)
+
+    def test_unverified_rollback_prunes_nothing(self):
+        for kind in ("rollback", "stop-rollback"):
+            with self.subTest(kind=kind):
+                self.failure_kind = kind
+                with self.assertRaises(RuntimeError):
+                    deploy.deploy(self.root, NEW)
+                self.assertEqual(self.receipt()["recovery"], "operator-required")
+                self.assert_untouched()
+                self.seeded.add(self.run_directory().name)
+
+    def test_failure_before_cutover_prunes_nothing(self):
+        self.images = [(self.app_tag(PRIOR_SHAS[0]), "sha256:stale")]
+        for kind in ("build", "smoke", "backup"):
+            with self.subTest(kind=kind):
+                self.failure_kind = kind
+                with self.assertRaises((RuntimeError, subprocess.CalledProcessError)):
+                    deploy.deploy(self.root, NEW)
+                self.assertEqual(self.receipt()["recovery"], "original-preserved")
+                self.assert_untouched()
+                self.seeded.add(self.run_directory().name)
+
+    def test_archive_verification_failure_prunes_nothing(self):
+        with (
+            patch.object(deploy.backup, "verify_archive", side_effect=RuntimeError("bad")),
+            self.assertRaises(RuntimeError),
+        ):
+            deploy.deploy(self.root, NEW)
+        self.assertEqual(self.receipt()["recovery"], "original-preserved")
+        self.assert_untouched()
+
+    def test_non_update_modes_prune_nothing(self):
+        self.images = [(self.app_tag(PRIOR_SHAS[0]), "sha256:stale")]
+        real_read = Path.read_bytes
+
+        def read(path):
+            if path.parent == Path(deploy.__file__).parent and path.name.startswith(
+                "update_production"
+            ):
+                return b"#!/bin/sh\nexit 0\n"
+            return real_read(path)
+
+        runs = {
+            "check-only": lambda: deploy.deploy(self.root, check_only=True),
+            "restart": lambda: deploy.deploy(self.root, OLD, restart=True),
+            "same-sha": lambda: deploy.deploy(self.root, OLD),
+            "install": lambda: deploy.deploy(self.root, install=RUNNER),
+        }
+        with (
+            patch.object(Path, "read_bytes", read),
+            patch.object(deploy, "enforce_retention", wraps=deploy.enforce_retention) as retention,
+        ):
+            for mode, run in runs.items():
+                with self.subTest(mode=mode):
+                    run()
+                    self.assertNotIn("retention", self.receipt())
+                    self.assert_untouched()
+                    self.seeded.add(self.run_directory().name)
+        retention.assert_not_called()
+
+    def test_image_pruning_keeps_every_protected_reference(self):
+        # After save_state, the recorded previous is the release just replaced (OLD).
+        previous = self.app_tag(OLD)
+        stopped = self.app_tag("4" * 40)
+        running_by_id = self.app_tag("5" * 40)
+        compose_ref = self.app_tag("6" * 40)
+        label_ref = self.app_tag("7" * 40)
+        runner_ref = self.app_tag("8" * 40)
+        stale = [self.app_tag(PRIOR_SHAS[2]), self.app_tag("9" * 40), self.app_tag("c" * 40)]
+        self.before["services"][deploy.EDGE]["image"] = compose_ref
+        self.before["services"][deploy.EDGE]["labels"]["io.service-portal.update.image"] = label_ref
+        (self.root / "compose.yaml").write_text(json.dumps(self.before))
+        self.original = (self.root / "compose.yaml").read_bytes()
+        config = json.loads((self.root / "release-config.json").read_text())
+        config["runner_image"] = runner_ref
+        (self.root / "release-config.json").write_text(json.dumps(config))
+        self.containers = [
+            ("c-stopped", "sha256:stopped", stopped),
+            ("c-running", "sha256:running", "some-other-name:latest"),
+        ]
+        self.images = [
+            (self.app_tag(NEW), "sha256:new-by-ref"),
+            (previous, "sha256:previous"),
+            (stopped, "sha256:stopped"),
+            (running_by_id, "sha256:running"),
+            (compose_ref, "sha256:compose"),
+            (label_ref, "sha256:label"),
+            (runner_ref, "sha256:runner"),
+            ("local/comfyui-image-frontend:samus-restored-20260921", "old-image"),
+            ("local/comfyui-image-frontend:latest", "sha256:unpinned"),
+            ("local/comfyui-image-frontend:" + "d" * 12, "sha256:short"),
+            (stale[0], "sha256:stale0"),
+            (stale[1], "sha256:stale1"),
+            (stale[2], "sha256:stale2"),
+        ]
+        self.refused_images = {stale[2]}
+        deploy.deploy(self.root, NEW)
+        self.assertEqual(self.removed_images, stale)
+        retention = self.receipt()["retention"]
+        self.assertEqual(retention["images_removed"], stale[:2])
+        self.assertNotIn("error", retention)
+        self.assertEqual(self.receipt()["outcome"], "updated")
+        log = (self.run_directory() / "deployment.log").read_text()
+        self.assertIn(f"kept image tag {stale[2]}", log)
+
+    def test_candidate_and_live_image_ids_are_protected_under_any_tag(self):
+        self.images = [
+            (self.app_tag("9" * 40), "new-image"),
+            (self.app_tag("c" * 40), "old-image"),
+        ]
+        deploy.deploy(self.root, NEW)
+        self.assertEqual(self.removed_images, [])
+
+    def test_non_fingerprinted_repositories_are_never_removed(self):
+        self.images = [
+            ("local/comfyui-image-frontend-edge:" + "9" * 40, "sha256:edge"),
+            ("local/comfyui-image-frontend-release:" + "9" * 40, "sha256:release"),
+            ("other/comfyui-image-frontend:" + "9" * 40, "sha256:other"),
+            ("local/comfyui-image-frontend:" + "9" * 40 + "-dirty", "sha256:suffixed"),
+        ]
+        deploy.deploy(self.root, NEW)
+        self.assertEqual(self.removed_images, [])
+
+    def test_blanket_prune_is_never_invoked(self):
+        commands = []
+        real = deploy.subprocess.run
+
+        def record(command, *args, **kwargs):
+            if command[0] != "docker":
+                return real(command, *args, **kwargs)
+            commands.append(list(command))
+            return subprocess.CompletedProcess(command, 0)
+
+        self.stack.enter_context(
+            patch.object(deploy, "remove_image_tag", side_effect=REAL_REMOVE_IMAGE_TAG)
+        )
+        self.images = [(self.app_tag("9" * 40), "sha256:stale")]
+        with patch.object(deploy.subprocess, "run", side_effect=record):
+            deploy.deploy(self.root, NEW)
+        self.assertIn(["docker", "image", "rm", self.app_tag("9" * 40)], commands)
+        self.assertFalse([c for c in commands if "prune" in c or "--force" in c or "-f" in c[:4]])
+
+    def test_symlinked_and_foreign_entries_are_skipped(self):
+        releases = self.root / "releases"
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (outside / "data.tar").write_text("not ours")
+        linked = releases / "20260924T120000Z-eeeeeeeeeeee"
+        linked.symlink_to(outside, target_is_directory=True)
+        foreign = releases / ("runner-" + RUNNER)
+        foreign.mkdir()
+        (foreign / "data.tar").write_text("runner artifact")
+        manual = releases / "manual-backup"
+        manual.mkdir()
+        (manual / "data.tar").write_text("operator backup")
+        uppercase = releases / "20260924T120000Z-EEEEEEEEEEEE"
+        uppercase.mkdir()
+        (uppercase / "data.tar").write_text("foreign name")
+        real = releases / "20260925T120000Z-ffffffffffff"
+        real.mkdir()
+        target = Path(self.temp.name) / "target.tar"
+        target.write_text("symlinked archive target")
+        (real / "data.tar").symlink_to(target)
+        (real / "data.tar.sha256").mkdir()
+        deploy.deploy(self.root, NEW)
+        self.assertEqual((outside / "data.tar").read_text(), "not ours")
+        self.assertEqual((foreign / "data.tar").read_text(), "runner artifact")
+        self.assertEqual((manual / "data.tar").read_text(), "operator backup")
+        self.assertEqual((uppercase / "data.tar").read_text(), "foreign name")
+        self.assertTrue((real / "data.tar").is_symlink())
+        self.assertTrue((real / "data.tar.sha256").is_dir())
+        self.assertEqual(target.read_text(), "symlinked archive target")
+        self.assertTrue(linked.is_symlink())
+        receipt = self.receipt()
+        self.assertEqual(receipt["retention"]["archives_removed"], 7)
+        self.assertNotIn("error", receipt["retention"])
+
+    def test_pruning_exception_still_reports_updated(self):
+        real_unlink = os.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path == "data.tar" and "dir_fd" in kwargs:
+                raise PermissionError("unlinkable")
+            return real_unlink(path, *args, **kwargs)
+
+        self.images = [(self.app_tag("9" * 40), "sha256:stale")]
+        with patch.object(deploy.os, "unlink", side_effect=unlink):
+            deploy.deploy(self.root, NEW)
+        receipt = self.receipt()
+        self.assertEqual((receipt["phase"], receipt["outcome"]), ("complete", "updated"))
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertNotIn(receipt["recovery"], ("rolled-back", "operator-required"))
+        self.assertEqual(receipt["retention"]["error"], "PermissionError")
+        # Remaining archive files and image tags are still processed.
+        self.assertEqual(receipt["retention"]["archives_removed"], 4)
+        self.assertEqual(receipt["retention"]["images_removed"], [self.app_tag("9" * 40)])
+        self.assertNotIn("up-old", self.events)
+        state = json.loads((self.root / "release-state.json").read_text())
+        self.assertEqual(state["candidate"], NEW)
+        self.assertFalse((self.root / ".deployment-update.lock").exists())
+
+    def test_unexpected_retention_failure_still_reports_updated(self):
+        with patch.object(deploy, "prune_images", side_effect=ValueError("bad docker output")):
+            deploy.deploy(self.root, NEW)
+        receipt = self.receipt()
+        self.assertEqual((receipt["outcome"], receipt["exit_code"]), ("updated", 0))
+        self.assertEqual(receipt["retention"]["error"], "ValueError")
+        self.assertEqual(receipt["retention"]["archives_removed"], 7)
+        self.assertNotIn("up-old", self.events)
+
+    def test_pruner_refuses_without_this_runs_lock(self):
+        summary = {"archives_removed": 0, "bytes_freed": 0, "images_removed": []}
+        keep = self.root / "releases" / "20260930T000000Z-bbbbbbbbbbbb"
+        with self.assertRaises((RuntimeError, OSError)):
+            deploy.prune_archives(self.root, keep, io.StringIO(), summary)
+        lock = self.root / ".deployment-update.lock"
+        lock.mkdir()
+        (lock / "owner.json").write_text(json.dumps({"pid": os.getpid() + 1}))
+        with self.assertRaises(RuntimeError):
+            deploy.prune_archives(self.root, keep, io.StringIO(), summary)
+        with self.assertRaises(RuntimeError):
+            deploy.prune_images(self.root, set(), set(), io.StringIO(), summary)
+        self.assert_untouched()
 
 
 class ReleaseSourceTests(unittest.TestCase):

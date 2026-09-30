@@ -14,6 +14,7 @@ import secrets
 import shutil
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import tarfile
@@ -585,6 +586,176 @@ def build_image(source, sha, directory, log):
     return image_id
 
 
+IMAGE_REPOSITORY = "local/comfyui-image-frontend"
+FINGERPRINTED_IMAGE = re.compile(re.escape(IMAGE_REPOSITORY) + r":[0-9a-f]{40}")
+RELEASE_DIRECTORY = re.compile(r"\d{8}T\d{6}\d*Z-(?:[0-9a-f]{12}|preflight)")
+ROLLBACK_ARCHIVES = ("data.tar", "data.tar.sha256", "data.tar.partial")
+# Operator one-off backups and request scratch space are not application state.
+ARCHIVE_EXCLUDE = ("backups", "tmp")
+
+
+def retention_log(log, message):
+    with suppress(OSError):
+        log.write("retention: " + message + "\n")
+        log.flush()
+
+
+def require_held_lock(root):
+    owner = root / ".deployment-update.lock" / "owner.json"
+    require(
+        not owner.parent.is_symlink() and json.loads(owner.read_text()).get("pid") == os.getpid(),
+        "Retention requires the deployment lock held by this run",
+    )
+
+
+def prune_archives(root, keep, log, summary):
+    """Remove rollback archives from every release directory except ``keep``.
+
+    Only direct, non-symlink children of ``releases/`` with a release name are
+    considered; only regular archive files inside them are unlinked. Provenance
+    files and the directories themselves are always kept.
+    """
+    require_held_lock(root)
+    releases = root / "releases"
+    require(not releases.is_symlink() and releases.is_dir(), "Unexpected releases directory")
+    require(keep.parent == releases and keep.name, "Kept release must be a direct child")
+    first_error = None
+    with os.scandir(releases) as entries:
+        children = sorted(entries, key=lambda e: e.name)
+    for entry in children:
+        if entry.name == keep.name:
+            continue
+        if not RELEASE_DIRECTORY.fullmatch(entry.name):
+            retention_log(log, f"skipped foreign entry releases/{entry.name}")
+            continue
+        try:
+            fd = os.open(entry.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            # A symlink (ELOOP/ENOTDIR) or a non-directory is never followed.
+            retention_log(log, f"skipped non-directory releases/{entry.name}")
+            continue
+        try:
+            for name in ROLLBACK_ARCHIVES:
+                relative = f"releases/{entry.name}/{name}"
+                try:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    retention_log(log, f"skipped non-regular {relative}")
+                    continue
+                try:
+                    os.unlink(name, dir_fd=fd)
+                except OSError as error:
+                    first_error = first_error or error
+                    retention_log(log, f"could not remove {relative}: {type(error).__name__}")
+                    continue
+                summary["archives_removed"] += 1
+                summary["bytes_freed"] += info.st_size
+                retention_log(log, f"removed {relative} ({info.st_size} bytes)")
+        finally:
+            os.close(fd)
+    if first_error is not None:
+        raise first_error
+
+
+def protected_image_references(root, keep):
+    protected = set(keep)
+    compose = json.loads((root / "compose.yaml").read_text())
+    for service in compose.get("services", {}).values():
+        protected.add(service.get("image"))
+        labels = service.get("labels") or {}
+        if isinstance(labels, dict):
+            protected.add(labels.get("io.service-portal.update.image"))
+    config = json.loads((root / "release-config.json").read_text())
+    protected.add(config.get("runner_image"))
+    state_path = root / "release-state.json"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text())
+        protected.add(state.get("image"))
+        if re.fullmatch(r"[0-9a-f]{40}", str(state.get("previous", ""))):
+            protected.add(IMAGE_REPOSITORY + ":" + state["previous"])
+    return {ref for ref in protected if ref}
+
+
+def prune_images(root, keep_refs, keep_ids, log, summary):
+    """Untag superseded fingerprinted app images; every protection is computed first."""
+    require_held_lock(root)
+    protected_refs = protected_image_references(root, keep_refs)
+    protected_ids = {i for i in keep_ids if i}
+    containers = output("docker", "container", "ls", "--all", "--quiet", "--no-trunc").split()
+    if containers:
+        described = output(
+            "docker",
+            "container",
+            "inspect",
+            "--format",
+            "{{.Image}} {{.Config.Image}}",
+            *containers,
+        )
+        for line in described.splitlines():
+            fields = line.split()
+            if fields:
+                protected_ids.add(fields[0])
+                protected_refs.update(fields[1:])
+    listed = output(
+        "docker",
+        "image",
+        "ls",
+        "--no-trunc",
+        "--format",
+        "{{.Repository}}:{{.Tag}} {{.ID}}",
+        IMAGE_REPOSITORY,
+    )
+    for line in listed.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or not FINGERPRINTED_IMAGE.fullmatch(fields[0]):
+            continue
+        ref, image_id = fields
+        if ref in protected_refs or image_id in protected_ids:
+            continue
+        # Plain per-tag removal: Docker refuses in-use images, and a refusal is kept.
+        if remove_image_tag(ref):
+            summary["images_removed"].append(ref)
+            retention_log(log, f"removed image tag {ref}")
+        else:
+            retention_log(log, f"kept image tag {ref}: docker image rm unsuccessful")
+
+
+def remove_image_tag(ref):
+    """One ``docker image rm <ref>``; never a blanket prune, never forced."""
+    try:
+        removed = subprocess.run(
+            ["docker", "image", "rm", ref],
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return removed.returncode == 0
+
+
+def enforce_retention(root, directory, keep_refs, keep_ids, log):
+    """Keep exactly one rollback; never raises, so success can never become failure."""
+    summary = {"archives_removed": 0, "bytes_freed": 0, "images_removed": []}
+    for step in (
+        lambda: prune_archives(root, directory, log, summary),
+        lambda: prune_images(root, keep_refs, keep_ids, log, summary),
+    ):
+        try:
+            step()
+        except Exception as error:
+            summary.setdefault("error", type(error).__name__)
+            retention_log(log, f"incomplete: {type(error).__name__}")
+    retention_log(
+        log,
+        f"summary archives_removed={summary['archives_removed']} "
+        f"bytes_freed={summary['bytes_freed']} images_removed={len(summary['images_removed'])}",
+    )
+    return summary
+
+
 def save_state(root, previous, sha, image, image_id):
     atomic_write(
         root / "release-state.json",
@@ -698,6 +869,7 @@ def transaction(root, sha, install, before, app, edge, deployed, source, directo
                 lambda phase: report("backup-" + phase),
                 keep_stopped=True,
                 log=log,
+                exclude=ARCHIVE_EXCLUDE,
             )
             stopped = True
             report("backup-verifying")
@@ -729,12 +901,25 @@ def transaction(root, sha, install, before, app, edge, deployed, source, directo
                 "Portal labels were not published",
             )
         save_state(root, deployed, sha, after["services"][APP]["image"], image_id)
+        extra = {}
+        if not install:
+            # Only now, with the new archive verified and the cutover verified and
+            # recorded, is every older archive/tag unusable for rollback. This never
+            # raises: a retention problem must not fail or roll back this release.
+            extra["retention"] = enforce_retention(
+                root,
+                directory,
+                {after["services"][APP]["image"], app["Config"]["Image"]},
+                {image_id, app["Image"]},
+                log,
+            )
         report(
             "complete",
             exit_code=0,
             outcome="installed" if install else "updated",
             target_sha=sha,
             image_id=image_id,
+            **extra,
             **verified,
         )
     except Exception:

@@ -1,4 +1,5 @@
 """Recovery-path tests; no Docker daemon or production data is used."""
+# ruff: noqa: S603
 
 import importlib.util
 import json
@@ -162,6 +163,40 @@ class ArchiveTests(unittest.TestCase):
                 pass
             with self.assertRaisesRegex(RuntimeError, "Missing database"):
                 backup.verify_archive(archive)
+
+    def test_top_level_exclusions_are_anchored_and_archive_still_verifies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp) / "data"
+            for path in ("assets/tmp", "assets/backups", "backups/old", "tmp/scratch"):
+                (data / path).mkdir(parents=True)
+                (data / path / "file").write_text(path)
+            db = sqlite3.connect(data / "app.db")
+            db.execute("CREATE TABLE sample (value TEXT)")
+            db.commit()
+            db.close()
+            (data / "tmpfile").write_text("top-level file with a tmp prefix")
+            archive = Path(temp) / "data.tar"
+            subprocess.run(
+                backup.archive_command(data, archive, ("backups", "tmp")),
+                check=True,
+                capture_output=True,
+            )
+            with tarfile.open(archive) as stream:
+                names = {m.name.removeprefix("./") for m in stream.getmembers()}
+            self.assertFalse({n for n in names if n.split("/")[0] in ("backups", "tmp")})
+            self.assertTrue(
+                {"app.db", "tmpfile", "assets/tmp/file", "assets/backups/file"} <= names
+            )
+            self.assertEqual(len(backup.verify_archive(archive)), 64)
+
+    def test_archive_exclusions_must_be_top_level_names(self):
+        for name in ("", ".", "..", "assets/tmp"):
+            with self.subTest(name=name), self.assertRaises(RuntimeError):
+                backup.archive_command(Path("/data"), Path("/a.tar"), (name,))
+        self.assertEqual(
+            backup.archive_command(Path("/data"), Path("/a.tar")),
+            ["tar", "-C", "/data", "-cf", "/a.tar", "."],
+        )
 
 
 class HostGateTests(unittest.TestCase):

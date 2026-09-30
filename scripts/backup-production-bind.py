@@ -234,8 +234,29 @@ def restart(app_id, timeout):
     raise RuntimeError("Original app was started but did not become healthy; inspect immediately")
 
 
+def archive_command(source, archive, exclude=()):
+    """GNU tar command; ``exclude`` names top-level entries of ``source`` only."""
+    for name in exclude:
+        require(
+            name and "/" not in name and name not in (".", ".."),
+            "Archive exclusions must be top-level names",
+        )
+    # --anchored keeps e.g. assets/tmp or assets/backups inside the archive.
+    options = ["--anchored", *(f"--exclude=./{name}" for name in exclude)] if exclude else []
+    return ["tar", "-C", str(source), "-cf", str(archive), *options, "."]
+
+
 def stopped_archive(
-    app_id, source, archive, timeout, health_timeout, report, *, keep_stopped=False, log=None
+    app_id,
+    source,
+    archive,
+    timeout,
+    health_timeout,
+    report,
+    *,
+    keep_stopped=False,
+    log=None,
+    exclude=(),
 ):
     """The restart is part of the same host process, including stop/tar failures."""
     complete = False
@@ -251,7 +272,7 @@ def stopped_archive(
         require(not inspect(app_id)["State"]["Running"], "App did not stop; refusing live archive")
         report("archiving")
         subprocess.run(
-            ["tar", "-C", str(source), "-cf", str(archive), "."],
+            archive_command(source, archive, exclude),
             check=True,
             timeout=timeout,
             stdout=log or subprocess.DEVNULL,

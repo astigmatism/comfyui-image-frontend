@@ -55,13 +55,25 @@ stops only the app for a consistent backup and app-only cutover. It preserves th
 Compose project, runtime environment, ComfyUI identity/network, external TLS,
 `Caddyfile`, deployment `data/`, uploads/assets, restore records, edge, ComfyUI,
 and portal. Do not modify application source on the host, create a permanent
-checkout, run production tests, reconfigure SSH, rotate credentials, or prune.
+checkout, run production tests, reconfigure SSH, rotate credentials, or prune by
+hand. The runner's own retention step is the only cleanup (see below).
 
 Artifacts live in restricted `releases/<timestamp>-<sha-prefix>/`: source archive,
 image receipt, previous Compose/operational files, data archive and checksum when
 cutover is needed, `deployment.log`, and `receipt.json`. Preflight failures use a
 `<timestamp>-preflight` directory. Logs/configuration may contain private data;
-report only sanitized phase, SHA, image ID, outcome, and job reference.
+report only sanitized phase, SHA, image ID, outcome, and job reference. The data
+archive leaves out the operator-made `data/backups/` and scratch `data/tmp/`.
+
+**Retention rule:** one pre-upgrade data archive (the rollback to the prior
+release) and the current + prior app image tags; older archives and tags are
+removed automatically after a successful update. Only an update that ends with
+`outcome=updated` prunes. Failed, rolled-back, check-only, restart, install, and
+same-SHA runs never delete anything. Provenance files and release directories
+are always kept. Report the receipt's `retention` summary. A `retention.error`
+does not make the release a failure; tell the operator. Details and the
+activation step (runner reinstall) are in
+[Service Portal installation](production-service-portal.md#rollback-retention-exactly-one-rollback).
 
 Before cutover, a failed preparation leaves the original app selected; backup
 errors attempt to restart it. After cutover, rollback stops the candidate, retains
