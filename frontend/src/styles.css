@@ -5287,9 +5287,11 @@ tr:last-child td {
   height: min(650px, calc(100dvh - 36px));
 }
 
+/* An open modal dialog is fixed with inset: 0, so height: auto would stretch
+   it to max-height; fit-content shrinks it to the confirmation copy. */
 .gallery-delete-dialog {
   width: min(510px, calc(100vw - 36px));
-  height: auto;
+  height: fit-content;
   max-height: calc(100dvh - 36px);
 }
 
@@ -5357,6 +5359,21 @@ tr:last-child td {
 @media (max-width: 800px) {
   .gallery-bulk-dialog .dialog-actions {
     flex-wrap: wrap;
+  }
+
+  /* Keep the short delete confirmation a centered card instead of the
+     full-screen sheet used by the larger dialogs. */
+  .gallery-delete-dialog {
+    width: calc(100vw - 24px);
+    height: fit-content;
+    max-width: none;
+    max-height: calc(100dvh - 24px);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+  }
+
+  .gallery-delete-dialog .dialog-frame {
+    max-height: calc(100dvh - 26px);
   }
 
   .gallery-selection-mode .topbar {

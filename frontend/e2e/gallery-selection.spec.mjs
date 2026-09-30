@@ -128,6 +128,15 @@ test("move and copy share the destination picker and preserve selection on a rej
   const deletion = page.locator("#gallery-delete-dialog");
   await expect(deletion).toContainText("5 generations");
   await expect(deletion).toContainText("including nested folders");
+  // The confirmation hugs its content instead of stretching to max-height, on desktop and phones.
+  const deleteSize = () => deletion.evaluate((dialog) => ({ dialog: dialog.getBoundingClientRect(), frame: dialog.querySelector(".dialog-frame").getBoundingClientRect().height, viewportWidth: innerWidth, viewportHeight: innerHeight }));
+  for (const viewport of [null, { width: 390, height: 844 }]) {
+    if (viewport) await page.setViewportSize(viewport);
+    const size = await deleteSize();
+    expect(Math.abs(size.dialog.height - size.frame)).toBeLessThanOrEqual(2);
+    expect(size.dialog.height).toBeLessThan(size.viewportHeight / 2);
+    expect(size.dialog.width).toBeLessThan(size.viewportWidth);
+  }
 });
 
 test("bulk favorites preserve existing favorites and selection for a ZIP download", async ({ page }) => {
