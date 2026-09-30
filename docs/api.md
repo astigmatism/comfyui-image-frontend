@@ -550,8 +550,10 @@ and `collection_ids` with status 200.
 
 `POST /api/gallery/download` returns `application/zip` with attachment filename
 `gallery-selection.zip`. The archive contains all currently stored image outputs, including every
-batch image and nested folder contents, with overlapping selections included once. Folder paths
-use sanitized names and IDs; generation and artifact IDs prevent filename collisions. Cards without
+batch image and nested folder contents, with overlapping selections included once. Every entry is a
+flat `image-<artifact-id><ext>` file at the archive root: the archive holds no directories, so
+extracting it places the images directly in the chosen location regardless of the folders or
+generations they came from. The artifact ID prevents filename collisions. Cards without
 images contribute no files; a selection with no images returns 409 `download_empty`. Active
 generations contribute only images already available. An image whose stored file is missing is
 skipped; when nothing remains the response is 409 `download_empty`.

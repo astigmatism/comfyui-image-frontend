@@ -134,10 +134,11 @@ def test_bulk_download_includes_nested_batches_once_and_cleans_up(
                 assert archive.read(name) == client.get(artifact["content_url"]).content
                 assert not PurePosixPath(name).is_absolute()
                 assert ".." not in PurePosixPath(name).parts
-            assert any(
-                name.startswith(f"Studies-{parent['id']}/Winter-{child['id']}/") for name in names
-            )
-            assert any(name.startswith(f"generation-{outside['id']}/") for name in names)
+                # Extraction drops every image straight into the chosen directory: no
+                # folder, generation, or any other directory component survives, even
+                # for images selected through nested folders.
+                assert name == f"image-{artifact['id']}{PurePosixPath(name).suffix}"
+            assert all("/" not in name and "\\" not in name for name in names)
         assert not list(staging.iterdir())
 
         # A batched manifest must not drop or duplicate rows when the selection spans
@@ -222,7 +223,7 @@ def test_download_tolerates_missing_artifact_files(settings_factory, fake_state)
         kept = create_generation(client, "kept image")
         pruned = create_generation(client, "pruned image")
         kept_detail = wait_for_status(client, kept["id"], "succeeded")
-        wait_for_status(client, pruned["id"], "succeeded")
+        pruned_detail = wait_for_status(client, pruned["id"], "succeeded")
         headers = {"X-CSRF-Token": csrf(client)}
         payload = {"generation_ids": [kept["id"], pruned["id"]]}
         with container.db.session_factory() as session:
@@ -240,8 +241,19 @@ def test_download_tolerates_missing_artifact_files(settings_factory, fake_state)
         assert response.status_code == 200, response.text
         with ZipFile(BytesIO(response.content)) as archive:
             names = archive.namelist()
-        assert all(pruned["id"] not in name for name in names)
-        assert any(kept["id"] in name for name in names)
+        images = {
+            detail["id"]: [item["id"] for item in detail["artifacts"] if item["kind"] == "image"]
+            for detail in (kept_detail, pruned_detail)
+        }
+        # Flat names carry the artifact identifier only, so the pruned generation's
+        # images are absent and the kept generation's images are all at the root.
+        assert {PurePosixPath(name).stem for name in names} == {
+            f"image-{identifier}" for identifier in images[kept["id"]]
+        }
+        assert all("/" not in name for name in names)
+        assert not {PurePosixPath(name).stem for name in names} & {
+            f"image-{identifier}" for identifier in images[pruned["id"]]
+        }
         assert len(names) == kept_detail["image_count"]
 
         # When nothing survives, the selection reports the same empty result as before.

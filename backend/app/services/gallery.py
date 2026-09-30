@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import errno
 import logging
-import re
 import shutil
 import time
 from collections.abc import Iterable, Iterator
@@ -326,32 +325,14 @@ class GalleryService:
                 "No images are available to download in this selection.",
                 status_code=409,
             )
-        folders = {
-            item.id: item
-            for batch in _batched(chosen.subtree_ids)
-            for item in session.scalars(
-                select(Collection).where(Collection.owner_id == owner_id, Collection.id.in_(batch))
-            )
-        }
-        folder_paths: dict[str, Path] = {}
-        for root in chosen.roots:
-            for level in chosen.levels[root.id]:
-                for item_id in level:
-                    folder = folders[item_id]
-                    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", folder.name)[:80].strip(" .")
-                    folder_paths[item_id] = folder_paths.get(folder.parent_id or "", Path()) / (
-                        f"{name or 'Collection'}-{folder.id}"
-                    )
         entries: list[tuple[str, str]] = []
         total_bytes = 0
         for artifact in artifacts:
-            generation = sources[artifact.generation_id]
-            directory = folder_paths.get(generation.collection_id or "", Path())
+            # Every image sits at the archive root so extracting the ZIP yields a plain
+            # set of files instead of one directory per folder and generation. The
+            # artifact's own identifier already makes each flat name unique.
             suffix = Path(artifact.storage_path).suffix
-            archive_name = (
-                directory / f"generation-{generation.id}" / f"image-{artifact.id}{suffix}"
-            )
-            entries.append((artifact.storage_path, archive_name.as_posix()))
+            entries.append((artifact.storage_path, f"image-{artifact.id}{suffix}"))
             total_bytes += max(0, int(artifact.byte_size or 0))
         return entries, total_bytes
 

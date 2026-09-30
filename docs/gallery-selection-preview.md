@@ -79,7 +79,10 @@ selected or while either Favorites filter hides folder tiles.
    remain set, and the action is disabled when every selected card is already a favorite.
 6. Choose **Download selection** (the down arrow) to save one ZIP containing every available image
    from selected cards and folders, including batches and nested folders. Overlapping selections
-   appear once. Both Favorites and Download keep the selection so you can use another action next,
+   appear once. The ZIP extracts as a flat set of image files with no folders inside it: contents of
+   selected folders and of image batches are all included, but each image lands directly in the
+   chosen location rather than inside its own directory. Both Favorites and Download keep the
+   selection so you can use another action next,
    except in the unfavorited-only state, where favoriting empties that view of the selected cards and
    clears the selection with them.
    The archive is assembled under `CIF_TEMP_DIR` (by default `$CIF_DATA_DIR/tmp`, on the data

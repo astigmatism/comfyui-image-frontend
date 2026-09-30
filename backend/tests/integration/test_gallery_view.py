@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import PurePosixPath
 from zipfile import ZipFile
 
 from app.main import create_app
@@ -271,7 +272,7 @@ def test_scoped_download_respects_exclusions_and_selected_folder_contents(
         inside = create_generation(client, "download inside")
         outside = create_generation(client, "download excluded")
         inside_detail = wait_for_status(client, inside["id"], "succeeded")
-        wait_for_status(client, outside["id"], "succeeded")
+        outside_detail = wait_for_status(client, outside["id"], "succeeded")
         assert transfer(client, "move", [inside["id"]], destination=parent["id"]).status_code == 200
         headers = {"X-CSRF-Token": csrf(client)}
         assert (
@@ -293,10 +294,21 @@ def test_scoped_download_respects_exclusions_and_selected_folder_contents(
             },
         )
         assert response.status_code == 200, response.text
+        images = {
+            detail["id"]: {
+                f"image-{item['id']}" for item in detail["artifacts"] if item["kind"] == "image"
+            }
+            for detail in (inside_detail, outside_detail)
+        }
         with ZipFile(BytesIO(response.content)) as archive:
             names = archive.namelist()
             assert len(names) == inside_detail["image_count"]
-            assert all(inside["id"] in name and outside["id"] not in name for name in names)
+            # The selected folder's images arrive flat at the archive root; the
+            # excluded generation contributes nothing.
+            assert all("/" not in name for name in names)
+            stems = {PurePosixPath(name).stem for name in names}
+            assert stems == images[inside["id"]]
+            assert not stems & images[outside["id"]]
         # Folder tiles exist in the unfiltered view only, so a folder can never be
         # part of a filtered view's snapshot, favorited or not.
         for scope in ({"favorites_only": True}, {"unfavorited_only": True}):
