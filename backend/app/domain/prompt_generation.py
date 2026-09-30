@@ -1,44 +1,108 @@
-"""Text output extraction and the pinned StableLlama seed compatibility adapter."""
+"""Text output extraction and the structural dataset-seed compatibility adapter."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from ..errors import AppError
 from .compiler import MAX_PUBLIC_STRING_LENGTH, CompileResult, WorkflowCompiler
 from .publication import sha256_json
 
-STABLELLAMA_PUBLICATION = "b11b9ce9-53f0-44f1-8e8d-296fc54c5949"
-STABLELLAMA_HASHES = (
-    "0fffb74f0331a8918b97129c1d3c91625bff5d16bec39979dffe8b4f9c4f53e3",
-    "84843b65f2c0847ae4ff5ef644d56559800bce7278ed47a27968ceffb01f3a6c",
-    "e5ae15f00a6ae252226364f71afcbfe6657ccc888644ad91461c069acb9341f5",
-)
+# Recognized sampling nodes: class_type -> (input name, inclusive minimum, inclusive
+# maximum). ComfyUI rejects a value above the node's own declared maximum, so the
+# bounds belong to the recognition entry. HFDatasetShuffle declares a signed 32-bit,
+# nonnegative INT input.
+DATASET_SEED_NODES: dict[str, tuple[str, int, int]] = {
+    "HFDatasetShuffle": ("seed", 0, 2**31 - 1),
+}
+# Retained key name: automatic-batch retirement reads this seed on restart.
+LEGACY_DATASET_SEED_KEY = "stablellama.dataset_seed"
+
+
+def _declared_seed_bindings(contract: Any) -> set[tuple[str, str]]:
+    """Return the (node ID, input) pairs a published seed parameter already owns."""
+
+    bound: set[tuple[str, str]] = set()
+    declarations = contract.get("inputs") if isinstance(contract, Mapping) else None
+    if not isinstance(declarations, list):
+        return bound
+    for declaration in declarations:
+        if not isinstance(declaration, Mapping) or declaration.get("type") != "seed":
+            continue
+        bindings = declaration.get("bindings")
+        if not isinstance(bindings, list):
+            continue
+        for binding in bindings:
+            if isinstance(binding, Mapping):
+                bound.add((str(binding.get("node_id")), str(binding.get("input"))))
+    return bound
+
+
+def _dataset_seed_nodes(
+    graph: Mapping[str, Any],
+) -> Iterator[tuple[str, str, dict[str, Any], str, int, int]]:
+    """Yield recognized sampling nodes in a stable, numeric-aware node ID order."""
+
+    for node_id in sorted(graph, key=lambda value: (len(value), value)):
+        node = graph[node_id]
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        inputs = node.get("inputs")
+        if not isinstance(class_type, str) or not isinstance(inputs, dict):
+            continue
+        recognized = DATASET_SEED_NODES.get(class_type)
+        if recognized is None:
+            continue
+        input_name, minimum, maximum = recognized
+        yield node_id, class_type, inputs, input_name, minimum, maximum
 
 
 def adapt_seed(profile: Any, compiled: CompileResult, compiler: WorkflowCompiler) -> str:
-    candidate = str(getattr(profile, "source_id", "")).endswith(
-        "/StableLlama Erotic Prompts v1.json"
-    )
-    if profile.publication_id == STABLELLAMA_PUBLICATION or candidate:
-        node = compiled.compiled_graph.get("909", {})
-        if (
-            profile.publication_id != STABLELLAMA_PUBLICATION
-            or (profile.ui_graph_sha256, profile.api_graph_sha256, profile.manifest_sha256)
-            != STABLELLAMA_HASHES
-            or node.get("class_type") != "HFDatasetShuffle"
-            or type(node.get("inputs", {}).get("seed")) is not int
-        ):
+    """Give recognized sampling nodes a fresh request-local seed, then hash the graph.
+
+    Recognition is structural. Publication identity (its ID, revision hashes and
+    filename) is deliberately not a gate: ComfyUI mints a new publication ID on every
+    publish, so an identity pin locks the source out permanently once it is published
+    again. A published seed parameter owns its own binding and is never patched here.
+    """
+
+    bound = _declared_seed_bindings(getattr(profile, "resolved_contract_json", None))
+    patched = 0
+    for node_id, class_type, inputs, input_name, minimum, maximum in _dataset_seed_nodes(
+        compiled.compiled_graph
+    ):
+        if (node_id, input_name) in bound:
+            continue
+        current = inputs.get(input_name)
+        if isinstance(current, bool) or not isinstance(current, int):
+            # A converted widget carries a link, not a value; it cannot be patched
+            # without changing the published graph, so the request fails visibly
+            # instead of silently repeating one cached sample.
             raise AppError(
                 "prompt_adapter_mismatch",
-                "The prompt source changed; its seed adapter must be reviewed.",
+                f"This prompt source cannot receive a fresh sampling seed. "
+                f"Publish node {node_id} ({class_type}) with an ordinary seed parameter.",
                 status_code=409,
+                details={
+                    "node_id": node_id,
+                    "class_type": class_type,
+                    "input": input_name,
+                    "reason": "seed_input_not_literal",
+                },
             )
-        # HFDatasetShuffle declares a signed 32-bit, nonnegative INT input.
-        seed = compiler.seed_resolver(0, 2**31 - 1)
-        node["inputs"]["seed"] = seed
-        compiled.resolved_seeds["stablellama.dataset_seed"] = str(seed)
+        seed = compiler.seed_resolver(minimum, maximum)
+        if isinstance(seed, bool) or not isinstance(seed, int) or not minimum <= seed <= maximum:
+            raise RuntimeError("seed resolver returned a value outside its requested range")
+        inputs[input_name] = seed
+        key = (
+            LEGACY_DATASET_SEED_KEY
+            if patched == 0
+            else f"{class_type}.{node_id}.{input_name}".lower()
+        )
+        compiled.resolved_seeds[key] = str(seed)
+        patched += 1
     return sha256_json(compiled.compiled_graph)
 
 

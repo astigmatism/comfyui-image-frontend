@@ -44,6 +44,11 @@ ComfyUI user on both instances. Compare publication IDs and all three revision
 hashes after refreshing. Do not independently republish an unchanged replica:
 that creates a different publication revision. Editable-only drift retains the
 accepted graph; API or manifest drift can produce a mismatched executable revision.
+Republishing a prompt source does not disable prompt generation: its seed adapter
+recognizes sampling nodes structurally, not by publication ID, revision hash or
+node ID. The revision check between the browser's selected revision and the
+assigned runtime's current publication still applies, so replicas must stay
+byte-identical.
 
 If the app reports a missing or mismatched text publication, re-copy the complete
 bundle to the assigned runtime and refresh the catalogs. It will not reroute the

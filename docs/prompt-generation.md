@@ -33,15 +33,15 @@ A text publication uses a connected `CIFPublishText` publisher, a valid `text` b
 
 Only the declared final publisher's matching ID, instance UUID, kind, role, and cardinality are accepted from ComfyUI history. Its text result must be exactly one nonblank string, at most 100,000 characters. Text jobs create no gallery entries, image artifacts, or thumbnails.
 
-The supplied bundle is unchanged. The temporary compatibility adapter is restricted to publication `b11b9ce9-53f0-44f1-8e8d-296fc54c5949` and these hashes:
+The supplied bundle is unchanged. A compatibility adapter gives sampling nodes that publish no seed parameter a fresh request-local seed, because an unchanged graph returns one cached caption. Recognition is **structural, never by identity**: publication ID, revision hashes, node ID and filename are not gates. ComfyUI mints a new `publication_id` on every publish and the interface manifest hash covers `published_at`, so an identity pin locks a working source out permanently the first time it is published again, with no in-app recovery.
 
-| File | SHA-256 |
-| --- | --- |
-| Editable workflow | `0fffb74f0331a8918b97129c1d3c91625bff5d16bec39979dffe8b4f9c4f53e3` |
-| Frozen API graph | `84843b65f2c0847ae4ff5ef644d56559800bce7278ed47a27968ceffb01f3a6c` |
-| Interface manifest | `e5ae15f00a6ae252226364f71afcbfe6657ccc888644ad91461c069acb9341f5` |
+After cloning the graph, the adapter scans the request-local copy in node order for a recognized class and, for each match whose seed input no declared seed parameter already owns, resolves a fresh seed in that node's inclusive range and records it:
 
-After cloning the graph, the adapter verifies node `909` is `HFDatasetShuffle`, resolves a fresh seed in the live node’s inclusive range `0–2,147,483,647`, and records the seed and compiled graph hash. A changed bundle requires review; it is not silently patched. Future publishers should expose an ordinary seed parameter. Random sampling does not guarantee a unique caption.
+| Recognized class | Seed input | Inclusive range | Recorded key |
+| --- | --- | --- | --- |
+| `HFDatasetShuffle` | `seed` | `0–2,147,483,647` | `stablellama.dataset_seed`, then `<class>.<node id>.<input>` |
+
+The range is the node's own declared maximum; ComfyUI rejects a larger value. The compiled graph hash is recomputed afterward, so every request submits a distinct graph. A declared seed parameter always wins: the compiler resolves it and the adapter leaves that binding untouched, which is the intended way to publish these sources (use `maximum: 2147483647` for `HFDatasetShuffle`). A recognized seed input that is not a literal value — a converted widget carrying a link — cannot be patched, so the request fails visibly with `prompt_adapter_mismatch` (409) naming the node instead of silently repeating one cached sample; publish that node with an ordinary seed parameter. A text source with no recognized class runs unchanged. Random sampling does not guarantee a unique caption.
 
 ## Durable APIs and recovery
 
