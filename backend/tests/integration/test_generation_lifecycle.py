@@ -1287,3 +1287,72 @@ def test_deleting_queued_and_running_generations_reconciles_before_cleanup(
             raise AssertionError(
                 "running generation was not deleted after cancellation reconciliation"
             )
+
+
+def test_absent_sources_after_a_cached_execution_are_retried_once_and_recover(
+    settings_factory, fake_state
+) -> None:
+    """A cached execution referencing archived-and-deleted outputs must not fail the job.
+
+    ComfyUI answers a byte-identical prompt from its execution cache, reporting the
+    previous run's filenames. Those files are gone once this application has archived
+    them and removed its sources, so the only correct response is to clear that cache
+    and execute once for real.
+    """
+
+    fake_state.absent_source_substrings.add(".png")
+    fake_state.report_cached_execution = True
+    settings = settings_factory(enable_background_worker=True)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="absent.sources")
+        generation = create_generation(client, "cached execution absent sources", seed=920)
+
+        requeued = wait_for_generation(
+            client,
+            generation["id"],
+            lambda item: any(
+                event["type"] == "generation.requeued" for event in item.get("events", [])
+            ),
+            timeout=12,
+        )
+        reason = next(
+            event["payload"]["reason"]
+            for event in requeued["events"]
+            if event["type"] == "generation.requeued"
+        )
+        assert "already archived and removed" in reason
+        # The worker's cached executions are discarded before the second attempt.
+        assert fake_state.execution_cache_resets == 1
+
+        # The sources exist again on re-execution, so the job completes normally.
+        fake_state.absent_source_substrings.clear()
+        succeeded = wait_for_status(client, generation["id"], "succeeded", timeout=20)
+
+        assert succeeded["error_code"] is None
+        assert succeeded["artifact_count"] >= 1
+        assert not any(
+            isinstance(item, dict) and item.get("code") == "artifact_persistence_failed"
+            for item in succeeded["errors"]
+        )
+
+
+def test_absent_sources_are_retried_at_most_once(settings_factory, fake_state) -> None:
+    """The retry is bounded: a second absent run fails rather than looping."""
+
+    fake_state.absent_source_substrings.add(".png")
+    settings = settings_factory(enable_background_worker=True)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="absent.bounded")
+        generation = create_generation(client, "persistently absent sources", seed=921)
+
+        failed = wait_for_status(
+            client,
+            generation["id"],
+            "failed_without_artifacts",
+            "failed_with_artifacts",
+            timeout=25,
+        )
+
+        assert failed["error_code"] == "artifact_persistence_failed"
+        requeues = [event for event in failed["events"] if event["type"] == "generation.requeued"]
+        assert len(requeues) == 1

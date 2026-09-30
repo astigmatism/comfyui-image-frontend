@@ -10,6 +10,7 @@ from collections.abc import Coroutine, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any, Literal
 
 import httpx
@@ -2107,7 +2108,9 @@ class QueueWorker:
                     if not isinstance(value, Mapping)
                     or any(value.get(key) != expected for key, expected in failure_key.items())
                 ]
-                failures.append({**failure_key, "error": type(exc).__name__})
+                failures.append(
+                    {**failure_key, "error": type(exc).__name__, **_failure_status(exc)}
+                )
                 diagnostics[diagnostic_key] = failures
                 generation.internal_diagnostics_json = diagnostics
                 event = add_generation_event(
@@ -2392,7 +2395,12 @@ class QueueWorker:
         )
         if committed is None:
             return
-        event, pending_delete, owner_id, pruned_paths = committed
+        event, pending_delete, owner_id, pruned_paths, requeued_from = committed
+        if requeued_from is not None:
+            await self._reset_execution_cache(requeued_from, comfyui=comfyui)
+            self._execution_observations.pop(generation_id, None)
+            await self._publish_event_best_effort(event, generation_id=generation_id)
+            return
         await _run_blocking(self.generation_eta.refresh, generation_id)
         self._execution_observations.pop(generation_id, None)
         await self._refresh_batch_estimates(generation_id)
@@ -2496,6 +2504,39 @@ class QueueWorker:
         else:
             await _run_blocking(self._record_source_cleanup_result, generation_id, None)
 
+    async def _reset_execution_cache(
+        self,
+        instance_id: str,
+        *,
+        comfyui: ComfyUIAdapter | None = None,
+    ) -> None:
+        """Clear a runtime's execution cache before a released job is offered again.
+
+        Best effort by design. The retry is worthwhile even if this fails, because any
+        other pool member holds no cache entry for the graph at all.
+        """
+
+        adapter = comfyui
+        if adapter is None:
+            try:
+                adapter = self._adapter_for_instance(instance_id)
+            except Exception:
+                logger.warning(
+                    "comfyui_execution_cache_reset_unavailable",
+                    extra={"comfyui_instance_id": instance_id},
+                )
+                return
+        reset = getattr(adapter, "reset_execution_cache", None)
+        if reset is None:
+            return
+        try:
+            await reset()
+        except Exception:
+            logger.warning(
+                "comfyui_execution_cache_reset_failed",
+                extra={"comfyui_instance_id": instance_id},
+            )
+
     def _source_cleanup_references(self, generation_id: str) -> list[dict[str, str]] | None:
         with self.session_factory() as session:
             generation = session.get(
@@ -2556,8 +2597,13 @@ class QueueWorker:
         raw_history: dict[str, Any],
         normalized: NormalizedHistory,
         outcome: str,
-    ) -> tuple[Any, bool, str, list[str]] | None:
-        """Atomically persist the terminal result using a thread-confined session."""
+    ) -> tuple[Any, bool, str, list[str], str | None] | None:
+        """Atomically persist the terminal result using a thread-confined session.
+
+        The final element names the runtime that must have its execution cache cleared
+        because the job was returned to the queue instead of finished; it is ``None`` for
+        every ordinary terminal outcome.
+        """
 
         with self.session_factory() as session:
             generation = session.get(Generation, generation_id)
@@ -2644,6 +2690,68 @@ class QueueWorker:
                 generation.final_artifact_count = len(declared_final)
                 generation.status = GenerationStatus.SUCCEEDED
             elif outcome == "success" and persistence_failures:
+                if (
+                    not artifacts
+                    and not diagnostics.get("comfyui_absent_sources_retry")
+                    and _sources_were_absent(persistence_failures)
+                ):
+                    # ComfyUI reported success yet every declared source was absent and
+                    # nothing was archived, so there is no result to keep. The usual cause
+                    # is its execution cache answering a byte-identical prompt with the
+                    # previous run's filenames, which this application has since archived
+                    # and deleted. Return the job to the pool for one genuine execution
+                    # rather than failing work the user can reasonably expect to succeed.
+                    # A fresh mapping is required: this column is plain JSON, so an
+                    # in-place mutation of the loaded value is not flushed and the retry
+                    # marker would be lost, allowing the job to loop. The abandoned
+                    # attempt's records are dropped with it: they name files from a prompt
+                    # that no longer applies, and keeping them would both fail the retry
+                    # and ask the companion to delete sources that never existed.
+                    generation.internal_diagnostics_json = {
+                        key: value
+                        for key, value in diagnostics.items()
+                        if key
+                        not in {
+                            "artifact_persistence_failures",
+                            "artifact_persistence_warnings",
+                            "archived_comfyui_sources",
+                            "comfyui_source_cleanup_complete",
+                            "comfyui_source_cleanup_error",
+                        }
+                    } | {
+                        "comfyui_absent_sources_retry": True,
+                        "comfyui_absent_sources_cached_nodes": _cached_node_count(raw_history),
+                    }
+                    generation.result_warnings_json = []
+                    generation.result_errors_json = [
+                        value
+                        for value in (generation.result_errors_json or [])
+                        if not (
+                            isinstance(value, Mapping)
+                            and value.get("code") == "artifact_persistence_failed"
+                        )
+                    ]
+                    generation.status = GenerationStatus.QUEUED
+                    generation.comfyui_prompt_id = None
+                    generation.submitted_graph_json = None
+                    generation.submitted_graph_sha256 = None
+                    generation.progress_json = None
+                    served_by = generation.comfyui_instance_id
+                    _release_worker(generation)
+                    requeued = add_generation_event(
+                        session,
+                        generation,
+                        "generation.requeued",
+                        {
+                            "reason": (
+                                "ComfyUI reported a completed run whose output files were "
+                                "already archived and removed. Retrying once with a cleared "
+                                "execution cache."
+                            )
+                        },
+                    )
+                    session.commit()
+                    return requeued, False, generation.owner_id, [], served_by
                 outcome = "failed"
                 generation.error_code = "artifact_persistence_failed"
                 generation.error_message = (
@@ -2745,7 +2853,7 @@ class QueueWorker:
             pending_delete = generation.pending_delete
             owner_id = generation.owner_id
             session.commit()
-            return event, pending_delete, owner_id, pruned_paths
+            return event, pending_delete, owner_id, pruned_paths, None
 
     def _delete_terminal_if_present(self, generation_id: str) -> None:
         """Delete a reconciled pending generation and its files in one worker thread."""
@@ -3629,6 +3737,48 @@ def _persistence_failure_key(file_output: NativeFileOutput) -> dict[str, Any]:
         "subfolder": file_output.reference.get("subfolder", ""),
         "type": file_output.reference.get("type", "output"),
     }
+
+
+def _failure_status(exc: Exception) -> dict[str, int]:
+    """Record the HTTP status of a retrieval failure when the transport exposed one.
+
+    Only a definitively absent source justifies re-executing a job that ComfyUI already
+    reported as successful, so the status has to survive into the diagnostics.
+    """
+
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return {"status": int(status)} if isinstance(status, int) else {}
+
+
+def _sources_were_absent(failures: Any) -> bool:
+    """True when every recorded persistence failure was a missing ComfyUI source."""
+
+    if not isinstance(failures, list) or not failures:
+        return False
+    return all(
+        isinstance(failure, Mapping) and failure.get("status") == HTTPStatus.NOT_FOUND
+        for failure in failures
+    )
+
+
+def _cached_node_count(raw_history: Mapping[str, Any]) -> int:
+    """Count the nodes ComfyUI reported as served from its execution cache."""
+
+    status = raw_history.get("status")
+    if not isinstance(status, Mapping):
+        return 0
+    total = 0
+    for message in status.get("messages") or []:
+        if (
+            isinstance(message, (list, tuple))
+            and len(message) > 1
+            and message[0] == "execution_cached"
+            and isinstance(message[1], Mapping)
+        ):
+            nodes = message[1].get("nodes")
+            if isinstance(nodes, list):
+                total += len(nodes)
+    return total
 
 
 def _cleanup_reference(reference: Mapping[str, Any]) -> dict[str, str] | None:

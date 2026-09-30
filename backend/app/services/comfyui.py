@@ -637,33 +637,83 @@ class ComfyUIAdapter:
                 "POST",
                 self.ARTIFACT_DELETE_ROUTE,
                 json={"artifacts": artifacts[offset : offset + self.ARTIFACT_DELETE_BATCH_SIZE]},
-                timeout=5,
+                timeout=self.settings.comfyui_health_timeout_seconds,
                 maximum_bytes=self.settings.comfyui_listing_max_bytes,
                 context="ComfyUI artifact cleanup response",
             )
             response.raise_for_status()
 
     async def health(self) -> tuple[bool, str | None]:
+        """Report whether this runtime can accept work.
+
+        Liveness is decided by a cheap endpoint, deliberately not by the multi-megabyte
+        ``/object_info`` schema: a worker that is busy generating can take many seconds to
+        serialize that document, and treating the delay as an outage both mislabels the
+        worker offline and withholds queued work from a GPU that is merely loaded. The
+        schema is still required before an execution-only target may run anything, so the
+        first probe must establish it; later refreshes are best effort and never change
+        availability.
+        """
+
+        timeout = self.settings.comfyui_health_timeout_seconds
         try:
             response = await self._request_limited(
                 "GET",
+                "/system_stats",
+                timeout=timeout,
+                maximum_bytes=self.settings.comfyui_listing_max_bytes,
+                context="ComfyUI health response",
+            )
+            if not response.is_success:
+                return False, f"ComfyUI returned HTTP {response.status_code}."
+        except (AppError, httpx.HTTPError):
+            return False, "ComfyUI is unreachable."
+        established = bool(self._runtime_object_info)
+        try:
+            schema = await self._request_limited(
+                "GET",
                 "/object_info",
-                timeout=5,
                 maximum_bytes=self.settings.comfyui_object_info_max_bytes,
                 context="ComfyUI health response",
             )
-            if response.is_success:
+            if schema.is_success:
                 # Execution-only targets need the runtime schema too; they never
                 # participate in the primary target's publication discovery.
                 self._runtime_object_info = _response_json_object(
-                    response,
+                    schema,
                     maximum_bytes=self.settings.comfyui_object_info_max_bytes,
                     context="ComfyUI health response",
                 )
                 return True, None
-            return False, f"ComfyUI returned HTTP {response.status_code}."
+            if not established:
+                return False, f"ComfyUI returned HTTP {schema.status_code}."
         except (AppError, httpx.HTTPError):
-            return False, "ComfyUI is unreachable."
+            if not established:
+                return False, "ComfyUI is unreachable."
+        # A retained schema keeps the worker eligible: it answered the liveness probe, and
+        # the previously observed node set remains the best description available.
+        return True, None
+
+    async def reset_execution_cache(self) -> None:
+        """Discard this runtime's cached executions.
+
+        ComfyUI serves a byte-identical prompt from its execution cache, reporting the
+        previous run's output filenames without executing anything. Those files no longer
+        exist once the frontend has archived them and removed its sources, so a repeat
+        submission has to be preceded by clearing the cache. ``free_memory`` is the only
+        documented lever and it also unloads models, costing a reload on the next run;
+        that is acceptable on this rare recovery path.
+        """
+
+        response = await self._request_limited(
+            "POST",
+            "/free",
+            json={"free_memory": True},
+            timeout=self.settings.comfyui_health_timeout_seconds,
+            maximum_bytes=self.settings.comfyui_listing_max_bytes,
+            context="ComfyUI execution cache reset",
+        )
+        response.raise_for_status()
 
 
 def _validated_artifact_reference(reference: Mapping[str, Any]) -> tuple[str, str, str]:

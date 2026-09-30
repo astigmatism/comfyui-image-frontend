@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -95,8 +96,12 @@ def test_execution_target_health_materializes_runtime_schema_without_catalog(
     tmp_path: Path,
 ) -> None:
     schema = {"KSampler": {"input": {"required": {}}}}
+    paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"system": {}})
         assert request.url.path == "/object_info"
         return httpx.Response(200, json=schema)
 
@@ -111,6 +116,102 @@ def test_execution_target_health_materializes_runtime_schema_without_catalog(
             await adapter.close()
 
     asyncio.run(scenario())
+    # Liveness is decided before the expensive schema is requested.
+    assert paths[0] == "/system_stats"
+
+
+def test_health_liveness_uses_the_cheap_endpoint_and_governs_availability(tmp_path: Path) -> None:
+    """A runtime that cannot answer a 1 KiB probe is genuinely unreachable."""
+
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        raise httpx.ConnectError("refused", request=request)
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            assert await adapter.health() == (False, "ComfyUI is unreachable.")
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    # The multi-megabyte schema is never fetched when liveness already failed.
+    assert requested == ["/system_stats"]
+
+
+def test_health_keeps_a_busy_worker_available_when_only_the_schema_times_out(
+    tmp_path: Path,
+) -> None:
+    """A slow /object_info is load, not an outage, once the schema is established.
+
+    A worker serializing tens of megabytes while generating used to be reported
+    unreachable, which both mislabelled it offline and withheld queued work from it.
+    """
+
+    schema = {"KSampler": {"input": {"required": {}}}}
+    allow_schema = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"system": {}})
+        if allow_schema:
+            return httpx.Response(200, json=schema)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    async def scenario() -> None:
+        nonlocal allow_schema
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            assert await adapter.health() == (True, None)
+            allow_schema = False
+            assert await adapter.health() == (True, None)
+            # The previously observed node set is retained rather than discarded.
+            assert adapter.cached_object_info() == schema
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+
+
+def test_health_reports_unavailable_when_the_schema_was_never_established(tmp_path: Path) -> None:
+    """An execution-only target cannot run anything until its node set is known."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"system": {}})
+        raise httpx.ReadTimeout("slow", request=request)
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            assert await adapter.health() == (False, "ComfyUI is unreachable.")
+            assert adapter.cached_object_info() == {}
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+
+
+def test_reset_execution_cache_requests_the_documented_lever(tmp_path: Path) -> None:
+    """free_memory is what clears ComfyUI's cached executions."""
+
+    calls: list[tuple[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={})
+
+    async def scenario() -> None:
+        adapter = ComfyUIAdapter(settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            await adapter.reset_execution_cache()
+        finally:
+            await adapter.close()
+
+    asyncio.run(scenario())
+    assert calls == [("/free", {"free_memory": True})]
 
 
 def test_preferred_v2_listing_is_recursive_and_preserves_comfy_user(tmp_path: Path) -> None:

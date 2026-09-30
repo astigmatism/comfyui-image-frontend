@@ -82,6 +82,11 @@ class FakeServiceState:
     fail_artifact_cleanup: bool = False
     retrieval_failure_substrings: set[str] = field(default_factory=set)
     retrieval_failures_remaining: int = 0
+    # A source the frontend already archived and deleted answers 404, unlike the 500 of
+    # retrieval_failure_substrings. Only the absent case may trigger a re-execution.
+    absent_source_substrings: set[str] = field(default_factory=set)
+    execution_cache_resets: int = 0
+    report_cached_execution: bool = False
     disconnect_websocket: bool = False
     initial_event_delay: float = 0.02
     default_stage_delay: float = 0.08
@@ -137,6 +142,9 @@ class FakeServiceState:
         self.fail_artifact_cleanup = False
         self.retrieval_failure_substrings.clear()
         self.retrieval_failures_remaining = 0
+        self.absent_source_substrings.clear()
+        self.execution_cache_resets = 0
+        self.report_cached_execution = False
         self.disconnect_websocket = False
         self.initial_event_delay = 0.02
         self.default_stage_delay = 0.08
@@ -254,10 +262,15 @@ class FakeServiceState:
                         }
                     ],
                 }
+            messages: list[Any] = []
+            if self.report_cached_execution:
+                messages.append(
+                    ["execution_cached", {"prompt_id": prompt_id, "nodes": list(graph)}]
+                )
             self.histories[prompt_id]["status"] = {
                 "status_str": "success",
                 "completed": True,
-                "messages": [],
+                "messages": messages,
             }
             self.running_prompt_ids.discard(prompt_id)
             return
@@ -597,6 +610,14 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         require_comfy()
         return state.object_info
 
+    @app.post("/free")
+    async def free(payload: dict[str, Any]) -> dict[str, bool]:
+        require_comfy()
+        if payload.get("free_memory"):
+            state.execution_cache_resets += 1
+            state.report_cached_execution = False
+        return {"ok": True}
+
     @app.get("/system_stats")
     async def system_stats() -> dict[str, Any]:
         require_comfy()
@@ -772,6 +793,8 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
     @app.get("/view")
     async def view(filename: str, subfolder: str = "", type: str = "output") -> Response:
         require_comfy()
+        if any(fragment in filename for fragment in state.absent_source_substrings):
+            raise HTTPException(status_code=404)
         targeted_failure = any(
             fragment in filename for fragment in state.retrieval_failure_substrings
         )

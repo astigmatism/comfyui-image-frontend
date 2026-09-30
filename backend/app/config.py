@@ -226,6 +226,11 @@ class Settings(BaseSettings):
     comfyui_api_max_bytes: int = 32 * 1024 * 1024
     comfyui_history_max_bytes: int = 32 * 1024 * 1024
     comfyui_output_max_bytes: int = 128 * 1024 * 1024
+    # Budget for the cheap liveness probe and the companion cleanup call. A worker
+    # that is busy generating still has to answer within this window, so it is
+    # deliberately generous: a starved runtime answering slowly is not an outage,
+    # and treating it as one withholds work from a GPU that is merely loaded.
+    comfyui_health_timeout_seconds: float = 15.0
     external_health_interval_seconds: float = 10.0
     dispatch_poll_seconds: float = 0.4
     dispatcher_heartbeat_stale_seconds: float = 30.0
@@ -456,6 +461,8 @@ class Settings(BaseSettings):
             raise ValueError("session_ttl_hours must be positive")
         if self.speech_to_text_timeout_seconds <= 0:
             raise ValueError("speech_to_text_timeout_seconds must be positive")
+        if self.comfyui_health_timeout_seconds <= 0:
+            raise ValueError("comfyui_health_timeout_seconds must be positive")
         if self.dispatch_poll_seconds <= 0:
             raise ValueError("dispatch_poll_seconds must be positive")
         minimum_heartbeat_window = max(15.0, self.dispatch_poll_seconds * 2)
