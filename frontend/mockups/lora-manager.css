@@ -154,11 +154,11 @@
 
 .lm-summary-item {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+  grid-template-columns: 64px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 9px;
-  min-height: 55px;
-  padding: 6px 0;
+  gap: 10px;
+  min-height: 76px;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -169,8 +169,8 @@
 .lm-summary-thumb {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 64px;
+  height: 64px;
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -194,10 +194,66 @@
 }
 
 .lm-summary-strength {
+  padding: 3px 6px;
+  border: 1px dashed transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-soft);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
+  text-align: right;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+
+.lm-summary-strength:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.lm-summary-strength-input {
+  width: 64px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  text-align: right;
+}
+
+.lm-summary-strength-input.is-invalid {
+  border-color: var(--danger);
+}
+
+.lm-summary-remove {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+
+.lm-summary-remove:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 
 .lm-empty-summary {

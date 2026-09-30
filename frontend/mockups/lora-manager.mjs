@@ -48,6 +48,9 @@ const toast = document.querySelector("#lm-toast");
 
 let committed = structuredClone(initialRows);
 let draft = null;
+let editingId = null;
+let editingValue = null;
+let summaryRendering = false;
 let imageTargetId = null;
 let dragId = null;
 let touchDrag = null;
@@ -68,6 +71,18 @@ function formatStrength(value) {
   return Number(value).toFixed(2);
 }
 
+const STRENGTH_CONTROL = { minimum: 0, maximum: 2, step: 0.05 };
+const MIN_STRENGTH = Math.max(STRENGTH_CONTROL.step, STRENGTH_CONTROL.minimum);
+
+function parseStrength(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < MIN_STRENGTH || value > STRENGTH_CONTROL.maximum) return null;
+  const steps = value / STRENGTH_CONTROL.step;
+  if (Math.abs(steps - Math.round(steps)) > 1e-9) return null;
+  return Number(value.toPrecision(12));
+}
+
 function activeRows(rows) {
   return rows.filter((row) => row.strength > 0);
 }
@@ -82,12 +97,85 @@ function imageMarkup(row) {
     : '<span class="lm-add-image" aria-hidden="true"><b>＋</b><span>Add image</span></span>';
 }
 
+// Re-focus after a re-render without re-entering renderSummary from a blur
+// that the innerHTML replacement itself triggers.
+function deferFocus(select) {
+  queueMicrotask(() => {
+    const element = select();
+    if (element && element.isConnected) {
+      element.focus({ preventScroll: true });
+      if (element.select) element.select();
+    }
+  });
+}
+
 function renderSummary() {
   const active = activeRows(committed);
   document.querySelector("#lm-panel-count").textContent = `${active.length} active`;
+  summaryRendering = true;
   summary.innerHTML = active.length
-    ? `<ul class="lm-summary-list">${active.map((row) => `<li class="lm-summary-item"><span class="lm-summary-thumb">${row.image ? `<img src="${escapeHtml(row.image)}" alt="" />` : '<span aria-hidden="true">✧</span>'}</span><span class="lm-summary-name">${escapeHtml(row.label)}</span><span class="lm-summary-strength">${formatStrength(row.strength)}</span></li>`).join("")}</ul>`
+    ? `<ul class="lm-summary-list">${active.map((row) => {
+      const strength = editingId === row.id
+        ? `<input class="lm-summary-strength-input" data-lora-strength-input="${escapeHtml(row.id)}" type="number" min="${MIN_STRENGTH}" max="${STRENGTH_CONTROL.maximum}" step="${STRENGTH_CONTROL.step}" value="${escapeHtml(editingValue)}" aria-label="Strength for ${escapeHtml(row.label)}" />`
+        : `<button type="button" class="lm-summary-strength" data-lora-strength-edit="${escapeHtml(row.id)}" aria-label="Edit strength for ${escapeHtml(row.label)}" title="Click to edit strength">${formatStrength(row.strength)}</button>`;
+      return `<li class="lm-summary-item"><span class="lm-summary-thumb">${row.image ? `<img src="${escapeHtml(row.image)}" alt="" />` : '<span aria-hidden="true">✧</span>'}</span><span class="lm-summary-name">${escapeHtml(row.label)}</span>${strength}<button type="button" class="lm-summary-remove" data-lora-disable="${escapeHtml(row.id)}" aria-label="Disable ${escapeHtml(row.label)}" title="Disable ${escapeHtml(row.label)}">×</button></li>`;
+    }).join("")}</ul>`
     : '<p class="lm-empty-summary">No LoRAs enabled.</p>';
+  summaryRendering = false;
+  if (editingId) deferFocus(() => summary.querySelector(`[data-lora-strength-input="${CSS.escape(editingId)}"]`));
+}
+
+function openStrengthEdit(id) {
+  if (editingId === id) return;
+  if (editingId && !commitStrengthEdit(editingId)) return;
+  const row = committed.find((candidate) => candidate.id === id);
+  if (!row) return;
+  editingId = id;
+  editingValue = formatStrength(row.strength);
+  renderSummary();
+}
+
+function commitStrengthEdit(id) {
+  if (editingId !== id) return true;
+  const row = committed.find((candidate) => candidate.id === id);
+  editingId = null;
+  const value = parseStrength(editingValue);
+  if (row && value !== null) {
+    row.strength = value;
+    row.lastStrength = value;
+    renderSummary();
+    deferFocus(() => summary.querySelector(`[data-lora-strength-edit="${CSS.escape(id)}"]`));
+    return true;
+  }
+  if (row) {
+    editingId = id;
+    renderSummary();
+    const input = summary.querySelector(`[data-lora-strength-input="${CSS.escape(id)}"]`);
+    input?.classList.add("is-invalid");
+    showToast(`Strength must be from ${formatStrength(MIN_STRENGTH)} to ${formatStrength(STRENGTH_CONTROL.maximum)} in steps of ${formatStrength(STRENGTH_CONTROL.step)}.`);
+  } else {
+    renderSummary();
+  }
+  return false;
+}
+
+function cancelStrengthEdit(id) {
+  if (editingId !== id) return;
+  editingId = null;
+  renderSummary();
+  deferFocus(() => summary.querySelector(`[data-lora-strength-edit="${CSS.escape(id)}"]`));
+}
+
+function disableRow(id) {
+  const row = committed.find((candidate) => candidate.id === id);
+  if (!row || row.strength <= 0) return;
+  if (editingId === id) editingId = null;
+  else if (editingId) commitStrengthEdit(editingId);
+  row.lastStrength = row.strength;
+  row.strength = 0;
+  renderSummary();
+  showToast(`${row.label} disabled.`);
+  deferFocus(() => manageButton);
 }
 
 function rowMarkup(row) {
@@ -103,7 +191,7 @@ function rowMarkup(row) {
     </div>
     <button type="button" class="icon-button lm-drag-handle" draggable="true" aria-label="Reorder ${label}" aria-description="Drag to reorder, or use the Up and Down arrow keys.">⠿</button>
     <div class="lm-row-info"><span class="lm-row-name">${label}</span><span class="lm-row-description">${escapeHtml(row.description)}</span><span class="lm-row-state">${enabled ? "Enabled" : "Off"}</span></div>
-    <div class="lm-strength"><span class="lm-strength-label">${enabled ? "Strength" : "Strength when enabled"}</span><input type="range" data-lora-range="${id}" min="0.05" max="2" step="0.05" value="${strength}" aria-label="${label} strength slider" ${enabled ? "" : "disabled"} /><input type="number" data-lora-number="${id}" min="0.05" max="2" step="0.05" value="${formatStrength(strength)}" aria-label="${label} strength" ${enabled ? "" : "disabled"} /></div>
+    <div class="lm-strength"><span class="lm-strength-label">${enabled ? "Strength" : "Strength when enabled"}</span><input type="range" data-lora-range="${id}" min="${MIN_STRENGTH}" max="${STRENGTH_CONTROL.maximum}" step="${STRENGTH_CONTROL.step}" value="${strength}" aria-label="${label} strength slider" ${enabled ? "" : "disabled"} /><input type="number" data-lora-number="${id}" min="${MIN_STRENGTH}" max="${STRENGTH_CONTROL.maximum}" step="${STRENGTH_CONTROL.step}" value="${formatStrength(strength)}" aria-label="${label} strength" ${enabled ? "" : "disabled"} /></div>
   </li>`;
 }
 
@@ -138,6 +226,7 @@ function showToast(message) {
 
 function openDialog() {
   if (dialog.open) return;
+  if (editingId) commitStrengthEdit(editingId);
   returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : manageButton;
   draft = structuredClone(committed);
   dialog.returnValue = "";
@@ -206,6 +295,47 @@ document.querySelector("#lm-all-off").addEventListener("click", () => {
 dialog.addEventListener("close", () => {
   draft = null;
   returnFocus?.focus({ preventScroll: true });
+});
+
+summary.addEventListener("click", (event) => {
+  const edit = event.target.closest("[data-lora-strength-edit]");
+  if (edit) {
+    openStrengthEdit(edit.dataset.loraStrengthEdit);
+    return;
+  }
+  const disable = event.target.closest("[data-lora-disable]");
+  if (disable) disableRow(disable.dataset.loraDisable);
+});
+
+// Resolve a pending edit before the blur re-renders out from under a click on another row.
+summary.addEventListener("mousedown", (event) => {
+  const disable = event.target.closest("[data-lora-disable]");
+  if (disable && editingId) disableRow(disable.dataset.loraDisable);
+});
+
+summary.addEventListener("input", (event) => {
+  const input = event.target.closest("[data-lora-strength-input]");
+  if (input && editingId === input.dataset.loraStrengthInput) editingValue = input.value;
+});
+
+summary.addEventListener("keydown", (event) => {
+  const input = event.target.closest("[data-lora-strength-input]");
+  if (!input || editingId !== input.dataset.loraStrengthInput) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitStrengthEdit(input.dataset.loraStrengthInput);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    cancelStrengthEdit(input.dataset.loraStrengthInput);
+  }
+});
+
+summary.addEventListener("focusout", (event) => {
+  if (summaryRendering) return;
+  const input = event.target.closest("[data-lora-strength-input]");
+  if (!input || editingId !== input.dataset.loraStrengthInput) return;
+  if (event.relatedTarget instanceof Node && summary.contains(event.relatedTarget)) return;
+  commitStrengthEdit(input.dataset.loraStrengthInput);
 });
 
 list.addEventListener("change", (event) => {
@@ -367,6 +497,8 @@ document.querySelector("#lm-panel-scrim").addEventListener("click", () => shell.
 window.previewOpenDialog = openDialog;
 window.previewReset = () => {
   if (dialog.open) closeDialog("cancel");
+  editingId = null;
+  editingValue = null;
   committed = structuredClone(initialRows);
   subject.value = "A cinematic portrait";
   renderSummary();
