@@ -100,7 +100,7 @@ The publisher is responsible for producing the exact manifest. This abbreviated 
   "generation_source": {"schema_version": "comfyui-image-frontend.generation-source/v1"},
   "technical_inventory": {"schema_version": "comfyui-image-frontend.technical-inventory/v1"},
   "warnings": [],
-  "runtime": {"attach_workflow_as_extra_pnginfo": true}
+  "runtime": {"attach_workflow_as_extra_pnginfo": true, "seed_values_must_be_concrete": true}
 }
 ```
 
@@ -220,7 +220,7 @@ The namespaced declaration is authoritative for stable ID, role, kind, cardinali
 
 ## Discovery and validation
 
-Discovery runs at startup, through `POST /api/admin/workflows/refresh`, and once when health monitoring observes ComfyUI recover from offline to online. The recovery path also populates an empty catalog after an offline startup. Continuous online health checks do not periodically refetch publication bundles.
+Discovery runs at startup, through `POST /api/admin/workflows/refresh`, and once when health monitoring observes ComfyUI recover from offline to online. The recovery path also populates an empty catalog after an offline startup. There is no periodic rescan in the application: an in-place bundle edit goes live only after one of those triggers, and on a deployment without an administrator session an application restart is the only available one. Refreshes observed roughly every 100 seconds on an earlier deployment were not a timer either; they were the offline-to-online recovery refresh re-triggered by health flapping while busy workers failed the pre-`/system_stats` `/object_info` liveness probe, a trigger that no longer exists.
 
 1. Probe ComfyUI and fetch `/object_info`.
 2. Recursively list `CIF_COMFYUI_WORKFLOW_DIRECTORY` with `GET /v2/userdata?path=...`; use `GET /userdata?dir=...&recurse=true&full_info=true` as the compatibility fallback.
@@ -232,6 +232,8 @@ Discovery runs at startup, through `POST /api/admin/workflows/refresh`, and once
 When configured, `CIF_COMFYUI_USER` is forwarded as `Comfy-User` on the relevant HTTP and WebSocket operations.
 
 Validation rejects absolute paths, backslashes, dot segments, traversal, encoded separators in manifest paths, mismatched stems, source/path disagreement, duplicate JSON keys, non-finite values, unsupported publication/interface schemas, wrong API node counts, invalid API graph structure, invalid input/output declarations, absent or duplicate publishers, disconnected publishers, zero or multiple final outputs, invalid cardinality, unsafe or missing binding targets, binding/class mismatches, uncovered or missing node dependencies, missing native-output inventory, and over-limit responses. `dependencies.class_types` must cover the observed API graph and each class must exist in `/object_info`.
+
+Runtime policy is validated strictly: `runtime.attach_workflow_as_extra_pnginfo` and the optional `runtime.seed_values_must_be_concrete` must be Boolean when present (the latter defaults to `false`). When `seed_values_must_be_concrete` is `true`, a text publication must also give every recognized sampling node — currently `HFDatasetShuffle.seed` — a concrete literal value within the node's declared range in the frozen API graph. The application replaces that value with a fresh secure-random seed on every request, which is impossible through a link, so a connected, missing, or out-of-range seed input rejects the publication with `prompt_adapter_mismatch` (`reason: seed_input_not_literal`, details `node_id`/`class_type`/`input`) at publish or refresh time instead of failing every user's generation request. Image publications are exempt: the application injects no seeds into image graphs, where a time-based shuffle chain remains a legitimate cache-busting pattern for the app and for direct ComfyUI-API use.
 
 Both adjacent artifacts remain required, path-checked, size-bounded, and parsed as strict JSON. If current raw bytes differ from the manifest's recorded workflow or API hash, discovery adds a nonfatal drift warning and continues validating the observed API graph and interface. This commonly follows a normal ComfyUI save, layout change, or mixed publication files. Discovery never rewrites either artifact.
 

@@ -424,6 +424,10 @@ def validate_publication(
         if metadata_warning not in warnings:
             warnings = (*warnings, metadata_warning)
     runtime = _validate_runtime(manifest.get("runtime", {}))
+    if runtime["seed_values_must_be_concrete"] and publication_kind(private_contract) == "text":
+        # The app mints a fresh seed per request for text sources, which only a
+        # literal frozen value can be patched into; gate that here, not per click.
+        _validate_concrete_dataset_seeds(api_document)
 
     source_key = source_key_for(instance_id, source_id)
     manifest_sha256 = sha256_bytes(manifest_bytes)
@@ -1280,7 +1284,59 @@ def _validate_runtime(raw_runtime: Any) -> dict[str, Any]:
         raise ContractError(
             "manifest_invalid", "runtime.attach_workflow_as_extra_pnginfo must be Boolean."
         )
-    return {"attach_workflow_as_extra_pnginfo": attach}
+    concrete = raw_runtime.get("seed_values_must_be_concrete", False)
+    if not isinstance(concrete, bool):
+        raise ContractError(
+            "manifest_invalid", "runtime.seed_values_must_be_concrete must be Boolean."
+        )
+    return {
+        "attach_workflow_as_extra_pnginfo": attach,
+        "seed_values_must_be_concrete": concrete,
+    }
+
+
+def _validate_concrete_dataset_seeds(api_document: Mapping[str, Any]) -> None:
+    """Reject dataset seed inputs that the per-request adapter cannot patch.
+
+    Runs only when the manifest declares ``runtime.seed_values_must_be_concrete``.
+    Every request to a text source whose recognized seed input is not a literal
+    value in range fails at generation time with ``prompt_adapter_mismatch``, so
+    the violation is reported at publish time instead of on every user's click.
+    The local import keeps the recognition table in prompt_generation the single
+    source of truth (that module imports from this one, so the import cannot be
+    module-level).
+    """
+
+    from .prompt_generation import DATASET_SEED_NODES, seed_input_not_literal_message
+
+    for node_id in sorted(api_document, key=lambda value: (len(value), value)):
+        node = api_document[node_id]
+        if not isinstance(node, Mapping):
+            continue
+        class_type = node.get("class_type")
+        inputs = node.get("inputs")
+        if not isinstance(class_type, str) or not isinstance(inputs, Mapping):
+            continue
+        recognized = DATASET_SEED_NODES.get(class_type)
+        if recognized is None:
+            continue
+        input_name, minimum, maximum = recognized
+        current = inputs.get(input_name)
+        if (
+            isinstance(current, bool)
+            or not isinstance(current, int)
+            or not minimum <= current <= maximum
+        ):
+            raise ContractError(
+                "prompt_adapter_mismatch",
+                seed_input_not_literal_message(node_id, class_type),
+                details={
+                    "node_id": node_id,
+                    "class_type": class_type,
+                    "input": input_name,
+                    "reason": "seed_input_not_literal",
+                },
+            )
 
 
 def _required_mapping(mapping: Mapping[str, Any], key: str, context: str) -> Mapping[str, Any]:

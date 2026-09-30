@@ -20,6 +20,19 @@ DATASET_SEED_NODES: dict[str, tuple[str, int, int]] = {
 LEGACY_DATASET_SEED_KEY = "stablellama.dataset_seed"
 
 
+def seed_input_not_literal_message(node_id: str, class_type: str) -> str:
+    """User-facing wording shared by the runtime adapter and the publish-time gate."""
+
+    return (
+        f"This prompt source cannot receive a fresh sampling seed: the seed input "
+        f"of node {node_id} ({class_type}) is connected to another node. This app "
+        "requires a concrete (literal) seed value on that input in the frozen API "
+        "graph; it is replaced with a fresh secure-random seed on every request. "
+        "Republish the workflow with a literal seed value (for example 0) and do "
+        "not connect this input."
+    )
+
+
 def _declared_seed_bindings(contract: Any) -> set[tuple[str, str]]:
     """Return the (node ID, input) pairs a published seed parameter already owns."""
 
@@ -82,8 +95,7 @@ def adapt_seed(profile: Any, compiled: CompileResult, compiler: WorkflowCompiler
             # instead of silently repeating one cached sample.
             raise AppError(
                 "prompt_adapter_mismatch",
-                f"This prompt source cannot receive a fresh sampling seed. "
-                f"Publish node {node_id} ({class_type}) with an ordinary seed parameter.",
+                seed_input_not_literal_message(node_id, class_type),
                 status_code=409,
                 details={
                     "node_id": node_id,

@@ -150,7 +150,8 @@ def test_unwritable_sampling_seed_fails_visibly_with_actionable_detail(value):
         "input": "seed",
         "reason": "seed_input_not_literal",
     }
-    assert "seed parameter" in raised.value.message
+    assert "literal seed value" in raised.value.message
+    assert "node 909 (HFDatasetShuffle)" in raised.value.message
     assert LEGACY_DATASET_SEED_KEY not in compiled.resolved_seeds
 
 

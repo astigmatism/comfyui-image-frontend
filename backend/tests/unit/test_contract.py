@@ -1092,3 +1092,130 @@ def test_missing_runtime_dependency_marks_source_unavailable_without_contract_re
 
     assert publication.readiness == "dependency_missing"
     assert publication.missing_dependencies == ("FakeImageOutput",)
+
+
+def _object_info_with_dataset_shuffle() -> dict:
+    object_info = dict(object_info_fixture())
+    object_info["HFDatasetShuffle"] = {"input": {"required": {"seed": ["INT"]}}}
+    return object_info
+
+
+def _text_bundle_with_dataset_seed(
+    seed_value: object,
+    *,
+    omit_input: bool = False,
+    flag: bool | None = True,
+) -> PublicationBundle:
+    """Text publication whose frozen graph carries an HFDatasetShuffle seed value.
+
+    ``flag`` None leaves the field absent (an older manifest); the artifacts
+    mutation runs before hashes, so the added node stays part of the bundle.
+    """
+
+    def mutate_artifacts(manifest, workflow, api):  # type: ignore[no-untyped-def]
+        inputs = {} if omit_input else {"seed": seed_value}
+        api["909"] = {"class_type": "HFDatasetShuffle", "inputs": inputs}
+        workflow["nodes"].append({"id": 909, "type": "HFDatasetShuffle", "widgets_values": []})
+        manifest["dependencies"]["class_types"] = sorted(
+            set(manifest["dependencies"]["class_types"]) | {"HFDatasetShuffle"}
+        )
+
+    def mutate_manifest(manifest):  # type: ignore[no-untyped-def]
+        manifest["runtime"]["seed_values_must_be_concrete"] = flag
+
+    return build_publication_bundle(
+        "text",
+        mutate_artifacts=mutate_artifacts,
+        mutate_manifest=mutate_manifest if flag is not None else None,
+    )
+
+
+@pytest.mark.parametrize(
+    "seed_value",
+    [["905", 0], True, 7.0, "7", -1, 2**31],
+)
+def test_concrete_dataset_seed_gate_rejects_nonliteral_seeds(seed_value):  # type: ignore[no-untyped-def]
+    bundle = _text_bundle_with_dataset_seed(seed_value)
+    with pytest.raises(ContractError) as exc:
+        validate(bundle, object_info=_object_info_with_dataset_shuffle())
+    assert exc.value.code == "prompt_adapter_mismatch"
+    assert exc.value.status_code == 422
+    assert exc.value.details == {
+        "node_id": "909",
+        "class_type": "HFDatasetShuffle",
+        "input": "seed",
+        "reason": "seed_input_not_literal",
+    }
+    assert "literal seed value" in exc.value.message
+    assert "node 909 (HFDatasetShuffle)" in exc.value.message
+
+
+def test_concrete_dataset_seed_gate_rejects_missing_seed_input() -> None:
+    bundle = _text_bundle_with_dataset_seed(None, omit_input=True)
+    with pytest.raises(ContractError) as exc:
+        validate(bundle, object_info=_object_info_with_dataset_shuffle())
+    assert exc.value.code == "prompt_adapter_mismatch"
+    assert exc.value.details["reason"] == "seed_input_not_literal"
+
+
+@pytest.mark.parametrize("seed_value", [0, 2**31 - 1])
+def test_concrete_dataset_seed_gate_accepts_literal_in_range_seeds(seed_value):  # type: ignore[no-untyped-def]
+    publication = validate(
+        _text_bundle_with_dataset_seed(seed_value),
+        object_info=_object_info_with_dataset_shuffle(),
+    )
+    assert publication.readiness == "ready"
+    assert publication.api_document["909"]["inputs"]["seed"] == seed_value
+    assert publication.private_contract["runtime"]["seed_values_must_be_concrete"] is True
+
+
+def test_concrete_dataset_seed_gate_is_opt_in_by_manifest() -> None:
+    """An absent or false flag preserves today's behavior for linked seeds."""
+
+    object_info = _object_info_with_dataset_shuffle()
+    for flag in (None, False):
+        publication = validate(
+            _text_bundle_with_dataset_seed(["905", 0], flag=flag), object_info=object_info
+        )
+        assert publication.readiness == "ready"
+    assert publication.private_contract["runtime"]["seed_values_must_be_concrete"] is False
+
+
+def test_concrete_dataset_seed_gate_does_not_apply_to_image_publications() -> None:
+    def mutate_artifacts(manifest, workflow, api):  # type: ignore[no-untyped-def]
+        api["909"] = {"class_type": "HFDatasetShuffle", "inputs": {"seed": ["905", 0]}}
+        workflow["nodes"].append({"id": 909, "type": "HFDatasetShuffle", "widgets_values": []})
+        manifest["dependencies"]["class_types"] = sorted(
+            set(manifest["dependencies"]["class_types"]) | {"HFDatasetShuffle"}
+        )
+
+    def mutate_manifest(manifest):  # type: ignore[no-untyped-def]
+        manifest["runtime"]["seed_values_must_be_concrete"] = True
+
+    bundle = build_publication_bundle(
+        mutate_artifacts=mutate_artifacts, mutate_manifest=mutate_manifest
+    )
+    publication = validate(bundle, object_info=_object_info_with_dataset_shuffle())
+    # Accepted: the technical inventory warns about the added class, but no
+    # contract error is raised for an image publication.
+    assert publication.readiness in ("ready", "ready_with_warnings")
+    assert publication.api_document["909"]["inputs"]["seed"] == ["905", 0]
+    assert publication.private_contract["runtime"]["seed_values_must_be_concrete"] is True
+
+
+def test_seed_values_must_be_concrete_must_be_boolean() -> None:
+    def mutate_manifest(manifest):  # type: ignore[no-untyped-def]
+        manifest["runtime"]["seed_values_must_be_concrete"] = "yes"
+
+    with pytest.raises(ContractError) as exc:
+        validate(build_publication_bundle(mutate_manifest=mutate_manifest))
+    assert exc.value.code == "manifest_invalid"
+    assert "seed_values_must_be_concrete" in exc.value.message
+
+
+def test_runtime_contract_preserves_seed_concreteness_flag_default_false() -> None:
+    publication = validate(build_publication_bundle())
+    assert publication.private_contract["runtime"] == {
+        "attach_workflow_as_extra_pnginfo": True,
+        "seed_values_must_be_concrete": False,
+    }
