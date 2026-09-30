@@ -37,7 +37,7 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   page.on("pageerror", (error) => errors.push(error.message));
   await expect(page.locator('[data-control-section="prompt-generation"] .control-section-trigger')).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator('[data-control-section="prompt-generation"]')).not.toContainText("Subject entry is independent");
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(1);
   await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
   await page.getByRole("switch", { name: "Use Creative Direction" }).check();
   await expect(page.locator("#prompt-assistant-thinking-mode")).toBeVisible();
@@ -132,7 +132,7 @@ test("saved primary source controls survive the CPU catalog becoming representat
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("Retained subject");
   await expect(page.locator("#prompt-generation-source")).toHaveValue(source.source_key);
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(1);
   await expect(page.locator("#prompt-generation-runtime, #comfyui-instance")).toHaveCount(0);
 });
 
@@ -540,5 +540,5 @@ test("an initially empty CPU catalog is reloaded after discovery recovers", asyn
   ready = true;
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Generate prompt", exact: true })).toBeEnabled();
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(1);
 });

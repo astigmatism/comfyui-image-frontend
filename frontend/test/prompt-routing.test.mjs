@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { catalogSource, reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "../src/prompt-routing.mjs";
+import { catalogSource, defaultSourceKey, reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "../src/prompt-routing.mjs";
 import { sameAutomationConfiguration } from "../src/auto-generation-sync.mjs";
 import { generationPanelMarkup, generationActivityMarkup } from "../src/render.mjs";
 
@@ -84,4 +84,23 @@ test("runtime selectors are absent and automatic status reports both assignments
   value.automation = { snapshot: { generation: { comfyui_instance_id: "primary" }, prompt_generation: { comfyui_instance_id: "promptgen" } } };
   const activity = generationActivityMarkup(value);
   assert.equal(activity, ""); // Enabled automation alone is not accepted image work.
+});
+
+test("the source select has no empty choice and defaults to an available source", () => {
+  const offline = { ...source, source_key: "offline", available: false };
+  assert.equal(defaultSourceKey([offline, source]), "cpu-text");
+  assert.equal(defaultSourceKey([offline]), null);
+  assert.equal(defaultSourceKey([]), null);
+  const value = { ...state(), parameters: {}, sources: [source], promptAssistant: {},
+    activeSource: { ...source, output_kind: "image" }, activeSourceKey: "image",
+    controlSectionOpen: { "prompt-generation": true }, generationQuantity: 1 };
+  const markup = generationPanelMarkup(value, value.activeSource, { inputs: [], outputs: [] });
+  assert.doesNotMatch(markup, /Choose a prompt source|<option value=""/);
+  value.promptGeneratorSource = null;
+  value.promptGeneratorsLoaded = false;
+  assert.match(promptRuntimeError(value), /Loading prompt sources/);
+  value.promptGeneratorsLoaded = true;
+  value.promptGeneration.active_source = null;
+  assert.match(promptRuntimeError(value), /No prompt sources are available/);
+  assert.doesNotMatch(promptRuntimeError(value), /Choose/);
 });

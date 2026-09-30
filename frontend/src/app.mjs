@@ -1,4 +1,4 @@
-import { reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
+import { defaultSourceKey, reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
 import { photoViewerPreloadArtifact, createPhotoViewerPreloader } from "./photo-viewer-preload.mjs";
 import { createPhotoViewerImages, photoKey } from "./photo-viewer-images.mjs";
 import { submitGeneration, setSubmissionOwner, pendingSubmission, createSubmissionRecovery, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
@@ -228,6 +228,7 @@ const state = {
   recentResolutionsBySource: {},
   promptGeneration: { enabled: false, active_source: null, sources: {}, previous_assistant_mode: null },
   promptGeneratorSources: [],
+  promptGeneratorsLoaded: false,
   promptGeneratorSource: null,
   promptGenerationBusy: false,
   promptGenerationRequest: null,
@@ -6754,6 +6755,7 @@ async function applySharedSettings(preferences) {
     state.selectedPreset = parameters.selectedPreset;
   }
   if (state.promptGeneration.enabled) state.promptAssistant.mode = "refine";
+  if (!state.promptGeneration.active_source) state.promptGeneration.active_source = defaultSourceKey(state.promptGeneratorSources);
   if (state.promptGeneratorSources.length && oldPromptSource !== state.promptGeneration.active_source) await selectPromptGenerator(state.promptGeneration.active_source);
   loadRecentResolutionsForActiveSource();
   if (state.sources.length && previousSource !== state.activeSourceKey) {
@@ -7035,6 +7037,7 @@ function persistBrowserDraft() {
 function restoreBrowserDraft() {
   state.promptGeneration = { enabled: false, active_source: null, sources: {}, previous_assistant_mode: null };
   state.promptGeneratorSources = [];
+  state.promptGeneratorsLoaded = false;
   state.promptGeneratorSource = null;
   state.promptGenerationBusy = false;
   state.promptGenerationRequest = null;
@@ -7062,8 +7065,9 @@ async function loadPromptGenerators(signal = applicationStartupController?.signa
     const sources = await api("/api/workflows?output_kind=text", { signal });
     if (signal?.aborted) return;
     state.promptGeneratorSources = sources;
+    state.promptGeneratorsLoaded = true;
     state.promptGeneratorLoadError = false;
-    if (!state.promptGeneration.active_source && sources.length === 1 && sources[0].available !== false) state.promptGeneration.active_source = sources[0].source_key;
+    if (!state.promptGeneration.active_source) state.promptGeneration.active_source = defaultSourceKey(sources);
     await selectPromptGenerator(state.promptGeneration.active_source, signal);
   } catch (error) {
     if (signal?.aborted) return;

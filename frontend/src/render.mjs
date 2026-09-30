@@ -872,7 +872,6 @@ function promptGenerationMarkup(state) {
   ).join("");
   const content = `<div class="prompt-generation-body">
     <label class="field"><span>Prompt source</span><select id="prompt-generation-source" ${state.promptGenerationBusy ? "disabled" : ""}>
-      <option value="" ${!selection.active_source ? "selected" : ""}>Choose a prompt source</option>
       ${missing ? `<option value="${escapeHtml(selection.active_source)}" selected disabled>Saved source unavailable</option>` : ""}
       ${sources.map((item) => `<option value="${escapeHtml(item.source_key)}" ${item.source_key === selection.active_source ? "selected" : ""} ${item.available === false ? "disabled" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}
     </select></label>
