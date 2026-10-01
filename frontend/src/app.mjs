@@ -90,6 +90,7 @@ import {
   generationActivityTitle,
   detailMarkup,
   galleryCardMarkup,
+  collectionThumbnailsHidden,
   galleryMarkup,
   generationProgressMarkup,
   generationPanelMarkup,
@@ -2831,6 +2832,10 @@ function visibleGenerations() {
     : state.generations;
 }
 
+function currentViewHidesThumbnails() {
+  return collectionThumbnailsHidden(state.collections, state.currentCollectionId);
+}
+
 function generationBelongsToView(generation) {
   return generation.collection_id === state.currentCollectionId;
 }
@@ -5047,6 +5052,7 @@ function renderGallery() {
       favoritesMode: mode,
       promptGroups: state.galleryLayout === "classic" ? null : galleryGroups?.options(),
       galleryLayout: state.galleryLayout,
+      hideThumbnails: currentViewHidesThumbnails(),
     }));
   });
   applyCollectionActivity({ counts: false });
@@ -5323,7 +5329,7 @@ async function toggleCollectionPreviews(collectionId) {
 function upsertGalleryCard(generation) {
   const card = document.querySelector(`#gallery [data-gallery-card="generation"][data-generation-id="${CSS.escape(generation.id)}"]`);
   if (!card) { renderGallery(); return; }
-  galleryHover.preserveDuring(() => reconcileGalleryCard(card, galleryCardMarkup(generation)));
+  galleryHover.preserveDuring(() => reconcileGalleryCard(card, galleryCardMarkup(generation, { hideThumbnail: currentViewHidesThumbnails() })));
   gallerySelection?.sync();
 }
 

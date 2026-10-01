@@ -1427,17 +1427,19 @@ export function galleryMarkup(
     favoritesMode: mode = "all",
     promptGroups = null,
     galleryLayout = "grouped",
+    hideThumbnails = false,
   } = {},
 ) {
+  const cardMarkup = (generation) => galleryCardMarkup(generation, { hideThumbnail: hideThumbnails });
   const tiles = collections
     .filter((collection) => (collection.parent_id ?? null) === currentCollectionId)
     .map((collection) => collectionTileMarkup(collection))
     .join("");
   const classic = galleryLayout === "classic";
   const tileGrid = `${classic ? classicGalleryHeaderMarkup() : ""}${tiles ? `<div class="collection-grid">${tiles}</div>` : ""}`;
-  const flatCards = () => sortGenerationsNewestFirst(generations).map((generation) => galleryCardMarkup(generation)).join("");
+  const flatCards = () => sortGenerationsNewestFirst(generations).map(cardMarkup).join("");
   const cards = classic ? `<div class="classic-gallery-grid">${flatCards()}</div>`
-    : promptGroups ? promptGroupsMarkup(generations, galleryCardMarkup, promptGroups) : flatCards();
+    : promptGroups ? promptGroupsMarkup(generations, cardMarkup, promptGroups) : flatCards();
   if (status === "loading") {
     return `${tileGrid}<section class="gallery-status" role="status"><h2>Loading gallery…</h2><p>Retained history will appear here.</p></section>${cards}`;
   }
@@ -1636,14 +1638,26 @@ export function moveDialogMarkup(generation, collections) {
   </form>`;
 }
 
-export function galleryCardMarkup(generation) {
+const THUMBNAIL_HIDDEN_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3l18 18" /><path d="M10.6 5.1A10.4 10.4 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-3 3.9M6.6 6.6A16.6 16.6 0 0 0 2.5 12S6 19 12 19a9.6 9.6 0 0 0 5.4-1.6" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>`;
+
+// A folder whose previews are switched off also hides the thumbnails of the image
+// cards inside it; the image is then only shown in the full-screen photo viewer.
+export function collectionThumbnailsHidden(collections, collectionId) {
+  if (!collectionId || !Array.isArray(collections)) return false;
+  return collections.find((collection) => collection?.id === collectionId)?.previews_enabled === false;
+}
+
+export function galleryCardMarkup(generation, { hideThumbnail = false } = {}) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
+  const thumbnailHidden = Boolean(hasImage && hideThumbnail);
   const sourceName = generationSourceName(generation);
   const runtimeName = generationComfyuiInstanceName(generation);
   const generationName = runtimeName ? `${sourceName}, ${runtimeName}` : sourceName;
   const stateClass = String(generation.status || "unknown").replaceAll("_", "-");
-  const media = hasImage
+  const media = thumbnailHidden
+    ? `<span class="card-thumbnail-hidden" aria-hidden="true">${THUMBNAIL_HIDDEN_ICON}<span>Preview hidden</span></span>`
+    : hasImage
     ? `<img data-thumbnail-state="pending" data-thumbnail-src="${escapeHtml(artifact.thumbnail_url || artifact.content_url)}" alt="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}" draggable="true" data-gallery-artifact-id="${escapeHtml(artifact.id)}" />`
     : statusPlaceholderMarkup(generation);
   const progress = generationProgressMarkup(generation);
@@ -1661,7 +1675,7 @@ export function galleryCardMarkup(generation) {
   const cancel = generation.cancel_allowed
     ? `<button type="button" class="button card-cancel-button" data-action="cancel-generation" data-generation-id="${escapeHtml(generation.id)}">Cancel</button>`
     : "";
-  return `<article class="gallery-card${generation.is_favorite ? " is-favorited" : ""} status-${stateClass}" data-gallery-card="generation" data-generation-id="${escapeHtml(generation.id)}">
+  return `<article class="gallery-card${generation.is_favorite ? " is-favorited" : ""}${thumbnailHidden ? " thumbnail-hidden" : ""} status-${stateClass}" data-gallery-card="generation" data-generation-id="${escapeHtml(generation.id)}">
     <div class="card-media-frame"${aspectStyle}>
       ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(generationName)} image">${media}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}">${media}</div>`}
       <div class="card-hover-scrim" aria-hidden="true"></div>

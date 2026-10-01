@@ -8,6 +8,7 @@ import {
   controlSectionKeysWithErrors,
   collectionDialogMarkup,
   collectionTileMarkup,
+  collectionThumbnailsHidden,
   controlMarkup,
   detailMarkup,
   formatGenerationDuration,
@@ -2939,4 +2940,38 @@ test("the service banner appears only when every image worker is unavailable", (
   assert.match(single, /Primary unavailable/);
   const unconfigured = serviceBannerMarkup([], "ready", null, { ...instances, instances: [] });
   assert.match(unconfigured, /Image service is not configured/);
+});
+
+test("folders with previews off hide the thumbnails of their image cards but keep the photo viewer", () => {
+  const generation = {
+    id: "g1", workflow_display_name: "Portrait", status: "succeeded", accepted_at: "2026-07-12T12:00:00Z",
+    prompt_fingerprint: "p", expected_width: 512, expected_height: 768,
+    display_artifact: { id: "a1", kind: "image", thumbnail_url: "/api/artifacts/a1/thumbnail", content_url: "/api/artifacts/a1/content" },
+  };
+  const shown = galleryCardMarkup(generation);
+  assert.match(shown, /data-thumbnail-src="\/api\/artifacts\/a1\/thumbnail"/);
+  assert.doesNotMatch(shown, /card-thumbnail-hidden|thumbnail-hidden/);
+  const hidden = galleryCardMarkup(generation, { hideThumbnail: true });
+  assert.doesNotMatch(hidden, /data-thumbnail-src|<img/);
+  assert.match(hidden, /class="card-thumbnail-hidden"/);
+  assert.match(hidden, /class="gallery-card thumbnail-hidden status-succeeded"/);
+  assert.match(hidden, /data-action="open-photo" data-generation-id="g1"/);
+  assert.match(hidden, /--gallery-media-aspect: 512 \/ 768/);
+  // Cards without an image keep their status placeholder.
+  const queued = galleryCardMarkup({ id: "q", status: "queued" }, { hideThumbnail: true });
+  assert.doesNotMatch(queued, /card-thumbnail-hidden/);
+  const promptGroups = { metadata: new Map(), collapsed: new Set(), changes: new Map() };
+  for (const options of [{ promptGroups }, { galleryLayout: "classic" }, {}]) {
+    const markup = galleryMarkup([generation], { ...options, currentCollectionId: "c1", hideThumbnails: true });
+    assert.doesNotMatch(markup, /data-thumbnail-src/);
+    assert.match(markup, /card-thumbnail-hidden/);
+    assert.match(galleryMarkup([generation], options), /data-thumbnail-src/);
+  }
+  const collections = [{ id: "on", previews_enabled: true }, { id: "off", previews_enabled: false }, { id: "legacy" }];
+  assert.equal(collectionThumbnailsHidden(collections, "off"), true);
+  assert.equal(collectionThumbnailsHidden(collections, "on"), false);
+  assert.equal(collectionThumbnailsHidden(collections, "legacy"), false);
+  assert.equal(collectionThumbnailsHidden(collections, "missing"), false);
+  assert.equal(collectionThumbnailsHidden(collections, null), false);
+  assert.equal(collectionThumbnailsHidden(undefined, "off"), false);
 });

@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-async function fixture(page, { count = 525, activity = false } = {}) {
+async function fixture(page, { count = 525, activity = false, folderPreviews = true } = {}) {
   const data = { arrivals: [], requests: [], operations: [], failInventory: false };
   const settings = { gallery_layout: "grouped", prompt_generation: { enabled: false, active_source: null, sources: {} }, active_source: null, runtime_id: null, sources: {}, model_selections: {}, quantity: 1, control_sections: {}, recent_resolutions: {}, creative_direction: "", assistant_mode: "refine", assistant_think: true, assistant_instructions: {}, use_creative_direction: false, max_generations: 200 };
   let preferences = { settings_initialized: true, settings, revision: 1, gallery_scale: 20, checkpoint_tiers: {} };
-  const folders = [{ id: "folder", parent_id: null, name: "Landscapes", generation_count: 3, previews: [], is_favorite: true }];
+  const folders = [{ id: "folder", parent_id: null, name: "Landscapes", generation_count: 3, previews: [], is_favorite: true, previews_enabled: folderPreviews }];
   const generation = (index) => ({
     id: `g${index}`, collection_id: null, status: "succeeded", is_favorite: index % 3 === 0,
     image_count: 1, accepted_at: new Date(Date.UTC(2026, 8, 24, 0, 0, -index)).toISOString(),
@@ -204,4 +204,22 @@ test("toolbar and selection actions fit desktop and narrow screens", async ({ pa
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: testInfo.outputPath("classic-gallery-desktop.png") });
+});
+
+test("a folder with previews off shows image cards without thumbnails, viewable only full screen", async ({ page }) => {
+  await fixture(page, { count: 6, folderPreviews: false });
+  await page.getByRole("button", { name: /Open collection Landscapes/ }).click();
+  await expect(page).toHaveURL(/#\/c\/folder$/);
+  const card = page.locator('#gallery [data-gallery-card="generation"][data-generation-id="g0"]');
+  await expect(card.locator(".card-thumbnail-hidden")).toBeVisible();
+  await expect(page.locator("#gallery .gallery-card img[data-thumbnail-src]")).toHaveCount(0);
+  await expect(page.locator("#gallery .gallery-card.thumbnail-hidden")).toHaveCount(6);
+  await card.getByRole("button", { name: /View .* image/ }).click();
+  const viewer = page.locator("#photo-viewer");
+  await expect(viewer).toBeVisible();
+  await expect(viewer.locator('img[src*="/api/artifacts/a0/"]').first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Home has no folder preference, so its cards keep their thumbnails.
+  await page.getByRole("link", { name: "Home" }).click();
+  await expect(page.locator('#gallery [data-generation-id="g0"] img')).toHaveAttribute("data-thumbnail-state", "ready");
 });
