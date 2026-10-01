@@ -25,9 +25,14 @@ from ..schemas import (
     PromptChanges,
     PromptGroupLookup,
     PromptGroupMembership,
+    PromptRerunCreate,
+    PromptRerunPreview,
+    PromptRerunResult,
 )
+from ..services import prompt_rerun
 from ..services.gallery import GalleryService
 from ..services.prompt_groups import changes_for_group, lookup_groups, member_page
+from .generations import require_generation_protocol
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
 
@@ -149,6 +154,33 @@ def transfer_selection(
     container = get_container(request)
     return GalleryService(container.generations, container.collections).transfer(
         session, owner_id=context.user.id, payload=payload
+    )
+
+
+@router.post("/prompt-rerun/preview", response_model=PromptRerunPreview)
+@database_handler
+def prompt_rerun_preview(
+    payload: GallerySelection,
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> PromptRerunPreview:
+    container = get_container(request)
+    return prompt_rerun.preview(
+        session, container.generations, container.collections, context.user.id, payload
+    )
+
+
+@router.post("/prompt-rerun", response_model=PromptRerunResult, status_code=201)
+async def create_prompt_rerun(
+    payload: PromptRerunCreate,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> PromptRerunResult:
+    key = require_generation_protocol(request)
+    container = get_container(request)
+    return await prompt_rerun.accept(
+        container.generations, container.collections, context.user.id, payload, key
     )
 
 

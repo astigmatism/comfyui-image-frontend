@@ -222,6 +222,8 @@ The production frontend uses browser-native modules:
 - `lib.mjs`: source-input ordering/defaults/validation, finite-choice reconciliation, seed-safe serialization, recall/state and collection-tree helpers.
 - `render.mjs`: escaped semantic HTML for source-driven controls, collection navigation/tiles, cards, detail, warnings and service states.
 - `gallery-hover.mjs`: shared intentional-hover timing and hover/focus preservation across card redraws.
+- `gallery-selection.mjs`: multi-select mode, the selection toolbar, and the bulk transfer/delete/favorite/download operations.
+- `prompt-rerun.mjs`: the Prompt Re-run dialog. It copies the control panel's settings into a draft, never writes them back, and submits the selection plus settings. The server reads each generation's retained prompt, creates the destination folder, and queues the batch under one idempotent submission receipt.
 - `app.mjs`: state transitions, collection hash routing/CRUD, source selection/revision refresh, submission, pagination, SSE and administration.
 - `styles.css`: design tokens, control geometry, responsive layout, focus and reduced-motion behavior.
 

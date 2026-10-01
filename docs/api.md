@@ -453,6 +453,8 @@ them. They resolve only to current validated publications and do not restore leg
 | `POST` | `/api/gallery/delete` | Delete a mixed selection using the existing cancellation and cleanup lifecycle |
 | `POST` | `/api/gallery/favorite` | Add explicitly selected image and folder cards to Favorites |
 | `POST` | `/api/gallery/download` | Download selected images and recursive folder contents as one ZIP |
+| `POST` | `/api/gallery/prompt-rerun/preview` | Count and excerpt the retained prompts of a selection for Prompt Re-run |
+| `POST` | `/api/gallery/prompt-rerun` | Queue the selection's exact prompts again with new settings into a new folder |
 
 Collections are returned as a flat list ordered by `position, created_at, id`; clients construct
 the tree from `parent_id` and render each parent's children in the order received. Names are
@@ -557,6 +559,48 @@ generations they came from. The artifact ID prevents filename collisions. Cards 
 images contribute no files; a selection with no images returns 409 `download_empty`. Active
 generations contribute only images already available. An image whose stored file is missing is
 skipped; when nothing remains the response is 409 `download_empty`.
+
+### Prompt Re-run
+
+Prompt Re-run generates the exact retained prompts (`final_prompt`) of selected generations again,
+with new settings, into a new folder. It never runs Creative Direction or the prompt generator. The
+server reads the prompts; the browser sends only the selection and the new settings.
+
+`POST /api/gallery/prompt-rerun/preview` takes a selection (with the same ownership, scope, and
+recursive folder rules as the other bulk operations) and returns `generation_count`,
+`prompt_count` (generations with a non-blank prompt), `unique_prompt_count`, `duplicate_count`,
+`skipped_count` (generations with no prompt), and `prompts`: up to 50 entries of
+`generation_id`, a short `excerpt`, the original `width`/`height` when recorded, and `has_seed`.
+Prompts are ordered oldest first and deduplicated by exact text.
+
+`POST /api/gallery/prompt-rerun` is a generation submission. It requires
+`X-CIF-Generation-Protocol: 3`, an `Idempotency-Key` UUID, and `X-CSRF-Token`, and is rejected
+with 409 while server auto generation is enabled. The body extends the selection with:
+
+| Field | Meaning |
+|---|---|
+| `folder_name` | 1–100 characters after trimming; the new folder's name |
+| `parent_collection_id` | Owned folder to create it inside, or null for Home |
+| `source_key`, `revision` | Target image source; a stale revision returns 409 `source_republished` |
+| `parameters` | Shared settings; any prompt or seed value here is ignored |
+| `model_variants` | 1–64 distinct parameter overlays, one per checkpoint (default `[{}]`); overlays cannot set the prompt |
+| `quantity` | Generations per prompt and variant, 1–16 |
+| `keep_original_resolution` | Use each original's width/height when the target accepts it |
+| `seed_mode` | `"random"` (default) or `"original"` (requires `quantity` 1) |
+| `skip_duplicates` | Queue each distinct prompt once (default true) |
+
+The plan is prompts × variants × quantity, ordered prompt, then variant, then repeat, and may not
+exceed 256 items (422 `prompt_rerun_too_large` with `details.planned` and `details.limit`). A
+selection without prompts returns 422 `prompt_rerun_empty`. A kept resolution that is missing or
+outside the target's minimum, maximum, or step falls back to the shared value and is counted in
+`resolution_fallback_count`.
+
+Success returns 201 with `collection` (the new folder), `items` (one per planned item, each with
+`generation` or `error`, as in `/api/generations/batch`), `prompt_count`, `planned_count`, and
+`resolution_fallback_count`. The folder, accepted generations, and receipt commit together. When
+every item fails, nothing commits and the first error is returned. Replaying the same key returns
+the original result, and `GET /api/generation-submissions/{key}` recovers it. A replay whose folder
+was deleted returns 410.
 
 The archive is assembled on disk under `CIF_TEMP_DIR` (default `$CIF_DATA_DIR/tmp`), not the
 container `/tmp`, and the temporary file is removed after the response, if archive creation fails,

@@ -5337,6 +5337,142 @@ tr:last-child td {
   justify-content: space-between;
 }
 
+.gallery-rerun-dialog {
+  width: min(680px, calc(100vw - 36px));
+  height: min(820px, calc(100dvh - 36px));
+}
+
+.rerun-dialog-content {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+  background: #0b1119;
+}
+
+.rerun-dialog-content > .help-text {
+  margin: 0;
+}
+
+.rerun-prompts {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.rerun-prompts summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.rerun-prompts ol {
+  display: grid;
+  gap: 4px;
+  max-height: 160px;
+  margin: 8px 0 2px;
+  padding-left: 22px;
+  overflow: auto;
+}
+
+.rerun-prompts small {
+  color: var(--muted);
+}
+
+.rerun-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.rerun-wide {
+  grid-column: 1 / -1;
+}
+
+.rerun-grid fieldset {
+  margin: 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.rerun-grid legend {
+  padding: 0 4px;
+}
+
+.rerun-grid input[type="text"],
+.rerun-grid input[type="number"],
+.rerun-grid select {
+  width: 100%;
+}
+
+.rerun-choice-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 4px 12px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.rerun-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.rerun-check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.rerun-lora-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 92px;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  font-weight: 500;
+}
+
+.rerun-lora-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rerun-axes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.rerun-total {
+  display: grid;
+  gap: 4px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rerun-total .field-error {
+  margin: 0;
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .rerun-grid,
+  .rerun-axes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .transfer-destinations {
   display: grid;
   gap: 7px;

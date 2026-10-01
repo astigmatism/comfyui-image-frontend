@@ -15,6 +15,7 @@ import { api, getCsrfToken, isTransientError, setCsrfToken, upload } from "./api
 import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
+import { createPromptRerun } from "./prompt-rerun.mjs";
 import {
   favoritesFilterActive,
   favoritesFilterPresentation,
@@ -401,6 +402,7 @@ async function startupGet(path, { operation, deadlineMs, signal } = {}) {
 
 let galleryGroups = null;
 let gallerySelection = null;
+let promptRerun = null;
 
 function bindDelegatedEvents() {
   galleryGroups = bindGalleryGroups(root, {
@@ -416,6 +418,8 @@ function bindDelegatedEvents() {
     getState: () => state,
     refresh: refreshAfterGalleryOperation,
     notify: toast,
+    openRerun: (selection) => openPromptRerun(selection),
+    rerunBlocked: promptRerunBlockedReason,
   });
   loraManagerController = installLoraManager(root, {
     api,
@@ -497,6 +501,105 @@ function bindDelegatedEvents() {
   window.addEventListener("focus", () => void refreshUserState());
   root.addEventListener("focusout", () => setTimeout(() => void refreshUserState(), 0));
   window.addEventListener("hashchange", handleCollectionHashChange);
+}
+
+function promptRerunBlockedReason() {
+  if (!state.automationLoaded || state.pendingAutoEnabled !== undefined || state.automationBusy) return "Checking auto generation…";
+  if (state.autoGenerate) return "Turn off auto generation to re-run prompts";
+  if (state.submitting || state.submissionRecoveryPending) return "Wait for the current submission to finish";
+  if (!state.sources.some((source) => source.available !== false && (source.output_kind || "image") === "image")) return "No generation source is available";
+  return null;
+}
+
+function promptRerunController() {
+  const dialog = root.querySelector("#gallery-rerun-dialog");
+  if (!dialog) return null;
+  if (promptRerun?.dialog === dialog) return promptRerun.controller;
+  const controller = createPromptRerun(dialog, {
+    api,
+    sources: () => state.sources,
+    collectionName: (id) => (id ? state.collections.find((item) => item.id === id)?.name || "this folder" : "Home"),
+    initial: () => ({
+      source: selectedGenerationSource(),
+      parameters: state.parameters,
+      selections: state.activeSource ? modelSelectionsForSource(state.activeSource) : {},
+      quantity: state.generationQuantity,
+      collectionId: state.currentCollectionId,
+    }),
+    loadSource: async (key) => {
+      const summary = state.sources.find((source) => sourceKey(source) === key) || {};
+      const detail = await api(`/api/workflows/${encodeURIComponent(key)}`, { operation: "Generation source details" });
+      const contract = sourceInterface(detail);
+      if (!contract) throw new Error("The selected source has no public interface.");
+      return { ...summary, ...detail, interface: contract };
+    },
+    savedParameters: (key, source) => {
+      if (key === state.activeSourceKey && state.activeSource && revisionsMatch(source, state.activeSource)) return state.parameters;
+      return state.parameterStateBySource[key]?.values || {};
+    },
+    savedSelections: (source) => modelSelectionsForSource(source),
+    submit: submitPromptRerun,
+    onClose: () => gallerySelection?.restoreFocus(),
+  });
+  promptRerun = { dialog, controller };
+  return controller;
+}
+
+function openPromptRerun({ body }) {
+  const reason = promptRerunBlockedReason();
+  if (reason) { toast(reason, "error"); return; }
+  if (!selectedGenerationSource()) { toast("Choose a generation source in the control panel first.", "error"); return; }
+  void promptRerunController()?.open({ body });
+}
+
+async function submitPromptRerun(body, plannedTotal) {
+  const reason = promptRerunBlockedReason();
+  if (reason) throw new Error(reason);
+  const requestOwnerId = state.session.user.id;
+  beginGenerationActivitySubmission(plannedTotal);
+  state.submitting = true;
+  syncGenerationSubmissionState();
+  try {
+    const result = await submitGeneration("/api/gallery/prompt-rerun", body, null, { signal: applicationStartupController.signal });
+    if (state.session?.user?.id !== requestOwnerId) return null;
+    await applyPromptRerunResult(result);
+    return result;
+  } catch (error) {
+    state.generationSubmissionProgress = null;
+    if (error.code === "submission_status_unknown") {
+      submissionRecovery?.start();
+      throw Object.assign(new Error("Reconnecting to your Prompt Re-run request… It will finish once the connection returns."), { code: error.code });
+    }
+    if (error.code === "source_republished" || error.code === "source_unavailable") await loadSources();
+    throw error;
+  } finally {
+    state.submitting = false;
+    syncGenerationSubmissionState();
+    gallerySelection?.sync();
+  }
+}
+
+async function applyPromptRerunResult(result) {
+  const queued = result.items.filter((item) => item.generation).map((item) => item.generation);
+  const failures = result.items.filter((item) => item.error).map((item) => item.error);
+  for (const generation of queued) {
+    if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
+  }
+  const name = result.collection?.name || "the new folder";
+  const fallback = result.resolution_fallback_count
+    ? ` ${result.resolution_fallback_count} prompt${result.resolution_fallback_count === 1 ? "" : "s"} used the chosen resolution because the original size was unavailable.`
+    : "";
+  toast(
+    failures.length
+      ? `Queued ${queued.length} of ${result.planned_count} generations into “${name}”. ${failures[0].message}${fallback}`
+      : `Queued ${queued.length} generation${queued.length === 1 ? "" : "s"} into “${name}”.${fallback}`,
+    failures.length ? "error" : "success",
+  );
+  gallerySelection?.clear();
+  galleryGroups?.invalidate();
+  await refreshGenerationActivity();
+  if (result.collection?.id) openCollectionRoute(result.collection.id);
+  else await loadCollections();
 }
 
 async function refreshAfterGalleryOperation({ operation, plan, result, destination }) {
@@ -6952,6 +7055,12 @@ function syncServerControls() {
 
 async function applyRecoveredSubmission(recovered) {
   state.submissionRecoveryPending = false;
+  if (recovered.pending.path === "/api/gallery/prompt-rerun") {
+    state.generationSubmissionProgress = null;
+    promptRerun?.controller.close();
+    await applyPromptRerunResult(recovered.result);
+    return;
+  }
   if (["/api/prompt-generations", "/api/generation-preparations"].includes(recovered.pending.path)) {
     state.promptGenerationError = null;
     await refreshPromptJobs();

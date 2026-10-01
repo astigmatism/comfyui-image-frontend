@@ -830,6 +830,80 @@ class GalleryDeleteResult(APIModel):
     items: list[GalleryDeleteItem]
 
 
+PROMPT_RERUN_MAX_ITEMS = 256
+PROMPT_RERUN_MAX_QUANTITY = 16
+
+
+def _single_variant() -> list[dict[str, str]]:
+    return [{}]
+
+
+class PromptRerunPromptPreview(APIModel):
+    generation_id: str
+    excerpt: str
+    width: int | None = None
+    height: int | None = None
+    has_seed: bool = False
+
+
+class PromptRerunPreview(APIModel):
+    """The prompts a Prompt Re-run would reuse, before any settings are chosen."""
+
+    generation_count: int
+    prompt_count: int
+    duplicate_count: int
+    skipped_count: int
+    unique_prompt_count: int
+    prompts: list[PromptRerunPromptPreview] = Field(default_factory=list)
+
+
+class PromptRerunCreate(GallerySelection):
+    """Queue the exact retained prompts of a selection with new settings.
+
+    Only the positive prompt (and optionally the original resolution and seed)
+    come from the selected generations. Every other public parameter comes from
+    this request, so Creative Direction and the prompt generator never apply.
+    """
+
+    folder_name: str = Field(min_length=1, max_length=100)
+    parent_collection_id: str | None = None
+    source_key: str = Field(min_length=1)
+    revision: SourceRevision
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    model_variants: list[dict[str, str]] = Field(
+        default_factory=_single_variant, min_length=1, max_length=64
+    )
+    quantity: int = Field(default=1, ge=1, le=PROMPT_RERUN_MAX_QUANTITY)
+    keep_original_resolution: bool = False
+    seed_mode: Literal["random", "original"] = "random"
+    skip_duplicates: bool = True
+
+    @field_validator("folder_name")
+    @classmethod
+    def validate_folder_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("folder name is required")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_rerun(self) -> PromptRerunCreate:
+        if self.seed_mode == "original" and self.quantity != 1:
+            raise ValueError("Reusing original seeds queues one generation per prompt.")
+        keys = [tuple(sorted(variant.items())) for variant in self.model_variants]
+        if len(set(keys)) != len(keys):
+            raise ValueError("each checkpoint variant is listed once")
+        return self
+
+
+class PromptRerunResult(APIModel):
+    collection: Collection
+    items: list[GenerationBatchItem]
+    prompt_count: int
+    planned_count: int
+    resolution_fallback_count: int = 0
+
+
 class GenerationDetail(GenerationSummary):
     workflow: WorkflowIdentity
     generation_source: dict[str, Any] = Field(default_factory=dict)

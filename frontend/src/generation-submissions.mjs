@@ -1,6 +1,9 @@
 import { api, isTransientError } from "./api.mjs";
 
 const prefix = "cif.pending-generation.";
+export const SUBMISSION_PATHS = Object.freeze([
+  "/api/generations", "/api/generations/batch", "/api/prompt-generations", "/api/generation-preparations", "/api/gallery/prompt-rerun",
+]);
 let ownerId = null;
 let active = false;
 
@@ -14,7 +17,7 @@ export function pendingSubmission() {
   if (!saved) return null;
   const pending = JSON.parse(saved);
   if (pending.ownerId !== ownerId || !pending.key || typeof pending.body !== "string"
-      || !["/api/generations", "/api/generations/batch", "/api/prompt-generations", "/api/generation-preparations"].includes(pending.path)) {
+      || !SUBMISSION_PATHS.includes(pending.path)) {
     throw new Error("The saved submission cannot be resumed. Keep this tab open and check generation history.");
   }
   return pending;
@@ -177,7 +180,9 @@ export function createSubmissionRecovery({ signal, onRecovered, onError, onChang
 }
 
 function validateResult(pending, result) {
-  const valid = pending.path === "/api/generation-preparations"
+  const valid = pending.path === "/api/gallery/prompt-rerun"
+    ? typeof result?.collection?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item?.generation?.id || item?.error?.code)
+    : pending.path === "/api/generation-preparations"
     ? typeof result?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item.id && item.status)
     : pending.path.endsWith("/batch")
     ? Array.isArray(result?.items) && result.items.every((item) => item?.generation?.id || item?.error?.code)

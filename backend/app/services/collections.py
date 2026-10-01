@@ -181,6 +181,18 @@ class CollectionService:
         owner_id: str,
         payload: CollectionCreate,
     ) -> CollectionResponse:
+        collection = self.create_in_session(session, owner_id=owner_id, payload=payload)
+        session.commit()
+        return self._response(session, owner_id=owner_id, collection_id=collection.id)
+
+    def create_in_session(
+        self,
+        session: Session,
+        *,
+        owner_id: str,
+        payload: CollectionCreate,
+    ) -> Collection:
+        """Add a folder in the caller's transaction without committing it."""
         if payload.parent_id is not None:
             parent = self.get_owned(session, owner_id, payload.parent_id)
             if self._level(session, owner_id=owner_id, collection=parent) >= MAX_COLLECTION_DEPTH:
@@ -192,8 +204,8 @@ class CollectionService:
             position=self._next_position(session, owner_id=owner_id, parent_id=payload.parent_id),
         )
         session.add(collection)
-        session.commit()
-        return self._response(session, owner_id=owner_id, collection_id=collection.id)
+        session.flush()
+        return collection
 
     def update(
         self,

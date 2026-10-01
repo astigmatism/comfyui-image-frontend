@@ -171,3 +171,38 @@ test("reconnection during a healthy in-flight submission neither reports uncerta
   assert.equal(f.timers.size, 0);
   assert.equal(calls, 1);
 });
+
+test("Prompt Re-run: a lost reply recovers its folder and jobs without resubmitting", async (context) => {
+  const original = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage };
+  context.after(() => { Object.assign(globalThis, original); setSubmissionOwner(null); });
+  globalThis.localStorage = storage();
+  globalThis.sessionStorage = storage();
+  setSubmissionOwner("owner");
+  let key;
+  let posts = 0;
+  globalThis.fetch = async (url, options) => {
+    posts += 1;
+    assert.equal(url, "/api/gallery/prompt-rerun");
+    key ??= pendingSubmission().key;
+    assert.equal(options.headers.get("Idempotency-Key"), key, "the server rejects a Prompt Re-run without its key");
+    assert.equal(options.method, "POST");
+    throw new TypeError("Lost reply after acceptance");
+  };
+  await assert.rejects(submitGeneration("/api/gallery/prompt-rerun", { generation_ids: ["g"], folder_name: "Again" }), { code: "submission_status_unknown" });
+  assert.equal(pendingSubmission().path, "/api/gallery/prompt-rerun");
+  const requests = posts;
+  const result = { collection: { id: "folder" }, items: [{ generation: { id: "new" } }, { error: { code: "invalid", message: "No." } }], prompt_count: 1, planned_count: 2 };
+  globalThis.fetch = async (url) => {
+    assert.equal(url, `/api/generation-submissions/${key}`);
+    return new Response(JSON.stringify({ result }), { headers: { "content-type": "application/json" } });
+  };
+  const recovered = await recoverSubmission();
+  assert.deepEqual(recovered.result, result);
+  assert.equal(posts, requests);
+  assert.equal(pendingSubmission(), null);
+  assert.deepEqual(pendingPromptJobs(), [], "a Prompt Re-run is not a text job");
+
+  sessionStorage.setItem("cif.pending-generation.owner", JSON.stringify({ ownerId: "owner", key: "k", path: "/api/gallery/prompt-rerun", body: "{}" }));
+  globalThis.fetch = async () => new Response(JSON.stringify({ result: { items: [] } }), { headers: { "content-type": "application/json" } });
+  await assert.rejects(recoverSubmission(), { code: "submission_status_unknown" }, "a result without its folder is incomplete");
+});

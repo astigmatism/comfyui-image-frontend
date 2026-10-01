@@ -30,22 +30,83 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def project_receipt(
-    service: GenerationService, session: Session, receipt: GenerationSubmission
-) -> GenerationSummary | GenerationBatchResult:
+def accept_items(
+    service: GenerationService,
+    session: Session,
+    user: User,
+    requests: list[GenerationCreate],
+    *,
+    batch: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Accept each request in its own savepoint inside the caller's transaction.
+
+    Call under the user-state lock. A batch records per-item failures as receipt
+    outcomes; a single request re-raises its failure.
+    """
+
+    run = begin_run(session, user.id, len(requests))
+    timing_batch_id = str(uuid.uuid4())
+    outcomes: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    for item in requests:
+        try:
+            with session.begin_nested():
+                generation, event = service._prepare_accept(session, user=user, request=item)
+                generation.timing_batch_id = timing_batch_id
+                session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
+            outcomes.append({"generation_id": generation.id})
+            events.append(event_payload(event))
+        except AppError as error:
+            if not batch:
+                raise
+            run.submission_failed_count += 1
+            outcomes.append({"error": error_outcome(error)})
+    return outcomes, events
+
+
+def error_outcome(error: AppError) -> dict[str, Any]:
+    return {
+        "code": error.code,
+        "message": error.message,
+        "fields": error.fields,
+        "details": error.details,
+        "status": error.status_code,
+    }
+
+
+def request_digest(endpoint: str, payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"endpoint": endpoint, "payload": payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+def project_items(
+    service: GenerationService, session: Session, owner_id: str, outcomes: list[dict[str, Any]]
+) -> list[GenerationBatchItem]:
     items = []
-    for outcome in receipt.outcomes:
+    for outcome in outcomes:
         if "error" in outcome:
             items.append(GenerationBatchItem(error=outcome["error"]))
         else:
             generation = session.get(Generation, outcome["generation_id"])
-            if generation is None or generation.owner_id != receipt.owner_id:
+            if generation is None or generation.owner_id != owner_id:
                 raise AppError(
                     "submission_result_unavailable",
                     "This submission was accepted, but its result has been deleted.",
                     status_code=410,
                 )
             items.append(GenerationBatchItem(generation=service.summary(session, generation)))
+    return items
+
+
+def project_receipt(
+    service: GenerationService, session: Session, receipt: GenerationSubmission
+) -> GenerationSummary | GenerationBatchResult:
+    items = project_items(service, session, receipt.owner_id, receipt.outcomes)
     if receipt.endpoint == "single":
         assert items[0].generation is not None
         return items[0].generation
@@ -67,6 +128,14 @@ def lookup(service: GenerationService, owner_id: str, key: str) -> dict[str, Any
                 "endpoint": receipt.endpoint,
                 "result": project_prompt_receipt(service, session, receipt),
             }
+        if receipt.endpoint == "prompt_rerun":
+            from .prompt_rerun import project_receipt as project_rerun_receipt
+
+            return {
+                "key": key,
+                "endpoint": receipt.endpoint,
+                "result": project_rerun_receipt(service, session, receipt).model_dump(mode="json"),
+            }
         return {
             "key": key,
             "endpoint": receipt.endpoint,
@@ -82,13 +151,7 @@ async def accept(
 ) -> GenerationSummary | GenerationBatchResult:
     batch = isinstance(request, GenerationBatchCreate)
     endpoint = "batch" if batch else "single"
-    digest = hashlib.sha256(
-        json.dumps(
-            {"endpoint": endpoint, "payload": request.model_dump(mode="json")},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    digest = request_digest(endpoint, request.model_dump(mode="json"))
 
     def transaction() -> tuple[GenerationSummary | GenerationBatchResult, list[dict[str, Any]]]:
         with service.session_factory() as session:
@@ -109,35 +172,7 @@ async def accept(
             if user is None or user.state != UserState.ACTIVE:
                 raise AppError("authentication_required", "Sign in is required.", status_code=401)
             requests = request.items if isinstance(request, GenerationBatchCreate) else [request]
-            run = begin_run(session, owner_id, len(requests))
-            timing_batch_id = str(uuid.uuid4())
-            outcomes: list[dict[str, Any]] = []
-            events: list[dict[str, Any]] = []
-            for item in requests:
-                try:
-                    with session.begin_nested():
-                        generation, event = service._prepare_accept(
-                            session, user=user, request=item
-                        )
-                        generation.timing_batch_id = timing_batch_id
-                        session.add(GenerationRunMember(generation_id=generation.id, run_id=run.id))
-                    outcomes.append({"generation_id": generation.id})
-                    events.append(event_payload(event))
-                except AppError as error:
-                    if not batch:
-                        raise
-                    run.submission_failed_count += 1
-                    outcomes.append(
-                        {
-                            "error": {
-                                "code": error.code,
-                                "message": error.message,
-                                "fields": error.fields,
-                                "details": error.details,
-                                "status": error.status_code,
-                            }
-                        }
-                    )
+            outcomes, events = accept_items(service, session, user, requests, batch=batch)
             receipt = GenerationSubmission(
                 owner_id=owner_id,
                 key=key or "",

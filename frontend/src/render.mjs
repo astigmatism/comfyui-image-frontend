@@ -132,6 +132,7 @@ export function shellMarkup(state) {
       <dialog id="move-dialog" class="move-dialog"></dialog>
       <dialog id="gallery-transfer-dialog" class="move-dialog gallery-bulk-dialog gallery-transfer-dialog" aria-label="Move or copy selection"></dialog>
       <dialog id="gallery-delete-dialog" class="collection-delete-dialog gallery-bulk-dialog gallery-delete-dialog" aria-label="Delete selection"></dialog>
+      <dialog id="gallery-rerun-dialog" class="move-dialog gallery-bulk-dialog gallery-rerun-dialog" aria-label="Prompt Re-run"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     </div>`;
 }

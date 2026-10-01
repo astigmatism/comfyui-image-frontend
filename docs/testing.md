@@ -131,6 +131,19 @@ mixed folder/image copy, bulk move, and bulk delete, verifying that deleting cop
 the originals and their image files. Backend gallery-selection integration tests cover ownership,
 overlapping subtrees, independent artifacts and recall, copy rollback, and folder depth limits.
 
+Prompt Re-run is covered at every layer. `backend/tests/unit/test_prompt_rerun.py` covers prompt
+planning (oldest first, blank prompts skipped, exact-text deduplication), original resolution and
+seed extraction, step/range fallback, prompt-then-variant-then-repeat expansion, and the 256-item
+cap. `backend/tests/integration/test_prompt_rerun.py` covers the preview counts, folder creation
+with the exact prompts, idempotent replay, receipt lookup and key conflict, kept resolution and
+original seeds, rejections that create nothing (empty selection, cap, stale revision, auto
+generation), owner scoping, and checkpoint fan-out. `frontend/test/prompt-rerun.test.mjs` covers
+the draft built from the control panel without aliasing it, the planned total, the request body,
+form updates, validation messages, source switching, and escaped markup.
+`frontend/test/generation-submissions.test.mjs` covers lost-reply recovery for the endpoint. The
+Playwright journey `frontend/e2e/prompt-rerun.spec.mjs` selects two real generations, fans out
+over two checkpoints with kept resolution, and checks that the new folder holds the exact prompts.
+
 `frontend/e2e/principal-journeys.spec.mjs` starts `backend/tests/e2e_server.py` and exercises the built frontend against live deterministic fake network services. The suite covers bootstrap/account flow, manifest-driven source selection, Basic/Advanced fields, warning-enabled generation, progressive/complete card/detail behavior, favorites, Prompt Assistant, cursor-aware voice transcription in standard and focused editors, exact recall, scale persistence, cancellation/deletion, retained failures, backend field-error disclosure, submission-time source locking, and stale cross-source composition rejection. It also covers collection creation/rename/navigation, in-collection generation, preview preference persistence, moving a completed card, recursive collection deletion, and recall restoring the Creative Direction panel (direction, mode, instructions, thinking mode) from the generation snapshot while preserving the current thinking mode when a snapshot carries none. Auto-generate journeys verify recoverable composition retry without parallel requests, pending-timer cancellation, stale-fingerprint invalidation, one generation after recovery, visible terminal pause, and explicit restart with reset backoff. Runtime-selector placement, unavailable-state blocking, and execution labels are covered by the frontend render suite; cross-runtime network routing is covered by the backend integration fake services.
 
 `frontend/e2e/image-worker-pool.spec.mjs` stubs the pool routes and verifies the idle-worker readout beside **Generate**: its text and per-worker tooltip, in-place updates when occupancy changes, the absence of any runtime selector or banner while the pool is only partially degraded, and that a one-worker deployment renders no readout at all. Real multi-worker execution is proven by `backend/tests/integration/test_image_worker_pool.py`, because the first appliance has a single GPU instance.
