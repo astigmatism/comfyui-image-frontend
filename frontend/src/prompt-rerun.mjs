@@ -6,15 +6,20 @@ import {
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
   clampGenerationQuantity,
+  clientValidate,
   escapeHtml,
   interfaceInputs,
   normalizeSourceModelSelections,
   parametersForRequest,
   positivePromptInput,
   reconcileInterfaceValues,
+  recordRecentResolution,
+  removeRecentResolution,
   sourceModelParameterVariants,
   sourceModelSelectors,
 } from "./lib.mjs";
+import { controlMarkup, controlSectionMarkup, pairedResolutionMarkup, sourcePickerMarkup } from "./render.mjs";
+import { loraStackError, loraStackMarkup } from "./lora-stack.mjs";
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -24,6 +29,7 @@ export function rerunInputs(contract) {
     prompt: positivePromptInput(contract),
     width: inputs.find((input) => input.semantic_role === "width" && input.type === "integer") || null,
     height: inputs.find((input) => input.semantic_role === "height" && input.type === "integer") || null,
+    resolution: inputs.find((input) => input.type === "resolution") || null,
     seed: inputs.find((input) => input.type === "seed") || null,
     loras: inputs.filter((input) => input.type === "lora_stack" && Array.isArray(input.items)),
   };
@@ -46,7 +52,7 @@ export function defaultRerunFolderName(source, selections, now = Date.now()) {
 }
 
 // The modal starts from the control panel's current settings and never writes back.
-export function promptRerunDraft({ source, parameters, selections, quantity, collectionId, now = Date.now() }) {
+export function promptRerunDraft({ source, parameters, selections, quantity, collectionId, checkpointTiers = {}, loraMemory = {}, loraImages = {}, recentResolutions = [], now = Date.now() }) {
   const contract = source?.interface || source?.contract || null;
   const normalizedSelections = normalizeSourceModelSelections(source, selections || {}, parameters || {});
   return {
@@ -60,6 +66,11 @@ export function promptRerunDraft({ source, parameters, selections, quantity, col
     skipDuplicates: true,
     folderName: defaultRerunFolderName(source, normalizedSelections, now),
     parentCollectionId: collectionId || null,
+    sectionOpen: {},
+    checkpointTiers: structuredClone(checkpointTiers),
+    loraMemory: structuredClone(loraMemory),
+    loraImages: structuredClone(loraImages),
+    recentResolutions: structuredClone(recentResolutions),
   };
 }
 
@@ -73,6 +84,7 @@ export function retargetRerunDraft(draft, source, savedParameters = {}, selectio
     values: reconcileInterfaceValues(contract, structuredClone(savedParameters || {})),
     selections: normalizeSourceModelSelections(source, selections, savedParameters || {}),
     seedMode: rerunInputs(contract).seed ? draft.seedMode : "random",
+    keepOriginalResolution: Boolean(rerunInputs(contract).width && rerunInputs(contract).height && draft.keepOriginalResolution),
   };
 }
 
@@ -117,11 +129,14 @@ export function validatePromptRerunDraft(draft, preview) {
       if (error) errors[key] = error;
     }
   }
+  if (inputs.resolution) {
+    const resolutionError = clientValidate(contract, draft.values)[inputs.resolution.id];
+    if (resolutionError) errors[inputs.resolution.id] = resolutionError;
+  }
   for (const control of inputs.loras) {
     const value = draft.values[control.id] || [];
-    if (value.some((entry) => !Number.isFinite(entry.strength) || entry.strength < control.minimum || entry.strength > control.maximum)) {
-      errors[control.id] = `Strengths must be between ${control.minimum} and ${control.maximum}.`;
-    }
+    const error = loraStackError(control, value);
+    if (error) errors[control.id] = error;
   }
   if (draft.seedMode === "original" && draft.quantity !== 1) errors.quantity = "Reusing original seeds queues one image per prompt.";
   if (!rerunPromptCount(draft, preview)) errors.prompts = "None of the selected images has a prompt to re-run.";
@@ -163,14 +178,6 @@ export function promptRerunSubmitLabel(draft, preview, loading = false) {
   return preview ? `Queue ${plural(promptRerunPlannedTotal(draft, preview), "generation")}` : "Loading…";
 }
 
-function numberAttributes(input) {
-  return ["minimum:min", "maximum:max", "step:step"]
-    .map((pair) => pair.split(":"))
-    .filter(([name]) => input?.[name] !== undefined)
-    .map(([name, attribute]) => `${attribute}="${escapeHtml(input[name])}"`)
-    .join(" ");
-}
-
 function previewSummary(preview, draft) {
   if (!preview) return "Reading the selected prompts…";
   const parts = [`${plural(rerunPromptCount(draft, preview), "prompt")} from ${plural(preview.generation_count, "generation")}`];
@@ -184,57 +191,59 @@ export function promptRerunSummaryMarkup(draft, preview, errors = validatePrompt
   return `<span data-rerun-total>${preview ? `Queues ${plural(total, "generation")}` : ""}</span>${fieldError(errors, "total")}${fieldError(errors, "prompts")}`;
 }
 
-export function promptRerunMarkup(draft, preview, { sources = [], parentName = "Home", loading = false, error = "" } = {}) {
+export function promptRerunMarkup(draft, preview, { parentName = "Home", loading = false, error = "" } = {}) {
   const errors = preview ? validatePromptRerunDraft(draft, preview) : {};
   const contract = draft.source?.interface || draft.source?.contract;
   const inputs = rerunInputs(contract);
-  const selector = sourceModelSelectors(draft.source)[0];
-  const selected = new Set(selector ? draft.selections[selector.parameter_id] || [] : []);
-  const total = promptRerunPlannedTotal(draft, preview);
-  const imageSources = sources.filter((source) => (source.output_kind || "image") === "image");
-  const excerpts = (preview?.prompts || []).map((item) => `<li>${escapeHtml(item.excerpt)}${item.width && item.height ? ` <small>${item.width} × ${item.height}</small>` : ""}</li>`).join("");
-  const more = preview && preview.prompts.length < rerunPromptCount(draft, preview) ? `<li class="muted">and ${rerunPromptCount(draft, preview) - preview.prompts.length} more</li>` : "";
   const blocked = loading || !preview || Object.keys(errors).length > 0;
-  return `<div class="dialog-frame">
-    <header class="dialog-header"><div><h2>Prompt Re-run</h2><p data-rerun-summary>${escapeHtml(previewSummary(preview, draft))}</p></div><button type="button" class="icon-button" data-rerun-action="close" aria-label="Close">×</button></header>
-    <div class="rerun-dialog-content">
-      <p class="help-text">Generates the exact prompts of the selection again. Creative Direction and the prompt generator are not used. Other settings come from the control panel.</p>
-      ${excerpts ? `<details class="rerun-prompts"><summary>Prompts</summary><ol>${excerpts}${more}</ol></details>` : ""}
-      <div class="rerun-grid">
-        <label class="field rerun-wide">Folder name<input type="text" name="rerun_folder" maxlength="100" value="${escapeHtml(draft.folderName)}" aria-invalid="${Boolean(errors.folder)}" /><small class="muted">Created inside ${escapeHtml(parentName)}</small>${fieldError(errors, "folder")}</label>
-        <label class="field rerun-wide">Generation source<select name="rerun_source">${imageSources.map((source) => `<option value="${escapeHtml(source.source_key)}" ${source.source_key === draft.sourceKey ? "selected" : ""} ${source.available === false ? "disabled" : ""}>${escapeHtml(source.display_name || source.source_key)}${source.available === false ? " — Unavailable" : ""}</option>`).join("")}</select>${fieldError(errors, "source")}</label>
-        ${selector ? `<fieldset class="field rerun-wide rerun-checkpoints"><legend>${escapeHtml(selector.label)}</legend><div class="rerun-choice-list">${selector.choices.map((choice) => `<label class="rerun-check"><input type="checkbox" name="rerun_checkpoint" value="${escapeHtml(choice.value)}" ${selected.has(choice.value) ? "checked" : ""} /><span>${escapeHtml(choice.label)}</span></label>`).join("")}</div>${fieldError(errors, "checkpoints")}</fieldset>` : ""}
-        ${inputs.loras.map((control) => {
-          const entries = draft.values[control.id] || [];
-          return `<fieldset class="field rerun-wide rerun-loras" data-rerun-lora="${escapeHtml(control.id)}"><legend>${escapeHtml(control.label || "LoRAs")}</legend>${entries.map((entry) => {
-            const item = control.items.find((candidate) => candidate.id === entry.id);
-            return `<label class="rerun-lora-row"><input type="checkbox" name="rerun_lora_enabled" data-lora-id="${escapeHtml(entry.id)}" ${entry.strength !== 0 ? "checked" : ""} aria-label="Enable ${escapeHtml(item?.label || entry.id)}" /><span>${escapeHtml(item?.label || entry.id)}</span><input type="number" name="rerun_lora_strength" data-lora-id="${escapeHtml(entry.id)}" value="${escapeHtml(entry.strength)}" ${numberAttributes(control)} aria-label="${escapeHtml(item?.label || entry.id)} strength" /></label>`;
-          }).join("")}${fieldError(errors, control.id)}</fieldset>`;
-        }).join("")}
-        ${inputs.width && inputs.height ? `<fieldset class="field rerun-wide rerun-resolution"><legend>Resolution</legend>
-          <label class="rerun-check"><input type="checkbox" name="rerun_keep_resolution" ${draft.keepOriginalResolution ? "checked" : ""} /><span>Keep each original image's resolution</span></label>
-          <div class="rerun-axes"><label class="field compact">Width<input type="number" name="rerun_width" value="${escapeHtml(draft.values[inputs.width.id] ?? "")}" ${numberAttributes(inputs.width)} ${draft.keepOriginalResolution ? "disabled" : ""} aria-invalid="${Boolean(errors.width)}" />${fieldError(errors, "width")}</label>
-          <label class="field compact">Height<input type="number" name="rerun_height" value="${escapeHtml(draft.values[inputs.height.id] ?? "")}" ${numberAttributes(inputs.height)} ${draft.keepOriginalResolution ? "disabled" : ""} aria-invalid="${Boolean(errors.height)}" />${fieldError(errors, "height")}</label></div>
-          ${draft.keepOriginalResolution ? '<small class="muted">Images without a recorded or valid size use the width and height above.</small>' : ""}</fieldset>` : ""}
+  const section = (key, title, status, content, actions = "", hasError = false) => controlSectionMarkup({
+    key, title, status, content, actions, idPrefix: "rerun-",
+    className: `control-section-${key === "resolution" ? "resolution" : "lora"}`,
+    open: Boolean(hasError || draft.sectionOpen?.[key]),
+  });
+  const loras = inputs.loras.map((control) => section(
+    `lora-${control.id}`, control.label || "LoRAs",
+    `${(draft.values[control.id] || []).filter((entry) => entry.strength > 0).length} active`,
+    loraStackMarkup(control, draft.values[control.id], draft.loraImages?.[control.id]) + fieldError(errors, control.id),
+    `<div class="control-section-actions"><button type="button" class="icon-button prompt-editor-launch" data-lora-open data-control-context="rerun" data-lora-control-id="${escapeHtml(control.id)}" aria-label="Open LoRA manager" title="Open LoRA manager" aria-haspopup="dialog" aria-controls="lora-manager-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`,
+    Boolean(errors[control.id]),
+  )).join("");
+  const paired = inputs.width && inputs.height;
+  const value = paired ? { width: draft.values[inputs.width.id], height: draft.values[inputs.height.id] } : draft.values[inputs.resolution?.id];
+  const resolutionErrors = paired ? { [inputs.width.id]: errors.width, [inputs.height.id]: errors.height } : errors;
+  const resolutionOptions = { idPrefix: "rerun-", liveErrors: true, hideLegend: true, hideLabel: true, recentResolutions: draft.recentResolutions, disabled: paired && draft.keepOriginalResolution };
+  const resolution = paired || inputs.resolution ? section("resolution", "Resolution",
+    paired && draft.keepOriginalResolution ? "Original sizes" : `${value?.width ?? "—"} × ${value?.height ?? "—"}`,
+    `${paired ? `<label class="rerun-check rerun-original-resolution"><input type="checkbox" name="rerun_keep_resolution" ${draft.keepOriginalResolution ? "checked" : ""} /><span>Keep each original image's resolution</span></label>` : ""}
+    ${paired ? pairedResolutionMarkup(inputs.width, inputs.height, draft.values, contract, resolutionErrors, resolutionOptions) : controlMarkup(inputs.resolution, draft.values, contract, errors, resolutionOptions)}
+    ${paired && draft.keepOriginalResolution ? '<p class="help-text">Images without a recorded or valid size use the chosen resolution above.</p>' : ""}`,
+    "", Boolean(errors.width || errors.height || errors[inputs.resolution?.id]),
+  ) : "";
+  return `<div class="dialog-frame rerun-dialog-frame" data-control-context="rerun">
+    <header class="dialog-header"><div><h2>Prompt Re-run</h2><p data-rerun-summary aria-live="polite">${escapeHtml(previewSummary(preview, draft))}</p></div><button type="button" class="icon-button source-picker-dialog-close" data-rerun-action="close" aria-label="Close Prompt Re-run" ${loading ? "disabled" : ""}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>
+    <div class="rerun-dialog-content" ${loading ? "inert" : ""}>
+      ${sourcePickerMarkup({ selectedGenerationTargetCount: rerunVariants(draft).length }, draft.source ? [draft.source] : [], draft.sourceKey, loading, { idPrefix: "rerun-" })}
+      ${fieldError(errors, "source")}${fieldError(errors, "checkpoints")}
+      <div class="rerun-sections">${loras}${resolution}</div>
+      <div class="rerun-options">
         ${inputs.seed ? `<fieldset class="field rerun-seed"><legend>Seed</legend>
           <label class="rerun-check"><input type="radio" name="rerun_seed" value="random" ${draft.seedMode === "random" ? "checked" : ""} /><span>Random per image</span></label>
           <label class="rerun-check"><input type="radio" name="rerun_seed" value="original" ${draft.seedMode === "original" ? "checked" : ""} /><span>Reuse original seed</span></label></fieldset>` : ""}
         <label class="field rerun-quantity">Generations per prompt<input type="number" name="rerun_quantity" min="${MIN_GENERATION_QUANTITY}" max="${draft.seedMode === "original" ? 1 : MAX_GENERATION_QUANTITY}" step="1" value="${draft.quantity}" ${draft.seedMode === "original" ? "disabled" : ""} />${fieldError(errors, "quantity")}</label>
-        <label class="rerun-check rerun-wide"><input type="checkbox" name="rerun_skip_duplicates" ${draft.skipDuplicates ? "checked" : ""} /><span>Skip duplicate prompts</span></label>
       </div>
-      <div class="rerun-total" role="status">${promptRerunSummaryMarkup(draft, preview, errors)}</div>
+      <div class="rerun-destination">
+        <label class="field">Folder name<input type="text" name="rerun_folder" maxlength="100" value="${escapeHtml(draft.folderName)}" aria-invalid="${Boolean(errors.folder)}" /><small class="muted">Created inside ${escapeHtml(parentName)}</small>${fieldError(errors, "folder")}</label>
+        <label class="rerun-check"><input type="checkbox" name="rerun_skip_duplicates" ${draft.skipDuplicates ? "checked" : ""} /><span>Skip duplicate prompts</span></label>
+      </div>
       <p class="field-error" data-operation-error role="alert">${escapeHtml(error)}</p>
     </div>
-    <footer class="dialog-actions"><button type="button" class="button secondary" data-rerun-action="close">Cancel</button><button type="button" class="button primary" data-rerun-action="submit" ${blocked ? "disabled" : ""}>${promptRerunSubmitLabel(draft, preview, loading)}</button></footer>
+    <footer class="dialog-actions rerun-dialog-footer"><div class="rerun-total" role="status">${promptRerunSummaryMarkup(draft, preview, errors)}</div><div class="rerun-footer-buttons"><button type="button" class="button secondary" data-rerun-action="close" ${loading ? "disabled" : ""}>Cancel</button><button type="button" class="button primary" data-rerun-action="submit" ${blocked ? "disabled" : ""}>${promptRerunSubmitLabel(draft, preview, loading)}</button></div></footer>
   </div>`;
 }
 
 // Apply one form control's change to a draft, returning a new draft.
-export function updateRerunDraft(draft, name, value, extra = {}) {
+export function updateRerunDraft(draft, name, value) {
   const next = { ...draft, values: structuredClone(draft.values), selections: structuredClone(draft.selections) };
-  const contract = draft.source?.interface || draft.source?.contract;
-  const inputs = rerunInputs(contract);
-  const integer = (raw) => (raw === "" ? null : Number(raw));
   if (name === "rerun_folder") next.folderName = String(value);
   else if (name === "rerun_quantity") next.quantity = clampGenerationQuantity(value);
   else if (name === "rerun_keep_resolution") next.keepOriginalResolution = Boolean(value);
@@ -242,60 +251,43 @@ export function updateRerunDraft(draft, name, value, extra = {}) {
   else if (name === "rerun_seed") {
     next.seedMode = value === "original" ? "original" : "random";
     if (next.seedMode === "original") next.quantity = 1;
-  } else if (name === "rerun_width" && inputs.width) next.values[inputs.width.id] = integer(value);
-  else if (name === "rerun_height" && inputs.height) next.values[inputs.height.id] = integer(value);
-  else if (name === "rerun_checkpoint") {
-    const selector = sourceModelSelectors(draft.source)[0];
-    if (selector) {
-      const chosen = new Set(next.selections[selector.parameter_id] || []);
-      if (extra.checked) chosen.add(value); else chosen.delete(value);
-      next.selections[selector.parameter_id] = selector.choices.map((choice) => choice.value).filter((item) => chosen.has(item));
-      const values = next.selections[selector.parameter_id];
-      if (values.length && !values.includes(next.values[selector.parameter_id])) next.values[selector.parameter_id] = values[0];
-    }
-  } else if (name === "rerun_lora_strength" || name === "rerun_lora_enabled") {
-    const control = inputs.loras.find((item) => item.id === extra.controlId);
-    if (control) {
-      next.values[control.id] = (next.values[control.id] || []).map((entry) => {
-        if (entry.id !== extra.loraId) return entry;
-        if (name === "rerun_lora_strength") return { ...entry, strength: value === "" ? Number.NaN : Number(value) };
-        const restored = Number(extra.restoreStrength);
-        return { ...entry, strength: value ? (restored > 0 ? restored : 1) : 0 };
-      });
-    }
   }
   return next;
 }
 
-// DOM controller. `deps` supplies application state and services.
+// DOM controller. Shared pickers receive callbacks into this session, never the panel.
 export function createPromptRerun(dialog, deps) {
   let draft = null;
   let preview = null;
   let selectionBody = null;
   let loading = false;
   let error = "";
-  let token = 0;
-  const loraMemory = new Map();
+  let sessionToken = 0;
+  let sourceToken = 0;
+  let recentTimer = null;
 
   const render = () => {
     if (!draft) return;
-    const focused = document.activeElement && dialog.contains(document.activeElement) ? document.activeElement : null;
-    const name = focused?.name;
-    const loraId = focused?.dataset?.loraId;
-    const value = focused?.value;
-    const position = focused && "selectionStart" in focused ? (() => { try { return focused.selectionStart; } catch { return null; } })() : null;
-    dialog.innerHTML = promptRerunMarkup(draft, preview, { sources: deps.sources(), parentName: deps.collectionName(draft.parentCollectionId), loading, error });
-    if (name) {
-      const selector = loraId ? `[name="${name}"][data-lora-id="${CSS.escape(loraId)}"]` : focused.type === "radio" || focused.type === "checkbox" ? `[name="${name}"][value="${CSS.escape(value)}"]` : `[name="${name}"]`;
+    const errors = preview ? validatePromptRerunDraft(draft, preview) : {};
+    const inputs = rerunInputs(draft.source?.interface || draft.source?.contract);
+    if (errors.width || errors.height || errors[inputs.resolution?.id]) draft.sectionOpen.resolution = true;
+    for (const control of inputs.loras) if (errors[control.id]) draft.sectionOpen[`lora-${control.id}`] = true;
+    const focused = dialog.contains(document.activeElement) ? document.activeElement : null;
+    const selector = focused?.id ? `#${CSS.escape(focused.id)}` : focused?.name
+      ? `[name="${focused.name}"]${["radio", "checkbox"].includes(focused.type) ? `[value="${CSS.escape(focused.value)}"]` : ""}` : null;
+    const position = focused?.type === "text" ? focused.selectionStart : null;
+    const scrollTop = dialog.querySelector(".rerun-dialog-content")?.scrollTop || 0;
+    dialog.innerHTML = promptRerunMarkup(draft, preview, { parentName: deps.collectionName(draft.parentCollectionId), loading, error });
+    dialog.querySelector(".rerun-dialog-content").scrollTop = scrollTop;
+    if (selector) {
       const replacement = dialog.querySelector(selector);
       replacement?.focus({ preventScroll: true });
-      if (position !== null && replacement && "setSelectionRange" in replacement) {
-        try { replacement.setSelectionRange(position, position); } catch { /* number inputs */ }
-      }
+      if (position !== null) replacement?.setSelectionRange(position, position);
     }
   };
 
   function refreshDerived() {
+    if (!draft) return;
     const errors = preview ? validatePromptRerunDraft(draft, preview) : {};
     for (const slot of dialog.querySelectorAll("[data-rerun-error]")) {
       if (slot.closest(".rerun-total")) continue;
@@ -303,6 +295,18 @@ export function createPromptRerun(dialog, deps) {
       const field = slot.closest("label")?.querySelector("input");
       if (field) field.setAttribute("aria-invalid", String(Boolean(errors[slot.dataset.rerunError])));
     }
+    const inputs = rerunInputs(draft.source?.interface || draft.source?.contract);
+    for (const slot of dialog.querySelectorAll("[data-control-error]")) {
+      const id = slot.dataset.controlError;
+      const key = id === inputs.width?.id ? "width" : id === inputs.height?.id ? "height" : id;
+      slot.textContent = errors[key] || "";
+    }
+    for (const field of dialog.querySelectorAll("[data-control-id]")) {
+      const id = field.dataset.controlId;
+      const key = id === inputs.width?.id ? "width" : id === inputs.height?.id ? "height" : id;
+      field.setAttribute("aria-invalid", String(Boolean(errors[key])));
+    }
+    if (errors.width || errors.height || errors[inputs.resolution?.id]) setSectionOpen("resolution", true);
     const status = dialog.querySelector(".rerun-total");
     if (status) status.innerHTML = promptRerunSummaryMarkup(draft, preview, errors);
     const summary = dialog.querySelector("[data-rerun-summary]");
@@ -314,61 +318,100 @@ export function createPromptRerun(dialog, deps) {
     }
   }
 
+  function setSectionOpen(key, open) {
+    if (!draft) return;
+    draft.sectionOpen[key] = open;
+    const section = dialog.querySelector(`[data-control-section="${CSS.escape(key)}"]`);
+    section?.classList.toggle("is-expanded", open);
+    section?.querySelector(".control-section-trigger")?.setAttribute("aria-expanded", String(open));
+    const body = section?.querySelector(".control-section-body");
+    body?.setAttribute("aria-hidden", String(!open));
+    body?.toggleAttribute("inert", !open);
+  }
+
   async function open({ body }) {
-    const request = ++token;
-    selectionBody = body;
+    const session = ++sessionToken;
+    sourceToken += 1;
+    selectionBody = structuredClone(body);
     preview = null;
     error = "";
     loading = false;
-    loraMemory.clear();
     draft = promptRerunDraft(deps.initial());
     render();
     dialog.oncancel = (event) => { if (loading) event.preventDefault(); };
-    dialog.onclose = () => { token += 1; draft = null; deps.onClose?.(); };
+    dialog.onclose = () => {
+      sessionToken += 1;
+      sourceToken += 1;
+      clearTimeout(recentTimer);
+      draft = null;
+      deps.closePickers?.();
+      deps.onClose?.();
+    };
     dialog.showModal();
-    dialog.querySelector('[name="rerun_folder"]')?.focus();
+    dialog.querySelector("#rerun-workflow-source")?.focus();
     try {
       const result = await deps.api("/api/gallery/prompt-rerun/preview", { method: "POST", body: JSON.stringify(body) });
-      if (request !== token) return;
+      if (session !== sessionToken) return;
       preview = result;
     } catch (failure) {
-      if (request !== token) return;
+      if (session !== sessionToken) return;
       error = failure.message || "The selected prompts could not be read.";
     }
-    render();
+    // Preview arrivals must not replace an opener underneath a stacked picker.
+    refreshDerived();
+    const errorSlot = dialog.querySelector("[data-operation-error]");
+    if (errorSlot) errorSlot.textContent = error;
   }
 
-  async function changeSource(key) {
-    const request = ++token;
-    try {
-      const source = await deps.loadSource(key);
-      if (request !== token || !draft) return;
-      draft = retargetRerunDraft(draft, source, deps.savedParameters(key, source), deps.savedSelections(source));
-      loraMemory.clear();
-      error = "";
-    } catch (failure) {
-      if (request !== token || !draft) return;
-      error = failure.message || "That generation source could not be loaded.";
+  async function applySource(selection, session = sessionToken, force = false) {
+    if (!draft || loading || session !== sessionToken) return false;
+    const request = ++sourceToken;
+    const changed = selection.sourceKey !== draft.sourceKey;
+    const source = changed || force ? await deps.loadSource(selection.sourceKey) : draft.source;
+    if (session !== sessionToken || request !== sourceToken || !draft) return false;
+    if (changed || force) {
+      draft = retargetRerunDraft(draft, source, deps.savedParameters(selection.sourceKey, source), selection.modelSelectionsBySource[selection.sourceKey]);
+      const extras = deps.sourceSettings?.(selection.sourceKey) || {};
+      draft.loraMemory = structuredClone(extras.loraMemory || {});
+      draft.loraImages = structuredClone(extras.loraImages || {});
+      draft.recentResolutions = structuredClone(extras.recentResolutions || []);
+      clearTimeout(recentTimer);
+    } else {
+      draft.selections = structuredClone(selection.modelSelectionsBySource[draft.sourceKey] || {});
     }
+    for (const selector of sourceModelSelectors(source)) {
+      const values = draft.selections[selector.parameter_id] || [];
+      if (values.length && !values.includes(draft.values[selector.parameter_id])) draft.values[selector.parameter_id] = values[0];
+    }
+    draft.checkpointTiers = structuredClone(selection.checkpointTiers);
+    error = "";
     render();
+    return true;
   }
 
   async function submit() {
     if (!draft || loading || !preview || Object.keys(validatePromptRerunDraft(draft, preview)).length) return;
+    const session = sessionToken;
     loading = true;
     error = "";
     render();
     const body = promptRerunRequest(draft, selectionBody);
     try {
       const result = await deps.submit(body, promptRerunPlannedTotal(draft, preview));
+      if (session !== sessionToken) return;
       loading = false;
       if (result) dialog.close();
       else render();
     } catch (failure) {
+      if (session !== sessionToken || !draft) return;
       loading = false;
-      if (!draft) return;
+      if (["source_republished", "source_unavailable"].includes(failure.code)) {
+        try {
+          await applySource({ sourceKey: draft.sourceKey, modelSelectionsBySource: { [draft.sourceKey]: draft.selections }, checkpointTiers: draft.checkpointTiers }, session, true);
+        } catch { /* Keep the failed draft available for correction. */ }
+      }
+      if (session !== sessionToken || !draft) return;
       error = failure.message || "Prompt Re-run could not be queued.";
-      if (["source_republished", "source_unavailable"].includes(failure.code)) await changeSource(draft.sourceKey);
       render();
     }
   }
@@ -380,31 +423,15 @@ export function createPromptRerun(dialog, deps) {
     if (action === "close" && !loading) dialog.close();
     else if (action === "submit") void submit();
   });
-  const handle = (event, commit) => {
+  const handle = (event) => {
     const target = event.target;
     if (!draft || !target.name?.startsWith("rerun_") || loading) return;
-    if (target.name === "rerun_source") { if (commit) void changeSource(target.value); return; }
-    const controlId = target.closest("[data-rerun-lora]")?.dataset.rerunLora;
-    const loraId = target.dataset.loraId;
-    const memoryKey = `${controlId}:${loraId}`;
-    if (target.name === "rerun_lora_strength" && Number(target.value) > 0) loraMemory.set(memoryKey, Number(target.value));
-    if (target.name === "rerun_lora_enabled" && !target.checked) {
-      const current = (draft.values[controlId] || []).find((entry) => entry.id === loraId)?.strength;
-      if (current > 0) loraMemory.set(memoryKey, current);
-    }
-    const value = target.type === "checkbox" && target.name !== "rerun_checkpoint" ? target.checked : target.value;
-    draft = updateRerunDraft(draft, target.name, value, { checked: target.checked, controlId, loraId, restoreStrength: loraMemory.get(memoryKey) });
-    // Text and number fields refresh only derived state: replacing the focused
-    // input would move the caret, and a blur-time re-render would swallow the
-    // click that caused the blur.
-    if (target.type === "text" || target.type === "number") {
-      refreshDerived();
-      return;
-    }
-    render();
+    draft = updateRerunDraft(draft, target.name, target.type === "checkbox" ? target.checked : target.value);
+    if (target.type === "text" || target.type === "number") refreshDerived();
+    else render();
   };
-  dialog.addEventListener("input", (event) => { if (event.target.type === "text" || event.target.type === "number") handle(event, false); });
-  dialog.addEventListener("change", (event) => handle(event, true));
+  dialog.addEventListener("input", (event) => { if (["text", "number"].includes(event.target.type)) handle(event); });
+  dialog.addEventListener("change", handle);
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && event.target.matches('input[type="text"], input[type="number"]')) {
       event.preventDefault();
@@ -412,5 +439,70 @@ export function createPromptRerun(dialog, deps) {
     }
   });
 
-  return { open, isOpen: () => dialog.open, close: () => { if (!loading && dialog.open) dialog.close(); } };
+  function recordResolution(value) {
+    clearTimeout(recentTimer);
+    recentTimer = null;
+    if (draft && !loading) draft.recentResolutions = recordRecentResolution(draft.recentResolutions, value);
+  }
+
+  return {
+    open, isOpen: () => dialog.open,
+    close: () => { if (!loading && dialog.open) dialog.close(); },
+    toggleSection: (trigger) => setSectionOpen(trigger.closest("[data-control-section]").dataset.controlSection, trigger.getAttribute("aria-expanded") !== "true"),
+    sourcePickerContext: () => {
+      if (!draft || loading) return null;
+      const session = sessionToken;
+      return {
+        owner: "rerun", sourceKey: draft.sourceKey,
+        selections: structuredClone(draft.selections), checkpointTiers: structuredClone(draft.checkpointTiers),
+        sources: () => deps.sources().filter((source) => (source.output_kind || "image") === "image").map((source) => source.source_key === draft?.sourceKey ? { ...source, ...draft.source } : source),
+        apply: (selection) => applySource(selection, session),
+        cancel: () => { sourceToken += 1; },
+      };
+    },
+    loraContext: (id) => {
+      if (!draft || loading) return null;
+      const control = rerunInputs(draft.source?.interface || draft.source?.contract).loras.find((item) => item.id === id);
+      if (!control) return null;
+      return { control, sourceKey: draft.sourceKey, sourceName: draft.source.display_name,
+        publicationRevision: draft.source.revision, values: draft.values[id], memory: draft.loraMemory[id] || {},
+        images: draft.loraImages[id] || {}, subjectAvailable: null };
+    },
+    applyLoras: (id, values, memory, key) => {
+      if (!draft || loading || draft.sourceKey !== key) throw new Error("The workflow changed. Reopen the LoRA manager.");
+      draft.values[id] = structuredClone(values);
+      draft.loraMemory[id] = structuredClone(memory);
+      render();
+    },
+    onLoraImages: (key, id, images) => {
+      if (draft?.sourceKey !== key) return;
+      draft.loraImages[id] = structuredClone(images);
+      render();
+    },
+    resolutionContext: () => {
+      if (!draft || loading) return null;
+      const owner = draft.source;
+      const inputs = rerunInputs(draft.source?.interface || draft.source?.contract);
+      return {
+        values: draft.values, recent: draft.recentResolutions,
+        set: (width, height) => {
+          if (draft?.source !== owner || (inputs.width && inputs.height && draft.keepOriginalResolution)) return;
+          if (inputs.width && inputs.height) {
+            draft.values[inputs.width.id] = width;
+            draft.values[inputs.height.id] = height;
+          } else if (inputs.resolution) draft.values[inputs.resolution.id] = { width, height };
+          refreshDerived();
+        },
+        record: recordResolution,
+        remove: (width, height) => {
+          clearTimeout(recentTimer);
+          draft.recentResolutions = removeRecentResolution(draft.recentResolutions, width, height);
+        },
+        queueRecord: (value, after) => {
+          clearTimeout(recentTimer);
+          recentTimer = setTimeout(() => { if (draft?.source === owner) { recordResolution(value); after(); } }, 600);
+        },
+      };
+    },
+  };
 }

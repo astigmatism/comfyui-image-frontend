@@ -54,7 +54,7 @@ test("production build emits one content-addressed frontend module graph", async
     gallery_dom: new Set(),
     generation_submissions: new Set([first.assets.api]),
     gallery_selection: new Set([first.assets.api, first.assets.lib, first.assets.gallery_view]),
-    prompt_rerun: new Set([first.assets.lib]),
+    prompt_rerun: new Set([first.assets.lib, first.assets.render, first.assets.lora_stack]),
     gallery_view: new Set(),
     gallery_hover: new Set(),
     gallery_groups: new Set([first.assets.api, first.assets.lib]),

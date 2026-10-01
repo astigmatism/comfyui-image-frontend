@@ -296,11 +296,12 @@ function sourceSelectorLabel(state, sources) {
   return sources.length ? "Select a source" : "No published sources";
 }
 
-function sourcePickerMarkup(
+export function sourcePickerMarkup(
   state,
   sources,
   activeKey,
   disabled,
+  { idPrefix = "" } = {},
 ) {
   const activeSource = sources.find((item) => sourceKey(item) === activeKey) || null;
   const activeName = activeSource ? sourceDisplayName(activeSource) : sourceSelectorLabel(state, sources);
@@ -316,10 +317,10 @@ function sourcePickerMarkup(
   ].filter(Boolean).join(" · ");
   return `
     <div class="field compact source-picker-field">
-      <span id="generation-source-label">Generation source</span>
+      <span id="${idPrefix}generation-source-label">Generation source</span>
       <div class="source-picker">
-        <button id="workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="generation-source-label generation-source-value" ${disabled ? "disabled" : ""}>
-          <span class="source-picker-current"><span class="source-picker-name"><strong id="generation-source-value">${escapeHtml(activeName)}</strong></span>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
+        <button id="${idPrefix}workflow-source" class="source-picker-trigger" type="button" data-action="open-generation-source-dialog" data-source-key="${escapeHtml(activeKey || "")}" aria-haspopup="dialog" aria-controls="source-picker-dialog" aria-labelledby="${idPrefix}generation-source-label ${idPrefix}generation-source-value" ${disabled ? "disabled" : ""}>
+          <span class="source-picker-current"><span class="source-picker-name"><strong id="${idPrefix}generation-source-value">${escapeHtml(activeName)}</strong></span>${selectionCopy ? `<small>${escapeHtml(selectionCopy)}</small>` : ""}</span>
           <svg class="source-picker-launch-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12M4 10h12M4 14.5h12" /><circle cx="7" cy="5.5" r="1.5" /><circle cx="13" cy="10" r="1.5" /><circle cx="9" cy="14.5" r="1.5" /></svg>
         </button>
       </div>
@@ -889,7 +890,7 @@ function promptGenerationMarkup(state) {
     className: "control-section-prompt-generation" });
 }
 
-function controlSectionMarkup({
+export function controlSectionMarkup({
   key,
   title,
   content,
@@ -899,10 +900,11 @@ function controlSectionMarkup({
   actions = "",
   className = "",
   titleHelp = "",
+  idPrefix = "",
 }) {
   const slug = sectionSlug(key);
-  const triggerId = `control-section-${slug}-trigger`;
-  const bodyId = `control-section-${slug}-body`;
+  const triggerId = `${idPrefix}control-section-${slug}-trigger`;
+  const bodyId = `${idPrefix}control-section-${slug}-body`;
   return `<section class="control-section ${className} ${open ? "is-expanded" : ""}" data-control-section="${escapeHtml(key)}">
     <div class="control-section-header">
       <button type="button" class="control-section-trigger" id="${triggerId}" data-action="toggle-control-section" aria-controls="${bodyId}" aria-expanded="${open}">
@@ -980,14 +982,14 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
     contract?.capability_states || {},
   );
   if (!presentation.visible) return "";
-  const id = `control-${control.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const id = `${options.idPrefix || ""}control-${control.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
   const value = values[control.id];
-  const disabled = !presentation.enabled;
+  const disabled = Boolean(options.disabled) || !presentation.enabled;
   const required = presentation.required;
   const error = errors[control.id];
   const label = control.id === "prompt.text" && !control.semantic_role ? "Prompt" : control.label || control.id;
   const isPrompt = control.semantic_role === "positive_prompt" || control.id === "prompt.text";
-  const errorId = error ? `${id}-error` : null;
+  const errorId = error || options.liveErrors ? `${id}-error` : null;
   const describedBy = errorId || "";
   const shared = `data-control-id="${escapeHtml(control.id)}" ${disabled ? "disabled" : ""} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}`;
   const common = `id="${id}" ${shared}${options.hideLabel && isPrompt ? ` aria-label="${escapeHtml(label)}"` : ""}`;
@@ -1097,7 +1099,7 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   }
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
-    ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
+    ${errorId ? `<p class="field-error" id="${errorId}" data-control-error="${escapeHtml(control.id)}" role="alert">${escapeHtml(error || "")}</p>` : ""}
   </div>`;
 }
 
@@ -1204,18 +1206,19 @@ function resolutionMarkup(control, value, disabled, required, error, describedBy
   </div>`;
 }
 
-function pairedResolutionMarkup(widthControl, heightControl, values, contract, errors, options = {}) {
+export function pairedResolutionMarkup(widthControl, heightControl, values, contract, errors, options = {}) {
   const capabilityStates = contract?.capability_states || {};
   const widthPresentation = controlPresentation(widthControl, values, capabilityStates);
   const heightPresentation = controlPresentation(heightControl, values, capabilityStates);
-  const disabled = !widthPresentation.enabled || !heightPresentation.enabled;
+  const disabled = Boolean(options.disabled) || !widthPresentation.enabled || !heightPresentation.enabled;
+  if (options.disabled) { widthPresentation.enabled = false; heightPresentation.enabled = false; }
   const required = widthPresentation.required || heightPresentation.required;
   const widthError = errors[widthControl.id];
   const heightError = errors[heightControl.id];
-  const widthId = `control-${widthControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
-  const heightId = `control-${heightControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
-  const widthErrorId = widthError ? `${widthId}-error` : null;
-  const heightErrorId = heightError ? `${heightId}-error` : null;
+  const widthId = `${options.idPrefix || ""}control-${widthControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const heightId = `${options.idPrefix || ""}control-${heightControl.id.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const widthErrorId = widthError || options.liveErrors ? `${widthId}-error` : null;
+  const heightErrorId = heightError || options.liveErrors ? `${heightId}-error` : null;
   const describedBy = [widthErrorId, heightErrorId].filter(Boolean).join(" ");
   const grid = resolutionGridConstraints({
     constraints: {
@@ -1250,7 +1253,7 @@ function pairedResolutionMarkup(widthControl, heightControl, values, contract, e
     heightId,
   );
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-resolution-pair-block="${escapeHtml(`${widthControl.id}:${heightControl.id}`)}" data-control-group="${escapeHtml(widthControl.group || heightControl.group || "")}">
-    <fieldset class="field semantic-fieldset" ${describedBy ? `aria-describedby="${describedBy}"` : ""}>
+    <fieldset class="field semantic-fieldset" ${options.disabled ? "disabled" : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""}>
       <legend${options.hideLegend ? ' class="visually-hidden"' : ""}>Resolution${required ? '<b class="required-mark" aria-hidden="true">*</b>' : ""}</legend>
       <div class="resolution-editor">
         ${recentResolutionsMarkup(options.recentResolutions, value)}
@@ -1280,7 +1283,7 @@ function pairedResolutionInputMarkup(
   const label = control.label || (axis === "width" ? "Width" : "Height");
   return `<div class="resolution-axis-field" data-control-block="${escapeHtml(control.id)}">
     <label for="${id}"><span>${escapeHtml(label)}</span><input id="${id}" data-control-id="${escapeHtml(control.id)}" data-resolution-axis="${axis}" type="number" value="${escapeHtml(value ?? "")}" min="${escapeHtml(controlConstraint(control, "minimum") ?? "")}" max="${escapeHtml(controlConstraint(control, "maximum") ?? "")}" step="${escapeHtml(controlConstraint(control, "step") ?? 1)}" ${presentation.enabled ? "" : "disabled"} ${required ? 'required aria-required="true"' : ""} ${error ? 'aria-invalid="true"' : ""} ${describedBy ? `aria-describedby="${describedBy}"` : ""} /></label>
-    ${error ? `<p class="field-error" id="${errorId}" role="alert">${escapeHtml(error)}</p>` : ""}
+    ${errorId ? `<p class="field-error" id="${errorId}" data-control-error="${escapeHtml(control.id)}" role="alert">${escapeHtml(error || "")}</p>` : ""}
   </div>`;
 }
 

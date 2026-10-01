@@ -293,6 +293,7 @@ let photoViewerDirection = "older";
 let promptEditorReturnFocus = null;
 let promptEditorInstructionOverrides = {};
 let sourcePickerReturnFocus = null;
+let sourcePickerContext = null;
 let collectionDialogReturnFocus = null;
 let collectionDeleteReturnFocus = null;
 let moveDialogReturnFocus = null;
@@ -423,7 +424,8 @@ function bindDelegatedEvents() {
   });
   loraManagerController = installLoraManager(root, {
     api,
-    context: (id) => {
+    context: (id, owner) => {
+      if (owner === "rerun") return promptRerun?.controller.loraContext(id);
       const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
       if (!control || !state.activeSourceKey) return null;
       const subjectSource = state.promptGeneratorSource;
@@ -434,12 +436,14 @@ function bindDelegatedEvents() {
         publicationRevision: sourceRevision(state.activeSource),
         values: state.parameters[id], memory: state.loraStrengthMemory[id] || {}, images: state.loraImages[id] || {}, subjectAvailable };
     },
-    onImages: (sourceKey, id, images) => {
+    onImages: (sourceKey, id, images, owner) => {
+      if (owner === "rerun") promptRerun?.controller.onLoraImages(sourceKey, id, images);
       if (sourceKey !== state.activeSourceKey) return;
       state.loraImages[id] = images;
       renderPanel();
     },
-    apply: (id, values, memory, sourceKey) => {
+    apply: (id, values, memory, sourceKey, owner) => {
+      if (owner === "rerun") return promptRerun?.controller.applyLoras(id, values, memory, sourceKey);
       if (sourceKey !== state.activeSourceKey) throw new Error("The workflow changed. Reopen the LoRA manager.");
       const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
       if (!control) throw new Error("The published LoRA catalog changed. Reopen the manager.");
@@ -525,7 +529,20 @@ function promptRerunController() {
       selections: state.activeSource ? modelSelectionsForSource(state.activeSource) : {},
       quantity: state.generationQuantity,
       collectionId: state.currentCollectionId,
+      checkpointTiers: state.checkpointTiers,
+      loraMemory: state.loraStrengthMemory,
+      loraImages: state.loraImages,
+      recentResolutions: state.recentResolutions,
     }),
+    sourceSettings: (key) => ({
+      loraMemory: key === state.activeSourceKey ? state.loraStrengthMemory : {},
+      loraImages: key === state.activeSourceKey ? state.loraImages : {},
+      recentResolutions: key === state.activeSourceKey ? state.recentResolutions : state.recentResolutionsBySource[key] || [],
+    }),
+    closePickers: () => {
+      if (sourcePickerContext?.owner === "rerun") closeSourcePickerDialog("cancel");
+      loraManagerController?.closeForOwner("rerun");
+    },
     loadSource: async (key) => {
       const summary = state.sources.find((source) => sourceKey(source) === key) || {};
       const detail = await api(`/api/workflows/${encodeURIComponent(key)}`, { operation: "Generation source details" });
@@ -681,6 +698,7 @@ async function handleClick(event) {
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;
+  const rerunEdit = Boolean(target.closest("#gallery-rerun-dialog")) || sourcePickerContext?.owner === "rerun";
   try {
     if (action === "generate") await generate();
     else if (action === "open-collection") {
@@ -762,7 +780,7 @@ async function handleClick(event) {
     else if (action === "delete-user") await deleteUser(target.dataset.userId, target.dataset.username);
     else if (action === "close-admin") document.querySelector("#admin-dialog")?.close();
     else if (action === "reload") window.location.reload();
-    if (["apply-generation-source-dialog", "apply-resolution-recent", "apply-prompt-editor", "paste-prompt-text", "compose-prompt", "reset-prompt-instructions", "use-latest-prompt", "settings-use-saved", "settings-keep-local", "increment-generation-quantity", "decrement-generation-quantity", "recall"].includes(action)) autoSettingsSync?.stage();
+    if (!rerunEdit && ["apply-generation-source-dialog", "apply-resolution-recent", "apply-prompt-editor", "paste-prompt-text", "compose-prompt", "reset-prompt-instructions", "use-latest-prompt", "settings-use-saved", "settings-keep-local", "increment-generation-quantity", "decrement-generation-quantity", "recall"].includes(action)) autoSettingsSync?.stage();
   } catch (error) {
     toast(error.message || "Action failed.", "error");
   }
@@ -770,6 +788,7 @@ async function handleClick(event) {
 
  async function handleChange(event) {
    const element = event.target;
+   if (handleRerunResolutionInput(element)) return;
    if (element.matches("[data-resolution-preset]")) {
     if (element.value !== "custom") applyResolutionPreset(element);
     return;
@@ -917,6 +936,7 @@ async function flushDeferredSourcePickerUpdates({ panelAlreadyRendered = false }
 }
 
 function sourcesForPicker() {
+  if (sourcePickerContext) return sourcePickerContext.sources();
   return state.sources.map((source) =>
     sourceKey(source) === state.activeSourceKey && state.activeSource
       ? { ...source, ...state.activeSource }
@@ -927,21 +947,24 @@ function sourcesForPicker() {
 function openSourcePickerDialog(button) {
   const dialog = document.querySelector("#source-picker-dialog");
   if (!dialog || dialog.open || button.disabled || !state.activeSourceKey) return;
+  sourcePickerContext = button.closest("#gallery-rerun-dialog") ? promptRerun?.controller.sourcePickerContext() : null;
+  if (button.closest("#gallery-rerun-dialog") && !sourcePickerContext) return;
   const sources = sourcesForPicker();
+  const activeKey = sourcePickerContext?.sourceKey || state.activeSourceKey;
   sourcePickerReturnFocus = button;
   state.sourcePickerDraft = {
-    sourceKey: state.activeSourceKey,
+    sourceKey: activeKey,
     modelSelectionsBySource: Object.fromEntries(
       sources.map((source) => [
         sourceKey(source),
-        structuredClone(modelSelectionsForSource(source)),
+        structuredClone(sourcePickerContext && sourceKey(source) === activeKey ? sourcePickerContext.selections : modelSelectionsForSource(source)),
       ]),
     ),
-    checkpointTiers: structuredClone(state.checkpointTiers),
+    checkpointTiers: structuredClone(sourcePickerContext?.checkpointTiers || state.checkpointTiers),
     searchQuery: "",
   };
   ensureSourcePickerDraftPreferences(
-    sources.find((source) => sourceKey(source) === state.activeSourceKey),
+    sources.find((source) => sourceKey(source) === activeKey),
   );
   state.sourcePickerDialogOpen = true;
   renderSourcePickerDialog();
@@ -962,6 +985,14 @@ function renderSourcePickerDialog() {
     checkpointTiers: draft.checkpointTiers,
     searchQuery: draft.searchQuery,
   });
+  if (draft.busy) dialog.querySelector(".source-picker-dialog-content")?.setAttribute("inert", "");
+  if (draft.busy) dialog.querySelector('[data-action="apply-generation-source-dialog"]')?.setAttribute("disabled", "");
+  if (draft.error) {
+    const message = dialog.querySelector(".source-picker-summary");
+    message.classList.add("field-error");
+    message.setAttribute("role", "alert");
+    message.textContent = draft.error;
+  }
   const scroller = dialog.querySelector("[data-checkpoint-tier-board]");
   if (scroller) scroller.scrollTop = scrollTop;
   for (const input of dialog.querySelectorAll('[data-indeterminate="true"]')) {
@@ -1142,6 +1173,7 @@ function closeSourcePickerDialog(returnValue, { flushDeferredUpdates = true } = 
   const wasOpen = state.sourcePickerDialogOpen;
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
+  sourcePickerContext?.cancel?.();
   if (dialog?.open) dialog.close(returnValue);
   if (wasOpen && flushDeferredUpdates) void flushDeferredSourcePickerUpdates();
 }
@@ -1152,12 +1184,29 @@ async function applySourcePickerDialog() {
   const selectedSource = sources.find(
     (source) => sourceKey(source) === draft?.sourceKey && source.available !== false,
   );
-  if (!draft || !selectedSource) return;
+  if (!draft || !selectedSource || draft.busy) return;
   const selector = sourceModelSelectors(selectedSource)[0];
   const selectedValues = selector
     ? draft.modelSelectionsBySource?.[draft.sourceKey]?.[selector.parameter_id] || []
     : [];
   if (selector && !selectedValues.length) return;
+  if (sourcePickerContext) {
+    const context = sourcePickerContext;
+    draft.busy = true;
+    draft.error = "";
+    renderSourcePickerDialog();
+    try {
+      const applied = await context.apply(structuredClone(draft));
+      if (state.sourcePickerDraft === draft && sourcePickerContext === context && applied) closeSourcePickerDialog("apply");
+    } catch (error) {
+      if (state.sourcePickerDraft === draft) {
+        draft.busy = false;
+        draft.error = error.message || "The source could not be loaded.";
+        renderSourcePickerDialog();
+      }
+    }
+    return;
+  }
   const sourceChanged = draft.sourceKey !== state.activeSourceKey;
   for (const source of sources) {
     setModelSelectionsForSource(
@@ -1186,9 +1235,12 @@ function handleSourcePickerDialogClose(event) {
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   const previous = sourcePickerReturnFocus;
+  const owner = sourcePickerContext?.owner;
+  sourcePickerContext?.cancel?.();
+  sourcePickerContext = null;
   sourcePickerReturnFocus = null;
   queueMicrotask(() => {
-    const fallback = document.querySelector("#workflow-source");
+    const fallback = document.querySelector(owner === "rerun" && document.querySelector("#gallery-rerun-dialog")?.open ? "#rerun-workflow-source" : "#workflow-source");
     const target = previous?.isConnected ? previous : fallback;
     if (target && !target.disabled) target.focus({ preventScroll: true });
   });
@@ -1196,6 +1248,7 @@ function handleSourcePickerDialogClose(event) {
 }
 
 function toggleControlSection(trigger) {
+  if (trigger.closest("#gallery-rerun-dialog")) return promptRerun?.controller.toggleSection(trigger);
   const section = trigger.closest("[data-control-section]");
   if (!section) return;
   const open = trigger.getAttribute("aria-expanded") !== "true";
@@ -1216,6 +1269,7 @@ function setControlSectionElementOpen(section, open) {
 
 function handleInput(event) {
   const element = event.target;
+  if (handleRerunResolutionInput(element)) return;
   if (element.matches("[data-prompt-generator-id]")) { updatePromptGeneratorControl(element); return; }
   if (element.id === "auto-generate-limit") {
     const value = element.value.trim() === "" ? null : Number(element.value);
@@ -1974,7 +2028,34 @@ function updateResolutionFromPointer(event, drag) {
   setResolutionValue(drag.grid, width, height);
 }
 
+function rerunResolutionContext(element) {
+  return element?.closest("#gallery-rerun-dialog") ? promptRerun?.controller.resolutionContext() : null;
+}
+
+function handleRerunResolutionInput(element) {
+  if (!element.closest("#gallery-rerun-dialog") || !element.matches("[data-control-id]")) return false;
+  const block = element.dataset.resolutionAxis
+    ? element.closest("[data-resolution-pair-block]")
+    : element.closest("[data-control-block]");
+  const grid = block?.querySelector("[data-resolution-grid]");
+  if (!grid || element.disabled) return true;
+  const current = resolutionValueForGrid(grid);
+  const part = element.dataset.resolutionPart || element.dataset.resolutionAxis;
+  if (!part) return true;
+  const value = { ...current, [part]: element.value === "" ? null : Number(element.value) };
+  rerunResolutionContext(grid)?.set(value.width, value.height);
+  updateResolutionUi(grid, value);
+  syncResolutionPresetSelect(block, value);
+  queueRecentResolutionRecord(grid);
+  return true;
+}
+
 function setResolutionValue(grid, width, height) {
+  if (grid.closest("#gallery-rerun-dialog")) {
+    rerunResolutionContext(grid)?.set(width, height);
+    updateResolutionUi(grid, resolutionValueForGrid(grid));
+    return;
+  }
   const widthId = grid.dataset.resolutionWidthId;
   const heightId = grid.dataset.resolutionHeightId;
   if (widthId && heightId) {
@@ -1997,12 +2078,13 @@ function setResolutionValue(grid, width, height) {
 
 function resolutionValueForGrid(grid) {
   if (!grid) return {};
+  const values = grid.closest("#gallery-rerun-dialog") ? rerunResolutionContext(grid)?.values || {} : state.parameters;
   const widthId = grid.dataset.resolutionWidthId;
   const heightId = grid.dataset.resolutionHeightId;
   if (widthId && heightId) {
-    return { width: state.parameters[widthId], height: state.parameters[heightId] };
+    return { width: values[widthId], height: values[heightId] };
   }
-  return state.parameters[grid.dataset.controlId] || {};
+  return values[grid.dataset.controlId] || {};
 }
 
 function updateResolutionUi(grid, value) {
@@ -2056,6 +2138,12 @@ function resolutionPosition(value, minimum, maximum) {
 }
 
 function commitResolutionValue(grid, width, height) {
+  if (grid.closest("#gallery-rerun-dialog")) {
+    rerunResolutionContext(grid)?.set(width, height);
+    updateResolutionUi(grid, resolutionValueForGrid(grid));
+    syncResolutionPresetSelect(grid.closest("[data-resolution-pair-block], [data-control-block]"), resolutionValueForGrid(grid));
+    return;
+  }
   const widthId = grid.dataset.resolutionWidthId || grid.dataset.controlId;
   const heightId = grid.dataset.resolutionHeightId;
   if (grid.dataset.resolutionWidthId && grid.dataset.resolutionHeightId) {
@@ -2110,8 +2198,11 @@ function removeRecentResolutionEntry(button) {
   if (!block) return;
   const badge = button.closest("[data-resolution-recent-value]");
   const [widthRaw, heightRaw] = ((badge || button).dataset.resolutionRecentValue || "").split("x");
-  state.recentResolutions = removeRecentResolution(state.recentResolutions, Number(widthRaw), Number(heightRaw));
-  persistRecentResolutions();
+  if (grid?.closest("#gallery-rerun-dialog")) rerunResolutionContext(grid)?.remove(Number(widthRaw), Number(heightRaw));
+  else {
+    state.recentResolutions = removeRecentResolution(state.recentResolutions, Number(widthRaw), Number(heightRaw));
+    persistRecentResolutions();
+  }
   syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
 }
 
@@ -2155,6 +2246,10 @@ function persistRecentResolutions() {
 }
 
 function commitRecentResolutionValue(grid) {
+  if (grid?.closest("#gallery-rerun-dialog")) {
+    rerunResolutionContext(grid)?.record(resolutionValueForGrid(grid));
+    return;
+  }
   if (!grid || !state.activeSourceKey) return;
   state.recentResolutions = recordRecentResolution(state.recentResolutions, resolutionValueForGrid(grid));
   persistRecentResolutions();
@@ -2164,6 +2259,12 @@ function commitRecentResolutionValue(grid) {
 // the record is deferred until the last change of the burst.
 function queueRecentResolutionRecord(grid) {
   if (!grid) return;
+  if (grid.closest("#gallery-rerun-dialog")) {
+    rerunResolutionContext(grid)?.queueRecord(resolutionValueForGrid(grid), () => {
+      if (grid.isConnected) syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
+    });
+    return;
+  }
   if (recentResolutionsRecordTimer) clearTimeout(recentResolutionsRecordTimer);
   recentResolutionsRecordTimer = setTimeout(() => {
     recentResolutionsRecordTimer = null;
@@ -2177,7 +2278,8 @@ function syncRecentResolutionsRow(grid, value) {
   const block = grid?.closest("[data-resolution-pair-block], [data-control-block]");
   const editor = block?.querySelector(".resolution-editor");
   if (!block || !editor) return;
-  const html = recentResolutionsMarkup(state.recentResolutions, value);
+  const recent = grid.closest("#gallery-rerun-dialog") ? rerunResolutionContext(grid)?.recent || [] : state.recentResolutions;
+  const html = recentResolutionsMarkup(recent, value);
   const existing = block.querySelector("[data-resolution-recent]");
   if (!html) {
     existing?.remove();
@@ -2211,6 +2313,13 @@ function syncResolutionPresetSelect(block, value) {
 }
 
 function renderPanelWithResolutionFocus(grid, handle) {
+  if (grid.closest("#gallery-rerun-dialog")) {
+    updateResolutionUi(grid, resolutionValueForGrid(grid));
+    syncResolutionPresetSelect(grid.closest("[data-resolution-pair-block], [data-control-block]"), resolutionValueForGrid(grid));
+    syncRecentResolutionsRow(grid, resolutionValueForGrid(grid));
+    grid.querySelector(`[data-resolution-handle="${handle}"]`)?.focus({ preventScroll: true });
+    return;
+  }
   const selector = grid.dataset.resolutionWidthId
     ? `[data-resolution-grid][data-resolution-width-id="${CSS.escape(grid.dataset.resolutionWidthId)}"]`
     : `[data-resolution-grid][data-control-id="${CSS.escape(grid.dataset.controlId)}"]`;

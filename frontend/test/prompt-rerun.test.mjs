@@ -76,22 +76,13 @@ test("the request omits the panel prompt and seed and sends one variant per chec
 
 test("form updates edit only the draft and keep dependent settings consistent", () => {
   let draft = promptRerunDraft(panel);
-  draft = updateRerunDraft(draft, "rerun_checkpoint", "b", { checked: false });
-  assert.deepEqual(draft.selections.checkpoint, ["c"]);
-  assert.equal(draft.values.checkpoint, "c");
-  draft = updateRerunDraft(draft, "rerun_checkpoint", "a", { checked: true });
-  assert.deepEqual(draft.selections.checkpoint, ["a", "c"], "selection keeps published order");
   draft = updateRerunDraft(draft, "rerun_seed", "original");
   assert.equal(draft.seedMode, "original");
   assert.equal(draft.quantity, 1);
-  draft = updateRerunDraft(draft, "rerun_width", "1000");
-  assert.equal(draft.values.width, 1000);
-  draft = updateRerunDraft(draft, "rerun_lora_enabled", true, { controlId: "loras", loraId: "x", restoreStrength: 0 });
-  assert.equal(draft.values.loras.find((entry) => entry.id === "x").strength, 1);
-  draft = updateRerunDraft(draft, "rerun_lora_enabled", false, { controlId: "loras", loraId: "y" });
-  assert.equal(draft.values.loras.find((entry) => entry.id === "y").strength, 0);
-  draft = updateRerunDraft(draft, "rerun_lora_enabled", true, { controlId: "loras", loraId: "y", restoreStrength: 0.8 });
-  assert.equal(draft.values.loras.find((entry) => entry.id === "y").strength, 0.8);
+  draft = updateRerunDraft(draft, "rerun_keep_resolution", true);
+  assert.equal(draft.keepOriginalResolution, true);
+  draft = updateRerunDraft(draft, "rerun_skip_duplicates", false);
+  assert.equal(draft.skipDuplicates, false);
   draft = updateRerunDraft(draft, "rerun_folder", "My folder");
   assert.equal(draft.folderName, "My folder");
   assert.equal(panel.parameters.width, 832);
@@ -101,13 +92,13 @@ test("validation explains every reason submit is blocked", () => {
   let draft = promptRerunDraft(panel);
   assert.deepEqual(validatePromptRerunDraft(draft, preview), {});
   draft = updateRerunDraft(draft, "rerun_folder", "   ");
-  draft = updateRerunDraft(draft, "rerun_width", "1001");
-  draft = updateRerunDraft(draft, "rerun_checkpoint", "b", { checked: false });
-  draft = updateRerunDraft(draft, "rerun_checkpoint", "c", { checked: false });
-  draft = updateRerunDraft(draft, "rerun_lora_strength", "3", { controlId: "loras", loraId: "y" });
+  draft.values.width = 1001;
+  draft.selections.checkpoint = [];
+  draft.values.loras[0].strength = 3;
   const errors = validatePromptRerunDraft(draft, { ...preview, unique_prompt_count: 0 });
   assert.deepEqual(Object.keys(errors).sort(), ["checkpoints", "folder", "loras", "prompts", "width"]);
-  const keep = updateRerunDraft(promptRerunDraft(panel), "rerun_width", "1001");
+  const keep = promptRerunDraft(panel);
+  keep.values.width = 1001;
   assert.equal(validatePromptRerunDraft(updateRerunDraft(keep, "rerun_keep_resolution", true), preview).width, undefined);
   const large = updateRerunDraft(promptRerunDraft(panel), "rerun_quantity", "16");
   assert.match(validatePromptRerunDraft(large, { ...preview, unique_prompt_count: 9 }).total, /288 planned generations exceeds the 256-item limit/);
@@ -131,8 +122,13 @@ test("markup escapes text, reflects state and disables submit until valid", () =
   assert.match(loading, /data-rerun-action="submit" disabled/);
   const html = promptRerunMarkup({ ...draft, folderName: "<script>" }, preview, { sources: [source, { source_key: "text", output_kind: "text", display_name: "Text" }], parentName: "A & B" });
   assert.match(html, /value="&lt;script&gt;"/);
-  assert.match(html, /a &lt;b&gt;/);
-  assert.match(html, /Alpha &lt;A&gt;/);
+  assert.doesNotMatch(html, /a &lt;b&gt;|rerun-prompts|name="rerun_checkpoint"|name="rerun_source"/);
+  assert.match(html, /id="rerun-workflow-source"/);
+  assert.match(html, /data-lora-open data-control-context="rerun"/);
+  assert.match(html, /data-resolution-grid/);
+  assert.match(html, /data-resolution-preset/);
+  assert.match(html, /id="rerun-control-width"/);
+  assert.match(html, /id="rerun-control-section-resolution-trigger"[^>]+aria-expanded="false"/);
   assert.match(html, /Created inside A &amp; B/);
   assert.match(html, /3 prompts from 5 generations · 1 duplicate skipped · 1 without a prompt/);
   assert.match(html, /Queue 12 generations/);
@@ -148,4 +144,42 @@ test("the toolbar tool explains when Prompt Re-run is unavailable", () => {
   assert.equal(rerunToolState({ count: 0 }).disabled, true);
   assert.deepEqual(rerunToolState({ count: 1 }, "Turn off auto generation to re-run prompts"), { disabled: true, title: "Turn off auto generation to re-run prompts" });
   assert.equal(rerunToolState({ count: 1 }, null, true).disabled, true);
+});
+
+
+test("rerun drafts own section, tier, strength, image and recent-resolution state", () => {
+  const initial = { ...panel, checkpointTiers: { moody: { checkpoint: { preferred: ["a"] } } }, loraMemory: { loras: { x: 0.7 } }, loraImages: { loras: { x: { image_url: "shared.png" } } }, recentResolutions: [{ width: 512, height: 768 }] };
+  const draft = promptRerunDraft(initial);
+  draft.checkpointTiers.moody.checkpoint.preferred.push("b");
+  draft.loraMemory.loras.x = 1.2;
+  draft.loraImages.loras.x.image_url = "draft.png";
+  draft.recentResolutions[0].width = 1024;
+  assert.deepEqual(initial.checkpointTiers.moody.checkpoint.preferred, ["a"]);
+  assert.equal(initial.loraMemory.loras.x, 0.7);
+  assert.equal(initial.loraImages.loras.x.image_url, "shared.png");
+  assert.equal(initial.recentResolutions[0].width, 512);
+  assert.deepEqual(draft.sectionOpen, {});
+});
+
+test("rerun controls reveal errors and respect original-resolution and seed modes", () => {
+  const draft = promptRerunDraft(panel);
+  draft.values.width = 1001;
+  const invalid = promptRerunMarkup(draft, preview);
+  assert.match(invalid, /id="rerun-control-section-resolution-trigger"[^>]+aria-expanded="true"/);
+  const original = promptRerunMarkup(updateRerunDraft({ ...draft, keepOriginalResolution: true }, "rerun_seed", "original"), preview);
+  assert.match(original, /Original sizes/);
+  assert.match(original, /data-resolution-disabled="true"/);
+  assert.match(original, /name="rerun_quantity"[^>]+max="1"[^>]+disabled/);
+  assert.doesNotMatch(original, /Use a multiple/);
+});
+
+test("composite resolution sources use the shared editor and validate values", () => {
+  const compositeSource = { ...source, interface: { inputs: [contract.inputs[0], { id: "size", type: "resolution", label: "Resolution", default: { width: 512, height: 768 }, constraints: { minimum_width: 64, maximum_width: 2048, minimum_height: 64, maximum_height: 2048, multiple: 64 } }] } };
+  const draft = promptRerunDraft({ ...panel, source: compositeSource });
+  const html = promptRerunMarkup(draft, preview);
+  assert.match(html, /id="rerun-control-size-width"/);
+  assert.match(html, /data-resolution-grid data-control-id="size"/);
+  assert.doesNotMatch(html, /rerun_keep_resolution/);
+  draft.values.size.width = 1001;
+  assert.ok(validatePromptRerunDraft(draft, preview).size);
 });

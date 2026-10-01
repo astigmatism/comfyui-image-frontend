@@ -13,6 +13,7 @@ export function loraPublicationRevisionMatches(first, second) {
 }
 
 function subjectPreview(control, values, subjectAvailable = true) {
+  if (subjectAvailable === null) return "Selected prompts stay unchanged";
   const strongest = strongestLoraTrigger(control, values);
   if (!strongest.entry) return "Subject unchanged · no LoRA enabled";
   if (!subjectAvailable) return "Subject unchanged · Prompt Generation subject is unavailable";
@@ -68,23 +69,27 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
   };
   const close = () => dialog()?.close("cancel");
   async function open(button) {
-    const ctx = context(button.dataset.loraControlId);
+    const owner = button.dataset.controlContext || "panel";
+    const ctx = context(button.dataset.loraControlId, owner);
     if (!ctx || dialog()?.open) return;
     returnFocus = button;
-    draft = { ...ctx, publicationRevision: structuredClone(ctx.publicationRevision || null), values: structuredClone(ctx.values), memory: { ...ctx.memory }, images: structuredClone(ctx.images || {}), changes: new Map(), error: "", busy: false };
+    draft = { ...ctx, owner, publicationRevision: structuredClone(ctx.publicationRevision || null), values: structuredClone(ctx.values), memory: { ...ctx.memory }, images: structuredClone(ctx.images || {}), changes: new Map(), error: "", busy: false };
+    const session = draft;
     render();
+    dialog().oncancel = (event) => { if (draft?.busy) event.preventDefault(); };
     dialog().showModal();
     dialog().querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
     try {
       const payload = await api(loraImagePath(ctx.sourceKey, ctx.control.id));
-      if (!draft || draft.sourceKey !== ctx.sourceKey || draft.control.id !== ctx.control.id) return;
+      if (draft !== session) return;
       const serverImages = Object.fromEntries((payload.items || []).map((item) => [item.id, item]));
       draft.images = structuredClone(serverImages);
       for (const [id, change] of draft.changes) draft.images[id] = { ...draft.images[id], image_url: change.preview || null };
-      onImages(ctx.sourceKey, ctx.control.id, serverImages);
-      render("[data-lora-toggle]");
+      onImages(ctx.sourceKey, ctx.control.id, serverImages, owner);
+      const focused = document.activeElement?.closest("[data-lora-id]");
+      render(focused ? `[data-lora-id="${CSS.escape(focused.dataset.loraId)}"] [data-lora-toggle]` : null);
     } catch (error) {
-      if (draft) { draft.error = `Images could not be loaded: ${error.message}`; render(); }
+      if (draft === session) { draft.error = `Images could not be loaded: ${error.message}`; render(); }
     }
   }
   function updateStrength(id, strength) {
@@ -110,7 +115,8 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
   }
   async function save() {
     if (!draft || draft.busy) return;
-    const current = context(draft.control.id);
+    const session = draft;
+    const current = context(draft.control.id, draft.owner);
     if (current?.sourceKey !== draft.sourceKey || !loraPublicationRevisionMatches(current?.publicationRevision, draft.publicationRevision)) {
       draft.error = "The workflow changed. Reopen the LoRA manager.";
       render();
@@ -137,12 +143,15 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
         }
         form.append("changes", JSON.stringify(changes));
         const result = await api(loraImagePath(draft.sourceKey, draft.control.id), { method: "POST", body: form });
+        if (draft !== session) return;
         draft.images = Object.fromEntries((result.items || []).map((item) => [item.id, item]));
-        onImages(draft.sourceKey, draft.control.id, structuredClone(draft.images));
+        onImages(draft.sourceKey, draft.control.id, structuredClone(draft.images), draft.owner);
       }
-      apply(draft.control.id, draft.values, draft.memory, draft.sourceKey);
+      if (draft !== session) return;
+      apply(draft.control.id, draft.values, draft.memory, draft.sourceKey, draft.owner);
       dialog().close("apply");
     } catch (error) {
+      if (draft !== session) return;
       draft.error = error.code === "lora_image_conflict" ? "An image changed while this manager was open. Close and reopen it to review the latest images before applying." : error.message || "Could not apply LoRAs.";
       draft.busy = false;
       render();
@@ -154,7 +163,7 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
     if (!draft || !event.target.closest("#lora-manager-dialog")) return;
     const selection = event.target.closest("[data-lora-toggle]");
     if (selection && !selection.disabled) { toggle(selection.dataset.loraToggle); return; }
-    if (event.target.closest("[data-lora-cancel]")) { close(); return; }
+    if (event.target.closest("[data-lora-cancel]")) { if (!draft.busy) close(); return; }
     if (event.target.closest("[data-lora-apply]")) { void save(); return; }
     if (event.target.closest("[data-lora-all-off]")) {
       for (const entry of draft.values) if (entry.strength > 0) draft.memory[entry.id] = entry.strength;
@@ -272,13 +281,15 @@ export function installLoraManager(root, { api, context, apply, onImages }) {
   root.addEventListener("close", (event) => {
     if (event.target !== dialog()) return;
     const controlId = draft?.control.id;
+    const owner = draft?.owner;
     revoke();
     draft = null;
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
-    else if (controlId) root.querySelector(`[data-lora-open][data-lora-control-id="${CSS.escape(controlId)}"]`)?.focus({ preventScroll: true });
+    else if (controlId) root.querySelector(`${owner === "rerun" ? "#gallery-rerun-dialog[open]" : "#generation-panel"} [data-lora-open][data-lora-control-id="${CSS.escape(controlId)}"]`)?.focus({ preventScroll: true });
   }, true);
   return {
     close,
+    closeForOwner: (owner) => { if (draft?.owner === owner) close(); },
     isOpen: () => Boolean(dialog()?.open),
     invalidateSource: (sourceKey) => {
       if (draft?.sourceKey !== sourceKey) return;

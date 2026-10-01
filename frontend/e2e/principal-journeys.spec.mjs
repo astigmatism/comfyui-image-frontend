@@ -107,7 +107,7 @@ async function generateAndExpectAccepted(page) {
       new URL(response.url()).pathname === "/api/generations" &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Generate" }).click();
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
   const response = await responsePromise;
   expect(response.status(), await response.text()).toBe(201);
   return response;
@@ -2248,7 +2248,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 }) => {
   test.setTimeout(90_000);
   await page.goto("/");
-  await signIn(page, "admin", "E2EAdminPermanent123!");
+  await signInFreshUser(page, "published.controls");
   const carriedPrompt = await page
     .getByRole("textbox", { name: "Prompt", exact: true })
     .inputValue();
@@ -2450,7 +2450,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await expect(page.locator("[data-resolution-summary]")).toHaveText(
     "1024 × 1600 · 1.64 MP · 16:25",
   );
-  await expect(page.getByRole("button", { name: "Generate" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
   const advanced = page.locator(".advanced-group");
   const advancedTrigger = advanced.getByRole("button", { name: "Advanced", exact: true });
   await expect(advancedTrigger).toHaveAttribute("aria-expanded", "false");
