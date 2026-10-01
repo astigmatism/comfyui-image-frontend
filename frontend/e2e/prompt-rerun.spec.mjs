@@ -142,6 +142,7 @@ test("Prompt Re-run queues the exact selected prompts into a new folder with new
   await dialog.getByRole("button", { name: "LoRAs", exact: true }).click();
   await expect(dialog.locator(".lm-summary-name")).toHaveText("Beta");
   await expect(dialog.locator(".lm-summary-strength")).toHaveText("1.25");
+  await expect(dialog.locator("[data-lora-editable], [data-lora-disable]")).toHaveCount(0);
   await expect(mainPanel.locator(".lora-stack")).toHaveText(mainLoras);
 
   // Resolution uses the panel's editor, without touching panel values or recents.
@@ -321,4 +322,58 @@ test("rerun source changes survive delayed previews and cancelled dialogs ignore
   await expect(sourceTrigger).toHaveAttribute("data-source-key", mainKey);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toBeHidden();
+});
+
+test("sidebar LoRA shortcuts and thumbnail autosaves persist without changing Subject", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/");
+  await signInFreshUser(page, "lora.shortcuts");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  const sourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
+  const panel = page.locator("#generation-panel");
+  const manager = page.locator("#lora-manager-dialog");
+  await page.getByRole("switch", { name: "Use Prompt Generation" }).check();
+  await panel.getByRole("button", { name: "Open LoRA manager" }).click();
+  await manager.getByRole("button", { name: "Toggle Alpha" }).click();
+  await manager.getByRole("button", { name: "Toggle Beta" }).click();
+  await manager.screenshot({ path: testInfo.outputPath("lora-manager-enabled.png"), animations: "disabled" });
+  await manager.getByRole("button", { name: "Apply", exact: true }).click();
+  const subject = page.getByRole("textbox", { name: "Subject name", exact: true });
+  await subject.fill("Keep my subject");
+  await subject.blur();
+  const strength = panel.getByRole("spinbutton", { name: "Alpha strength", exact: true });
+  await strength.fill("0.65");
+  await strength.press("Enter");
+  await panel.getByRole("button", { name: "Increase Alpha strength" }).click();
+  await expect(strength).toHaveValue("1.15");
+  await panel.getByRole("button", { name: "Disable Beta" }).click();
+  await expect(panel.locator('[data-control-section-status="lora-loras"]')).toHaveText("1 active");
+  await expect(subject).toHaveValue("Keep my subject");
+  await panel.locator('.lora-stack').screenshot({ path: testInfo.outputPath("lora-sidebar-shortcuts.png"), animations: "disabled" });
+  await expect.poll(async () => {
+    const preferences = await (await page.request.get("/api/preferences")).json();
+    return preferences.settings.sources?.[sourceKey]?.values?.loras;
+  }).toEqual([{ id: "a", strength: 1.15 }, { id: "b", strength: 0 }]);
+
+  await panel.getByRole("button", { name: "Open LoRA manager" }).click();
+  await manager.getByRole("button", { name: "Add image for Alpha" }).click();
+  await manager.locator("[data-lora-file]").setInputFiles({ name: "sample.png", mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64") });
+  await expect(manager.locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
+  await manager.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(1);
+  await page.reload();
+  await expect(strength).toHaveValue("1.15");
+  await expect(subject).toHaveValue("Keep my subject");
+  await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(1);
+  await panel.getByRole("button", { name: "Open LoRA manager" }).click();
+  await manager.getByRole("button", { name: "Toggle Beta" }).click();
+  await expect(manager.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.00");
+  await manager.getByRole("button", { name: "Change image for Alpha" }).hover();
+  await manager.getByRole("button", { name: "Remove image for Alpha" }).click();
+  await expect(manager.locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await expect(panel.locator('.lm-summary-item')).toHaveCount(1);
+  await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(0);
 });

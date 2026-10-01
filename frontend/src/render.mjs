@@ -998,7 +998,7 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   let field = "";
   switch (control.type) {
     case "lora_stack":
-      input = loraStackMarkup(control, value, options.loraImages || {});
+      input = loraStackMarkup(control, value, options.loraImages || {}, { editable: true, disabled });
       field = options.hideLabel ? input : `<fieldset class="field semantic-fieldset"><legend>${labelContent}</legend>${input}</fieldset>`;
       break;
     case "multiline_string":

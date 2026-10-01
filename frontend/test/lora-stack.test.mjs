@@ -7,6 +7,8 @@ import {
   loraDefaultPositiveStrength,
   strongestLoraTrigger,
   moveLora,
+  steppedLoraStrength,
+  formatLoraStrength,
 } from "../src/lora-stack.mjs";
 import { loraManagerMarkup, loraPublicationRevisionMatches } from "../src/lora-manager.mjs";
 import { parametersForRequest, overwriteWithRecall, clientValidate } from "../src/lib.mjs";
@@ -58,6 +60,22 @@ test("control panel summarizes only enabled LoRAs in application order", () => {
   assert.doesNotMatch(empty, /lm-summary-item/);
 });
 
+test("sidebar coarse steps preserve fine offsets and stay within the published grid", () => {
+  assert.equal(formatLoraStrength(0.65), "0.65");
+  assert.equal(formatLoraStrength(0.005), "0.005");
+  assert.equal(steppedLoraStrength(control, 0.65, 1), 1.15);
+  assert.equal(steppedLoraStrength(control, 0.65, -1), 0.15);
+  assert.equal(steppedLoraStrength(control, 0.15, -1), 0);
+  assert.equal(steppedLoraStrength(control, 1.85, 1), 2);
+  assert.equal(steppedLoraStrength({ ...control, step: 0.3, maximum: 1.95 }, 1.5, 1), 1.8);
+  assert.equal(steppedLoraStrength({ ...control, step: 0.2 }, 0.6, -1), 0.4);
+  const markup = loraStackMarkup(control, [{ id: "a", strength: 0.65 }, { id: "b", strength: 0 }], {}, { editable: true });
+  assert.match(markup, /data-lora-strength="a"/);
+  assert.match(markup, /step="0.05"/);
+  assert.match(markup, /Disable Alpha/);
+  assert.doesNotMatch(markup, /Disable Beta/);
+});
+
 test("manager lists all LoRAs with enable, strength, image and reorder controls", () => {
   const withUsage = structuredClone(control);
   withUsage.items[0].description = 'Use: <character> & "style". <script>alert(1)</script>';
@@ -75,6 +93,8 @@ test("manager lists all LoRAs with enable, strength, image and reorder controls"
   assert.doesNotMatch(markup, /type="checkbox"/);
   assert.match(markup, /0\.65/);
   assert.match(markup, /Example workflow/);
+  assert.match(markup, /✓ Enabled/);
+  assert.match(markup, /Thumbnail changes save automatically/);
   assert.match(markup, /Use: &lt;character&gt; &amp; &quot;style&quot;/);
   assert.doesNotMatch(markup, /<script>/);
   assert.doesNotMatch(markup, /Quick pick|Mix &amp; adjust|data-lora-solo/);

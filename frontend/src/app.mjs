@@ -8,7 +8,7 @@ import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
 import { automaticPromptUpdate, olderAutomaticProgress } from "./auto-generation-progress.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
-import { strongestLoraTrigger } from "./lora-stack.mjs";
+import { installLoraStackControls, strongestLoraTrigger } from "./lora-stack.mjs";
 import { installLoraManager, loraImagePath } from "./lora-manager.mjs";
 import { createAdminLoraController, reconcileLoraStrengthMemory } from "./admin-loras.mjs";
 import { api, getCsrfToken, isTransientError, setCsrfToken, upload } from "./api.mjs";
@@ -405,7 +405,43 @@ let galleryGroups = null;
 let gallerySelection = null;
 let promptRerun = null;
 
+function commitPanelLoras(id, values, memory, sourceKey, { updateSubject = false, refreshPanel = true } = {}) {
+  if (sourceKey !== state.activeSourceKey) throw new Error("The workflow changed. Reopen the LoRA manager.");
+  const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
+  if (!control) throw new Error("The published LoRA catalog changed. Reopen the manager.");
+  state.parameters[id] = structuredClone(values);
+  state.loraStrengthMemory[id] = structuredClone(memory);
+  state.explicitParameterIds.add(id);
+  delete state.serverFieldErrors[id];
+  state.formError = null;
+  const { triggerWord } = strongestLoraTrigger(control, values);
+  if (updateSubject && triggerWord) {
+    const source = state.promptGeneratorSource;
+    const input = interfaceInputs(source?.interface).find((item) => item.id === "subject_name" && item.type === "string");
+    const saved = state.promptGeneration.sources[source?.source_key];
+    if (input && saved && source.available !== false) {
+      saved.values.subject_name = triggerWord;
+      if (!saved.explicitInputIds.includes("subject_name")) saved.explicitInputIds.push("subject_name");
+      state.promptGenerationError = null;
+    }
+  }
+  persistActiveParameterState();
+  syncParameterValidation(id);
+  autoSettingsSync?.stage();
+  settingsSync?.schedule();
+  if (refreshPanel) renderPanel();
+  else syncServerControls();
+}
+
 function bindDelegatedEvents() {
+  installLoraStackControls(root, {
+    context: (id) => {
+      const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
+      return control && state.activeSourceKey ? { control, sourceKey: state.activeSourceKey,
+        values: state.parameters[id], memory: state.loraStrengthMemory[id] || {} } : null;
+    },
+    apply: (id, values, memory, sourceKey) => commitPanelLoras(id, values, memory, sourceKey, { refreshPanel: false }),
+  });
   galleryGroups = bindGalleryGroups(root, {
     getState: () => state, render: renderGallery, notify: toast,
     visibleGenerations: () => visibleGenerations(),
@@ -437,37 +473,15 @@ function bindDelegatedEvents() {
         values: state.parameters[id], memory: state.loraStrengthMemory[id] || {}, images: state.loraImages[id] || {}, subjectAvailable };
     },
     onImages: (sourceKey, id, images, owner) => {
-      if (owner === "rerun") promptRerun?.controller.onLoraImages(sourceKey, id, images);
+      if (owner === "rerun") return promptRerun?.controller.onLoraImages(sourceKey, id, images);
       if (sourceKey !== state.activeSourceKey) return;
       state.loraImages[id] = images;
       renderPanel();
     },
+    notify: toast,
     apply: (id, values, memory, sourceKey, owner) => {
       if (owner === "rerun") return promptRerun?.controller.applyLoras(id, values, memory, sourceKey);
-      if (sourceKey !== state.activeSourceKey) throw new Error("The workflow changed. Reopen the LoRA manager.");
-      const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
-      if (!control) throw new Error("The published LoRA catalog changed. Reopen the manager.");
-      state.parameters[id] = structuredClone(values);
-      state.loraStrengthMemory[id] = structuredClone(memory);
-      state.explicitParameterIds.add(id);
-      delete state.serverFieldErrors[id];
-      state.formError = null;
-      const { triggerWord } = strongestLoraTrigger(control, values);
-      if (triggerWord) {
-        const source = state.promptGeneratorSource;
-        const input = interfaceInputs(source?.interface).find((item) => item.id === "subject_name" && item.type === "string");
-        const saved = state.promptGeneration.sources[source?.source_key];
-        if (input && saved && source.available !== false) {
-          saved.values.subject_name = triggerWord;
-          if (!saved.explicitInputIds.includes("subject_name")) saved.explicitInputIds.push("subject_name");
-          state.promptGenerationError = null;
-        }
-      }
-      persistActiveParameterState();
-      syncParameterValidation(id);
-      autoSettingsSync?.stage();
-      settingsSync?.schedule();
-      renderPanel();
+      commitPanelLoras(id, values, memory, sourceKey, { updateSubject: true });
     },
   });
   root.addEventListener("submit", handleSubmit);
