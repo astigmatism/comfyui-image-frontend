@@ -173,11 +173,26 @@ test("Prompt Re-run queues the exact selected prompts into a new folder with new
   await expect(page.locator("#gallery-selection-toolbar").getByRole("status")).toHaveText("2 selected");
   const tool = page.locator('#gallery-selection-toolbar [data-bulk-action="rerun"]');
   await expect(tool).toBeEnabled();
-  await tool.click();
+  let previews = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/gallery/prompt-rerun/preview") previews += 1;
+  });
+  const originalTool = await tool.elementHandle();
+  await tool.hover();
+  await page.mouse.down();
+  // A focus-driven server refresh used to replace the pressed button, losing
+  // the click on release and starting another focusout/refresh cycle.
+  const refresh = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/auto-generation");
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await (await refresh).finished();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await originalTool.evaluate((button) => button.isConnected)).toBe(true);
+  await page.mouse.up();
 
   const dialog = page.locator("#gallery-rerun-dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog.locator("[data-rerun-summary]")).toHaveText("2 prompts from 2 generations");
+  expect(previews).toBe(1);
   await expect(dialog.locator("details:not(.prompt-preprocessor), .rerun-prompts")).toHaveCount(0);
   const sourceTrigger = dialog.locator("#rerun-workflow-source");
   const sourceDialog = page.locator("#source-picker-dialog");
