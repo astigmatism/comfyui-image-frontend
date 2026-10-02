@@ -27,7 +27,7 @@ export function galleryViewParameters(state, extras = {}) {
 
 export function checkpointRankFilterMarkup(state) {
   const excluded = excludedCheckpointRanks(state);
-  return `<div class="checkpoint-rank-filter" role="group" aria-label="Visible model ranks"><span class="rank-filter-label">Rank</span>${CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => `<button type="button" class="rank-filter-button checkpoint-tier-${id}" data-action="toggle-checkpoint-rank-filter" data-checkpoint-rank="${id}" aria-label="Show rank ${id}" aria-pressed="${!excluded.includes(id)}" title="${excluded.includes(id) ? "Show" : "Hide"} images from rank ${id}${id === "C" ? " (includes unranked models)" : ""}"><span class="rank-filter-check" aria-hidden="true">✓</span><span>${id}</span></button>`).join("")}</div>`;
+  return `<div class="checkpoint-rank-filter" role="group" aria-label="Visible model ranks"><div class="rank-filter-segments">${CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => `<button type="button" class="rank-filter-button checkpoint-tier-${id}" data-action="toggle-checkpoint-rank-filter" data-checkpoint-rank="${id}" aria-label="Show rank ${id}" aria-pressed="${!excluded.includes(id)}" title="${excluded.includes(id) ? "Show" : "Hide"} images from rank ${id}${id === "C" ? " (includes unranked models)" : ""}">${id}</button>`).join("")}</div></div>`;
 }
 
 export function galleryLayoutMarkup(layout = "grouped") {
