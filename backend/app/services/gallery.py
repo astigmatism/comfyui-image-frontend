@@ -43,6 +43,7 @@ from ..schemas import (
     GalleryViewItems,
 )
 from .collections import MAX_COLLECTION_DEPTH, CollectionService
+from .gallery_filters import gallery_filter_predicate
 from .generations import GenerationService
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ class GalleryService:
         )
         query = select(
             Generation.id,
+            Generation.checkpoint_id,
             Generation.collection_id,
             Generation.status,
             image_count.label("image_count"),
@@ -147,10 +149,7 @@ class GalleryService:
             Generation.collection_id == scope.collection_id,
             Generation.pending_delete.is_(False),
         )
-        if scope.favorites_only:
-            query = query.where(favorite)
-        elif scope.unfavorited_only:
-            query = query.where(~favorite)
+        query = query.where(gallery_filter_predicate(session, owner_id, scope))
         # A filtered view shows generation cards only, so its whole-view selection
         # never carries folders: a folder would drag favorites (or non-favorites)
         # out of the filter through its contents.
@@ -208,16 +207,17 @@ class GalleryService:
             # have been part of that view's selection.
             changed = changed or (scope.filtered and bool(payload.collection_ids))
             if scope.filtered:
+                predicate = gallery_filter_predicate(session, owner_id, scope)
                 for batch in _batched(payload.generation_ids):
-                    favorites = set(
+                    matched = set(
                         session.scalars(
-                            select(Favorite.generation_id).where(
-                                Favorite.owner_id == owner_id,
-                                Favorite.generation_id.in_(batch),
+                            select(Generation.id).where(
+                                Generation.owner_id == owner_id,
+                                Generation.id.in_(batch),
+                                predicate,
                             )
                         )
                     )
-                    matched = favorites if scope.favorites_only else set(batch) - favorites
                     changed = changed or matched != set(batch)
             if changed:
                 raise AppError(

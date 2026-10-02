@@ -1,4 +1,5 @@
 import { api } from "./api.mjs";
+import { galleryFilterSignature, galleryViewParameters, galleryViewScope } from "./gallery-view.mjs";
 import { escapeHtml, sortGenerationsNewestFirst } from "./lib.mjs";
 
 export function promptRuns(generations, metadata = new Map()) {
@@ -69,9 +70,9 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
   const pending = new Set();
   const stateRoute = () => {
     const state = getState();
-    return `${state.session?.user?.id || state.session?.user?.username || ""}:${state.currentCollectionId || "home"}`;
+    return `${state.session?.user?.id || state.session?.user?.username || ""}:${galleryFilterSignature(state)}`;
   };
-  const url = (id, suffix, extras = {}) => `/api/gallery/prompt-groups/${encodeURIComponent(id)}/${suffix}?${new URLSearchParams({ collection_id: getState().currentCollectionId || "", ...extras })}`;
+  const url = (id, suffix, extras = {}) => `/api/gallery/prompt-groups/${encodeURIComponent(id)}/${suffix}?${galleryViewParameters(getState(), extras)}`;
 
   function closePreview() {
     clearTimeout(openTimer); clearTimeout(closeTimer);
@@ -94,6 +95,7 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
       controller?.abort(); closePreview(); clearTimeout(retryTimer);
       route = stateRoute(); signature = null; metadata = new Map();
       routeRevision += 1;
+      pending.clear();
       collapsed.clear(); changes.clear(); diffCache.clear(); retryCount = 0;
     }
     return { metadata, collapsed, changes };
@@ -176,7 +178,7 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
       const found = new Map();
       try {
         for (let offset = 0; offset < ids.length; offset += 500) {
-          const rows = await api("/api/gallery/prompt-groups/lookup", { method: "POST", signal, body: JSON.stringify({ collection_id: state.currentCollectionId, generation_ids: ids.slice(offset, offset + 500) }) });
+          const rows = await api("/api/gallery/prompt-groups/lookup", { method: "POST", signal, body: JSON.stringify({ ...galleryViewScope(state), generation_ids: ids.slice(offset, offset + 500) }) });
           for (const row of rows) found.set(row.generation_id, row.group);
         }
         if (signal.aborted || requestedRoute !== stateRoute() || signature !== next) return;
@@ -227,10 +229,11 @@ export function bindGalleryGroups(root, { getState, render, appendMembers, notif
       if (requestRoute !== stateRoute() || requestRevision !== routeRevision) return;
       if (selection) root.dispatchEvent(new CustomEvent("gallery-select-group", { detail: { id, generations: page.items } }));
       else appendMembers(page.items);
-    } catch (error) { if (requestRoute === stateRoute()) notify(error.message, "error"); }
+    } catch (error) { if (requestRoute === stateRoute() && requestRevision === routeRevision) notify(error.message, "error"); }
     finally {
-      pending.delete(id); button.disabled = false; button.removeAttribute("aria-busy");
-      if (requestRoute === stateRoute()) for (const control of root.querySelectorAll("[data-prompt-group-select], [data-group-more]")) {
+      if (requestRevision === routeRevision) pending.delete(id);
+      button.disabled = false; button.removeAttribute("aria-busy");
+      if (requestRoute === stateRoute() && requestRevision === routeRevision) for (const control of root.querySelectorAll("[data-prompt-group-select], [data-group-more]")) {
         if ((control.dataset.promptGroupSelect || control.dataset.groupMore) === id) {
           control.disabled = false;
           if (selection && control.dataset.promptGroupSelect && (document.activeElement === document.body || document.activeElement === root)) control.focus({ preventScroll: true });

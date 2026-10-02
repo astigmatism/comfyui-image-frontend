@@ -22,7 +22,7 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
 
 ## Try the interaction
 
-Use **Grouped / Classic** between Favorites and Gallery scale to change the gallery layout.
+Use **Grouped / Classic** after the Favorites and rank filters to change the gallery layout.
 Grouped is the default; the choice is saved with your account settings. Classic keeps the existing
 thumbnail proportions and scale in one continuous grid, with folder tiles above it. Its **All items**
 header counts the entire current view. **Select all** includes unloaded generations and matching
@@ -33,7 +33,16 @@ card without a heart is selected in one gesture and then deleted, moved, copied,
 no risk of touching a favorite stored inside a folder. Individual deselection produces a mixed
 checkbox. Switching layouts
 preserves selection, while new arrivals stay unselected. Classic also resumes any history skipped
-by collapsed prompt groups. Changing location or the Favorites state clears selection.
+by collapsed prompt groups. Changing location or either filter clears selection.
+
+The five **A / B / C / D / F** buttons beside Favorites start enabled. Click a rank to hide it;
+colored buttons with a checkmark remain visible, and muted buttons can be turned back on.
+Enabled ranks combine with OR; Favorites narrows that set further. For example, A and B with
+Favorites active shows only favorites made with currently A- or B-ranked models. Unranked models
+and older images with missing model information fall under C. Filters persist across folders and
+layout changes, and reset on reload or sign-out. With all ranks off, **Show all ranks** restores them
+without changing Favorites. The controls remain together and get their own row on narrow screens.
+Rank changes update matching gallery images, counts, selection inventories, and viewer navigation.
 
 Prompt groups have neutral headers with a generation count, collapse arrow, **Prompt changes**,
 and **Select group**. Hover or focus Prompt changes to compare with the immediately older group;
@@ -53,12 +62,12 @@ folders in the open view; a marker shows the slot before you release. Focus a ti
 with Left, Right, Home, or End for the same move without a pointer. The order is saved per folder
 level for your account, so reload the preview and it stays. Dragging a folder onto another folder
 does not file it inside; use **Move / Copy…** for that. Reordering is unavailable while cards are
-selected or while either Favorites filter hides folder tiles.
+selected or while a Favorites or rank filter hides folder tiles.
 
 1. Hover an image or folder and click the checkbox in its lower-right toolkit. It appears
    with the existing tools after the hover delay (or keyboard focus). Touch screens keep the
    existing toolkit available. Selection reveals checkboxes on every card. A small count and six
-   outlined icons replace the collection breadcrumb in the normal-height title bar; Favorites,
+   outlined icons replace the collection breadcrumb in the title bar, which wraps when needed; Favorites,
    gallery scale, activity and account controls stay available. On narrow screens, selection actions
    use the second title-bar row and the other controls share the first row with the panel toggle.
    The icons select loaded items, add Favorites, download a ZIP, open Move / Copy, open Delete,

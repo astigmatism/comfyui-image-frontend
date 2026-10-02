@@ -20,6 +20,7 @@ from ..errors import AppError
 from ..file_response import StoredFileResponse as FileResponse
 from ..models import Artifact, User
 from ..schemas import (
+    GalleryFilters,
     GenerationActivity,
     GenerationBatchCreate,
     GenerationBatchResult,
@@ -33,6 +34,7 @@ from ..schemas import (
 )
 from ..services import submissions
 from ..services.generation_activity import activity_snapshot
+from .gallery_filters import gallery_filters
 
 router = APIRouter(prefix="/api", tags=["generations"])
 
@@ -104,6 +106,7 @@ def list_generations(
     request: Request,
     session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
+    filters: Annotated[GalleryFilters, Depends(gallery_filters)],
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=60)] = 24,
     collection_id: Annotated[str | None, Query()] = None,
@@ -115,6 +118,7 @@ def list_generations(
         limit=limit,
         collection_id=collection_id or None,
         collection_scoped=collection_id is not None,
+        filters=filters,
     )
 
 

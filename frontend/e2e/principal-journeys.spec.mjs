@@ -404,7 +404,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(favoritesFilterButton).toHaveAttribute("title", "Showing only unfavorited items");
   await expect(favoritesFilterButton).toContainText("Unfavorited");
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "No unfavorited items in this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No images match these filters" })).toBeVisible();
   await favoritesFilterButton.click();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "false");
   await expect(favoritesFilterButton).toHaveAttribute("title", "Show only favorites");
@@ -440,7 +440,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await favoritesFilterButton.click();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "mixed");
   await expect(page.locator("#gallery [data-gallery-card]")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "No unfavorited items in this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No images match these filters" })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("unfavorited-filter.png") });
   // A reload drops the filter, and the unfiltered view is the only place a folder
   // tile can be favorited or unfavorited.
@@ -455,7 +455,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(photoViewer).toHaveAttribute("open", "");
   await photoViewer.locator(".photo-viewer-favorite").click();
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No images match these filters" })).toBeVisible();
   await expect(photoViewer.locator(".photo-viewer-favorite")).toHaveAttribute("aria-pressed", "false");
   await photoViewer.locator(".photo-viewer-favorite").click();
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(1);
@@ -479,7 +479,7 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(prompt).toHaveValue("slow multi lighthouse at dusk");
 
   await clickGalleryControl(actions.getByRole("button", { name: "Remove from Favorites" }));
-  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No images match these filters" })).toBeVisible();
   // What just left the favorites view is exactly what the next state shows.
   await favoritesFilterButton.click();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "mixed");
@@ -584,7 +584,7 @@ test("Favorites filter follows the view sentinel and ignores stale cursor pages"
   await settled;
   // The held page (which contains a favorite) must not have leaked into the empty folder:
   // filter on + no favorites shows the favorites empty state, not the collection one.
-  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No images match these filters" })).toBeVisible();
   await expect(page.locator("#gallery .gallery-card")).toHaveCount(0);
   await page.goBack();
   await expect(favoritesFilterButton).toHaveAttribute("aria-pressed", "true");
@@ -609,7 +609,7 @@ test("server auto generation continues outside the favorites feed without browse
   await signIn(page, "artist.one", "E2EUserPermanent123!");
   await expect(page.locator("#workflow-source")).toBeEnabled();
   await page.getByRole("button", { name: "Favorites", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "No favorites in this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No images match these filters" })).toBeVisible();
   await page.getByRole("textbox", { name: "Prompt", exact: true }).fill("Favorites background generation");
   const browserSubmissions = [];
   page.on("request", (request) => {

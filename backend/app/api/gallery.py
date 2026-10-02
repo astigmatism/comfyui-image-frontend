@@ -16,10 +16,10 @@ from ..dependencies import (
     require_ready_csrf,
     require_ready_user,
 )
-from ..errors import AppError
 from ..models import PromptRerunRun
 from ..schemas import (
     GalleryDeleteResult,
+    GalleryFilters,
     GallerySelection,
     GallerySelectionScope,
     GalleryTransfer,
@@ -37,6 +37,7 @@ from ..services import prompt_rerun
 from ..services.gallery import GalleryService
 from ..services.prompt_groups import changes_for_group, lookup_groups, member_page
 from ..services.user_state import lock_user_state, notify_user
+from .gallery_filters import gallery_filters
 from .generations import require_generation_protocol
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
@@ -48,24 +49,16 @@ def view_items(
     request: Request,
     session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
+    filters: Annotated[GalleryFilters, Depends(gallery_filters)],
     collection_id: str | None = None,
-    favorites_only: bool = False,
-    unfavorited_only: bool = False,
 ) -> GalleryViewItems:
-    if favorites_only and unfavorited_only:
-        raise AppError(
-            "invalid_scope",
-            "A view is filtered to favorites or to unfavorited items, not both.",
-            status_code=422,
-        )
     container = get_container(request)
     return GalleryService(container.generations, container.collections).view_items(
         session,
         context.user.id,
         GallerySelectionScope(
             collection_id=collection_id or None,
-            favorites_only=favorites_only,
-            unfavorited_only=unfavorited_only,
+            **filters.model_dump(),
         ),
     )
 
@@ -77,7 +70,9 @@ def prompt_group_lookup(
     session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> list[PromptGroupMembership]:
-    return lookup_groups(session, context.user.id, payload.collection_id, payload.generation_ids)
+    return lookup_groups(
+        session, context.user.id, payload.collection_id, payload.generation_ids, filters=payload
+    )
 
 
 @router.get("/prompt-groups/{generation_id}/members", response_model=GenerationPage)
@@ -87,6 +82,7 @@ def prompt_group_members(
     request: Request,
     session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
+    filters: Annotated[GalleryFilters, Depends(gallery_filters)],
     collection_id: str | None = None,
     cursor: str | None = None,
     selection: bool = False,
@@ -99,6 +95,7 @@ def prompt_group_members(
         generation_id,
         cursor=cursor,
         selection=selection,
+        filters=filters,
     )
 
 

@@ -145,7 +145,7 @@ code {
 .app-shell {
   display: grid;
   grid-template-columns: var(--panel-width) minmax(0, 1fr);
-  grid-template-rows: var(--topbar-height) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   background: var(--bg);
@@ -156,7 +156,8 @@ code {
   display: grid;
   grid-template-columns: var(--panel-width) minmax(0, 1fr);
   align-items: center;
-  height: var(--topbar-height);
+  height: auto;
+  min-height: 52px;
   border-bottom: 1px solid #1e2a38;
   background: #0c121b;
   box-shadow: 0 1px 0 rgb(255 255 255 / 1%);
@@ -6453,4 +6454,65 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
     grid-row: 2;
     justify-self: start;
   }
+}
+
+/* Filters stay together; measured header height also positions mobile overlays. */
+.topbar-left { align-self: start; height: 52px; }
+.topbar-right { height: auto; min-height: 52px; flex-wrap: wrap; padding-block: 7px; row-gap: 7px; }
+.gallery-filter-controls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.checkpoint-rank-filter { display: flex; align-items: center; gap: 3px; padding-left: 8px; border-left: 1px solid var(--border); }
+.rank-filter-label { margin-right: 4px; color: var(--muted); font-size: 11px; }
+.rank-filter-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 36px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rank-filter-check { width: 8px; font-size: 10px; visibility: hidden; }
+.rank-filter-button[aria-pressed="true"] {
+  color: var(--tier-accent);
+  background: color-mix(in srgb, var(--tier-accent) 17%, var(--surface-0));
+  border-color: color-mix(in srgb, var(--tier-accent) 60%, var(--border));
+}
+.rank-filter-button[aria-pressed="true"] .rank-filter-check { visibility: visible; }
+.rank-filter-button:hover { border-color: var(--text-soft); }
+@media (max-width: 1400px) {
+  .rank-filter-label { display: none; }
+}
+@media (min-width: 801px) and (max-width: 1280px) {
+  .topbar, .gallery-selection-mode .topbar { grid-template-columns: 220px minmax(0, 1fr); }
+  .gallery-filter-controls { order: 10; flex-basis: 100%; }
+  .topbar-spacer { display: none; }
+}
+@media (max-width: 800px) {
+  .topbar, .gallery-selection-mode .topbar { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; }
+  .topbar-left, .gallery-selection-mode .topbar-left { grid-area: auto; height: 44px; }
+  .topbar-right, .gallery-selection-mode .topbar-right { grid-area: auto; margin-left: 0; padding: 0 0 4px; align-self: stretch; }
+  .gallery-selection-mode .app-title { display: block; }
+  .collection-bar-host { flex: 1 0 100%; }
+  .topbar-spacer { display: none; }
+  .gallery-filter-controls { flex-basis: 100%; gap: 6px; }
+  .checkpoint-rank-filter { padding-left: 6px; }
+  .rank-filter-button { width: 44px; min-height: 44px; }
+  .gallery-filter-controls .favorites-launch-button { width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+  .gallery-selection-mode .gallery-selection-toolbar { position: static; flex: 1 1 100%; flex-wrap: wrap; }
+}
+@media (hover: none), (pointer: coarse) {
+  .rank-filter-button { width: 44px; min-height: 44px; }
+  .gallery-filter-controls .favorites-launch-button { min-height: 44px; }
+}
+@media (min-width: 1281px) and (max-width: 1700px) {
+  .topbar .scale-control > span, .topbar .favorites-launch-label, .rank-filter-label { display: none; }
+  .topbar .scale-control input { width: 66px; }
+  .topbar-right { gap: 8px; }
 }

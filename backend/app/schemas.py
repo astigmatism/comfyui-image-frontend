@@ -580,7 +580,27 @@ class GenerationPage(APIModel):
     next_cursor: str | None = None
 
 
-class PromptGroupLookup(APIModel):
+CheckpointRank = Literal["A", "B", "C", "D", "F"]
+
+
+class GalleryFilters(APIModel):
+    favorites_only: bool = False
+    unfavorited_only: bool = False
+    excluded_checkpoint_ranks: list[CheckpointRank] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_filters(self) -> GalleryFilters:
+        if self.favorites_only and self.unfavorited_only:
+            raise ValueError("A view is filtered to favorites or to unfavorited items, not both.")
+        self.excluded_checkpoint_ranks = list(dict.fromkeys(self.excluded_checkpoint_ranks))
+        return self
+
+    @property
+    def filtered(self) -> bool:
+        return bool(self.favorites_only or self.unfavorited_only or self.excluded_checkpoint_ranks)
+
+
+class PromptGroupLookup(GalleryFilters):
     collection_id: str | None = None
     generation_ids: list[str] = Field(min_length=1, max_length=500)
 
@@ -728,24 +748,13 @@ class GenerationMove(APIModel):
     collection_id: str | None = None
 
 
-class GallerySelectionScope(APIModel):
+class GallerySelectionScope(GalleryFilters):
     collection_id: str | None = None
-    favorites_only: bool = False
-    unfavorited_only: bool = False
-
-    @model_validator(mode="after")
-    def validate_scope(self) -> GallerySelectionScope:
-        if self.favorites_only and self.unfavorited_only:
-            raise ValueError("A view is filtered to favorites or to unfavorited items, not both.")
-        return self
-
-    @property
-    def filtered(self) -> bool:
-        return self.favorites_only or self.unfavorited_only
 
 
 class GallerySelectionGeneration(APIModel):
     id: str
+    checkpoint_id: str | None = None
     collection_id: str | None
     status: str
     image_count: int

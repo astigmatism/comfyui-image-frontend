@@ -21,7 +21,10 @@ import {
   favoritesFilterActive,
   favoritesFilterPresentation,
   favoritesMode,
-  favoritesModeMatches,
+  excludedCheckpointRanks,
+  galleryFilterActive,
+  galleryGenerationMatches,
+  galleryViewParameters,
   nextFavoritesMode,
 } from "./gallery-view.mjs";
 import {
@@ -208,6 +211,7 @@ const state = {
   nextCursor: null,
   loadingMore: false,
   favoritesMode: "all",
+  excludedCheckpointRanks: [],
   photoViewerDetachedGeneration: null,
   galleryScale: 45,
   galleryLayout: "grouped",
@@ -335,6 +339,7 @@ let collectionsRequestToken = 0;
 let galleryHistoryController = null;
 let galleryPageController = null;
 let galleryPageRequest = null;
+let topbarResizeObserver = null;
 const pendingGenerationIds = new Set();
 
 const SERVICE_POLL_INTERVAL_MS = 10_000;
@@ -780,6 +785,13 @@ async function handleClick(event) {
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
     else if (action === "toggle-collection-favorite") await toggleCollectionFavorite(target.dataset.collectionId, target);
     else if (action === "toggle-favorites-filter") toggleFavoritesFilter();
+    else if (action === "toggle-checkpoint-rank-filter") toggleCheckpointRankFilter(target.dataset.checkpointRank);
+    else if (action === "show-all-checkpoint-ranks") {
+      state.excludedCheckpointRanks = [];
+      syncRankFilterControls();
+      void reloadGalleryFilters();
+      document.querySelector('[data-action="toggle-checkpoint-rank-filter"]')?.focus();
+    }
     else if (action === "open-detail") await openDetail(target.dataset.generationId);
     else if (action === "open-photo") openPhotoViewer(target.dataset.generationId);
     else if (action === "close-photo") closePhotoViewer();
@@ -1278,6 +1290,7 @@ async function persistCheckpointTierDraft(draft) {
     renderPhotoViewer();
   }
   if (state.sourcePickerDraft === draft) renderSourcePickerDialog();
+  if (excludedCheckpointRanks(state).length) void reloadGalleryFilters();
   return Boolean(saved && state.sourcePickerDraft === draft);
 }
 
@@ -1319,6 +1332,7 @@ async function changePhotoCheckpointRank(button) {
     const controls = [...document.querySelectorAll('#photo-viewer [data-action="rank-checkpoint"]')];
     (controls.find((control) => control.dataset.rankStep === step && !control.disabled) || controls.find((control) => !control.disabled))?.focus({ preventScroll: true });
   }
+  if (excludedCheckpointRanks(state).length) void reloadGalleryFilters();
   if (saved) setTimeout(() => {
     if (checkpointRankChange !== change) return;
     checkpointRankChange = null;
@@ -2653,6 +2667,7 @@ async function logout() {
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.checkpointTiers = {};
+  state.excludedCheckpointRanks = [];
   checkpointRankChange = null;
   state.modelSelectionsBySourceRevision = new Map();
   state.selectedGenerationTargetCount = 0;
@@ -2755,6 +2770,7 @@ async function enterApplication() {
   setGalleryRoute(collectionIdFromHash());
   state.galleryLayout = "grouped";
   state.favoritesMode = "all";
+  state.excludedCheckpointRanks = [];
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
@@ -2815,6 +2831,7 @@ async function enterApplication() {
   });
   window.addEventListener("online", () => submissionRecovery?.start({ immediate: true }), { signal: controller.signal });
   root.innerHTML = shellMarkup(state);
+  observeTopbarHeight();
   promptRerunProgress = createPromptRerunProgress(root.querySelector("#prompt-rerun-progress-host"), {
     api, context: () => ({ collectionId: state.currentCollectionId }),
     changed: scheduleActivityRefresh, notify: toast, signal: controller.signal,
@@ -3127,9 +3144,8 @@ function galleryNextCursor() {
 }
 
 function visibleGenerations() {
-  const mode = favoritesMode(state);
-  return favoritesFilterActive(mode)
-    ? state.generations.filter((generation) => favoritesModeMatches(mode, generation))
+  return galleryFilterActive(state)
+    ? state.generations.filter((generation) => galleryGenerationMatches(state, generation))
     : state.generations;
 }
 
@@ -3239,6 +3255,9 @@ function galleryPageUrl(cursor = null, collectionId = currentGalleryRoute()) {
   const parameters = new URLSearchParams({ limit: "24" });
   if (cursor) parameters.set("cursor", cursor);
   parameters.set("collection_id", collectionId || "");
+  for (const [key, value] of galleryViewParameters(state)) {
+    if (key !== "collection_id" && value !== "false") parameters.append(key, value);
+  }
   return `/api/generations?${parameters.toString()}`;
 }
 
@@ -4997,13 +5016,13 @@ function reorderableCollection(collectionId) {
   return Boolean(
     collection &&
       (collection.parent_id ?? null) === (state.currentCollectionId || null) &&
-      !favoritesFilterActive(favoritesMode(state)),
+      !galleryFilterActive(state),
   );
 }
 
 function collectionGridForEvent(event) {
   const grid = event.target.closest("#gallery .collection-grid");
-  return grid && !favoritesFilterActive(favoritesMode(state)) ? grid : null;
+  return grid && !galleryFilterActive(state) ? grid : null;
 }
 
 function clearCollectionDropIndicators() {
@@ -5350,9 +5369,10 @@ function renderGallery() {
       message: state.galleryMessage,
       // A filtered view is generation cards only: a folder tile would offer a
       // subtree whose contents ignore the filter.
-      collections: favoritesFilterActive(mode) ? [] : state.collections,
+      collections: galleryFilterActive(state) ? [] : state.collections,
       currentCollectionId: state.currentCollectionId,
       favoritesMode: mode,
+      excludedCheckpointRanks: excludedCheckpointRanks(state),
       promptGroups: state.galleryLayout === "classic" ? null : galleryGroups?.options(),
       galleryLayout: state.galleryLayout,
       hideThumbnails: currentViewHidesThumbnails(),
@@ -5728,7 +5748,7 @@ async function refreshGeneration(
       inserted ||
       state.generations[index]?.id !== id ||
       previous?.prompt_fingerprint !== detail.prompt_fingerprint ||
-      (favoritesFilterActive(favoritesMode(state)) && Boolean(previous?.is_favorite) !== Boolean(detail.is_favorite));
+      (galleryFilterActive(state) && galleryGenerationMatches(state, previous) !== galleryGenerationMatches(state, detail));
     if (galleryStructureChanged) renderGallery();
     else upsertGalleryCard(detail);
     syncServerControls();
@@ -5920,7 +5940,54 @@ async function toggleCollectionFavorite(id, button) {
 function toggleFavoritesFilter() {
   state.favoritesMode = nextFavoritesMode(favoritesMode(state));
   syncFavoritesFilterControl();
+  void reloadGalleryFilters();
+}
+
+function syncRankFilterControls() {
+  const excluded = excludedCheckpointRanks(state);
+  for (const button of document.querySelectorAll('[data-action="toggle-checkpoint-rank-filter"]')) {
+    const rank = button.dataset.checkpointRank;
+    button.setAttribute("aria-pressed", String(!excluded.includes(rank)));
+    button.title = `${excluded.includes(rank) ? "Show" : "Hide"} images from rank ${rank}${rank === "C" ? " (includes unranked models)" : ""}`;
+  }
+}
+
+function toggleCheckpointRankFilter(rank) {
+  if (!CHECKPOINT_TIER_DEFINITIONS.some(({ id }) => id === rank)) return;
+  const excluded = excludedCheckpointRanks(state);
+  state.excludedCheckpointRanks = excluded.includes(rank) ? excluded.filter((id) => id !== rank) : [...excluded, rank];
+  syncRankFilterControls();
+  void reloadGalleryFilters();
+}
+
+async function reloadGalleryFilters() {
+  if (!document.querySelector("#gallery")) return;
+  const token = ++collectionNavigationToken;
+  cancelGalleryReads();
+  state.observer?.disconnect();
+  if (document.querySelector("#photo-viewer")?.open) state.photoViewerDetachedGeneration = photoViewerGeneration(state.photoViewerGenerationId);
+  for (const generation of state.generations) {
+    if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
+  }
+  state.generations = [];
+  state.nextCursor = null;
+  state.gallerySkippedCursor = null;
+  state.loadingMore = false;
+  startupGalleryBoundary = null;
+  state.galleryStatus = "loading";
   renderGallery();
+  await loadStartupGallery(applicationStartupController?.signal, { navigationToken: token });
+  if (token === collectionNavigationToken) renderPhotoViewer();
+}
+
+function observeTopbarHeight() {
+  topbarResizeObserver?.disconnect();
+  const topbar = document.querySelector(".topbar");
+  if (!topbar) return;
+  const measure = () => document.documentElement.style.setProperty("--topbar-height", `${Math.ceil(topbar.getBoundingClientRect().height)}px`);
+  measure();
+  topbarResizeObserver = new ResizeObserver(measure);
+  topbarResizeObserver.observe(topbar);
 }
 
 async function openDetail(id) {
@@ -5944,12 +6011,19 @@ function photoViewerGenerations() {
 }
 
 function photoViewerNavigation(id) {
-  const generations = photoViewerGenerations();
+  const generations = photoViewerNavigationItems(id);
   const index = generations.findIndex((generation) => generation.id === id);
   return {
     hasOlder: index >= 0 && (index < generations.length - 1 || Boolean(galleryNextCursor())),
     hasNewer: index > 0,
   };
+}
+
+function photoViewerNavigationItems(id) {
+  const generations = photoViewerGenerations();
+  const anchor = photoViewerGeneration(id);
+  return anchor && !generations.some((item) => item.id === id)
+    ? sortGenerationsNewestFirst([...generations, anchor]) : generations;
 }
 
 function photoViewerGenerationDock() {
@@ -6042,7 +6116,7 @@ async function navigatePhotoViewer(direction) {
   photoViewerLoadError = null;
   photoViewerPaging = false;
   try {
-    let generations = photoViewerGenerations();
+    let generations = photoViewerNavigationItems(origin);
     let index = generations.findIndex((generation) => generation.id === origin);
     let target = index < 0 ? null : generations[index + (direction === "older" ? 1 : -1)];
     const cursors = new Set();
@@ -6055,7 +6129,7 @@ async function navigatePhotoViewer(direction) {
       const page = await loadMore();
       if (!current()) return;
       if (!page) break;
-      generations = photoViewerGenerations();
+      generations = photoViewerNavigationItems(origin);
       index = generations.findIndex((generation) => generation.id === origin);
       target = index < 0 ? null : generations[index + 1];
     }
@@ -6764,6 +6838,9 @@ function stopServicePolling() {
 }
 
 function stopLiveUpdates() {
+  topbarResizeObserver?.disconnect();
+  topbarResizeObserver = null;
+  document.documentElement.style.removeProperty("--topbar-height");
   clearGenerationEtaAnchors();
   activityRequestToken += 1;
   window.clearTimeout(activityRefreshTimer);
@@ -7057,7 +7134,10 @@ async function applySharedSettings(preferences) {
   updateGalleryLayout(saved.gallery_layout);
   const ranksChanged = !settingsEqual(state.checkpointTiers, normalizedCheckpointTiers(preferences.checkpoint_tiers));
   state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
-  if (ranksChanged) { checkpointTiersRevision += 1; renderGallery(); renderPhotoViewer(); }
+  if (ranksChanged) {
+    checkpointTiersRevision += 1; renderGallery(); renderPhotoViewer();
+    if (excludedCheckpointRanks(state).length) void reloadGalleryFilters();
+  }
   state.parameterStateBySource = normalizeStoredParameterState(JSON.stringify(saved.sources));
   state.activeSourceKey = saved.active_source;
   state.generationQuantity = saved.quantity;

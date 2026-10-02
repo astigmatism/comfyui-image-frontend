@@ -1,3 +1,35 @@
+import { CHECKPOINT_TIER_DEFINITIONS, checkpointRank } from "./lib.mjs";
+
+export function excludedCheckpointRanks(state) {
+  return CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => id).filter((id) => state?.excludedCheckpointRanks?.includes(id));
+}
+
+export function galleryFilterActive(state) {
+  return favoritesFilterActive(favoritesMode(state)) || excludedCheckpointRanks(state).length > 0;
+}
+
+export function galleryGenerationMatches(state, item) {
+  const excluded = excludedCheckpointRanks(state);
+  return favoritesModeMatches(favoritesMode(state), item)
+    && (!excluded.length || !excluded.includes(checkpointRank(item?.checkpoint_id, state?.checkpointTiers)));
+}
+
+export function galleryFilterSignature(state) {
+  return JSON.stringify([galleryViewScope(state), excludedCheckpointRanks(state).length ? state?.checkpointTiers : null]);
+}
+
+export function galleryViewParameters(state, extras = {}) {
+  const scope = galleryViewScope(state);
+  const parameters = new URLSearchParams({ collection_id: scope.collection_id || "", favorites_only: String(scope.favorites_only), unfavorited_only: String(scope.unfavorited_only), ...extras });
+  for (const rank of scope.excluded_checkpoint_ranks || []) parameters.append("excluded_checkpoint_ranks", rank);
+  return parameters;
+}
+
+export function checkpointRankFilterMarkup(state) {
+  const excluded = excludedCheckpointRanks(state);
+  return `<div class="checkpoint-rank-filter" role="group" aria-label="Visible model ranks"><span class="rank-filter-label">Rank</span>${CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => `<button type="button" class="rank-filter-button checkpoint-tier-${id}" data-action="toggle-checkpoint-rank-filter" data-checkpoint-rank="${id}" aria-label="Show rank ${id}" aria-pressed="${!excluded.includes(id)}" title="${excluded.includes(id) ? "Show" : "Hide"} images from rank ${id}${id === "C" ? " (includes unranked models)" : ""}"><span class="rank-filter-check" aria-hidden="true">✓</span><span>${id}</span></button>`).join("")}</div>`;
+}
+
 export function galleryLayoutMarkup(layout = "grouped") {
   return `<div class="gallery-layout-control" role="group" aria-label="Gallery layout">
     <button type="button" data-action="set-gallery-layout" data-gallery-layout="grouped" aria-pressed="${layout !== "classic"}">Grouped</button>
@@ -60,6 +92,7 @@ export function galleryViewScope(state) {
     collection_id: state.currentCollectionId || null,
     favorites_only: mode === "favorites",
     unfavorited_only: mode === "unfavorited",
+    ...(excludedCheckpointRanks(state).length ? { excluded_checkpoint_ranks: excludedCheckpointRanks(state) } : {}),
   };
 }
 

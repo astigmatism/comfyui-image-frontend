@@ -1,6 +1,6 @@
 import { promptRuntimeError } from "./prompt-routing.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
-import { classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup } from "./gallery-view.mjs";
+import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
@@ -96,7 +96,10 @@ export function shellMarkup(state) {
           })}</div>
           <div id="gallery-selection-toolbar" class="gallery-selection-toolbar" role="group" aria-label="Selection actions" hidden></div>
           <div class="topbar-spacer"></div>
+          <div class="gallery-filter-controls" role="group" aria-label="Gallery filters">
           <button type="button" class="button low favorites-launch-button" data-action="toggle-favorites-filter" aria-label="Favorites" title="${presentation.title}" aria-pressed="${presentation.pressed}" data-favorites-mode="${mode}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /><path class="favorites-slash-backing" d="M4.5 20.5 20 4.2" /><path class="favorites-slash" d="M4.5 20.5 20 4.2" /></svg><span class="favorites-launch-label">${presentation.label}</span></button>
+          ${checkpointRankFilterMarkup(state)}
+          </div>
           ${galleryLayoutMarkup(state.galleryLayout)}
           <label class="scale-control">
             <span>Gallery scale</span>
@@ -1431,6 +1434,7 @@ export function galleryMarkup(
     collections = [],
     currentCollectionId = null,
     favoritesMode: mode = "all",
+    excludedCheckpointRanks = [],
     promptGroups = null,
     galleryLayout = "grouped",
     hideThumbnails = false,
@@ -1454,11 +1458,11 @@ export function galleryMarkup(
     return `${tileGrid}<section class="gallery-status gallery-error" role="alert"><h2>Gallery temporarily unavailable</h2><p>${escapeHtml(message || "Retained history could not be loaded.")}</p><button type="button" class="button secondary" data-action="retry-gallery">Retry gallery</button></section>${cards}`;
   }
   if (!generations.length && !tiles) {
-    if (mode === "favorites") {
-      return `${tileGrid}<section class="empty-gallery empty-favorites"><h2>No favorites in this view</h2><p>Tap the heart on any card to add it here, or turn off the favorites filter.</p></section>`;
+    if (excludedCheckpointRanks.length === CHECKPOINT_TIER_DEFINITIONS.length) {
+      return `${tileGrid}<section class="empty-gallery"><h2>All model ranks are hidden</h2><p>Turn on a rank above to show its images.</p><button type="button" class="button secondary" data-action="show-all-checkpoint-ranks">Show all ranks</button></section>`;
     }
-    if (mode === "unfavorited") {
-      return `${tileGrid}<section class="empty-gallery empty-unfavorited"><h2>No unfavorited items in this view</h2><p>Everything here is already a favorite, or the view is empty.</p></section>`;
+    if (excludedCheckpointRanks.length || mode !== "all") {
+      return `${tileGrid}<section class="empty-gallery"><h2>No images match these filters</h2><p>Turn on more ranks or change the Favorites filter.</p></section>`;
     }
     if (currentCollectionId) {
       return `${tileGrid}<section class="empty-gallery empty-collection"><h2>This collection is empty</h2><p>Generate images here, or move cards in.</p></section>`;

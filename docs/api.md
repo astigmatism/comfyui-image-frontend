@@ -509,7 +509,7 @@ subsumes its descendants and separately selected generations inside it, so overl
 selections affect each item once.
 
 `GET /api/gallery/items` returns the inventory of one gallery view — `generations` (id,
-`collection_id`, `status`, `image_count`, `is_favorite`) and `collection_ids` — so a client can
+`collection_id`, `checkpoint_id`, `status`, `image_count`, `is_favorite`) and `collection_ids` — so a client can
 select an entire view, including items it has not paged in yet. `collection_id` follows the same
 empty-versus-absent convention as the listing above. `favorites_only=true` restricts the inventory
 to favorited generations and `unfavorited_only=true` to generations with no favorite; requesting
@@ -518,10 +518,20 @@ filtered gallery view shows generation cards only: a folder would carry contents
 filter. New arrivals are never added to a selection retroactively; the snapshot is what the client
 selected.
 
+Gallery pages (`GET /api/generations`), view inventories, and prompt-group member pages accept
+repeated `excluded_checkpoint_ranks` query parameters, for example
+`excluded_checkpoint_ranks=C&excluded_checkpoint_ranks=D&excluded_checkpoint_ranks=F`.
+The same field is an array in prompt-group lookup bodies and selection scopes. Only A, B, C, D,
+and F are accepted; omission or an empty list excludes nothing, and all five excludes every image.
+Ranks use the current owner's saved checkpoint tiers. Unassigned checkpoints and missing identities
+are C. Rank and Favorites predicates intersect before pagination; all filtered views omit folders.
+Prompt groups retain their original boundaries and comparisons while reporting matching counts
+and returning matching members. Group selection's 500-card limit applies to matching members.
+
 A selection may carry that view as an explicit `scope` (`collection_id`, `favorites_only`,
-`unfavorited_only`). The server re-validates the snapshot before mutating anything and returns 409
+`unfavorited_only`, `excluded_checkpoint_ranks`). The server re-validates the snapshot before mutating anything and returns 409
 `selection_changed` when an item has moved, is pending delete, no longer matches the scope's
-favorite filter, or — for either filtered scope — when the request names a folder at all. A scope
+favorite or rank filter, or — for any filtered scope — when the request names a folder at all. A scope
 requesting both filters is rejected as 422.
 
 `POST /api/gallery/transfer` also takes `operation` (`"move"` or `"copy"`) and `collection_id`

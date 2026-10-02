@@ -10,12 +10,14 @@ from sqlalchemy.orm import Session
 from ..errors import AppError
 from ..models import Collection, Generation
 from ..schemas import (
+    GalleryFilters,
     GenerationPage,
     PromptChangePart,
     PromptChanges,
     PromptGroupMembership,
     PromptGroupSummary,
 )
+from .gallery_filters import gallery_filter_predicate
 from .generations import (
     GenerationService,
     _decode_cursor,
@@ -66,13 +68,32 @@ def group_members(owner_id: str, collection_id: str | None) -> Any:
 
 
 def lookup_groups(
-    session: Session, owner_id: str, collection_id: str | None, ids: list[str]
+    session: Session,
+    owner_id: str,
+    collection_id: str | None,
+    ids: list[str],
+    *,
+    filters: GalleryFilters | None = None,
 ) -> list[PromptGroupMembership]:
     if collection_id is not None and not session.scalar(
         select(Collection.id).where(Collection.id == collection_id, Collection.owner_id == owner_id)
     ):
         raise AppError("not_found", "Collection was not found.", status_code=404)
     members = group_members(owner_id, collection_id)
+    if filters is not None and filters.filtered:
+        # Form runs first: filtering must not merge separate uses of the same prompt.
+        members = (
+            select(
+                members.c.id,
+                members.c.group_id,
+                members.c.group_time,
+                members.c.previous_id,
+                func.count().over(partition_by=members.c.group_id).label("generation_count"),
+            )
+            .join(Generation, Generation.id == members.c.id)
+            .where(gallery_filter_predicate(session, owner_id, filters))
+            .cte("filtered_prompt_members")
+        )
     rows = session.execute(select(members).where(members.c.id.in_(ids))).all()
     return [
         PromptGroupMembership(
@@ -108,9 +129,10 @@ def member_page(
     *,
     cursor: str | None = None,
     selection: bool = False,
+    filters: GalleryFilters | None = None,
 ) -> GenerationPage:
     group = owned_group(session, owner_id, collection_id, generation_id)
-    if selection and group.generation_count > 500:
+    if selection and group.generation_count > 500 and not (filters and filters.filtered):
         raise AppError(
             "selection_limit",
             "This group exceeds the 500-card selection limit. Select individual cards.",
@@ -122,6 +144,8 @@ def member_page(
         .join(members, members.c.id == Generation.id)
         .where(members.c.group_id == group.id)
     )
+    if filters is not None and filters.filtered:
+        statement = statement.where(gallery_filter_predicate(session, owner_id, filters))
     if cursor and not selection:
         time, item_id = _decode_cursor(cursor)
         statement = statement.where(

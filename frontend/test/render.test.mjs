@@ -1548,15 +1548,15 @@ test("active generation ETA anchors the server estimate to the client clock", ()
 
 test("galleryMarkup shows a filter-specific empty state and folder tiles only unfiltered", () => {
   const empty = galleryMarkup([], { favoritesMode: "favorites" });
-  assert.match(empty, /No favorites in this view/);
-  assert.match(empty, /turn off the favorites filter/);
+  assert.match(empty, /No images match these filters/);
+  assert.match(empty, /change the Favorites filter/);
   assert.doesNotMatch(empty, /No generations yet|This collection is empty/);
-  assert.doesNotMatch(galleryMarkup([]), /No favorites in this view/);
-  assert.doesNotMatch(galleryMarkup([], { currentCollectionId: "c1" }), /No favorites in this view/);
+  assert.doesNotMatch(galleryMarkup([]), /No images match these filters/);
+  assert.doesNotMatch(galleryMarkup([], { currentCollectionId: "c1" }), /No images match these filters/);
   const unfavoritedEmpty = galleryMarkup([], { favoritesMode: "unfavorited" });
-  assert.match(unfavoritedEmpty, /No unfavorited items in this view/);
-  assert.match(unfavoritedEmpty, /Everything here is already a favorite/);
-  assert.doesNotMatch(unfavoritedEmpty, /No favorites in this view|No generations yet/);
+  assert.match(unfavoritedEmpty, /No images match these filters/);
+  assert.match(unfavoritedEmpty, /change the Favorites filter/);
+  assert.doesNotMatch(unfavoritedEmpty, /No generations yet/);
   const collection = { id: "c1", name: "Saved <folder>", is_favorite: true, generation_count: 2 };
   const generation = {
     id: "g1", workflow_display_name: "Portrait Workflow", status: "succeeded",
@@ -1569,7 +1569,7 @@ test("galleryMarkup shows a filter-specific empty state and folder tiles only un
     collections: [collection],
   });
   assert.match(filtered, /class="gallery-card is-favorited status-succeeded"/);
-  assert.doesNotMatch(filtered, /No favorites in this view/);
+  assert.doesNotMatch(filtered, /No images match these filters/);
   // Folder tiles belong to the unfiltered view only; both filtered states show
   // generation cards, because a folder subtree ignores the filter.
   const unfiltered = galleryMarkup([generation], { currentCollectionId: null, collections: [collection] });

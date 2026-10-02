@@ -47,6 +47,7 @@ from ..models import (
 from ..schemas import (
     ArtifactSummary,
     FavoriteSummary,
+    GalleryFilters,
     GenerationBatchCreate,
     GenerationBatchResult,
     GenerationCreate,
@@ -65,6 +66,7 @@ from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
 from .event_broker import EventBroker
 from .events import add_generation_event, event_payload
+from .gallery_filters import gallery_filter_predicate
 from .generation_activity import retain_deleted_outcome
 from .generation_eta import is_checkpoint_declaration, verified_duration
 from .user_state import asset_is_saved, lock_user_state
@@ -669,9 +671,12 @@ class GenerationService:
         limit: int,
         collection_id: str | None = None,
         collection_scoped: bool = False,
+        filters: GalleryFilters | None = None,
     ) -> GenerationPage:
         limit = max(1, min(limit, 60))
         statement = select(*_summary_projection()).where(Generation.owner_id == owner_id)
+        if filters is not None and filters.filtered:
+            statement = statement.where(gallery_filter_predicate(session, owner_id, filters))
         if collection_scoped:
             self._collection_for_owner(session, owner_id, collection_id)
             statement = statement.where(Generation.pending_delete.is_(False))

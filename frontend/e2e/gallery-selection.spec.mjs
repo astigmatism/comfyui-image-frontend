@@ -206,10 +206,10 @@ test("an empty folder can be favorited but has nothing to download", async ({ pa
 for (const width of [320, 390, 801, 850, 1000, 1024, 1201, 1440]) test(`selection toolbar and both destination buttons fit ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 844 });
   await mountSelection(page);
-  const headerBefore = await page.locator(".topbar").boundingBox();
   const checkbox = page.locator('[data-generation-id="g0"] .card-select-button');
   await checkbox.focus(); await checkbox.press("Space");
-  expect((await page.locator(".topbar").boundingBox()).height).toBe(headerBefore.height);
+  // The filter row can wrap; the gallery must follow the resulting header height.
+  expect((await page.locator("#gallery-viewport").boundingBox()).y).toBeGreaterThanOrEqual((await page.locator(".topbar").boundingBox()).height);
   await expect(page.getByRole("button", { name: "Favorites", exact: true })).toBeVisible();
   await expect(page.getByRole("slider", { name: "Gallery scale" })).toBeVisible();
   await page.evaluate(async () => {
