@@ -12,6 +12,7 @@ import {
   collectionAncestors,
   collectionDepth,
   collectionTreeRows,
+  creativeDirectionWarningText,
   escapeHtml,
   formatLocalDate,
   interfaceInputs,
@@ -1359,6 +1360,7 @@ function promptAssistantMarkup(state = {}) {
     <div class="assistant-body">
       ${promptInstructionsMarkup("prompt-assistant-instructions")}
       ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
+      ${creativeDirectionWarningMarkup("creative-direction", "")}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
       ${thinkingModeMarkup("prompt-assistant-thinking-mode", state.promptAssistant)}
       <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
@@ -1397,6 +1399,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
         <div class="prompt-editor-assistant-controls">
           ${promptInstructionsMarkup("prompt-editor-instructions", promptAssistant)}
           ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative Direction", creativeDirection, 3)}
+          ${creativeDirectionWarningMarkup("prompt-editor-creative-direction", creativeDirection)}
           <div class="prompt-editor-assistant-action-row">
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
@@ -1412,6 +1415,11 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
       <button type="button" class="button primary" data-action="apply-prompt-editor">Apply</button>
     </footer>
   </form>`;
+}
+
+export function creativeDirectionWarningMarkup(id, value) {
+  const warning = creativeDirectionWarningText(value);
+  return `<p class="field-warning" data-creative-direction-warning="${escapeHtml(id)}" role="status" ${warning ? "" : "hidden"}>${escapeHtml(warning)}</p>`;
 }
 
 function speechTextareaMarkup(id, label, value, rows) {
@@ -2384,11 +2392,15 @@ export function serverControlsMarkup(state) {
 export function automationStatusMarkup(state) {
   const auto = state.automation;
   const syncStatus = state.autoSettingsStatus;
+  // The toggle stays on while the server is blocked or retrying, so say why nothing is running.
+  const blocked = auto?.status === "blocked";
+  const reason = auto?.enabled && auto.message && (blocked || auto.status === "retrying")
+    ? `<p class="automation-status-message${blocked ? " is-blocked" : ""}" role="${blocked ? "alert" : "status"}">${escapeHtml(auto.message)}</p>` : "";
   const retry = auto?.status === "blocked" && auto.error_code !== "collection_deleted"
     ? '<button class="button low" data-action="retry-auto-generate">Retry Auto-generate</button>' : "";
   const error = ["error", "conflict"].includes(syncStatus) && state.autoSettingsMessage
     ? `<div class="auto-settings-status" role="alert">${escapeHtml(state.autoSettingsMessage)}<button class="button low" data-action="retry-auto-settings">Retry changes</button></div>` : "";
-  return retry + error;
+  return reason + retry + error;
 }
 
 export function sharedSettingsStatusMarkup(state) {

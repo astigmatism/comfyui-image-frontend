@@ -22,6 +22,7 @@ import {
   promptGenerationButtonPresentation,
   generationButtonContentMarkup,
   automationStatusMarkup,
+  creativeDirectionWarningMarkup,
   serverControlsMarkup,
   generationProgressMarkup,
   generationActivityMarkup,
@@ -2757,6 +2758,29 @@ test("normal automatic settings saves render no status host content", () => {
   for (const autoSettingsStatus of ["error", "conflict"]) {
     assert.match(automationStatusMarkup({ autoSettingsStatus, autoSettingsMessage: "Edits need attention" }), /role="alert".*Edits need attention.*retry-auto-settings/);
   }
+});
+
+test("a blocked or retrying automation explains why nothing is running", () => {
+  const message = "Prompt Assistant repeated the current prompt instead of applying the Creative Direction <after retrying>.";
+  const blocked = automationStatusMarkup({ automation: { enabled: true, status: "blocked", error_code: "prompt_refinement_unchanged", message } });
+  assert.match(blocked, /<p class="automation-status-message is-blocked" role="alert">Prompt Assistant repeated/);
+  assert.match(blocked, /&lt;after retrying&gt;/);
+  assert.ok(blocked.indexOf("automation-status-message") < blocked.indexOf("retry-auto-generate"));
+  const retrying = automationStatusMarkup({ automation: { enabled: true, status: "retrying", message: "Restarting from your starting prompt." } });
+  assert.match(retrying, /<p class="automation-status-message" role="status">Restarting from your starting prompt\.<\/p>/);
+  assert.doesNotMatch(retrying, /retry-auto-generate/);
+  for (const status of ["waiting", "preparing", "generating"]) {
+    assert.equal(automationStatusMarkup({ automation: { enabled: true, status, message: "ignored" } }), "");
+  }
+  assert.equal(automationStatusMarkup({ automation: { enabled: false, status: "blocked", message: "stale" } }).includes("stale"), false);
+});
+
+test("Creative Direction warns about an unfilled template placeholder", () => {
+  const direction = "3. New pose: [DESCRIBE THE NEW POSE HERE — stance, both hand positions, body angle, head and gaze direction]";
+  const warned = creativeDirectionWarningMarkup("creative-direction", direction);
+  assert.match(warned, /data-creative-direction-warning="creative-direction" role="status" >Creative Direction contains an unfilled placeholder: “\[DESCRIBE THE NEW POSE HERE/);
+  assert.match(warned, /…\]”\. Replace it with the intended change\./);
+  assert.match(creativeDirectionWarningMarkup("creative-direction", "Make it snow."), /data-creative-direction-warning="creative-direction" role="status" hidden><\/p>/);
 });
 
 test("automatic Generate presentation survives concurrent prompt submission and recovery", () => {

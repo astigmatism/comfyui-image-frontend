@@ -352,6 +352,22 @@ export function sourceModelParameterVariants(source, selections = {}, fallbackVa
   return variants;
 }
 
+// A bracketed template slot such as "[DESCRIBE THE NEW POSE HERE]" asks the model for a change
+// it was never given, so refinement can return the prompt unchanged.
+const CREATIVE_DIRECTION_PLACEHOLDER = /\[[^\]\n]{0,200}\b(?:HERE|TODO|TBD)\b[^\]\n]{0,200}\]/i;
+
+export function creativeDirectionPlaceholder(text) {
+  const match = String(text ?? "").match(CREATIVE_DIRECTION_PLACEHOLDER);
+  return match ? match[0] : null;
+}
+
+export function creativeDirectionWarningText(text) {
+  const placeholder = creativeDirectionPlaceholder(text);
+  if (!placeholder) return "";
+  const shown = placeholder.length > 80 ? `${placeholder.slice(0, 78)}…]` : placeholder;
+  return `Creative Direction contains an unfilled placeholder: “${shown}”. Replace it with the intended change.`;
+}
+
 export function insertTranscription(value, transcript, selectionStart, selectionEnd) {
   const source = String(value ?? "");
   const spoken = String(transcript ?? "").trim();

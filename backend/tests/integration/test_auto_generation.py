@@ -190,7 +190,7 @@ def test_disable_during_composition_cannot_enqueue(app_client, monkeypatch):
     from app.schemas import PromptComposeResponse
     from app.services import auto_generation
 
-    async def compose(*args):
+    async def compose(*args, **kwargs):
         started.set()
         await release.wait()
         return PromptComposeResponse(
@@ -291,7 +291,7 @@ def test_transient_composition_retries_but_invalid_configuration_blocks(app_clie
     )
     original = auto_generation.compose_prompt
 
-    async def unavailable(*args):
+    async def unavailable(*args, **kwargs):
         raise AppError("ollama_generate_timeout", "Temporarily unavailable", status_code=503)
 
     monkeypatch.setattr(auto_generation, "compose_prompt", unavailable)
@@ -309,7 +309,7 @@ def test_transient_composition_retries_but_invalid_configuration_blocks(app_clie
     assert len(jobs(app_client)) == 1
     complete(app_client)
 
-    async def invalid(*args):
+    async def invalid(*args, **kwargs):
         raise AppError("invalid_instructions", "Review instructions", status_code=422)
 
     monkeypatch.setattr(auto_generation, "compose_prompt", invalid)
@@ -321,6 +321,79 @@ def test_transient_composition_retries_but_invalid_configuration_blocks(app_clie
     retried = command(app_client, "/retry", expected_revision=state["revision"])
     assert retried.status_code == 200
     assert retried.json()["status"] == "waiting"
+
+
+def _clear_retry_delay(client, owner):
+    from datetime import UTC, datetime, timedelta
+
+    with client.app.state.container.db.session_factory() as session:
+        row = session.get(AutoGeneration, owner)
+        row.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+
+
+def test_stalled_refinement_chain_restarts_from_the_starting_prompt(app_client, fake_state):
+    user, _ = provision_user(app_client)
+    enable(
+        app_client,
+        assistant={"mode": "refine", "prompt": "lighthouse", "creative_direction": "night"},
+    )
+    fake_state.ollama_response_prompts.append("lighthouse at dusk")
+    tick(app_client, user["id"])
+    assert [job.final_prompt for job in jobs(app_client)] == ["lighthouse at dusk"]
+    complete(app_client)
+
+    # The chain now refines its own output, and the model keeps returning it unchanged.
+    fake_state.ollama_response_prompts.extend(["lighthouse at dusk"] * 3)
+    before = len(fake_state.ollama_calls)
+    tick(app_client, user["id"])
+    chained = fake_state.ollama_calls[before:]
+    assert "Current prompt:\nlighthouse at dusk\n" in chained[0]["messages"][0]["content"]
+    assert [call["options"]["temperature"] for call in chained] == [0.7, 1.0, 1.0]
+    restarted = app_client.get("/api/auto-generation").json()
+    assert restarted["enabled"] and restarted["status"] == "retrying"
+    assert restarted["error_code"] == "prompt_refinement_unchanged"
+    assert "starting prompt" in restarted["message"]
+    assert restarted["latest_prompt"] == "lighthouse"
+    assert len(jobs(app_client)) == 1
+
+    # The restart refines the starting prompt; returning the earlier chain prompt is a
+    # repeat, so the next candidate is used.
+    _clear_retry_delay(app_client, user["id"])
+    fake_state.ollama_response_prompts.extend(["lighthouse at dusk", "lighthouse at dawn"])
+    before = len(fake_state.ollama_calls)
+    tick(app_client, user["id"])
+    restart = fake_state.ollama_calls[before:]
+    assert "Current prompt:\nlighthouse\n" in restart[0]["messages"][0]["content"]
+    assert len(restart) == 2
+    assert [job.final_prompt for job in jobs(app_client)] == [
+        "lighthouse at dusk",
+        "lighthouse at dawn",
+    ]
+    resumed = app_client.get("/api/auto-generation").json()
+    assert resumed["status"] == "generating"
+    assert resumed["error_code"] is None and resumed["message"] is None
+
+
+def test_refinement_blocks_visibly_when_the_starting_prompt_cannot_change(app_client, fake_state):
+    user, _ = provision_user(app_client)
+    enable(
+        app_client,
+        assistant={"mode": "refine", "prompt": "lighthouse", "creative_direction": "night"},
+    )
+    fake_state.ollama_response_prompt = "lighthouse"
+    tick(app_client, user["id"])
+    blocked = app_client.get("/api/auto-generation").json()
+    assert blocked["enabled"] and blocked["status"] == "blocked"
+    assert blocked["error_code"] == "prompt_refinement_unchanged"
+    assert "Creative Direction" in blocked["message"]
+    assert jobs(app_client) == []
+    # The starting prompt is the input already, so there is nothing to restart from.
+    assert [call["options"]["temperature"] for call in fake_state.ollama_calls[-3:]] == [
+        0.1,
+        0.7,
+        1.0,
+    ]
 
 
 def test_apply_discards_prefetch_and_only_changes_future_jobs(app_client):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -12,6 +13,7 @@ from app.errors import AppError
 from app.main import JsonFormatter
 from app.services.ollama import (
     OUTPUT_TOKEN_BUDGETS,
+    REFINE_RETRY_FEEDBACK,
     THINKING_EFFORT,
     OllamaAdapter,
     _create_excluded_prompts,
@@ -99,11 +101,40 @@ def test_refine_retry_changes_sampling() -> None:
         seed=90210,
     )
 
+    # A replayed production echo stayed unchanged at 0.1 and 0.5 and changed at 1.0, so the
+    # final redraw reaches 1.0.
     assert payload["options"] == {
-        "temperature": 0.5,
+        "temperature": 1.0,
         "seed": 90210,
         "num_predict": OUTPUT_TOKEN_BUDGETS[0],
     }
+    # The llama.cpp router forwards only a top-level seed.
+    assert payload["seed"] == 90210
+
+
+def test_refine_sampling_escalates_and_chained_refinement_starts_warmer() -> None:
+    def temperatures(*, chained: bool) -> list[object]:
+        return [
+            _generate_payload(
+                mode="refine", instruction="refine this", attempt=attempt, seed=1, chained=chained
+            )["options"]["temperature"]
+            for attempt in range(3)
+        ]
+
+    assert temperatures(chained=False) == [0.1, 0.7, 1.0]
+    assert temperatures(chained=True) == [0.7, 1.0, 1.0]
+
+
+def test_refine_correction_is_appended_only_when_supplied() -> None:
+    plain = _instruction(mode="refine", prompt="a portrait", direction="warmer")
+    corrected = _instruction(
+        mode="refine", prompt="a portrait", direction="warmer", feedback=REFINE_RETRY_FEEDBACK
+    )
+
+    assert corrected == f"{plain}\n\nCorrection:\n{REFINE_RETRY_FEEDBACK}"
+    assert _instruction(mode="create", prompt="", direction="a fox", feedback="ignored") == (
+        _instruction(mode="create", prompt="", direction="a fox")
+    )
 
 
 def test_thinking_can_be_disabled_per_request() -> None:
@@ -165,6 +196,8 @@ def test_response_only_structured_output_is_accepted_with_a_capability_warning(
             "output_budgets": [OUTPUT_TOKEN_BUDGETS[0]],
             "selected_output_budget_attempt": 1,
             "selected_output_budget": OUTPUT_TOKEN_BUDGETS[0],
+            "temperature": 0.1,
+            "candidate_sha256": hashlib.sha256(b"a portrait in warm window light").hexdigest(),
         }
         assert "warm window light" not in json.dumps(result.raw_response)
 
@@ -716,7 +749,12 @@ def test_budget_exhaustion_advances_candidates_before_raising(
         [700] * 4 + [701] * 4 + [702] * 4
     )
     assert [payload["options"]["temperature"] for payload in payloads] == (
-        [0.1] * 4 + [0.3] * 4 + [0.5] * 4
+        [0.1] * 4 + [0.7] * 4 + [1.0] * 4
+    )
+    # Budget exhaustion is not a distinctness rejection, so no correction is added.
+    assert all(
+        "Correction:" not in payload["messages"][0]["content"]  # type: ignore[index]
+        for payload in payloads
     )
 
 
@@ -1028,7 +1066,10 @@ def test_refine_redraws_an_unchanged_candidate_and_returns_the_changed_prompt(
     asyncio.run(scenario())
 
     assert [payload["options"]["seed"] for payload in payloads] == [700, 701]
-    assert [payload["options"]["temperature"] for payload in payloads] == [0.1, 0.3]
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.1, 0.7]
+    contents = [payload["messages"][0]["content"] for payload in payloads]  # type: ignore[index]
+    assert REFINE_RETRY_FEEDBACK not in contents[0]
+    assert contents[1].endswith(f"Correction:\n{REFINE_RETRY_FEEDBACK}")
 
 
 def test_refine_rejects_unchanged_output_only_after_bounded_redraws(
@@ -1072,12 +1113,74 @@ def test_refine_rejects_unchanged_output_only_after_bounded_redraws(
         assert raised.value.status_code == 422
         assert "after retrying" in raised.value.message
         assert raised.value.details["validation_stage"] == "refinement_distinctness"
-        assert len(raised.value.details["attempt_diagnostics"]) == 3
+        attempts = raised.value.details["attempt_diagnostics"]
+        assert len(attempts) == 3
+        assert [item["rejection_reason"] for item in attempts] == ["unchanged_prompt"] * 3
+        assert [item["temperature"] for item in attempts] == [0.1, 0.7, 1.0]
+        # Every candidate normalizes to the input; the digest shows it without storing text.
+        assert {item["candidate_sha256"] for item in attempts} == {
+            hashlib.sha256(b"a portrait").hexdigest()
+        }
+        assert "portrait" not in json.dumps(raised.value.details)
 
     asyncio.run(scenario())
 
     assert [payload["options"]["seed"] for payload in payloads] == [800, 801, 802]
-    assert [payload["options"]["temperature"] for payload in payloads] == [0.1, 0.3, 0.5]
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.1, 0.7, 1.0]
+    contents = [payload["messages"][0]["content"] for payload in payloads]  # type: ignore[index]
+    assert ["Correction:" in content for content in contents] == [False, True, True]
+
+
+def test_chained_refine_rejects_a_recent_chain_prompt_and_redraws(tmp_path: Path) -> None:
+    payloads: list[dict[str, object]] = []
+    candidates = iter(["  A portrait at   DUSK ", "a portrait at dawn"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == "/api/chat":
+            payloads.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "model": "active-model",
+                    "response": json.dumps({"prompt": next(candidates)}),
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    async def scenario() -> None:
+        adapter = OllamaAdapter(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+            seed_resolver=lambda minimum, maximum: 900,
+        )
+        try:
+            result = await adapter.compose(
+                mode="refine",
+                prompt="a portrait at noon",
+                direction="change the time of day",
+                think=False,
+                excluded_prompts=["a portrait at noon", "a portrait at dusk"],
+                chained=True,
+            )
+        finally:
+            await adapter.close()
+
+        # Returning the previous cycle's prompt would alternate between two prompts.
+        assert result.prompt == "a portrait at dawn"
+        assert result.raw_response["selected_attempt"] == 2
+        rejected = result.raw_response["attempts"][0]
+        assert rejected["validation_stage"] == "refinement_comparison"
+        assert rejected["rejection_reason"] == "repeated_prompt"
+
+    asyncio.run(scenario())
+
+    assert [payload["options"]["temperature"] for payload in payloads] == [0.7, 1.0]
+    contents = [payload["messages"][0]["content"] for payload in payloads]  # type: ignore[index]
+    assert ["Correction:" in content for content in contents] == [False, True]
 
 
 def test_direction_echo_rule_covers_variants_and_not_expansions() -> None:

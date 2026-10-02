@@ -5890,6 +5890,10 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .auto-limit-row label, .auto-limit-row > span { flex: 0 0 auto; }
 #automation-status-host:empty, #shared-settings-status-host:empty { display: none; }
 .auto-settings-status { font-size: .75rem; color: var(--text-soft); line-height: 1.5; }
+.automation-status-message { margin: 0 0 8px; font-size: .75rem; line-height: 1.45; color: var(--text-soft); }
+.automation-status-message.is-blocked { padding: 8px 10px; border: 1px solid #783f47; border-radius: var(--radius-sm); background: #32191e; color: #ffc0c5; font-weight: 600; }
+.field-warning { margin: 4px 0 0; font-size: .72rem; line-height: 1.4; color: var(--warning); }
+.field-warning[hidden] { display: none; }
 
 /* Layout is independent of thumbnail scale and remains available during selection. */
 .gallery-layout-control {

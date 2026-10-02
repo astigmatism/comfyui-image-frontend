@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import secrets
@@ -19,6 +20,19 @@ CANDIDATE_SEED_MAXIMUM = 2**31 - 1
 MAX_REFINE_ATTEMPTS = 3
 MAX_CREATE_ATTEMPTS = 3
 MAX_CREATE_EXCLUSIONS = 8
+MAX_REFINE_CHAIN_EXCLUSIONS = 8
+# A one-shot refinement starts conservatively so it stays faithful to the current prompt, then
+# escalates when a candidate fails to apply the direction. Replaying a production refinement that
+# returned its input verbatim stayed unchanged at temperatures 0.1 and 0.5 and changed at 1.0.
+REFINE_TEMPERATURES = (0.1, 0.7, 1.0)
+# A chained automatic refinement feeds each output back as the next input, so it starts warmer
+# to keep the sequence moving instead of converging on a fixed point.
+CHAINED_REFINE_TEMPERATURES = (0.7, 1.0, 1.0)
+REFINE_RETRY_FEEDBACK = (
+    "Your previous answer did not apply the creative direction: it repeated the current prompt "
+    "or an earlier result. Apply the creative direction now and return a prompt that differs "
+    "from them."
+)
 MAX_GENERATE_ATTEMPTS = 3
 GENERATE_RETRY_BASE_SECONDS = 0.25
 RETRYABLE_GENERATE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
@@ -152,7 +166,15 @@ class OllamaAdapter:
         think: bool = True,
         excluded_prompts: Sequence[str] = (),
         instructions: str | None = None,
+        chained: bool = False,
     ) -> ComposeResult:
+        """Compose one prompt.
+
+        ``excluded_prompts`` are earlier results the candidate must not repeat. In create mode
+        they are past outputs for the same direction; in refine mode they are the recent prompts
+        of a chained automatic sequence, which keeps the chain from alternating between two
+        prompts. ``chained`` selects the warmer sampling schedule for that sequence.
+        """
         if not self._client:
             raise AppError(
                 "ollama_unavailable", "Prompt Assistant is not configured.", status_code=503
@@ -173,6 +195,10 @@ class OllamaAdapter:
             if mode == "create"
             else {}
         )
+        # The input itself is compared separately so its rejection keeps the distinct
+        # ``unchanged_prompt`` reason.
+        refine_history = _distinct_prompts(excluded_prompts) if mode == "refine" else {}
+        refine_rejections = 0
         maximum_attempts = MAX_CREATE_ATTEMPTS if mode == "create" else MAX_REFINE_ATTEMPTS
         direction_echo_attempts = 0
         candidate_seed = self.seed_resolver(
@@ -187,7 +213,13 @@ class OllamaAdapter:
             raise RuntimeError("candidate seed resolver returned an out-of-range value")
         for attempt in range(maximum_attempts):
             instruction = _instruction(
-                mode=mode, prompt=prompt, direction=direction, instructions=instructions
+                mode=mode,
+                prompt=prompt,
+                direction=direction,
+                instructions=instructions,
+                # Tell the model why its previous candidate was rejected instead of only
+                # redrawing the same request with another seed.
+                feedback=REFINE_RETRY_FEEDBACK if refine_rejections else None,
             )
             candidate, budget_failure = await self._compose_candidate(
                 mode=mode,
@@ -195,6 +227,7 @@ class OllamaAdapter:
                 think=think,
                 attempt=attempt,
                 seed=candidate_seed + attempt,
+                chained=chained,
             )
             if candidate is None:
                 # The candidate produced no usable structured prompt after its
@@ -279,15 +312,38 @@ class OllamaAdapter:
                     },
                 )
             normalized_final = _normalize_prompt(final)
+            # Metadata only: the sampling temperature and a digest of the normalized candidate
+            # let an operator tell an echoed input from a changed prompt without storing text.
+            diagnostics["temperature"] = _candidate_temperature(mode, attempt, chained=chained)
+            diagnostics["candidate_sha256"] = hashlib.sha256(
+                normalized_final.encode("utf-8")
+            ).hexdigest()
             if mode == "refine" and _same_prompt(final, prompt):
                 diagnostics["validation_stage"] = "refinement_comparison"
+                diagnostics["rejection_reason"] = "unchanged_prompt"
                 response_diagnostics.append(diagnostics)
+                refine_rejections += 1
                 self._log_candidate_rejected(
                     mode=mode,
                     think=think,
                     attempt=attempt,
                     maximum_attempts=maximum_attempts,
                     reason="unchanged_prompt",
+                )
+                continue
+            if mode == "refine" and normalized_final in refine_history:
+                # A chained sequence that returns an earlier prompt alternates between two
+                # prompts and queues duplicate images; treat it like an unchanged result.
+                diagnostics["validation_stage"] = "refinement_comparison"
+                diagnostics["rejection_reason"] = "repeated_prompt"
+                response_diagnostics.append(diagnostics)
+                refine_rejections += 1
+                self._log_candidate_rejected(
+                    mode=mode,
+                    think=think,
+                    attempt=attempt,
+                    maximum_attempts=maximum_attempts,
+                    reason="repeated_prompt",
                 )
                 continue
             if mode == "create" and _is_direction_echo(final, direction):
@@ -358,8 +414,9 @@ class OllamaAdapter:
         if mode == "refine":
             raise AppError(
                 "prompt_refinement_unchanged",
-                "Prompt Assistant could not produce a changed prompt after retrying. "
-                "Adjust the Creative Direction and try again.",
+                "Prompt Assistant repeated the current prompt instead of applying the Creative "
+                "Direction after retrying. Check the Creative Direction for unfilled placeholders "
+                "or rules that conflict with the prompt.",
                 status_code=422,
                 details={
                     **(response_diagnostics[-1] if response_diagnostics else {}),
@@ -416,6 +473,7 @@ class OllamaAdapter:
         think: bool,
         attempt: int,
         seed: int,
+        chained: bool = False,
     ) -> tuple[_CandidateCompose | None, dict[str, Any] | None]:
         """Run one candidate's bounded output-budget escalation.
 
@@ -459,6 +517,7 @@ class OllamaAdapter:
                 attempt=attempt,
                 seed=seed,
                 output_budget=output_budget,
+                chained=chained,
             )
             if self.settings.ollama_model:
                 payload["model"] = self.settings.ollama_model
@@ -865,10 +924,18 @@ def _with_output_budget_diagnostics(
     return enriched
 
 
-def _instruction(*, mode: str, prompt: str, direction: str, instructions: str | None = None) -> str:
+def _instruction(
+    *,
+    mode: str,
+    prompt: str,
+    direction: str,
+    instructions: str | None = None,
+    feedback: str | None = None,
+) -> str:
     prefix = DEFAULT_PROMPT_INSTRUCTIONS[mode] if instructions is None else instructions.strip()
     if mode == "refine":
-        return f"{prefix}\n\nCurrent prompt:\n{prompt}\n\nCreative direction:\n{direction}"
+        instruction = f"{prefix}\n\nCurrent prompt:\n{prompt}\n\nCreative direction:\n{direction}"
+        return f"{instruction}\n\nCorrection:\n{feedback}" if feedback else instruction
     return f"{prefix}\n\n{direction}"
 
 
@@ -919,6 +986,13 @@ def _is_direction_echo(candidate: str, direction: str) -> bool:
     return _normalize_prompt(candidate) in normalized_direction
 
 
+def _candidate_temperature(mode: str, attempt: int, *, chained: bool = False) -> float:
+    if mode == "refine":
+        schedule = CHAINED_REFINE_TEMPERATURES if chained else REFINE_TEMPERATURES
+        return schedule[min(attempt, len(schedule) - 1)]
+    return min(0.9, 0.5 + (attempt * 0.2))
+
+
 def _generate_payload(
     *,
     mode: str,
@@ -927,6 +1001,7 @@ def _generate_payload(
     attempt: int = 0,
     seed: int | None = 0,
     output_budget: int = OUTPUT_TOKEN_BUDGETS[0],
+    chained: bool = False,
 ) -> dict[str, Any]:
     if (
         not isinstance(seed, int)
@@ -934,18 +1009,11 @@ def _generate_payload(
         or not 0 <= seed <= CANDIDATE_SEED_MAXIMUM
     ):
         raise ValueError(f"{mode} sampling requires an in-range integer seed")
-    if mode == "refine":
-        options = {
-            "temperature": min(0.5, round(0.1 + (attempt * 0.2), 1)),
-            "seed": seed,
-            "num_predict": output_budget,
-        }
-    else:
-        options = {
-            "temperature": min(0.9, 0.5 + (attempt * 0.2)),
-            "seed": seed,
-            "num_predict": output_budget,
-        }
+    options = {
+        "temperature": _candidate_temperature(mode, attempt, chained=chained),
+        "seed": seed,
+        "num_predict": output_budget,
+    }
     return {
         "messages": [{"role": "user", "content": instruction}],
         "stream": False,
@@ -957,6 +1025,9 @@ def _generate_payload(
             "additionalProperties": False,
         },
         "options": options,
+        # The llama.cpp router forwards only a top-level seed; Ollama reads options.seed and
+        # ignores this field. Sending both keeps candidate sampling reproducible on either.
+        "seed": seed,
     }
 
 

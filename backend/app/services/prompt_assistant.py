@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -9,7 +10,7 @@ from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
 from ..models import GenerationPreparation, PromptAssistantRun
 from ..schemas import PromptComposeRequest, PromptComposeResponse
-from .ollama import MAX_CREATE_EXCLUSIONS
+from .ollama import MAX_CREATE_EXCLUSIONS, MAX_REFINE_CHAIN_EXCLUSIONS
 from .user_state import lock_user_state
 
 if TYPE_CHECKING:
@@ -24,7 +25,14 @@ async def compose_prompt(
     payload: PromptComposeRequest,
     *,
     preparation_id: str | None = None,
+    chain_history: Sequence[str] = (),
 ) -> PromptComposeResponse:
+    """Compose a prompt and durably record the run.
+
+    ``chain_history`` holds the recent prompts of a chained automatic refinement, which feeds
+    each output back as the next input. Its prompts must not be repeated, and the sequence uses
+    warmer sampling so it keeps changing instead of settling on one prompt.
+    """
     if payload.mode == "refine" and not payload.prompt.strip():
         raise AppError(
             "prompt_required",
@@ -64,6 +72,11 @@ async def compose_prompt(
             and run.creative_direction == payload.creative_direction
             and run.ollama_output
         ][:MAX_CREATE_EXCLUSIONS]
+    chained = payload.mode == "refine" and bool(chain_history)
+    if chained:
+        excluded_prompts = [prompt for prompt in chain_history if prompt][
+            :MAX_REFINE_CHAIN_EXCLUSIONS
+        ]
 
     try:
         result = await container.ollama.compose(
@@ -73,6 +86,7 @@ async def compose_prompt(
             think=payload.think,
             excluded_prompts=excluded_prompts,
             instructions=payload.instructions,
+            **({"chained": True} if chained else {}),
         )
     except AppError as exc:
         record = PromptAssistantRun(

@@ -37,6 +37,7 @@ from ..schemas import (
 from .auto_generation_progress import project_progress
 from .events import event_payload
 from .generation_activity import begin_run
+from .ollama import MAX_REFINE_CHAIN_EXCLUSIONS
 from .prompt_assistant import compose_prompt
 from .user_state import lock_user_state, notify_user
 
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from ..container import AppContainer
 
 logger = logging.getLogger(__name__)
+CHAIN_RESTART_DELAY_SECONDS = 2
 _RETRYABLE = {
     "comfyui_instance_unavailable",
     "source_catalog_loading",
@@ -54,6 +56,10 @@ _RETRYABLE = {
     "ollama_generate_invalid_json",
     "ollama_unavailable",
 }
+
+
+def _same_text(first: str, second: str) -> bool:
+    return " ".join(first.split()).casefold() == " ".join(second.split()).casefold()
 
 
 def response(row: AutoGeneration | None, session: Session | None = None) -> AutoGenerationResponse:
@@ -428,7 +434,13 @@ class AutoGenerationService:
                 await notify_user(self.container.broker, user_id, "auto_generation.updated")
                 composed = None
                 if prepared["assistant"]:
-                    composed = await compose_prompt(self.container, user_id, prepared["assistant"])
+                    history = prepared.get("history") or ()
+                    composed = await compose_prompt(
+                        self.container,
+                        user_id,
+                        prepared["assistant"],
+                        **({"chain_history": history} if history else {}),
+                    )
                 completed = await _run_blocking(
                     self._complete_composition, user_id, prepared, composed
                 )
@@ -552,8 +564,28 @@ class AutoGenerationService:
                     cycle_id = cycle.id
                     row.status = "preparing"
                     latest = row.latest_prompt
-                    session.commit()
                     assistant = snapshot.assistant
+                    # Refinement without prompt generation is a chain: each cycle refines the
+                    # previous cycle's output. Its recent prompts must not come back.
+                    history = (
+                        list(
+                            session.scalars(
+                                select(AutoGenerationCycle.prompt)
+                                .where(
+                                    AutoGenerationCycle.user_id == user_id,
+                                    AutoGenerationCycle.prompt.is_not(None),
+                                )
+                                .order_by(
+                                    AutoGenerationCycle.created_at.desc(),
+                                    AutoGenerationCycle.id.desc(),
+                                )
+                                .limit(MAX_REFINE_CHAIN_EXCLUSIONS)
+                            )
+                        )
+                        if assistant and assistant.mode == "refine"
+                        else []
+                    )
+                    session.commit()
                     if assistant:
                         assistant = assistant.model_copy(
                             update={"prompt": latest or assistant.prompt}
@@ -564,6 +596,7 @@ class AutoGenerationService:
                         "cycle_id": cycle_id,
                         "claim": claim,
                         "assistant": assistant,
+                        "history": history,
                     }
                 return {"action": "ready", "revision": revision, "cycle_id": cycle.id}
             except AppError as error:
@@ -794,8 +827,37 @@ class AutoGenerationService:
                 )
                 .values(claim=None)
             )
-            self._set_error(row, error)
+            if not self._restart_chain(row, error):
+                self._set_error(row, error)
             session.commit()
+
+    @staticmethod
+    def _restart_chain(row: AutoGeneration, error: Exception) -> bool:
+        """Restart a stalled refinement chain from the captured starting prompt.
+
+        A chained refinement that can no longer change its latest prompt retries from the
+        starting prompt instead of blocking. Only a failure to change the starting prompt
+        itself blocks, so a chain cannot loop on the same unchangeable input.
+        """
+        if not isinstance(error, AppError) or error.code != "prompt_refinement_unchanged":
+            return False
+        snapshot = row.snapshot_json or {}
+        assistant = snapshot.get("assistant") or {}
+        starting = assistant.get("prompt") or ""
+        if snapshot.get("prompt_generation") or assistant.get("mode") != "refine":
+            return False
+        if not starting.strip() or _same_text(row.latest_prompt or starting, starting):
+            return False
+        row.latest_prompt = starting
+        row.failures += 1
+        row.status = "retrying"
+        row.error_code = error.code
+        row.message = (
+            "Creative Direction could not change the latest prompt, so the next cycle restarts "
+            "from your starting prompt."
+        )
+        row.next_retry_at = datetime.now(UTC) + timedelta(seconds=CHAIN_RESTART_DELAY_SECONDS)
+        return True
 
     @staticmethod
     def _set_error(row: AutoGeneration, error: Exception) -> None:

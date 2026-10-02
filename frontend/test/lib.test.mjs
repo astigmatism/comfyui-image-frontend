@@ -34,6 +34,8 @@ import {
   generationSourceModelVariant,
   hasActiveGeneration,
   insertTranscription,
+  creativeDirectionPlaceholder,
+  creativeDirectionWarningText,
   isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
   migrateInterfaceState,
@@ -1554,4 +1556,16 @@ test("generation quantity clamps into the supported range", () => {
   assert.equal(clampGenerationQuantity("1abc"), 1);
   assert.equal(clampGenerationQuantity("007"), 7);
   assert.equal(clampGenerationQuantity("16"), 16);
+});
+
+test("Creative Direction placeholder detection finds template slots only", () => {
+  const production = "Rules:\n3. New pose: [DESCRIBE THE NEW POSE HERE — stance, both hand positions, body angle, head and gaze direction]\n4. Preserve";
+  assert.equal(creativeDirectionPlaceholder(production), "[DESCRIBE THE NEW POSE HERE — stance, both hand positions, body angle, head and gaze direction]");
+  assert.equal(creativeDirectionPlaceholder("Lighting: [TODO]"), "[TODO]");
+  assert.equal(creativeDirectionPlaceholder("Add [tbd later] detail"), "[tbd later]");
+  for (const ordinary of ["", null, "Make it snow.", "Keep the [blue] scarf", "Where is she [there, by the door]", "[stance and gaze]"]) {
+    assert.equal(creativeDirectionPlaceholder(ordinary), null, String(ordinary));
+  }
+  assert.equal(creativeDirectionWarningText("Make it snow."), "");
+  assert.match(creativeDirectionWarningText(production), /^Creative Direction contains an unfilled placeholder: “\[DESCRIBE THE NEW POSE HERE — stance, both hand positions, body angle, head an…\]”\./);
 });

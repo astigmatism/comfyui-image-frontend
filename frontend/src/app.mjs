@@ -47,6 +47,7 @@ import {
   createLatestRequestGate,
   createCoalescedTaskQueue,
   creativeDirectionStorageKey,
+  creativeDirectionWarningText,
   defaultsForInterface,
   directionSignalNextStatus,
   hasActiveGeneration,
@@ -1381,8 +1382,20 @@ function setControlSectionElementOpen(section, open) {
   else body?.setAttribute("inert", "");
 }
 
+function syncCreativeDirectionWarning(textarea) {
+  if (!textarea?.id) return;
+  const warning = document.querySelector(`[data-creative-direction-warning="${textarea.id}"]`);
+  if (!warning) return;
+  const text = creativeDirectionWarningText(textarea.value);
+  if (warning.textContent !== text) warning.textContent = text;
+  warning.hidden = !text;
+}
+
 function handleInput(event) {
   const element = event.target;
+  if (element.id === "creative-direction" || element.id === "prompt-editor-creative-direction") {
+    syncCreativeDirectionWarning(element);
+  }
   if (handleRerunResolutionInput(element)) return;
   if (element.matches("[data-prompt-generator-id]")) { updatePromptGeneratorControl(element); return; }
   if (element.id === "auto-generate-limit") {
@@ -3881,6 +3894,7 @@ function renderPanel() {
   if (assistant) {
     const direction = assistant.querySelector("#creative-direction");
     direction.value = state.promptAssistant.creativeDirection || "";
+    syncCreativeDirectionWarning(direction);
     if (state.promptGeneration.enabled) state.promptAssistant.mode = "refine";
     const mode = assistant.querySelector(`[name=assistant-mode][value=${state.promptAssistant.mode}]`);
     if (mode) mode.checked = true;
