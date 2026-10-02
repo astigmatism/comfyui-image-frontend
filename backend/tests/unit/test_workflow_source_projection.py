@@ -82,11 +82,13 @@ def test_model_selector_projection_uses_canonical_and_compatibility_signals() ->
     assert timeline_selector["default"] == "first"
     assert timeline_selector["choices"] == [
         {
+            "checkpoint_id": None,
             "value": "first",
             "label": "Authoritative first",
             "released_month": None,
         },
         {
+            "checkpoint_id": None,
             "value": "second",
             "label": "Authoritative second",
             "released_month": "2026-07",

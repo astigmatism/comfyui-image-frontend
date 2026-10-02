@@ -320,10 +320,22 @@ class CollectionService:
         collection_id: str,
     ) -> bool:
         def prepare() -> tuple[Any, Any, Any, list[str]]:
+            from ..models import PromptRerunRun
+            from .prompt_rerun import stop_in_session
+            from .user_state import lock_user_state
+
             with self.generations.session_factory() as session:
+                lock_user_state(session)
                 root = self.get_owned(session, owner_id, collection_id)
                 levels = self._subtree_levels(session, owner_id=owner_id, root_id=root.id)
                 subtree_ids = [item_id for level in levels for item_id in level]
+                for rerun in session.scalars(
+                    select(PromptRerunRun).where(
+                        PromptRerunRun.owner_id == owner_id,
+                        PromptRerunRun.collection_id.in_(subtree_ids),
+                    )
+                ):
+                    stop_in_session(session, rerun, "The destination folder was deleted.")
                 collection_metadata = {
                     item.id: (item.name, item.parent_id)
                     for item in session.scalars(

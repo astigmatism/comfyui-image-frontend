@@ -1374,6 +1374,9 @@ code {
 }
 
 .card-checkpoint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   position: absolute;
   top: 12px;
   right: 50px;
@@ -3176,8 +3179,10 @@ dialog::backdrop {
   position: absolute;
   top: 18px;
   right: 200px;
+  left: 18px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: flex-end;
   gap: 12px;
   pointer-events: none;
   z-index: 2;
@@ -3221,12 +3226,12 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   height: 42px;
-  max-width: min(46vw, 480px);
-  padding: 0 15px;
+  width: 100%;
+  padding: 0;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 18%);
+  border: 1px solid color-mix(in srgb, var(--tier-accent) 40%, #33404e);
   border-radius: 999px;
-  background: rgb(6 9 13 / 64%);
+  background: color-mix(in srgb, var(--tier-accent) 8%, #080d14);
   box-shadow: 0 4px 18px rgb(0 0 0 / 38%);
   color: #f4f7fb;
   font-size: 0.78rem;
@@ -3239,8 +3244,165 @@ dialog::backdrop {
   transition: opacity 360ms ease;
 }
 
-.photo-viewer.controls-visible .photo-viewer-checkpoint {
+.photo-viewer.controls-visible .photo-viewer-checkpoint,
+.photo-viewer .photo-viewer-checkpoint-block:focus-within .photo-viewer-checkpoint {
   opacity: 1;
+  pointer-events: auto;
+}
+
+.checkpoint-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkpoint-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 26px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tier-accent) 17%, #0b1018);
+  color: var(--tier-accent);
+  font-size: 0.75rem;
+  font-weight: 750;
+  text-shadow: none;
+}
+
+.photo-viewer-checkpoint-block {
+  position: relative;
+  flex: 1 1 320px;
+  min-width: 140px;
+  max-width: 440px;
+}
+
+.photo-viewer-checkpoint > .checkpoint-rank {
+  align-self: stretch;
+  min-width: 42px;
+  padding: 0 13px;
+  font-size: 0.875rem;
+  border-radius: 0;
+  border-right: 1px solid rgb(255 255 255 / 12%);
+}
+
+.photo-viewer-checkpoint > .checkpoint-name {
+  flex: 1;
+  padding: 0 11px;
+}
+
+.checkpoint-rank-actions {
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+}
+
+.checkpoint-rank-arrow {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tier-accent);
+}
+
+.checkpoint-rank-arrow + .checkpoint-rank-arrow {
+  border-left: 1px solid rgb(255 255 255 / 10%);
+}
+
+.checkpoint-rank-arrow svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.checkpoint-rank-arrow:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tier-accent) 20%, transparent);
+}
+
+.checkpoint-rank-arrow:focus-visible {
+  outline-offset: -3px;
+}
+
+.checkpoint-rank-feedback {
+  position: absolute;
+  top: 48px;
+  left: 11px;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #e1eaf5;
+  text-shadow: 0 1px 3px #000;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.photo-viewer.controls-visible .checkpoint-rank-feedback,
+.photo-viewer-checkpoint-block:focus-within .checkpoint-rank-feedback {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.checkpoint-rank-feedback[data-rank-error] { color: #ffc4c8; }
+.checkpoint-rank-feedback button {
+  padding: 2px 7px;
+  border: 1px solid #738ba4;
+  border-radius: 5px;
+  background: #101722;
+  color: #fff;
+}
+
+@media (max-width: 1000px) {
+  .photo-viewer .photo-viewer-toolbar {
+    top: 66px;
+    left: 12px;
+    right: 12px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .photo-viewer-checkpoint-block {
+    flex-basis: 100%;
+    max-width: none;
+    margin-bottom: 25px;
+  }
+}
+
+@media (pointer: coarse) {
+  .checkpoint-rank-arrow { width: 44px; min-height: 44px; }
+  .photo-viewer-checkpoint { height: 46px; }
+}
+
+@media (min-width: 1351px) {
+  .photo-viewer:has(.photo-viewer-activity-host:not(:empty)) .photo-viewer-toolbar {
+    left: 300px;
+  }
+}
+
+@media (min-width: 1001px) and (max-width: 1350px) {
+  .photo-viewer:has(.photo-viewer-activity-host:not(:empty)) .photo-viewer-toolbar {
+    top: 66px;
+  }
+}
+
+@media (max-width: 520px) {
+  .photo-viewer .photo-viewer-generation-dock {
+    top: 66px;
+  }
+
+  .photo-viewer:has(.photo-viewer-activity-host:not(:empty)) .photo-viewer-toolbar {
+    top: 112px;
+  }
 }
 
 .photo-viewer-view-controls {
@@ -3746,24 +3908,29 @@ dialog::backdrop {
   border-top: 1px solid rgb(42 56 73 / 88%);
 }
 
-.checkpoint-tier-top_picks {
-  --tier-accent: #df9c54;
-  --tier-tint: rgb(223 156 84 / 13%);
+.checkpoint-tier-A {
+  --tier-accent: #d98383;
+  --tier-tint: rgb(217 131 131 / 13%);
 }
 
-.checkpoint-tier-preferred {
-  --tier-accent: #a77adf;
-  --tier-tint: rgb(167 122 223 / 13%);
+.checkpoint-tier-B {
+  --tier-accent: #d9a06c;
+  --tier-tint: rgb(217 160 108 / 13%);
 }
 
-.checkpoint-tier-occasional {
-  --tier-accent: #5aa8aa;
-  --tier-tint: rgb(90 168 170 / 12%);
+.checkpoint-tier-C {
+  --tier-accent: #d4c06f;
+  --tier-tint: rgb(212 192 111 / 12%);
 }
 
-.checkpoint-tier-unsorted {
-  --tier-accent: #708095;
-  --tier-tint: rgb(112 128 149 / 11%);
+.checkpoint-tier-D {
+  --tier-accent: #7bab87;
+  --tier-tint: rgb(123 171 135 / 11%);
+}
+
+.checkpoint-tier-F {
+  --tier-accent: #8e8bc9;
+  --tier-tint: rgb(142 139 201 / 13%);
 }
 
 .checkpoint-tier-rail {
@@ -3778,20 +3945,20 @@ dialog::backdrop {
 }
 
 .checkpoint-tier-rail > strong {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 9px 4px;
   border-left: 5px solid var(--tier-accent);
   background: color-mix(in srgb, var(--tier-accent) 16%, #0d151f);
-  color: #d8e2ee;
-  font-size: 0.66rem;
+  color: var(--tier-accent);
+  font-size: 1.1rem;
   font-weight: 800;
   letter-spacing: 0.055em;
   line-height: 1;
   text-transform: uppercase;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
 }
 
 .checkpoint-tier-toggle {
@@ -4980,9 +5147,9 @@ tr:last-child td {
   }
 
   .photo-viewer-slideshow {
-    position: absolute;
-    top: 54px;
-    right: -182px;
+    position: relative;
+    top: auto;
+    right: auto;
   }
 
   .app-title {
@@ -5047,11 +5214,6 @@ tr:last-child td {
   .photo-viewer-toolbar {
     top: 66px;
     right: 12px;
-  }
-
-  .photo-viewer-slideshow {
-    top: 54px;
-    right: 0;
   }
 
   /* Keep the dock on the first row, clear of the Full screen button: the
@@ -5459,6 +5621,58 @@ tr:last-child td {
   justify-content: flex-end;
   gap: var(--space-2);
   margin-left: auto;
+}
+
+.rerun-dialog-content textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+}
+
+#prompt-rerun-progress-host {
+  margin-bottom: 1rem;
+}
+
+.rerun-progress {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+}
+
+.rerun-progress-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.rerun-progress h2, .rerun-progress h3 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+.rerun-progress p {
+  margin: 0 0 0.75rem;
+}
+
+.rerun-progress summary {
+  cursor: pointer;
+  padding: 0.5rem 0;
+}
+
+.rerun-prompt-list {
+  padding-left: 1.5rem;
+}
+
+.rerun-progress pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 20rem;
+  overflow-y: auto;
+  font-family: inherit;
+  margin: 0 0 1rem;
 }
 
 @media (max-width: 480px) {

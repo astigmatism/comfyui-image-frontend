@@ -9,10 +9,10 @@ import json
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..blocking import run_blocking
@@ -28,6 +28,7 @@ from ..models import (
     GenerationRunMember,
     GenerationSubmission,
     PromptGenerationRun,
+    PromptRerunRun,
     User,
     UserState,
     WorkflowProfile,
@@ -37,6 +38,7 @@ from ..schemas import (
     GenerationPreparationItem,
     PromptAssistantSnapshot,
     PromptGenerationCreate,
+    RetainedPromptPreparationItem,
 )
 from .comfyui import _queue_prompt_ids, prompt_rejection_diagnostics
 from .events import event_payload
@@ -52,6 +54,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 PREPARATION_ACTIVE = ("preparing", "refining", "ready")
 TEXT_ACTIVE = ("queued", "dispatching", "submitting", "running")
+PreparationT = TypeVar("PreparationT", GenerationPreparationItem, RetainedPromptPreparationItem)
+
+
+def captured_preparation(
+    row: GenerationPreparation,
+) -> GenerationPreparationItem | RetainedPromptPreparationItem:
+    if row.rerun_id:
+        return RetainedPromptPreparationItem.model_validate(row.request_json)
+    return GenerationPreparationItem.model_validate(row.request_json)
 
 
 def text_summary(run: PromptGenerationRun) -> dict[str, Any]:
@@ -74,14 +85,18 @@ def preparation_summary(
 ) -> dict[str, Any]:
     items = []
     for row in sorted(rows, key=lambda item: item.position):
-        text_run = session.get(PromptGenerationRun, row.prompt_run_id)
+        text_run = (
+            session.get(PromptGenerationRun, row.prompt_run_id) if row.prompt_run_id else None
+        )
         generation = session.get(Generation, row.generation_id) if row.generation_id else None
         items.append(
             {
                 "id": row.id,
                 "status": row.status,
                 "prompt_run_id": row.prompt_run_id,
-                "raw_prompt": text_run.prompt if text_run else None,
+                "raw_prompt": text_run.prompt
+                if text_run
+                else row.request_json.get("retained_prompt"),
                 "prompt": row.prompt,
                 "generation": service.summary(session, generation).model_dump(mode="json")
                 if generation
@@ -185,10 +200,10 @@ class PromptGenerationService:
         self,
         session: Session,
         owner_id: str,
-        item: GenerationPreparationItem,
+        item: PreparationT,
         *,
         profile: WorkflowProfile | None = None,
-    ) -> tuple[WorkflowProfile, GenerationPreparationItem]:
+    ) -> tuple[WorkflowProfile, PreparationT]:
         user = session.get(User, owner_id)
         if not user or user.state != UserState.ACTIVE:
             raise AppError("authentication_required", "Sign in is required.", status_code=401)
@@ -555,7 +570,10 @@ class PromptGenerationService:
                     with self.container.db.session_factory() as session:
                         rows = session.scalars(
                             select(GenerationPreparation)
-                            .where(GenerationPreparation.status.in_(PREPARATION_ACTIVE))
+                            .where(
+                                GenerationPreparation.status.in_(PREPARATION_ACTIVE),
+                                GenerationPreparation.rerun_id.is_(None),
+                            )
                             .order_by(
                                 GenerationPreparation.created_at, GenerationPreparation.position
                             )
@@ -564,7 +582,18 @@ class PromptGenerationService:
                         grouped: dict[str, list[GenerationPreparation]] = {}
                         for row in rows:
                             grouped.setdefault(row.group_id, []).append(row)
-                        identities = []
+                        identities = [
+                            f"rerun:{owner}"
+                            for owner in session.scalars(
+                                select(GenerationPreparation.owner_id)
+                                .where(
+                                    GenerationPreparation.rerun_id.is_not(None),
+                                    GenerationPreparation.status.in_(PREPARATION_ACTIVE),
+                                )
+                                .group_by(GenerationPreparation.owner_id)
+                                .order_by(func.min(GenerationPreparation.created_at))
+                            )
+                        ]
                         for members in grouped.values():
                             if len({row.prompt_run_id for row in members}) == 1:
                                 # One shared text run: advance the whole group at once.
@@ -601,6 +630,12 @@ class PromptGenerationService:
         )
 
     async def advance(self, identity: str) -> None:
+        if identity.startswith("rerun:"):
+            owner = identity.removeprefix("rerun:")
+            async with self._batch_locks.setdefault(owner, asyncio.Lock()):
+                await self._advance_reruns(owner)
+            return
+
         def batch_identity() -> tuple[str, str] | None:
             with self.container.db.session_factory() as session:
                 row = session.get(GenerationPreparation, identity)
@@ -782,16 +817,56 @@ class PromptGenerationService:
             )
         )
 
-    async def _advance_batch(self, group: str) -> None:
-        """Advance one batch that shares a single text run (manual or automatic)."""
+    async def _advance_reruns(self, owner_id: str) -> None:
+        """Drain ready groups, then refine the oldest unfinished prompt for this account."""
 
-        def load() -> tuple[GenerationPreparation, PromptGenerationRun, bool] | None:
+        def pending() -> list[tuple[str, bool]]:
+            with self.container.db.session_factory() as session:
+                rows = session.scalars(
+                    select(GenerationPreparation)
+                    .join(PromptRerunRun, PromptRerunRun.id == GenerationPreparation.rerun_id)
+                    .where(
+                        GenerationPreparation.owner_id == owner_id,
+                        GenerationPreparation.status.in_(PREPARATION_ACTIVE),
+                    )
+                    .order_by(
+                        PromptRerunRun.created_at, PromptRerunRun.id, GenerationPreparation.position
+                    )
+                )
+                groups: dict[str, bool] = {}
+                for row in rows:
+                    groups.setdefault(row.group_id, row.assistant_run_id is not None)
+                return list(groups.items())
+
+        groups = await run_blocking(pending)
+        for group, ready in groups:
+            if ready:
+                await self._advance_batch(group)
+        for group, ready in groups:
+            if not ready:
+                await self._advance_batch(group)
+                break
+
+    async def _advance_batch(self, group: str) -> None:
+        """Advance images sharing generated or retained text and one refinement."""
+
+        def load() -> tuple[GenerationPreparation, PromptGenerationRun | None, bool] | None:
             with self.container.db.session_factory() as session:
                 lock_user_state(session)
                 rows = self._batch_rows(session, group)
                 if not rows or any(row.status not in PREPARATION_ACTIVE for row in rows):
                     return None
                 leader = rows[0]
+                if leader.rerun_id:
+                    rerun = session.get(PromptRerunRun, leader.rerun_id)
+                    if rerun and (rerun.stopped or not rerun.collection_id):
+                        from .prompt_rerun import stop_in_session
+
+                        stop_in_session(
+                            session, rerun, "The destination was deleted or the rerun was stopped."
+                        )
+                        session.commit()
+                        return None
                 if not self.valid_cycle(session, leader):
                     for row in rows:
                         self.fail_preparation(
@@ -802,10 +877,14 @@ class PromptGenerationService:
                         )
                     session.commit()
                     return None
-                text = session.get(PromptGenerationRun, leader.prompt_run_id)
-                assert text is not None
+                text = (
+                    session.get(PromptGenerationRun, leader.prompt_run_id)
+                    if leader.prompt_run_id
+                    else None
+                )
+                assert text is not None or leader.rerun_id
                 changed = False
-                if text.status == "succeeded":
+                if leader.rerun_id or (text and text.status == "succeeded"):
                     status = (
                         "refining"
                         if leader.request_json.get("assistant") and not leader.assistant_run_id
@@ -821,20 +900,32 @@ class PromptGenerationService:
         if not loaded:
             return
         leader, text, changed = loaded
-        if text.status in TEXT_ACTIVE:
+        if text and text.status in TEXT_ACTIVE:
             return
         try:
-            if text.status != "succeeded":
+            if text and text.status != "succeeded":
                 raise AppError(
                     text.error_code or "prompt_generation_failed",
                     text.error_message or "Prompt generation failed.",
                 )
-            payload = GenerationPreparationItem.model_validate(leader.request_json)
+            payload = captured_preparation(leader)
+            raw_prompt = (
+                payload.retained_prompt
+                if isinstance(payload, RetainedPromptPreparationItem)
+                else text.prompt
+                if text
+                else None
+            )
+            assert raw_prompt is not None
             # Publish the raw prompt and durable phase before starting refinement.
             if changed:
                 await notify_user(
                     self.container.broker, leader.owner_id, "prompt_generation.updated"
                 )
+                if leader.rerun_id:
+                    await notify_user(
+                        self.container.broker, leader.owner_id, "prompt_rerun.updated"
+                    )
                 if leader.auto_cycle_id:
                     await notify_user(
                         self.container.broker, leader.owner_id, "auto_generation.updated"
@@ -845,13 +936,17 @@ class PromptGenerationService:
                 await compose_prompt(
                     self.container,
                     leader.owner_id,
-                    payload.assistant.model_copy(update={"prompt": text.prompt}),
+                    payload.assistant.model_copy(update={"prompt": raw_prompt}),
                     preparation_id=leader.id,
                 )
                 # The saved output is visible even when image acceptance must wait.
                 await notify_user(
                     self.container.broker, leader.owner_id, "prompt_generation.updated"
                 )
+                if leader.rerun_id:
+                    await notify_user(
+                        self.container.broker, leader.owner_id, "prompt_rerun.updated"
+                    )
                 if leader.auto_cycle_id:
                     await notify_user(
                         self.container.broker, leader.owner_id, "auto_generation.updated"
@@ -877,7 +972,9 @@ class PromptGenerationService:
                         assert auto is not None
                     if not user or user.state != UserState.ACTIVE:
                         return []
-                    prompt = current.prompt or text.prompt
+                    if current.rerun_id and (not current.prompt or not current.assistant_run_id):
+                        raise AppError("refinement_missing", "The refined prompt was not saved.")
+                    prompt = current.prompt or raw_prompt
                     events = []
                     for position, row in enumerate(rows):
                         profile = session.get(WorkflowProfile, row.profile_id)
@@ -885,7 +982,7 @@ class PromptGenerationService:
                             raise AppError(
                                 "source_unavailable", "The captured workflow is unavailable."
                             )
-                        item = GenerationPreparationItem.model_validate(row.request_json)
+                        item = captured_preparation(row)
                         prompt_id = next(
                             i["id"]
                             for i in profile.resolved_contract_json["inputs"]
@@ -910,6 +1007,16 @@ class PromptGenerationService:
                         )
                         if position == 0:
                             assistant_snapshot = generation.prompt_assistant_json
+                            if row.rerun_id and assistant_snapshot is not None:
+                                assistant_snapshot = {
+                                    **assistant_snapshot,
+                                    "prompt_before": raw_prompt,
+                                    "composition_id": current.assistant_run_id,
+                                    "source_generation_id": row.request_json[
+                                        "source_generation_id"
+                                    ],
+                                }
+                                generation.prompt_assistant_json = assistant_snapshot
                         else:
                             generation.prompt_assistant_json = copy.deepcopy(assistant_snapshot)
                         generation.auto_cycle_id = row.auto_cycle_id
@@ -955,6 +1062,8 @@ class PromptGenerationService:
                 self._fail, leader.id, "preparation_failed", "Image batch preparation failed."
             )
         await notify_user(self.container.broker, leader.owner_id, "prompt_generation.updated")
+        if leader.rerun_id:
+            await notify_user(self.container.broker, leader.owner_id, "prompt_rerun.updated")
         if leader.auto_cycle_id:
             await notify_user(self.container.broker, leader.owner_id, "auto_generation.updated")
 
@@ -969,7 +1078,7 @@ class PromptGenerationService:
         activity = session.get(GenerationRun, row.activity_run_id)
         if activity:
             activity.submission_failed_count += 1
-        text = session.get(PromptGenerationRun, row.prompt_run_id)
+        text = session.get(PromptGenerationRun, row.prompt_run_id) if row.prompt_run_id else None
         if text and text.status == "queued":
             text.status = "discarded"
 

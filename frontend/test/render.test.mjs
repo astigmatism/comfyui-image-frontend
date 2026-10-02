@@ -1179,8 +1179,8 @@ test("source picker renders persisted preference tiers without legacy metadata",
           description: "Choose one or more model releases.",
           default: "v1",
           choices: [
-            { value: "v1", label: "Version 1", released_month: "2026-01" },
-            { value: "v2", label: "Version 2" },
+            { value: "v1", label: "Version 1", released_month: "2026-01", checkpoint_id: "cp1_" + "1".repeat(64) },
+            { value: "v2", label: "Version 2", checkpoint_id: "cp1_" + "2".repeat(64) },
           ],
         },
       ],
@@ -1192,21 +1192,12 @@ test("source picker renders persisted preference tiers without legacy metadata",
     modelSelectionsBySource: {
       one: { checkpoint: ["v1", "v2"] },
     },
-    checkpointTiers: {
-      one: {
-        checkpoint: {
-          top_picks: ["v2"],
-          preferred: ["v1"],
-          occasional: [],
-          unsorted: [],
-        },
-      },
-    },
+    checkpointTiers: { A: ["cp1_" + "2".repeat(64)], B: ["cp1_" + "1".repeat(64)] },
   });
 
-  const top = html.match(/data-checkpoint-tier="top_picks"[\s\S]*?<\/section>/)?.[0] || "";
-  const preferred = html.match(/data-checkpoint-tier="preferred"[\s\S]*?<\/section>/)?.[0] || "";
-  const occasional = html.match(/data-checkpoint-tier="occasional"[\s\S]*?<\/section>/)?.[0] || "";
+  const top = html.match(/data-checkpoint-tier="A"[\s\S]*?<\/section>/)?.[0] || "";
+  const preferred = html.match(/data-checkpoint-tier="B"[\s\S]*?<\/section>/)?.[0] || "";
+  const occasional = html.match(/data-checkpoint-tier="D"[\s\S]*?<\/section>/)?.[0] || "";
   assert.match(top, /Version 2/);
   assert.doesNotMatch(top, /Version 1/);
   assert.match(preferred, /Version 1/);
@@ -1283,8 +1274,8 @@ test("source picker exposes tri-state tier controls and disables Apply at zero s
             parameter_id: "checkpoint",
             default: "one",
             choices: [
-              { value: "one", label: "One" },
-              { value: "two", label: "Two" },
+              { value: "one", label: "One", checkpoint_id: "cp1_" + "1".repeat(64) },
+              { value: "two", label: "Two", checkpoint_id: "cp1_" + "2".repeat(64) },
             ],
           },
         ],
@@ -1293,20 +1284,11 @@ test("source picker exposes tri-state tier controls and disables Apply at zero s
     {
       sourceKey: "tiered",
       modelSelectionsBySource: { tiered: { checkpoint: [] } },
-      checkpointTiers: {
-        tiered: {
-          checkpoint: {
-            top_picks: ["one", "two"],
-            preferred: [],
-            occasional: [],
-            unsorted: [],
-          },
-        },
-      },
+      checkpointTiers: { A: ["cp1_" + "1".repeat(64), "cp1_" + "2".repeat(64)] },
     },
   );
 
-  const top = html.match(/data-checkpoint-tier="top_picks"[\s\S]*?<\/section>/)?.[0] || "";
+  const top = html.match(/data-checkpoint-tier="A"[\s\S]*?<\/section>/)?.[0] || "";
   assert.match(top, />0\/2<\/small>/);
   assert.doesNotMatch(top, /data-indeterminate|checked/);
   assert.match(html, /data-action="apply-generation-source-dialog" disabled/);
@@ -1490,7 +1472,7 @@ test("gallery overlays show only checkpoint metadata and keep details accessible
   };
   const html = galleryCardMarkup(base);
   assert.match(html, /data-gallery-card="generation"/);
-  assert.match(html, /class="card-checkpoint card-hover-reveal" title="Moody &lt;Krea&gt; &amp; &quot;V5&quot;">Moody &lt;Krea&gt; &amp; &quot;V5&quot;<\/span>/);
+  assert.match(html, /class="card-checkpoint card-hover-reveal" title="Moody &lt;Krea&gt; &amp; &quot;V5&quot;"><span class="checkpoint-name">Moody &lt;Krea&gt; &amp; &quot;V5&quot;<\/span>/);
   assert.match(html, /class="card-hover-scrim" aria-hidden="true"/);
   assert.doesNotMatch(html, /card-footer|card-metadata|1m 30s|<footer/);
   const noCheckpoint = galleryCardMarkup({ ...base, checkpoint_label: "" });

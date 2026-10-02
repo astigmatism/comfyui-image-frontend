@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "lora-manager.mjs", "admin-loras.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "prompt-rerun.mjs", "app.mjs"];
+const modules = ["prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "lora-manager.mjs", "admin-loras.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "prompt-rerun.mjs", "prompt-rerun-progress.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -97,6 +97,7 @@ const assets = {
   gallery_view: `${assetPrefix}/gallery-view.mjs`,
   gallery_selection: `${assetPrefix}/gallery-selection.mjs`,
   prompt_rerun: `${assetPrefix}/prompt-rerun.mjs`,
+  prompt_rerun_progress: `${assetPrefix}/prompt-rerun-progress.mjs`,
   styles: `${assetPrefix}/styles.css`,
   font: `${assetPrefix}/syncopate-latin.woff2`,
   font_license: `${assetPrefix}/LICENSE-syncopate.txt`,

@@ -103,6 +103,7 @@ class FakeServiceState:
     orphan_prompt_substrings: set[str] = field(default_factory=set)
     models: list[str] = field(default_factory=lambda: ["zeta:latest", "alpha:latest", "nighttime"])
     ollama_effective_model: str | None = None
+    ollama_delay_seconds: float = 0
     ollama_include_thinking: bool = True
     ollama_response_in_thinking: bool = False
     ollama_response_prompt: str | None = None
@@ -161,6 +162,7 @@ class FakeServiceState:
         self.orphan_prompt_substrings.clear()
         self.models = ["zeta:latest", "alpha:latest", "nighttime"]
         self.ollama_effective_model = None
+        self.ollama_delay_seconds = 0
         self.ollama_include_thinking = True
         self.ollama_response_in_thinking = False
         self.ollama_response_prompt = None
@@ -855,6 +857,8 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             raise HTTPException(status_code=503)
         payload = await request.json()
         state.ollama_calls.append(copy.deepcopy(payload))
+        if state.ollama_delay_seconds:
+            await asyncio.sleep(state.ollama_delay_seconds)
         if state.ollama_generate_failures_remaining > 0:
             state.ollama_generate_failures_remaining -= 1
             return JSONResponse(

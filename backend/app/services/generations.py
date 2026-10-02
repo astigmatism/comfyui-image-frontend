@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..blocking import run_blocking
 from ..config import ComfyUIInstanceConfig
+from ..domain.checkpoint_identity import generation_checkpoint_identity_v1
 from ..domain.compiler import CompileResult, WorkflowCompiler
 from ..domain.lora_stack import validate_lora_runtime
 from ..domain.publication import publication_kind
@@ -84,6 +85,7 @@ class _GenerationSummaryRow:
     status: GenerationStatus
     workflow_display_name: str
     checkpoint_label: str | None
+    checkpoint_id: str | None
     comfyui_instance_id: str | None
     comfyui_instance_label: str | None
     accepted_at: datetime
@@ -248,6 +250,12 @@ class GenerationService:
             api_graph_sha256=profile.api_graph_sha256,
             contract_sha256=profile.contract_sha256,
             resolved_contract_json=copy.deepcopy(profile.resolved_contract_json),
+            checkpoint_id=generation_checkpoint_identity_v1(
+                profile.resolved_contract_json,
+                compiled.effective_controls,
+                profile.source_api_json,
+                str(profile.source_key),
+            ),
             requested_controls_json=compiled.requested_controls,
             effective_controls_json=compiled.effective_controls,
             resolved_seeds_json=compiled.resolved_seeds,
@@ -865,6 +873,7 @@ class GenerationService:
             status=status,
             workflow_display_name=row.workflow_display_name,
             checkpoint_label=row.checkpoint_label,
+            checkpoint_id=row.checkpoint_id,
             comfyui_instance_id=row.comfyui_instance_id,
             comfyui_instance_label=row.comfyui_instance_label,
             accepted_at=row.accepted_at,
@@ -960,6 +969,7 @@ class GenerationService:
             collection_id=generation.collection_id,
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
+            checkpoint_id=generation.checkpoint_id,
             checkpoint_label=_checkpoint_label(
                 generation.resolved_contract_json,
                 generation.effective_controls_json,
@@ -1596,6 +1606,7 @@ def _summary_projection() -> tuple[Any, ...]:
         Generation.status.label("status"),
         Generation.workflow_display_name.label("workflow_display_name"),
         checkpoint_column().label("checkpoint_label"),
+        Generation.checkpoint_id.label("checkpoint_id"),
         Generation.comfyui_instance_id.label("comfyui_instance_id"),
         Generation.comfyui_instance_label.label("comfyui_instance_label"),
         Generation.accepted_at.label("accepted_at"),
@@ -1649,6 +1660,7 @@ def _summary_row(row: Any) -> _GenerationSummaryRow:
         status=values["status"],
         workflow_display_name=str(values["workflow_display_name"]),
         checkpoint_label=values["checkpoint_label"],
+        checkpoint_id=values["checkpoint_id"],
         comfyui_instance_id=_optional_text(values["comfyui_instance_id"]),
         comfyui_instance_label=_optional_text(values["comfyui_instance_label"]),
         accepted_at=values["accepted_at"],

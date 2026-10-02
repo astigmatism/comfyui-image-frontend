@@ -107,12 +107,12 @@ async def update_preferences(
             if payload.source_colors is not None:
                 preference.source_colors_json = dict(payload.source_colors)
             if payload.checkpoint_tiers is not None:
+                if payload.expected_revision is None:
+                    raise AppError(
+                        "revision_required", "A settings revision is required.", status_code=409
+                    )
                 preference.checkpoint_tiers_json = {
-                    source_key: {
-                        parameter_id: {tier: list(choices) for tier, choices in tiers.items()}
-                        for parameter_id, tiers in selectors.items()
-                    }
-                    for source_key, selectors in payload.checkpoint_tiers.items()
+                    tier: list(identities) for tier, identities in payload.checkpoint_tiers.items()
                 }
             preference.revision += 1
             session.commit()

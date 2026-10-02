@@ -6,11 +6,14 @@ import {
   promptRerunMarkup,
   promptRerunPlannedTotal,
   promptRerunRequest,
+  promptRerunSummaryMarkup,
+  promptRerunSubmitLabel,
   retargetRerunDraft,
   updateRerunDraft,
   validatePromptRerunDraft,
 } from "../src/prompt-rerun.mjs";
 import { rerunToolState } from "../src/gallery-selection.mjs";
+import { promptRerunProgressMarkup } from "../src/prompt-rerun-progress.mjs";
 
 const revision = { publication_id: "p", workflow_sha256: "w", api_sha256: "a", manifest_sha256: "m" };
 const contract = {
@@ -34,6 +37,49 @@ const panel = {
   collectionId: "folder-1",
   now: Date.UTC(2026, 0, 5, 12),
 };
+
+test("Creative Direction is an isolated opt-in refinement draft with separate prompt and image counts", () => {
+  const assistant = { creativeDirection: "cinematic light", mode: "create", think: false,
+    defaultInstructions: { refine: "Default refine" }, instructionOverrides: { refine: "Keep the subject" } };
+  let draft = promptRerunDraft({ ...panel, promptAssistant: assistant });
+  assert.equal(draft.refine, false);
+  assert.equal(draft.creativeDirection, "cinematic light");
+  assert.equal(draft.instructions, "Keep the subject");
+  assert.equal(draft.think, false);
+  assert.equal(promptRerunRequest(draft, {}).refinement, undefined);
+  draft = updateRerunDraft(draft, "rerun_refine", true);
+  assert.equal(draft.sectionOpen["creative-direction"], true);
+  draft = updateRerunDraft(draft, "rerun_direction", "at dusk");
+  draft = updateRerunDraft(draft, "rerun_instructions", "Preserve composition");
+  assert.equal(assistant.creativeDirection, "cinematic light");
+  assert.equal(assistant.instructionOverrides.refine, "Keep the subject");
+  assert.deepEqual(promptRerunRequest(draft, {}).refinement, {
+    creative_direction: "at dusk", instructions: "Preserve composition", think: false,
+  });
+  assert.match(promptRerunSummaryMarkup(draft, preview), /Refine 3 prompts · Generate up to 12 images/);
+  assert.equal(promptRerunSubmitLabel(draft, preview), "Refine & Queue");
+  assert.ok(validatePromptRerunDraft({ ...draft, creativeDirection: " " }, preview).direction);
+  assert.ok(validatePromptRerunDraft({ ...draft, instructions: " " }, preview).instructions);
+  assert.match(promptRerunMarkup({ ...draft, instructions: " " }, preview), /class="prompt-preprocessor" open/);
+  const markup = promptRerunMarkup(draft, preview);
+  assert.match(markup, /Thinking mode/);
+  assert.doesNotMatch(markup, /New Prompt from Creative Direction|name="assistant-mode"/);
+  assert.equal(retargetRerunDraft(draft, source).creativeDirection, "at dusk");
+});
+
+test("rerun progress separates prompt completion from image completion and escapes retained text", () => {
+  const run = { id: "r", status: "processing", prompt_count: 2, queued_count: 3, planned_count: 6,
+    counts: { waiting: 0, refining: 1, ready: 0, finished: 1, failed: 0, cancelled: 0 },
+    items: [{ id: "g", status: "refining", original_prompt: "<img src=x>", prompt: "refined <b>" }] };
+  const markup = promptRerunProgressMarkup([run]);
+  assert.match(markup, /Stop remaining/);
+  assert.match(markup, /3 of 6 images queued/);
+  assert.match(markup, /&lt;img src=x&gt;/);
+  const completed = promptRerunProgressMarkup([{ ...run, status: "completed" }]);
+  assert.match(completed, /All prompts processed/);
+  assert.match(completed, /Queued images finish independently/);
+  assert.doesNotMatch(completed, /Stop remaining/);
+});
 
 test("the draft starts from the control panel and does not alias its values", () => {
   const draft = promptRerunDraft(panel);

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
 from app.main import create_app
-from app.models import Collection, Generation, GenerationSubmission
+from app.models import Collection, Generation, GenerationSubmission, PromptRerunRun
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from tests.conftest import csrf
@@ -234,7 +235,8 @@ def test_rerun_is_owner_scoped_even_for_admin(app_client):
         assert session.scalar(select(func.count()).select_from(Generation)) == 1
 
 
-def test_rerun_fans_out_across_checkpoints(fake_state, settings_factory):
+@pytest.mark.parametrize("refine", [False, True])
+def test_rerun_fans_out_across_checkpoints(fake_state, settings_factory, refine):
     fake_state.workflow_files = dict(build_publication_bundle("moody").files)
     with TestClient(create_app(settings_factory())) as client:
         provision_user(client, username="rerun.checkpoints")
@@ -254,14 +256,28 @@ def test_rerun_fans_out_across_checkpoints(fake_state, settings_factory):
                 "revision": profile["revision"],
                 "parameters": {"width": 512, "height": 512},
                 "model_variants": [{"checkpoint": "v4_int8"}, {"checkpoint": "v4_bf16"}],
+                "quantity": 3,
+                **({"refinement": {"creative_direction": "at dusk"}} if refine else {}),
             },
         )
-        assert response.status_code == 201, response.text
+        assert response.status_code == (202 if refine else 201), response.text
+        if refine:
+            owner = rows(client, PromptRerunRun)[0].owner_id
+            client.portal.call(
+                client.app.state.container.prompt_generation.advance, f"rerun:{owner}"
+            )
+            assert len(fake_state.ollama_calls) == 1
         created = rows(
             client, Generation, Generation.collection_id == response.json()["collection"]["id"]
         )
         assert sorted(item.effective_controls_json["checkpoint"] for item in created) == [
             "v4_bf16",
+            "v4_bf16",
+            "v4_bf16",
+            "v4_int8",
+            "v4_int8",
             "v4_int8",
         ]
-        assert {item.final_prompt for item in created} == {"checkpoint prompt"}
+        assert {item.final_prompt for item in created} == {
+            "checkpoint prompt, at dusk" if refine else "checkpoint prompt"
+        }

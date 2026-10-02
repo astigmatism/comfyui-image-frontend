@@ -17,6 +17,47 @@ The control panel uses independent switches and expansion buttons for Auto-gener
 - Both Generate buttons and new manual image/preparation API submissions are blocked while automation is enabled. Replaying an already accepted idempotency receipt remains supported. Prompt-only requests remain available.
 - Disabled image Generate buttons show **Auto Generating** with the same spinner while automation is enabled. Normal automatic-settings saves are silent; errors and conflicts retain their recovery controls.
 
+## Creative Direction in Prompt Re-run
+
+Prompt Re-run optionally refines each retained prompt with one shared Creative
+Direction before queueing its images. The dialog starts with this option off and
+copies the panel's direction, Refine instructions, and thinking setting into an
+independent draft. It supports Refine only. Direction and instructions must be
+nonblank when enabled; dialog changes do not change the panel.
+
+Duplicate handling runs before refinement. Each retained prompt receives one
+LLM refinement shared across all selected checkpoints and repetitions. The
+account's reruns refine in acceptance order, with prompts oldest first. Each
+completed refinement is saved before its image group is accepted atomically.
+The next prompt can refine while those images run or the image pool is offline.
+Failure records an error for that prompt and continues with the rest; no images
+fall back to the original text. Original history remains unchanged, and every
+result records the direction, original prompt, and composition provenance.
+
+The accepted run opens its destination folder. Its progress card reports waiting,
+refining, ready, finished, failed, and stopped prompts separately from images
+queued, with expandable original/refined text. **Stop remaining** cancels
+unaccepted preparations and prevents a late LLM response from queueing images.
+Already accepted images finish. Deleting the destination also stops preparations.
+Status restores on folder navigation, reload, and reconnect; the server continues
+without the browser. Completed refinements and accepted images are reused after
+restart. A completed prompt run does not mean its images have finished.
+
+`POST /api/gallery/prompt-rerun` accepts optional `refinement` settings containing
+`creative_direction`, optional `instructions`, and `think` (default true). With
+refinement it returns HTTP 202, the new folder, workload counts, and `run`; image
+`items` can be empty at acceptance. Without it, the existing HTTP 201 immediate
+rerun behavior is retained. Submission receipts cover both forms.
+
+Owner-scoped status is available from `GET /api/gallery/prompt-rerun/{id}` and
+`GET /api/gallery/prompt-rerun?collection_id=...`. The CSRF-protected
+`POST /api/gallery/prompt-rerun/{id}/stop` is idempotent. The
+`prompt_rerun.updated` event refreshes status, with polling while work is active.
+Migration `b28a6f1d903e` adds durable rerun records and allows preparations to use
+captured retained text without a text-generation run. Existing preparations keep
+their text-run links. Downgrade refuses to discard retained-text preparations;
+use the supported pre-upgrade backup recovery when necessary.
+
 ## Browser and shared preferences
 
 `cif.control-panel.v1.<user-id>` stores a versioned local snapshot, last synchronized base, server revision, and unresolved conflict. Writes happen on input; only server synchronization is debounced. The origin and authenticated user isolate the journal. Existing local controls are imported into the shared settings format.

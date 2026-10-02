@@ -9,6 +9,25 @@ function storage() {
   return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
 }
 
+test("refined rerun receipt recovers before any images exist and requires a durable run", async (context) => {
+  const original = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage };
+  context.after(() => { Object.assign(globalThis, original); setSubmissionOwner(null); });
+  globalThis.localStorage = storage();
+  globalThis.sessionStorage = storage();
+  setSubmissionOwner("owner");
+  const payload = { refinement: { creative_direction: "at night" } };
+  globalThis.fetch = async () => { throw new TypeError("Lost acceptance reply"); };
+  await assert.rejects(submitGeneration("/api/gallery/prompt-rerun", payload), { code: "submission_status_unknown" });
+  const accepted = { collection: { id: "folder" }, items: [], run: { id: "run", status: "processing", items: [{ id: "group", status: "waiting" }] } };
+  globalThis.fetch = async () => response({ result: { ...accepted, run: null } });
+  await assert.rejects(recoverSubmission(), { code: "submission_status_unknown" });
+  assert.ok(pendingSubmission());
+  globalThis.fetch = async () => response({ result: accepted });
+  assert.deepEqual((await recoverSubmission()).result, accepted);
+  assert.equal(pendingSubmission(), null);
+  assert.deepEqual(pendingPromptJobs(), []);
+});
+
 for (const path of ["/api/prompt-generations", "/api/generation-preparations"]) test(`${path}: lost reply recovers the original job and context without resubmitting`, async (context) => {
   const original = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage };
   context.after(() => { Object.assign(globalThis, original); setSubmissionOwner(null); });

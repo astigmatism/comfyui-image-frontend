@@ -131,7 +131,7 @@ class PreferenceResponse(APIModel):
     gallery_scale: int
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
-    checkpoint_tiers: dict[str, dict[str, dict[str, list[str]]]] = Field(default_factory=dict)
+    checkpoint_tiers: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class PreferenceUpdate(APIModel):
@@ -141,9 +141,7 @@ class PreferenceUpdate(APIModel):
     gallery_scale: int | None = Field(default=None, ge=0, le=100)
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
-    checkpoint_tiers: dict[StrictStr, dict[StrictStr, dict[StrictStr, list[StrictStr]]]] | None = (
-        None
-    )
+    checkpoint_tiers: dict[StrictStr, list[StrictStr]] | None = None
 
     @field_validator("source_ratings")
     @classmethod
@@ -181,55 +179,22 @@ class PreferenceUpdate(APIModel):
     @field_validator("checkpoint_tiers")
     @classmethod
     def validate_checkpoint_tiers(
-        cls,
-        value: dict[str, dict[str, dict[str, list[str]]]] | None,
-    ) -> dict[str, dict[str, dict[str, list[str]]]] | None:
+        cls, value: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
         if value is None:
-            return value
-        if len(value) > 500:
-            raise ValueError("checkpoint_tiers cannot contain more than 500 sources")
-        allowed_tiers = {"top_picks", "preferred", "occasional", "unsorted"}
-        total_choices = 0
-        for source_key, selectors in value.items():
-            if not source_key or source_key != source_key.strip() or len(source_key) > 256:
-                raise ValueError(
-                    "checkpoint tier source keys must be 1 to 256 non-whitespace characters"
-                )
-            if len(selectors) > 20:
-                raise ValueError(
-                    "checkpoint_tiers cannot contain more than 20 selectors per source"
-                )
-            for parameter_id, tiers in selectors.items():
-                if (
-                    not parameter_id
-                    or parameter_id != parameter_id.strip()
-                    or len(parameter_id) > 256
-                ):
-                    raise ValueError(
-                        "checkpoint tier parameter keys must be 1 to 256 non-whitespace characters"
-                    )
-                unknown_tiers = set(tiers) - allowed_tiers
-                if unknown_tiers:
-                    raise ValueError("checkpoint tier names are not recognized")
-                seen: set[str] = set()
-                for choices in tiers.values():
-                    if len(choices) > 1000:
-                        raise ValueError(
-                            "checkpoint tiers cannot contain more than 1000 choices per tier"
-                        )
-                    total_choices += len(choices)
-                    for choice in choices:
-                        if not choice or choice != choice.strip() or len(choice) > 512:
-                            raise ValueError(
-                                "checkpoint tier values must be 1 to 512 non-whitespace characters"
-                            )
-                        if choice in seen:
-                            raise ValueError(
-                                "a checkpoint value cannot appear in more than one tier"
-                            )
-                        seen.add(choice)
-        if total_choices > 25_000:
-            raise ValueError("checkpoint_tiers cannot contain more than 25000 choices")
+            return None
+        if set(value) - {"A", "B", "C", "D", "F"}:
+            raise ValueError("checkpoint tier names must be A, B, C, D, or F")
+        seen: set[str] = set()
+        for choices in value.values():
+            for identity in choices:
+                if not re.fullmatch(r"cp1_[0-9a-f]{64}", identity):
+                    raise ValueError("checkpoint tiers require opaque checkpoint identities")
+                if identity in seen:
+                    raise ValueError("a checkpoint cannot appear in more than one tier")
+                seen.add(identity)
+        if len(seen) > 25_000:
+            raise ValueError("checkpoint_tiers cannot contain more than 25000 checkpoints")
         return value
 
     @model_validator(mode="after")
@@ -332,6 +297,7 @@ class LoraOperationPublic(APIModel):
 
 
 class ModelSelectorChoice(APIModel):
+    checkpoint_id: str | None = None
     value: str
     label: str
     released_month: str | None = Field(
@@ -570,6 +536,7 @@ class GenerationSummary(APIModel):
     status: str
     workflow_display_name: str
     checkpoint_label: str | None = None
+    checkpoint_id: str | None = None
     # Null until an image worker claims the generation.
     comfyui_instance_id: str | None = None
     comfyui_instance_label: str | None = None
@@ -857,12 +824,25 @@ class PromptRerunPreview(APIModel):
     prompts: list[PromptRerunPromptPreview] = Field(default_factory=list)
 
 
+class PromptRerunRefinement(APIModel):
+    creative_direction: str = Field(min_length=1)
+    instructions: str | None = Field(default=None, min_length=1, max_length=8000)
+    think: bool = True
+
+    @field_validator("creative_direction", "instructions")
+    @classmethod
+    def nonblank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Enter text or reset to the default.")
+        return value.strip() if value is not None else None
+
+
 class PromptRerunCreate(GallerySelection):
-    """Queue the exact retained prompts of a selection with new settings.
+    """Queue retained prompts with new settings and optional per-prompt refinement.
 
     Only the positive prompt (and optionally the original resolution and seed)
     come from the selected generations. Every other public parameter comes from
-    this request, so Creative Direction and the prompt generator never apply.
+    this request. Refinement is explicit; the prompt generator never applies.
     """
 
     folder_name: str = Field(min_length=1, max_length=100)
@@ -877,6 +857,7 @@ class PromptRerunCreate(GallerySelection):
     keep_original_resolution: bool = False
     seed_mode: Literal["random", "original"] = "random"
     skip_duplicates: bool = True
+    refinement: PromptRerunRefinement | None = None
 
     @field_validator("folder_name")
     @classmethod
@@ -902,6 +883,7 @@ class PromptRerunResult(APIModel):
     prompt_count: int
     planned_count: int
     resolution_fallback_count: int = 0
+    run: dict[str, Any] | None = None
 
 
 class GenerationDetail(GenerationSummary):
@@ -1064,6 +1046,15 @@ class GenerationPreparationItem(APIModel):
 
 class GenerationPreparationCreate(APIModel):
     items: list[GenerationPreparationItem] = Field(min_length=1, max_length=256)
+
+
+class RetainedPromptPreparationItem(APIModel):
+    """Internal captured input; only the rerun service reads historical prompts."""
+
+    generation: GenerationCreate
+    retained_prompt: str
+    source_generation_id: str
+    assistant: PromptComposeRequest
 
 
 class AutoGenerationSnapshot(APIModel):

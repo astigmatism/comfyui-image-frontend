@@ -23,6 +23,8 @@ def main() -> None:
     )
     worker.state.workflow_files = dict(primary.state.workflow_files)
     primary.state.slow_stage_delay = 2.0
+    # Keep the asynchronous refinement stage visible for browser progress/stop journeys.
+    primary.state.ollama_delay_seconds = 1.0
     worker.state.slow_stage_delay = 2.0
     # Keep this sample running through image persistence and the cancellation round trip.
     primary.state.stage_delay_overrides["slow cancellation sample"] = 10.0

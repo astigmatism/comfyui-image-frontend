@@ -184,6 +184,17 @@ def activity_snapshot(session: Session, owner_id: str) -> GenerationActivity:
                 )
             )
             + run.deleted_cancelled_count
+            + (
+                session.scalar(
+                    select(func.count())
+                    .select_from(GenerationPreparation)
+                    .where(
+                        GenerationPreparation.activity_run_id == run.id,
+                        GenerationPreparation.status == "cancelled",
+                    )
+                )
+                or 0
+            )
         )
         resolved = run.total_count - remaining
         completed = max(

@@ -180,8 +180,10 @@ export function createSubmissionRecovery({ signal, onRecovered, onError, onChang
 }
 
 function validateResult(pending, result) {
+  const refinedRerun = pending.path === "/api/gallery/prompt-rerun" && Boolean(JSON.parse(pending.body).refinement);
   const valid = pending.path === "/api/gallery/prompt-rerun"
     ? typeof result?.collection?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item?.generation?.id || item?.error?.code)
+      && (!refinedRerun || (typeof result?.run?.id === "string" && Array.isArray(result.run.items) && result.run.status))
     : pending.path === "/api/generation-preparations"
     ? typeof result?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item.id && item.status)
     : pending.path.endsWith("/batch")

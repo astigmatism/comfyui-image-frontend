@@ -80,22 +80,34 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "checkpoint_tiers": {},
         }
         checkpoint_tiers = {
-            "source-alpha": {
-                "checkpoint": {
-                    "top_picks": ["model-v2"],
-                    "preferred": ["model-v1"],
-                    "occasional": [],
-                    "unsorted": ["model-new"],
-                }
-            }
+            "A": ["cp1_" + "a" * 64],
+            "B": ["cp1_" + "b" * 64],
+            "C": ["cp1_" + "c" * 64],
+            "D": [],
+            "F": [],
         }
         tiers_saved = first.put(
             "/api/preferences",
             headers={"X-CSRF-Token": csrf(first)},
-            json={"checkpoint_tiers": checkpoint_tiers},
+            json={"checkpoint_tiers": checkpoint_tiers, "expected_revision": 2},
         )
         assert tiers_saved.status_code == 200
         assert tiers_saved.json()["checkpoint_tiers"] == checkpoint_tiers
+        first.cookies.clear()
+        login(first, "admin", ADMIN_PASSWORD)
+        assert first.get("/api/preferences").json()["checkpoint_tiers"] == {}
+        restore_cookie(first, cookie, name=settings.session_cookie_name)
+        for body in (
+            {"checkpoint_tiers": {"C": []}},
+            {"checkpoint_tiers": {"C": []}, "expected_revision": 2},
+        ):
+            assert (
+                first.put(
+                    "/api/preferences", headers={"X-CSRF-Token": csrf(first)}, json=body
+                ).status_code
+                == 409
+            )
+        assert first.get("/api/preferences").json()["checkpoint_tiers"] == checkpoint_tiers
         assert (
             first.put(
                 "/api/preferences",
@@ -125,16 +137,8 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
                 "/api/preferences",
                 headers={"X-CSRF-Token": csrf(first)},
                 json={
-                    "checkpoint_tiers": {
-                        "source-alpha": {
-                            "checkpoint": {
-                                "top_picks": ["duplicate"],
-                                "preferred": ["duplicate"],
-                                "occasional": [],
-                                "unsorted": [],
-                            }
-                        }
-                    }
+                    "checkpoint_tiers": {"A": ["cp1_" + "a" * 64], "B": ["cp1_" + "a" * 64]},
+                    "expected_revision": 3,
                 },
             ).status_code
             == 422

@@ -302,29 +302,14 @@ test("source model selectors ignore projected metadata when detail has no model 
   );
 });
 
-test("checkpoint tier layouts preserve known order and append new choices to Unsorted", () => {
-  const selector = {
-    choices: [
-      { value: "alpha", label: "Alpha" },
-      { value: "beta", label: "Beta" },
-      { value: "new", label: "New" },
-    ],
-  };
-  assert.deepEqual(
-    normalizeCheckpointTierLayout(selector, {
-      top_picks: ["beta", "removed"],
-      preferred: ["alpha", "beta"],
-      occasional: [],
-      unsorted: [],
-      unknown: ["new"],
-    }),
-    {
-      top_picks: ["beta"],
-      preferred: ["alpha"],
-      occasional: [],
-      unsorted: ["new"],
-    },
-  );
+test("checkpoint tier layouts preserve known order and append new choices to C", () => {
+  const a = "cp1_" + "a".repeat(64), b = "cp1_" + "b".repeat(64);
+  const selector = { choices: [
+    { value: "alpha", checkpoint_id: a }, { value: "beta", checkpoint_id: b },
+    { value: "new", checkpoint_id: "cp1_" + "c".repeat(64) },
+  ] };
+  assert.deepEqual(normalizeCheckpointTierLayout(selector, { A: [b, "removed"], B: [a,b] }),
+    { A: ["beta"], B: ["alpha"], C: ["new"], D: [], F: [] });
 });
 
 test("voice transcripts insert at or replace the saved text selection", () => {

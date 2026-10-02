@@ -16,6 +16,7 @@ import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoVi
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
 import { createPromptRerun } from "./prompt-rerun.mjs";
+import { createPromptRerunProgress } from "./prompt-rerun-progress.mjs";
 import {
   favoritesFilterActive,
   favoritesFilterPresentation,
@@ -52,6 +53,9 @@ import {
   loadRecentResolutions,
   migrateInterfaceState,
   normalizeCheckpointTierLayout,
+  normalizeCheckpointRanks,
+  checkpointRank,
+  moveCheckpointRank,
   normalizeSourceModelSelections,
   normalizeInputValue,
   normalizeStoredActiveSource,
@@ -298,6 +302,7 @@ let collectionDialogReturnFocus = null;
 let collectionDeleteReturnFocus = null;
 let moveDialogReturnFocus = null;
 let checkpointTiersRevision = 0;
+let checkpointRankChange = null;
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
 let applicationStartupController = null;
@@ -529,6 +534,8 @@ function promptRerunBlockedReason() {
   return null;
 }
 
+let promptRerunProgress = null;
+
 function promptRerunController() {
   const dialog = root.querySelector("#gallery-rerun-dialog");
   if (!dialog) return null;
@@ -547,6 +554,7 @@ function promptRerunController() {
       loraMemory: state.loraStrengthMemory,
       loraImages: state.loraImages,
       recentResolutions: state.recentResolutions,
+      promptAssistant: state.promptAssistant,
     }),
     sourceSettings: (key) => ({
       loraMemory: key === state.activeSourceKey ? state.loraStrengthMemory : {},
@@ -621,7 +629,9 @@ async function applyPromptRerunResult(result) {
     ? ` ${result.resolution_fallback_count} prompt${result.resolution_fallback_count === 1 ? "" : "s"} used the chosen resolution because the original size was unavailable.`
     : "";
   toast(
-    failures.length
+    result.run
+      ? `Refining ${result.prompt_count} prompts for up to ${result.planned_count} images in “${name}”.${fallback}`
+      : failures.length
       ? `Queued ${queued.length} of ${result.planned_count} generations into “${name}”. ${failures[0].message}${fallback}`
       : `Queued ${queued.length} generation${queued.length === 1 ? "" : "s"} into “${name}”.${fallback}`,
     failures.length ? "error" : "success",
@@ -781,6 +791,7 @@ async function handleClick(event) {
     else if (action === "set-photo-playback") {
       setPhotoViewerPlaybackMode(target.dataset.photoPlaybackMode);
     }
+    else if (action === "rank-checkpoint" || action === "retry-checkpoint-rank") await changePhotoCheckpointRank(target);
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -974,7 +985,9 @@ function openSourcePickerDialog(button) {
         structuredClone(sourcePickerContext && sourceKey(source) === activeKey ? sourcePickerContext.selections : modelSelectionsForSource(source)),
       ]),
     ),
-    checkpointTiers: structuredClone(sourcePickerContext?.checkpointTiers || state.checkpointTiers),
+    checkpointTiers: structuredClone(state.checkpointTiers),
+    checkpointTierBaseline: structuredClone(state.checkpointTiers),
+    ranksEdited: false,
     searchQuery: "",
   };
   ensureSourcePickerDraftPreferences(
@@ -1001,6 +1014,7 @@ function renderSourcePickerDialog() {
   });
   if (draft.busy) dialog.querySelector(".source-picker-dialog-content")?.setAttribute("inert", "");
   if (draft.busy) dialog.querySelector('[data-action="apply-generation-source-dialog"]')?.setAttribute("disabled", "");
+  if (draft.savingRanks) for (const button of dialog.querySelectorAll('[data-action="cancel-generation-source-dialog"]')) button.disabled = true;
   if (draft.error) {
     const message = dialog.querySelector(".source-picker-summary");
     message.classList.add("field-error");
@@ -1030,11 +1044,7 @@ function ensureSourcePickerDraftPreferences(source) {
     draft.modelSelectionsBySource[key] = structuredClone(modelSelectionsForSource(source));
   }
   if (!selector) return;
-  if (!draft.checkpointTiers[key]) draft.checkpointTiers[key] = {};
-  draft.checkpointTiers[key][selector.parameter_id] = normalizeCheckpointTierLayout(
-    selector,
-    draft.checkpointTiers[key][selector.parameter_id] || {},
-  );
+  draft.checkpointTiers = normalizeCheckpointRanks(draft.checkpointTiers, [selector]);
 }
 
 function updateSourcePickerDraftWorkflow(key) {
@@ -1118,7 +1128,7 @@ function updateAllSourcePickerCheckpoints(checked, tierId = null) {
   ensureSourcePickerDraftPreferences(source);
   const key = sourceKey(source);
   const current = new Set(draft.modelSelectionsBySource[key]?.[selector.parameter_id] || []);
-  const layout = draft.checkpointTiers[key][selector.parameter_id];
+  const layout = normalizeCheckpointTierLayout(selector, draft.checkpointTiers);
   const values = tierId
     ? layout[tierId] || []
     : selector.choices.map((choice) => choice.value);
@@ -1159,18 +1169,11 @@ function moveSourcePickerCheckpoint(value, destinationTierId, beforeValue = null
     return false;
   }
   ensureSourcePickerDraftPreferences(source);
-  const key = sourceKey(source);
-  const layout = normalizeCheckpointTierLayout(
-    selector,
-    draft.checkpointTiers[key][selector.parameter_id],
-  );
-  for (const tier of CHECKPOINT_TIER_DEFINITIONS) {
-    layout[tier.id] = layout[tier.id].filter((candidate) => candidate !== value);
-  }
-  const destination = layout[destinationTierId];
-  const beforeIndex = beforeValue ? destination.indexOf(beforeValue) : -1;
-  destination.splice(beforeIndex >= 0 ? beforeIndex : destination.length, 0, value);
-  draft.checkpointTiers[key][selector.parameter_id] = layout;
+  const identity = selector.choices.find((choice) => choice.value === value)?.checkpoint_id;
+  if (!identity) return false;
+  const beforeIdentity = selector.choices.find((choice) => choice.value === beforeValue)?.checkpoint_id;
+  draft.checkpointTiers = moveCheckpointRank(draft.checkpointTiers, identity, destinationTierId, beforeIdentity);
+  draft.ranksEdited = true;
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document
@@ -1204,6 +1207,7 @@ async function applySourcePickerDialog() {
     ? draft.modelSelectionsBySource?.[draft.sourceKey]?.[selector.parameter_id] || []
     : [];
   if (selector && !selectedValues.length) return;
+  if (!await persistCheckpointTierDraft(draft)) return;
   if (sourcePickerContext) {
     const context = sourcePickerContext;
     draft.busy = true;
@@ -1228,8 +1232,6 @@ async function applySourcePickerDialog() {
       draft.modelSelectionsBySource?.[sourceKey(source)] || {},
     );
   }
-  state.checkpointTiers = normalizedCheckpointTiers(draft.checkpointTiers);
-  checkpointTiersRevision += 1;
   closeSourcePickerDialog("apply", { flushDeferredUpdates: false });
   state.serverFieldErrors = {};
   state.formError = null;
@@ -1238,6 +1240,90 @@ async function applySourcePickerDialog() {
   renderPanel();
   await saveCheckpointTierPreferences();
   await flushDeferredSourcePickerUpdates({ panelAlreadyRendered: true });
+}
+
+async function persistCheckpointTierDraft(draft) {
+  if (!draft.ranksEdited) return true;
+  const previous = state.checkpointTiers;
+  const next = normalizeCheckpointRanks(draft.checkpointTiers);
+  if (settingsEqual(previous, next)) return true;
+  if (!settingsEqual(previous, draft.checkpointTierBaseline)) {
+    draft.error = "Checkpoint ranks changed elsewhere. Cancel and reopen to use the latest ranks.";
+    renderSourcePickerDialog();
+    return false;
+  }
+  const sessionId = state.session?.user?.id;
+  draft.busy = true;
+  draft.savingRanks = true;
+  draft.error = "";
+  state.checkpointTiers = next;
+  checkpointTiersRevision += 1;
+  renderSourcePickerDialog();
+  renderGallery();
+  renderPhotoViewer();
+  const saved = await settingsSync?.save();
+  if (sessionId !== state.session?.user?.id) return false;
+  draft.busy = false;
+  draft.savingRanks = false;
+  if (saved) {
+    draft.checkpointTierBaseline = structuredClone(state.checkpointTiers);
+    draft.ranksEdited = false;
+  }
+  if (!saved) {
+    if (settingsEqual(state.checkpointTiers, next)) state.checkpointTiers = previous;
+    checkpointTiersRevision += 1;
+    settingsSync?.persistLocal();
+    draft.error = state.sharedSettingsMessage || "Checkpoint ranks could not be saved. Retry Apply.";
+    renderGallery();
+    renderPhotoViewer();
+  }
+  if (state.sourcePickerDraft === draft) renderSourcePickerDialog();
+  return Boolean(saved && state.sourcePickerDraft === draft);
+}
+
+async function changePhotoCheckpointRank(button) {
+  if (checkpointRankChange?.status === "saving") return;
+  const identity = button.dataset.checkpointId;
+  if (!/^cp1_[0-9a-f]{64}$/.test(identity || "")) return;
+  const from = checkpointRank(identity, state.checkpointTiers);
+  const index = CHECKPOINT_TIER_DEFINITIONS.findIndex((tier) => tier.id === from);
+  const to = button.dataset.action === "retry-checkpoint-rank"
+    ? (checkpointRankChange?.identity === identity ? checkpointRankChange.to : null)
+    : CHECKPOINT_TIER_DEFINITIONS[index + Number(button.dataset.rankStep)]?.id;
+  if (!to || to === from) return;
+  const previous = state.checkpointTiers;
+  const next = moveCheckpointRank(previous, identity, to);
+  const change = { identity, from, to, status: "saving" };
+  const sessionId = state.session?.user?.id;
+  const wasFocused = document.activeElement === button;
+  const step = button.dataset.rankStep || "-1";
+  checkpointRankChange = change;
+  state.checkpointTiers = next;
+  checkpointTiersRevision += 1;
+  renderGallery();
+  renderPhotoViewer();
+  const saved = await settingsSync?.save();
+  if (sessionId !== state.session?.user?.id || checkpointRankChange !== change) return;
+  if (saved) change.status = "saved";
+  else {
+    if (settingsEqual(state.checkpointTiers, next)) state.checkpointTiers = previous;
+    checkpointTiersRevision += 1;
+    settingsSync?.persistLocal();
+    change.status = "error";
+    change.message = state.sharedSettingsMessage || "The rank could not be saved. Try again.";
+  }
+  renderGallery();
+  renderPhotoViewer();
+  if (wasFocused && document.querySelector("#photo-viewer")?.open &&
+      photoViewerGeneration(state.photoViewerGenerationId)?.checkpoint_id === identity) {
+    const controls = [...document.querySelectorAll('#photo-viewer [data-action="rank-checkpoint"]')];
+    (controls.find((control) => control.dataset.rankStep === step && !control.disabled) || controls.find((control) => !control.disabled))?.focus({ preventScroll: true });
+  }
+  if (saved) setTimeout(() => {
+    if (checkpointRankChange !== change) return;
+    checkpointRankChange = null;
+    renderPhotoViewer();
+  }, 2600);
 }
 
 async function saveCheckpointTierPreferences() {
@@ -1976,8 +2062,7 @@ function moveSourcePickerCheckpointFromKeyboard(handle, key) {
   const selector = sourceModelSelectors(source)[0];
   if (!source || !selector) return false;
   ensureSourcePickerDraftPreferences(source);
-  const sourcePreference =
-    state.sourcePickerDraft.checkpointTiers[sourceKey(source)][selector.parameter_id];
+  const sourcePreference = state.sourcePickerDraft.checkpointTiers;
   const layout = normalizeCheckpointTierLayout(selector, sourcePreference);
   const value = handle.dataset.checkpointValue;
   const tierId = handle.dataset.checkpointTierId;
@@ -2568,6 +2653,7 @@ async function logout() {
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.checkpointTiers = {};
+  checkpointRankChange = null;
   state.modelSelectionsBySourceRevision = new Map();
   state.selectedGenerationTargetCount = 0;
   checkpointTiersRevision += 1;
@@ -2683,6 +2769,7 @@ async function enterApplication() {
   state.generationQuantity = loadGenerationQuantity();
   clearAutoGeneratePin();
   state.checkpointTiers = {};
+  checkpointRankChange = null;
   checkpointTiersRevision += 1;
   state.parameterStateBySource = normalizeStoredParameterState(
     readStoredItem(parameterStateStorageKey(sessionStorageUserId())),
@@ -2728,6 +2815,10 @@ async function enterApplication() {
   });
   window.addEventListener("online", () => submissionRecovery?.start({ immediate: true }), { signal: controller.signal });
   root.innerHTML = shellMarkup(state);
+  promptRerunProgress = createPromptRerunProgress(root.querySelector("#prompt-rerun-progress-host"), {
+    api, context: () => ({ collectionId: state.currentCollectionId }),
+    changed: scheduleActivityRefresh, notify: toast, signal: controller.signal,
+  });
   disposeThumbnails = installThumbnails(document.querySelector("#gallery-viewport"));
   document.querySelector("#photo-viewer")?.addEventListener("close", () => {
     if (!document.querySelector("#photo-viewer")?.open) resetPhotoViewerState();
@@ -2742,6 +2833,9 @@ async function enterApplication() {
   document
     .querySelector("#source-picker-dialog")
     ?.addEventListener("close", handleSourcePickerDialogClose);
+  document.querySelector("#source-picker-dialog")?.addEventListener("cancel", (event) => {
+    if (state.sourcePickerDraft?.savingRanks) event.preventDefault();
+  });
   document
     .querySelector("#collection-dialog")
     ?.addEventListener("close", handleCollectionDialogClose);
@@ -2859,26 +2953,7 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
 }
 
 function normalizedCheckpointTiers(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const result = {};
-  const tierIds = new Set(CHECKPOINT_TIER_DEFINITIONS.map((tier) => tier.id));
-  for (const [key, selectors] of Object.entries(value)) {
-    if (!key || !selectors || typeof selectors !== "object" || Array.isArray(selectors)) continue;
-    const normalizedSelectors = {};
-    for (const [parameterId, tiers] of Object.entries(selectors)) {
-      if (!parameterId || !tiers || typeof tiers !== "object" || Array.isArray(tiers)) continue;
-      normalizedSelectors[parameterId] = Object.fromEntries(
-        Object.entries(tiers)
-          .filter(([tierId, choices]) => tierIds.has(tierId) && Array.isArray(choices))
-          .map(([tierId, choices]) => [
-            tierId,
-            [...new Set(choices.filter((choice) => typeof choice === "string" && choice))],
-          ]),
-      );
-    }
-    if (Object.keys(normalizedSelectors).length) result[key] = normalizedSelectors;
-  }
-  return result;
+  return normalizeCheckpointRanks(value);
 }
 
 async function loadStartupServices(signal = applicationStartupController?.signal) {
@@ -3094,6 +3169,7 @@ async function navigateCollectionView(collectionId) {
     if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
   }
   setGalleryRoute(collectionId);
+  promptRerunProgress?.navigate();
   state.generations = [];
   state.loadingMore = false;
   state.nextCursor = null;
@@ -4234,6 +4310,7 @@ function syncGenerationButtons() {
 function syncGenerationSubmissionState() {
   syncSubmissionSnapshot();
   renderGenerationActivity();
+  gallerySelection?.sync();
   const panel = document.querySelector("#generation-panel");
   if (!panel) return;
   const contract = sourceInterface(state.activeSource);
@@ -5279,6 +5356,7 @@ function renderGallery() {
       promptGroups: state.galleryLayout === "classic" ? null : galleryGroups?.options(),
       galleryLayout: state.galleryLayout,
       hideThumbnails: currentViewHidesThumbnails(),
+      checkpointTiers: state.checkpointTiers,
     }));
   });
   applyCollectionActivity({ counts: false });
@@ -5555,7 +5633,7 @@ async function toggleCollectionPreviews(collectionId) {
 function upsertGalleryCard(generation) {
   const card = document.querySelector(`#gallery [data-gallery-card="generation"][data-generation-id="${CSS.escape(generation.id)}"]`);
   if (!card) { renderGallery(); return; }
-  galleryHover.preserveDuring(() => reconcileGalleryCard(card, galleryCardMarkup(generation, { hideThumbnail: currentViewHidesThumbnails() })));
+  galleryHover.preserveDuring(() => reconcileGalleryCard(card, galleryCardMarkup(generation, { hideThumbnail: currentViewHidesThumbnails(), checkpointTiers: state.checkpointTiers })));
   gallerySelection?.sync();
 }
 
@@ -5919,7 +5997,7 @@ function renderPhotoViewer() {
   const displayed = photoViewerDisplayed
     ? { ...(photoViewerGeneration(photoViewerDisplayed.id) || photoViewerDisplayed), display_artifact: photoViewerDisplayed.display_artifact }
     : { ...generation, display_artifact: null };
-  const dock = { ...photoViewerGenerationDock(), loading: photoViewerLoading || photoViewerPaging, loadError: photoViewerLoadError };
+  const dock = { ...photoViewerGenerationDock(), checkpointTiers: state.checkpointTiers, checkpointRankChange, loading: photoViewerLoading || photoViewerPaging, loadError: photoViewerLoadError };
   const host = dialog.querySelector(".photo-viewer-host");
   reconcilePhotoViewer(host, photoViewerMarkup(displayed, photoViewerNavigation(generation.id), state.photoViewerMode, state.photoViewerPlaybackMode, dock), photoViewerImage);
   const activityHost = host.querySelector(".photo-viewer-activity-host");
@@ -6251,6 +6329,10 @@ function notePhotoViewerActivity() {
   dialog.classList.add("controls-visible");
   if (state.photoViewerTimer) window.clearTimeout(state.photoViewerTimer);
   state.photoViewerTimer = window.setTimeout(() => {
+    if (checkpointRankChange?.status === "saving" || dialog.querySelector(".photo-viewer-checkpoint-block:focus-within")) {
+      notePhotoViewerActivity();
+      return;
+    }
     dialog.classList.remove("controls-visible");
     state.photoViewerTimer = null;
   }, 2000);
@@ -6508,6 +6590,11 @@ function startLiveUpdates({ paused = false } = {}) {
   state.liveUpdatesPaused = paused;
   state.pendingLiveUpdates = [];
   const source = new EventSource(`/api/events?last_event_id=${state.lastEventId}`);
+  source.addEventListener("prompt_rerun.updated", () => {
+    if (state.eventSource !== source) return;
+    void promptRerunProgress?.refresh();
+    scheduleActivityRefresh();
+  });
   for (const type of ["preferences.updated", "auto_generation.updated"]) {
     source.addEventListener(type, () => void refreshUserState());
   }
@@ -6543,7 +6630,7 @@ function startLiveUpdates({ paused = false } = {}) {
     renderGenerationActivity();
     syncServerControls();
   };
-  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); submissionRecovery?.start({ immediate: true }); };
+  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); void promptRerunProgress?.refresh(); submissionRecovery?.start({ immediate: true }); };
   state.eventSource = source;
   startGenerationEtaTimer();
 }
@@ -6968,7 +7055,9 @@ async function applySharedSettings(preferences) {
   const changed = !settingsEqual(captureSharedSettings(), preferences);
   state.galleryScale = preferences.gallery_scale;
   updateGalleryLayout(saved.gallery_layout);
+  const ranksChanged = !settingsEqual(state.checkpointTiers, normalizedCheckpointTiers(preferences.checkpoint_tiers));
   state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
+  if (ranksChanged) { checkpointTiersRevision += 1; renderGallery(); renderPhotoViewer(); }
   state.parameterStateBySource = normalizeStoredParameterState(JSON.stringify(saved.sources));
   state.activeSourceKey = saved.active_source;
   state.generationQuantity = saved.quantity;
@@ -7221,6 +7310,7 @@ function validateImageParameters(contract, parameters) {
 function normalizePanelSettings(value) {
   if (!value?.settings) return value;
   const normalized = structuredClone(value);
+  normalized.checkpoint_tiers = normalizeCheckpointRanks(normalized.checkpoint_tiers);
   delete normalized.settings.runtime_id;
   if (normalized.settings.prompt_generation) delete normalized.settings.prompt_generation.runtime_id;
   normalized.settings.gallery_layout = normalized.settings.gallery_layout === "classic" ? "classic" : "grouped";

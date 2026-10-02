@@ -1,10 +1,13 @@
-from typing import Annotated
+from typing import Annotated, Any
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
+from ..blocking import run_blocking
 from ..dependencies import (
     AuthContext,
     database_handler,
@@ -14,6 +17,7 @@ from ..dependencies import (
     require_ready_user,
 )
 from ..errors import AppError
+from ..models import PromptRerunRun
 from ..schemas import (
     GalleryDeleteResult,
     GallerySelection,
@@ -32,6 +36,7 @@ from ..schemas import (
 from ..services import prompt_rerun
 from ..services.gallery import GalleryService
 from ..services.prompt_groups import changes_for_group, lookup_groups, member_page
+from ..services.user_state import lock_user_state, notify_user
 from .generations import require_generation_protocol
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
@@ -175,13 +180,80 @@ def prompt_rerun_preview(
 async def create_prompt_rerun(
     payload: PromptRerunCreate,
     request: Request,
+    response: Response,
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> PromptRerunResult:
     key = require_generation_protocol(request)
     container = get_container(request)
-    return await prompt_rerun.accept(
-        container.generations, container.collections, context.user.id, payload, key
+    result = await prompt_rerun.accept(
+        container.generations,
+        container.collections,
+        context.user.id,
+        payload,
+        key,
+        container.prompt_generation,
     )
+    if result.run:
+        response.status_code = 202
+    return result
+
+
+@router.get("/prompt-rerun")
+@database_handler
+def list_prompt_reruns(
+    collection_id: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+) -> list[dict[str, Any]]:
+    get_container(request).collections.get_owned(session, context.user.id, collection_id)
+    return [
+        prompt_rerun.run_summary(session, run)
+        for run in session.scalars(
+            select(PromptRerunRun)
+            .where(
+                PromptRerunRun.owner_id == context.user.id,
+                PromptRerunRun.collection_id == collection_id,
+            )
+            .order_by(PromptRerunRun.created_at)
+        )
+    ]
+
+
+@router.get("/prompt-rerun/{identity}")
+@database_handler
+def get_prompt_rerun(
+    identity: UUID,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+) -> dict[str, Any]:
+    return prompt_rerun.run_summary(
+        session, prompt_rerun.require_run(session, context.user.id, str(identity))
+    )
+
+
+@router.post("/prompt-rerun/{identity}/stop")
+async def stop_prompt_rerun(
+    identity: UUID,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> dict[str, Any]:
+    container = get_container(request)
+
+    def transaction() -> dict[str, Any]:
+        with container.db.session_factory() as session:
+            lock_user_state(session)
+            run = prompt_rerun.require_run(session, context.user.id, str(identity))
+            if prompt_rerun.run_summary(session, run)["status"] == "processing":
+                prompt_rerun.stop_in_session(session, run, "Stopped before image acceptance.")
+            session.flush()
+            result = prompt_rerun.run_summary(session, run)
+            session.commit()
+            return result
+
+    result = await run_blocking(transaction)
+    await notify_user(container.broker, context.user.id, "prompt_rerun.updated")
+    return result
 
 
 @router.post("/delete", response_model=GalleryDeleteResult)

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
+from ..domain.checkpoint_identity import checkpoint_identity_v1
 from ..domain.publication import publication_kind, source_key_for
 from ..domain.source_metadata import TIMELINE_MONTH_PATTERN, recognize_source_metadata
 from ..models import ServiceHealth, WorkflowCatalogHealth
@@ -229,6 +230,8 @@ def _summary(profile: Any, health: ServiceHealth | WorkflowCatalogHealth | None)
         model_selectors=_model_selectors(
             profile.resolved_contract_json,
             source_metadata.generation_source,
+            profile.source_api_json,
+            str(profile.source_key),
         ),
         profile_id=profile.id,
         workflow_id=profile.workflow_id,
@@ -319,11 +322,16 @@ def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
 def _model_selectors(
     contract: Any,
     generation_source: Any,
+    api_document: Any = None,
+    source_key: str = "",
 ) -> list[ModelSelector]:
     """Project authoritative public model choices with optional inert release metadata."""
 
     if not isinstance(contract, Mapping):
         return []
+    declarations = {
+        item.get("id"): item for item in contract.get("inputs", []) if isinstance(item, Mapping)
+    }
     timeline_references, release_months = _timeline_model_variant_index(generation_source)
     selectors: list[ModelSelector] = []
     for raw_input in _public_interface(contract).get("inputs", []):
@@ -350,6 +358,9 @@ def _model_selectors(
                 ModelSelectorChoice(
                     value=value,
                     label=choice_label,
+                    checkpoint_id=checkpoint_identity_v1(
+                        declarations.get(parameter_id), value, api_document, source_key
+                    ),
                     released_month=release_months.get((parameter_id, value)),
                 )
             )

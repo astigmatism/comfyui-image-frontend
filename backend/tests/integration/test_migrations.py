@@ -12,10 +12,13 @@ from app.models import (
     CollectionFavorite,
     Favorite,
     Generation,
+    GenerationPreparation,
+    GenerationRun,
     GenerationStatus,
     GenerationTimingAuditState,
     GenerationTimingProfile,
     PromptAssistantRun,
+    PromptGenerationRun,
     User,
     UserPreference,
     WorkflowProfile,
@@ -25,7 +28,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "a4e1c7b9d206"
+HEAD_REVISION = "c73e2a9140bd"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -40,6 +43,150 @@ def _config(database_path: Path) -> Config:
     config.set_main_option("script_location", str(root / "backend" / "alembic"))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
     return config
+
+
+def test_checkpoint_ranks_reset_once_and_historical_identity_is_backfilled(tmp_path):
+    import json
+
+    from app.domain.checkpoint_identity import checkpoint_identity_v1
+
+    path = tmp_path / "checkpoint-ranks.db"
+    config = _config(path)
+    command.upgrade(config, LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    _insert_populated_legacy_rows(engine)
+    engine.dispose()
+    command.upgrade(config, "b28a6f1d903e")
+    engine = create_engine(f"sqlite:///{path}")
+    declaration = {
+        "id": "checkpoint",
+        "type": "choice",
+        "semantic_role": "model",
+        "bindings": [{"node_id": "42", "input": "value"}],
+    }
+    graph = {
+        "42": {
+            "inputs": {
+                "value": "alias",
+                "options_json": json.dumps(
+                    [
+                        {"value": "alias", "binding": "models/private.safetensors"},
+                    ]
+                ),
+            }
+        }
+    }
+    with engine.begin() as connection:
+        metadata = MetaData()
+        metadata.reflect(bind=connection, only=["generations", "user_preferences"])
+        connection.execute(
+            metadata.tables["generations"]
+            .update()
+            .values(
+                resolved_contract_json={"inputs": [declaration]},
+                effective_controls_json={"checkpoint": "alias"},
+                compiled_graph_json=graph,
+            )
+        )
+        connection.execute(
+            metadata.tables["user_preferences"]
+            .update()
+            .values(
+                checkpoint_tiers_json={"old-workflow": {"checkpoint": {"top_picks": ["alias"]}}},
+                revision=8,
+            )
+        )
+    engine.dispose()
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    expected_id = checkpoint_identity_v1(declaration, "alias", graph, "another-workflow")
+    with Session(engine) as session:
+        generation = session.get(Generation, LEGACY_GENERATION_ID)
+        assert generation.checkpoint_id == expected_id
+        assert generation.compiled_graph_json == graph
+        assert session.get(Artifact, LEGACY_ARTIFACT_ID) is not None
+        preference = session.get(UserPreference, LEGACY_USER_ID)
+        assert preference.checkpoint_tiers_json == {}
+        assert preference.revision == 9
+        preference.checkpoint_tiers_json = {"A": [expected_id]}
+        session.commit()
+    command.upgrade(config, "head")
+    with Session(engine) as session:
+        assert session.get(UserPreference, LEGACY_USER_ID).checkpoint_tiers_json == {
+            "A": [expected_id],
+        }
+        assert session.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
+def test_retained_prompt_migration_preserves_existing_preparations(tmp_path):
+    path = tmp_path / "retained-prompt-upgrade.db"
+    config = _config(path)
+    command.upgrade(config, LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    _insert_populated_legacy_rows(engine)
+    engine.dispose()
+    command.upgrade(config, "a4e1c7b9d206")
+    engine = create_engine(f"sqlite:///{path}")
+    original = {
+        "generation": {"parameters": {"seed": "123"}},
+        "prompt_generation": {"source_key": "text"},
+    }
+    with Session(engine) as session:
+        text_run = PromptGenerationRun(
+            owner_id=LEGACY_USER_ID,
+            profile_id=LEGACY_PROFILE_ID,
+            instance_id="text",
+            queue_seq=1,
+            status="succeeded",
+            prompt="saved text",
+            request_json={},
+            contract_json={},
+            compiled_graph_json={},
+            compiled_graph_sha256="a" * 64,
+        )
+        activity = GenerationRun(owner_id=LEGACY_USER_ID, total_count=1)
+        session.add_all([text_run, activity])
+        session.flush()
+        text_id = text_run.id
+        metadata = MetaData()
+        metadata.reflect(bind=session.connection(), only=["generation_preparations"])
+        session.execute(
+            metadata.tables["generation_preparations"].insert(),
+            {
+                "id": "legacy-preparation",
+                "group_id": "legacy-group",
+                "owner_id": LEGACY_USER_ID,
+                "profile_id": LEGACY_PROFILE_ID,
+                "prompt_run_id": text_id,
+                "activity_run_id": activity.id,
+                "position": 0,
+                "status": "ready",
+                "prompt": "saved text",
+                "request_json": original,
+                "created_at": datetime.now(UTC),
+            },
+        )
+        session.commit()
+    engine.dispose()
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with Session(engine) as session:
+        prepared = session.get(GenerationPreparation, "legacy-preparation")
+        assert prepared.prompt_run_id == text_id
+        assert prepared.rerun_id is None
+        assert prepared.prompt == "saved text"
+        assert prepared.request_json == original
+        assert session.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+    command.downgrade(config, "a4e1c7b9d206")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT prompt FROM generation_preparations")).scalar_one()
+            == "saved text"
+        )
+    engine.dispose()
 
 
 def _insert_populated_legacy_rows(engine: Engine) -> None:

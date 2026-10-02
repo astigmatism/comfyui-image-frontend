@@ -186,7 +186,17 @@ def test_source_summary_and_detail_project_authoritative_checkpoint_selector(
         assert len(summary["model_selectors"]) == 1
         selector = summary["model_selectors"][0]
 
-        assert selector == {
+        identities = [choice["checkpoint_id"] for choice in selector["choices"]]
+        assert len(set(identities)) == 5
+        assert all(identity.startswith("cp1_") and len(identity) == 68 for identity in identities)
+        public_selector = {
+            **selector,
+            "choices": [
+                {key: value for key, value in choice.items() if key != "checkpoint_id"}
+                for choice in selector["choices"]
+            ],
+        }
+        assert public_selector == {
             "parameter_id": "checkpoint",
             "label": "Checkpoint",
             "description": (
@@ -293,6 +303,7 @@ def test_dependency_unavailable_catalog_keeps_safe_checkpoint_selector(
         assert source["readiness"] == "dependency_missing"
         assert source["model_selectors"][0]["parameter_id"] == "checkpoint"
         assert source["model_selectors"][0]["choices"][1] == {
+            "checkpoint_id": None,
             "value": "tyjr_mxfp8",
             "label": "Moody Krea 2 TYJR MXFP8",
             "released_month": "2026-07",
@@ -1658,8 +1669,27 @@ def test_generation_list_projects_checkpoint_label_after_refresh(
         # Detail endpoint (Python helper path) — parity baseline.
         detail = client.get(f"/api/generations/{generation['id']}").json()
         assert detail["checkpoint_label"] == "Moody Krea 2 TYJR MXFP8"
+        checkpoint_id = next(
+            choice["checkpoint_id"]
+            for choice in source["model_selectors"][0]["choices"]
+            if choice["value"] == "tyjr_mxfp8"
+        )
+        assert detail["checkpoint_id"] == checkpoint_id
 
         # List endpoint (SQL projection path) — the previously broken path.
         items = client.get("/api/generations?limit=60").json()["items"]
         listed = next(item for item in items if item["id"] == generation["id"])
         assert listed["checkpoint_label"] == "Moody Krea 2 TYJR MXFP8"
+        assert listed["checkpoint_id"] == checkpoint_id
+        preferences = client.get("/api/preferences").json()
+        saved = client.put(
+            "/api/preferences",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={
+                "expected_revision": preferences["revision"],
+                "checkpoint_tiers": {"A": [checkpoint_id]},
+            },
+        )
+        assert saved.status_code == 200
+        # Ranking the model leaves the historical image and its metadata intact.
+        assert client.get(f"/api/generations/{generation['id']}").json() == detail

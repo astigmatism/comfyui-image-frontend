@@ -186,7 +186,9 @@ export function sourceModelSelectors(source) {
           description: input.description,
           default: input.default,
           choices: (Array.isArray(input.choices) ? input.choices : []).map((choice) => {
-            const releasedMonth = projectedChoices.get(choice?.value)?.released_month;
+            const projectedChoice = projectedChoices.get(choice?.value);
+            if (projectedChoice?.checkpoint_id) choice = { ...choice, checkpoint_id: projectedChoice.checkpoint_id };
+            const releasedMonth = projectedChoice?.released_month;
             return typeof releasedMonth === "string"
               ? { ...choice, released_month: releasedMonth }
               : choice;
@@ -238,40 +240,67 @@ export function sourceModelSelectors(source) {
 }
 
 export const CHECKPOINT_TIER_DEFINITIONS = Object.freeze([
-  Object.freeze({ id: "top_picks", label: "Top picks" }),
-  Object.freeze({ id: "preferred", label: "Preferred" }),
-  Object.freeze({ id: "occasional", label: "Occasional" }),
-  Object.freeze({ id: "unsorted", label: "Unsorted" }),
+  Object.freeze({ id: "A", label: "A" }),
+  Object.freeze({ id: "B", label: "B" }),
+  Object.freeze({ id: "C", label: "C" }),
+  Object.freeze({ id: "D", label: "D" }),
+  Object.freeze({ id: "F", label: "F" }),
 ]);
 
-export function normalizeCheckpointTierLayout(selector, value = {}) {
-  const choices = Array.isArray(selector?.choices) ? selector.choices : [];
-  const allowed = new Set(
-    choices
-      .map((choice) => (typeof choice?.value === "string" ? choice.value : ""))
-      .filter(Boolean),
-  );
+export function normalizeCheckpointRanks(value = {}, selectors = []) {
   const seen = new Set();
-  const result = Object.fromEntries(
-    CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => {
-      const requested = Array.isArray(value?.[id]) ? value[id] : [];
-      const tierValues = requested.filter((choiceValue) => {
-        if (
-          typeof choiceValue !== "string" ||
-          !allowed.has(choiceValue) ||
-          seen.has(choiceValue)
-        ) {
-          return false;
-        }
-        seen.add(choiceValue);
-        return true;
-      });
-      return [id, tierValues];
+  const result = Object.fromEntries(CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => [id,
+    (Array.isArray(value?.[id]) ? value[id] : []).filter((identity) => {
+      if (typeof identity !== "string" || !/^cp1_[0-9a-f]{64}$/.test(identity) || seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
     }),
-  );
+  ]));
+  for (const selector of selectors) for (const choice of selector?.choices || []) {
+    const identity = choice.checkpoint_id;
+    if (typeof identity === "string" && /^cp1_[0-9a-f]{64}$/.test(identity) && !seen.has(identity)) {
+      result.C.push(identity);
+      seen.add(identity);
+    }
+  }
+  return result;
+}
+
+export function checkpointRank(identity, ranks = {}) {
+  return CHECKPOINT_TIER_DEFINITIONS.find(({ id }) => Array.isArray(ranks?.[id]) && ranks[id].includes(identity))?.id || "C";
+}
+
+export function moveCheckpointRank(ranks, identity, destination, before = null) {
+  const result = normalizeCheckpointRanks(ranks);
+  if (before === identity) return result;
+  if (!/^cp1_[0-9a-f]{64}$/.test(identity || "") || !Object.hasOwn(result, destination)) return result;
+  for (const values of Object.values(result)) {
+    const index = values.indexOf(identity);
+    if (index >= 0) values.splice(index, 1);
+  }
+  const values = result[destination];
+  const index = before ? values.indexOf(before) : -1;
+  values.splice(index < 0 ? values.length : index, 0, identity);
+  return result;
+}
+
+export function normalizeCheckpointTierLayout(selector, ranks = {}) {
+  const choices = Array.isArray(selector?.choices) ? selector.choices : [];
+  const seen = new Set();
+  const result = Object.fromEntries(CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => {
+    const values = [];
+    for (const identity of Array.isArray(ranks?.[id]) ? ranks[id] : []) {
+      for (const choice of choices) {
+        if (choice.checkpoint_id !== identity || seen.has(choice.value)) continue;
+        values.push(choice.value);
+        seen.add(choice.value);
+      }
+    }
+    return [id, values];
+  }));
   for (const choice of choices) {
     if (!choice?.value || seen.has(choice.value)) continue;
-    result.unsorted.push(choice.value);
+    result.C.push(choice.value);
     seen.add(choice.value);
   }
   return result;

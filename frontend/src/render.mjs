@@ -4,6 +4,7 @@ import { classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode,
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
+  checkpointRank,
   DEFAULT_OPEN_CONTROL_SECTION_KINDS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
@@ -118,6 +119,7 @@ export function shellMarkup(state) {
       <button class="panel-scrim" data-action="close-panel" aria-label="Close generation controls"></button>
       <main class="gallery-viewport" id="gallery-viewport">
         <div id="service-banner"></div>
+        <div id="prompt-rerun-progress-host" hidden></div>
         <div id="gallery" class="gallery-grid" aria-live="polite"></div>
         <div id="gallery-sentinel" class="gallery-sentinel"><button class="button secondary" data-action="load-more">Load more</button></div>
       </main>
@@ -368,7 +370,7 @@ export function sourcePickerDialogMarkup(
     : "—";
   const layout = normalizeCheckpointTierLayout(
     selector,
-    checkpointTiers?.[activeSourceKey]?.[selector?.parameter_id] || {},
+    checkpointTiers,
   );
   const choiceByValue = new Map(choices.map((choice) => [choice.value, choice]));
   const query = String(searchQuery || "").trim().toLocaleLowerCase();
@@ -415,7 +417,7 @@ export function sourcePickerDialogMarkup(
         </label>
       </div>
       <div class="checkpoint-picker-heading">
-        <div><span><h3>Checkpoints</h3><small data-source-selection-count>${escapeHtml(`${selectedCount} of ${totalCount} selected`)}</small></span><p>Drag checkpoints between tiers to rank them.</p></div>
+        <div><span><h3>Checkpoints</h3><small data-source-selection-count>${escapeHtml(`${selectedCount} of ${totalCount} selected`)}</small></span><p>Drag checkpoints between tiers. New checkpoints start at C.</p></div>
         <div class="checkpoint-picker-tools">
           <label class="checkpoint-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input type="search" data-checkpoint-search placeholder="Search checkpoints" value="${escapeHtml(searchQuery)}" aria-label="Search checkpoints" /></label>
           <button type="button" class="button low" data-action="select-all-checkpoints" ${!totalCount || selectedCount === totalCount ? "disabled" : ""}>Select all</button>
@@ -467,7 +469,7 @@ function checkpointTierMarkup({
     : "Drop checkpoints here";
   return `<section class="checkpoint-tier checkpoint-tier-${escapeHtml(tier.id)}" data-checkpoint-tier="${escapeHtml(tier.id)}" data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" aria-label="${escapeHtml(tier.label)} tier">
     <div class="checkpoint-tier-rail">
-      <strong>${escapeHtml(tier.label)}</strong>
+      <strong><span>${escapeHtml(tier.label)}</span></strong>
       <label class="checkpoint-tier-toggle" title="${escapeHtml(`${selectionAction} every checkpoint in ${tier.label}`)}">
         <input type="checkbox" data-checkpoint-tier-toggle data-checkpoint-tier-id="${escapeHtml(tier.id)}" aria-label="${escapeHtml(`${selectionAction} every checkpoint in ${tier.label}`)}" ${allSelected ? "checked" : ""} ${indeterminate ? 'data-indeterminate="true"' : ""} ${choices.length ? "" : "disabled"} />
         <span aria-hidden="true"></span><small>${selectedCount}/${choices.length}</small>
@@ -488,9 +490,9 @@ function checkpointCardMarkup({
   const presentation = checkpointChoicePresentation(choice);
   const dragTitle = reorderDisabled
     ? "Clear search to reorder checkpoints"
-    : `Drag ${choice.label} to reorder`;
+    : `Move ${choice.label}: drag, or use Alt+Up/Down to change tier and Alt+Left/Right to reorder`;
   return `<article class="checkpoint-card${selected ? " is-selected" : ""}" data-checkpoint-card data-checkpoint-value="${escapeHtml(choice.value)}" role="listitem">
-    <button type="button" class="checkpoint-drag-handle" data-checkpoint-drag-handle data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" data-checkpoint-tier-id="${escapeHtml(tierId)}" data-checkpoint-value="${escapeHtml(choice.value)}" draggable="${reorderDisabled ? "false" : "true"}" aria-label="${escapeHtml(dragTitle)}" title="${escapeHtml(dragTitle)}" ${reorderDisabled ? "disabled" : ""}><span aria-hidden="true"></span></button>
+    <button type="button" class="checkpoint-drag-handle" data-checkpoint-drag-handle aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight" data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" data-checkpoint-tier-id="${escapeHtml(tierId)}" data-checkpoint-value="${escapeHtml(choice.value)}" draggable="${reorderDisabled ? "false" : "true"}" aria-label="${escapeHtml(dragTitle)}" title="${escapeHtml(dragTitle)}" ${reorderDisabled ? "disabled" : ""}><span aria-hidden="true"></span></button>
     <label class="checkpoint-choice-body"><input type="checkbox" data-source-model-choice data-source-model-source-key="${escapeHtml(activeSourceKey)}" data-source-model-parameter-id="${escapeHtml(parameterId)}" data-source-model-value="${escapeHtml(choice.value)}" aria-label="${escapeHtml(choice.label)}" ${selected ? "checked" : ""} /><span aria-hidden="true"></span><strong title="${escapeHtml(choice.label)}">${escapeHtml(presentation.label)}</strong>${presentation.badge ? `<small>${escapeHtml(presentation.badge)}</small>` : ""}</label>
   </article>`;
 }
@@ -1432,9 +1434,10 @@ export function galleryMarkup(
     promptGroups = null,
     galleryLayout = "grouped",
     hideThumbnails = false,
+    checkpointTiers = {},
   } = {},
 ) {
-  const cardMarkup = (generation) => galleryCardMarkup(generation, { hideThumbnail: hideThumbnails });
+  const cardMarkup = (generation) => galleryCardMarkup(generation, { hideThumbnail: hideThumbnails, checkpointTiers });
   const tiles = collections
     .filter((collection) => (collection.parent_id ?? null) === currentCollectionId)
     .map((collection) => collectionTileMarkup(collection))
@@ -1651,7 +1654,7 @@ export function collectionThumbnailsHidden(collections, collectionId) {
   return collections.find((collection) => collection?.id === collectionId)?.previews_enabled === false;
 }
 
-export function galleryCardMarkup(generation, { hideThumbnail = false } = {}) {
+export function galleryCardMarkup(generation, { hideThumbnail = false, checkpointTiers = {} } = {}) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
   const thumbnailHidden = Boolean(hasImage && hideThumbnail);
@@ -1671,7 +1674,7 @@ export function galleryCardMarkup(generation, { hideThumbnail = false } = {}) {
   const count = imageCount > 1 ? `<div class="batch-count${generation.status === "succeeded" ? " card-hover-reveal" : ""}" aria-label="${imageCount} images">${imageCount}</div>` : "";
   const checkpointName = generationCheckpointLabel(generation);
   const checkpoint = checkpointName
-    ? `<span class="card-checkpoint card-hover-reveal" title="${escapeHtml(checkpointName)}">${escapeHtml(checkpointName)}</span>`
+    ? `<span class="card-checkpoint card-hover-reveal" title="${escapeHtml(checkpointName)}">${generation.checkpoint_id ? checkpointRankMarkup(checkpointRank(generation.checkpoint_id, checkpointTiers)) : ""}<span class="checkpoint-name">${escapeHtml(checkpointName)}</span></span>`
     : "";
   const width = positiveNumber(generation.expected_width) || positiveNumber(artifact?.width);
   const height = positiveNumber(generation.expected_height) || positiveNumber(artifact?.height);
@@ -1951,20 +1954,41 @@ export function formatNextInCountdown(remainingSeconds) {
   return `Next in ${formatGenerationDuration(Math.ceil(remainingSeconds))}`;
 }
 
+export function checkpointRankMarkup(grade) {
+  const tier = CHECKPOINT_TIER_DEFINITIONS.find((tier) => tier.id === grade) || CHECKPOINT_TIER_DEFINITIONS[2];
+  return `<span class="checkpoint-rank checkpoint-tier-${tier.id}" aria-label="Tier ${tier.label}"><span>${tier.label}</span></span>`;
+}
+
+function photoCheckpointMarkup(generation, ranks, change) {
+  const name = generationCheckpointLabel(generation);
+  if (!name) return "";
+  const identity = generation.checkpoint_id;
+  const grade = checkpointRank(identity, ranks);
+  const index = CHECKPOINT_TIER_DEFINITIONS.findIndex((tier) => tier.id === grade);
+  const busy = change?.status === "saving";
+  const notice = change?.identity === identity ? change : null;
+  const arrows = identity ? `<span class="checkpoint-rank-actions" role="group" aria-label="Checkpoint rank">${[-1, 1].map((step) => {
+    const next = CHECKPOINT_TIER_DEFINITIONS[index + step]?.id;
+    const label = next ? `${step < 0 ? "Raise" : "Lower"} checkpoint from ${grade} to ${next}` : `Already at ${step < 0 ? "highest" : "lowest"} rank ${grade}`;
+    return `<button type="button" class="checkpoint-rank-arrow" data-action="rank-checkpoint" data-checkpoint-id="${escapeHtml(identity)}" data-rank-step="${step}" aria-label="${label}" title="${label}" ${!next || busy ? "disabled" : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="${step < 0 ? "m5 9 5-5 5 5M10 4v12" : "m5 11 5 5 5-5M10 4v12"}" /></svg></button>`;
+  }).join("")}</span>` : "";
+  const feedback = notice ? notice.status === "error"
+    ? `${escapeHtml(`${notice.from} → ${notice.to} wasn’t saved. Still ${grade}.`)} <button type="button" data-action="retry-checkpoint-rank" data-checkpoint-id="${escapeHtml(identity)}" title="${escapeHtml(notice.message || "Retry saving rank")}">Retry</button>`
+    : escapeHtml(`${notice.from} → ${notice.to} · ${notice.status === "saving" ? "Saving…" : "Saved"}`) : "";
+  return `<div class="photo-viewer-checkpoint-block"><div class="photo-viewer-checkpoint checkpoint-tier-${grade}" title="${escapeHtml(name)}">${identity ? checkpointRankMarkup(grade) : ""}<span class="checkpoint-name">${escapeHtml(name)}</span>${arrows}</div><div class="checkpoint-rank-feedback" role="${notice?.status === "error" ? "alert" : "status"}" ${notice?.status === "error" ? 'data-rank-error="true"' : ""}>${feedback}</div></div>`;
+}
+
 export function photoViewerMarkup(
   generation,
   navigation = {},
   requestedViewMode = "fill",
   requestedPlaybackMode = "hold",
-  { activity = "", loading = false, loadError = null } = {},
+  { activity = "", loading = false, loadError = null, checkpointTiers = {}, checkpointRankChange = null } = {},
 ) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
   const runtimeName = generationComfyuiInstanceName(generation);
-  const checkpointName = generationCheckpointLabel(generation);
-  const checkpointLabel = checkpointName
-    ? `<span class="photo-viewer-checkpoint" title="${escapeHtml(checkpointName)}">${escapeHtml(checkpointName)}</span>`
-    : "";
+  const checkpointLabel = photoCheckpointMarkup(generation, checkpointTiers, checkpointRankChange);
   const hasImage = artifact?.kind === "image";
   const viewMode = ["actual", "fit"].includes(requestedViewMode) ? requestedViewMode : "fill";
   const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";

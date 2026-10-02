@@ -507,6 +507,7 @@ class Generation(Base):
     )
     workflow_id: Mapped[str] = mapped_column(String(255), nullable=False)
     workflow_display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    checkpoint_id: Mapped[str | None] = mapped_column(String(68))
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
     contract_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
     adapter_version: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -812,11 +813,25 @@ class PromptGenerationRun(Base):
     )
 
 
+class PromptRerunRun(Base):
+    __tablename__ = "prompt_rerun_runs"
+    __table_args__ = (Index("ix_rerun_owner_collection", "owner_id", "collection_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
+    collection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("collections.id", ondelete="SET NULL")
+    )
+    stopped: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GenerationPreparation(Base):
     __tablename__ = "generation_preparations"
     __table_args__ = (
         Index("ix_preparation_owner_group", "owner_id", "group_id"),
         Index("ix_preparation_status", "status"),
+        Index("ix_preparation_rerun_position", "rerun_id", "position"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
@@ -825,8 +840,11 @@ class GenerationPreparation(Base):
     profile_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workflow_profiles.id", ondelete="RESTRICT")
     )
-    prompt_run_id: Mapped[str] = mapped_column(
+    prompt_run_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("prompt_generation_runs.id", ondelete="CASCADE")
+    )
+    rerun_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("prompt_rerun_runs.id", ondelete="CASCADE")
     )
     auto_cycle_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("auto_generation_cycles.id", ondelete="SET NULL")

@@ -1,18 +1,9 @@
-"""Prompt Re-run: queue the exact retained prompts of a selection with new settings.
-
-The selected generations contribute only their accepted ``final_prompt`` (and,
-when requested, their resolution and seed). Creative Direction, the Prompt
-Assistant and the prompt generator never participate: every item is an
-ordinary manual generation whose positive prompt is the historical text.
-
-One SQLite transaction creates the destination folder, accepts every planned
-item and records an idempotency receipt, so a retried request after a lost
-reply never creates a second folder or duplicate jobs.
-"""
+"""Rerun retained prompts verbatim or durably refine each before image acceptance."""
 
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,24 +13,39 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..blocking import run_blocking
+from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
-from ..models import Generation, GenerationSubmission, User, UserState, WorkflowProfile
+from ..models import (
+    Generation,
+    GenerationPreparation,
+    GenerationRun,
+    GenerationSubmission,
+    PromptRerunRun,
+    User,
+    UserState,
+    WorkflowProfile,
+    utcnow,
+)
 from ..schemas import (
     PROMPT_RERUN_MAX_ITEMS,
     CollectionCreate,
     GallerySelection,
     GenerationCreate,
+    PromptComposeRequest,
     PromptRerunCreate,
     PromptRerunPreview,
     PromptRerunPromptPreview,
     PromptRerunResult,
+    RetainedPromptPreparationItem,
 )
+from .generation_activity import begin_run
 from .submissions import accept_items, project_items, request_digest
 from .user_state import lock_user_state, require_manual_generation
 
 if TYPE_CHECKING:
     from .collections import CollectionService
     from .generations import GenerationService
+    from .prompt_generation import PromptGenerationService
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +371,127 @@ def project_receipt(
         prompt_count=int(meta.get("prompt_count", 0)),
         planned_count=int(meta.get("planned_count", 0)),
         resolution_fallback_count=int(meta.get("resolution_fallback_count", 0)),
+        run=run_summary(session, require_run(session, receipt.owner_id, meta["run_id"]))
+        if meta.get("run_id")
+        else None,
     )
+
+
+def require_run(session: Session, owner_id: str, identity: str) -> PromptRerunRun:
+    run = session.get(PromptRerunRun, identity)
+    if run is None or run.owner_id != owner_id:
+        raise AppError("not_found", "The prompt rerun was not found.", status_code=404)
+    return run
+
+
+def run_summary(session: Session, run: PromptRerunRun) -> dict[str, Any]:
+    rows = session.scalars(
+        select(GenerationPreparation)
+        .where(
+            GenerationPreparation.rerun_id == run.id,
+        )
+        .order_by(GenerationPreparation.position)
+    ).all()
+    groups: dict[str, list[GenerationPreparation]] = {}
+    for row in rows:
+        groups.setdefault(row.group_id, []).append(row)
+    counts = dict.fromkeys(["waiting", "refining", "ready", "finished", "failed", "cancelled"], 0)
+    items = []
+    for group, members in groups.items():
+        leader = members[0]
+        status = {"preparing": "waiting", "accepted": "finished"}.get(leader.status, leader.status)
+        counts[status] += 1
+        items.append(
+            {
+                "id": group,
+                "status": status,
+                "source_generation_id": leader.request_json["source_generation_id"],
+                "original_prompt": leader.request_json["retained_prompt"],
+                "prompt": leader.prompt,
+                "planned_count": len(members),
+                "queued_count": sum(row.status == "accepted" for row in members),
+                "error": {"code": leader.error_code, "message": leader.error_message}
+                if leader.error_code
+                else None,
+            }
+        )
+    active = any(counts[key] for key in ("waiting", "refining", "ready"))
+    return {
+        "id": run.id,
+        "collection_id": run.collection_id,
+        "status": "stopped" if run.stopped else "processing" if active else "completed",
+        "prompt_count": len(groups),
+        "planned_count": len(rows),
+        "queued_count": sum(row.status == "accepted" for row in rows),
+        "counts": counts,
+        "items": items,
+    }
+
+
+def stop_in_session(session: Session, run: PromptRerunRun, message: str) -> None:
+    run.stopped = True
+    for row in session.scalars(
+        select(GenerationPreparation).where(
+            GenerationPreparation.rerun_id == run.id,
+            GenerationPreparation.status.in_(["preparing", "refining", "ready"]),
+        )
+    ):
+        row.status, row.error_code, row.error_message = "cancelled", "rerun_stopped", message
+        activity = session.get(GenerationRun, row.activity_run_id)
+        if activity:
+            activity.updated_at = utcnow()
+
+
+def create_refinements(
+    preparer: PromptGenerationService,
+    session: Session,
+    owner_id: str,
+    payload: PromptRerunCreate,
+    plan: PromptPlan,
+    built: BuiltRequests,
+    profile: WorkflowProfile,
+    collection_id: str,
+) -> PromptRerunRun:
+    assert payload.refinement is not None
+    run = PromptRerunRun(owner_id=owner_id, collection_id=collection_id)
+    session.add(run)
+    session.flush()
+    activity = begin_run(session, owner_id, len(built.requests))
+    per_prompt = len(payload.model_variants) * payload.quantity
+    for index, source in enumerate(plan.prompts):
+        group = str(uuid.uuid4())
+        assistant = PromptComposeRequest(
+            mode="refine",
+            prompt=source.prompt,
+            creative_direction=payload.refinement.creative_direction,
+            think=payload.refinement.think,
+            instructions=payload.refinement.instructions or DEFAULT_PROMPT_INSTRUCTIONS["refine"],
+        )
+        for position in range(index * per_prompt, (index + 1) * per_prompt):
+            _, captured = preparer.capture_image(
+                session,
+                owner_id,
+                RetainedPromptPreparationItem(
+                    generation=built.requests[position],
+                    retained_prompt=source.prompt,
+                    source_generation_id=source.generation_id,
+                    assistant=assistant,
+                ),
+                profile=profile,
+            )
+            session.add(
+                GenerationPreparation(
+                    group_id=group,
+                    owner_id=owner_id,
+                    profile_id=profile.id,
+                    rerun_id=run.id,
+                    activity_run_id=activity.id,
+                    position=position,
+                    request_json=captured.model_dump(mode="json"),
+                )
+            )
+    session.flush()
+    return run
 
 
 async def accept(
@@ -374,8 +500,12 @@ async def accept(
     owner_id: str,
     payload: PromptRerunCreate,
     key: str,
+    preparer: PromptGenerationService,
 ) -> PromptRerunResult:
-    digest = request_digest(ENDPOINT, payload.model_dump(mode="json"))
+    original = payload.model_dump(mode="json")
+    if payload.refinement is None:
+        original.pop("refinement", None)  # Preserve pre-refinement submission receipts.
+    digest = request_digest(ENDPOINT, original)
 
     def transaction() -> tuple[PromptRerunResult, list[dict[str, Any]]]:
         with service.session_factory() as session:
@@ -420,9 +550,18 @@ async def accept(
                 ),
             )
             built = build_requests(profile.resolved_contract_json, payload, plan, folder.id)
-            outcomes, events = accept_items(service, session, user, built.requests)
+            run = None
+            outcomes: list[dict[str, Any]]
+            events: list[dict[str, Any]]
+            if payload.refinement:
+                run = create_refinements(
+                    preparer, session, owner_id, payload, plan, built, profile, folder.id
+                )
+                outcomes, events = [], []
+            else:
+                outcomes, events = accept_items(service, session, user, built.requests)
             accepted = [item for item in outcomes if "generation_id" in item]
-            if not accepted:
+            if not accepted and run is None:
                 error = outcomes[0]["error"]
                 raise AppError(
                     error["code"],
@@ -437,6 +576,7 @@ async def accept(
                     "prompt_count": len(plan.prompts),
                     "planned_count": len(built.requests),
                     "resolution_fallback_count": built.resolution_fallback_count,
+                    **({"run_id": run.id} if run else {}),
                 }
             }
             receipt = GenerationSubmission(
@@ -453,6 +593,8 @@ async def accept(
             return result, events
 
     result, events = await run_blocking(transaction)
+    if result.run:
+        events.append({"id": None, "type": "prompt_rerun.updated", "payload": {}})
     for event in events:
         try:
             await service.broker.publish(owner_id, event)

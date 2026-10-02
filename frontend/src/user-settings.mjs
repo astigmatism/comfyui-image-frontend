@@ -11,6 +11,9 @@ const object = (value) => value !== null && typeof value === "object" && !Array.
 export function mergeSettings(base, local, remote, path = "") {
   if (equal(local, base)) return { value: structuredClone(remote), conflicts: [] };
   if (equal(remote, base) || equal(local, remote)) return { value: structuredClone(local), conflicts: [] };
+  // A rank move removes from one tier and inserts into another. Merge the board
+  // atomically so concurrent moves cannot duplicate a checkpoint across tiers.
+  if (path === "checkpoint_tiers") return { value: structuredClone(local), conflicts: [path] };
   if (object(base) && object(local) && object(remote)) {
     const value = {};
     const conflicts = [];
@@ -135,12 +138,14 @@ export function createSettingsSync({ api, read, apply, status: reportStatus, sig
       if (pending) schedule(false);
     }
   };
-  const save = async () => {
-    if (!active() || applying || remoteConflict) return;
-    if (!base) { status("error", "Settings have not loaded. Retry before saving."); return; }
-    if (busy) { pending = true; await new Promise((done) => waiters.push(done)); return save(); }
+  const save = async (retryConflict = true) => {
+    if (!active() || applying || remoteConflict) return false;
+    clearTimeout(timer);
+    timer = null;
+    if (!base) { status("error", "Settings have not loaded. Retry before saving."); return false; }
+    if (busy) { pending = true; await new Promise((done) => waiters.push(done)); return save(retryConflict); }
     const sent = read();
-    if (equal(sent, base)) { pending = false; status("saved"); return; }
+    if (equal(sent, base)) { pending = false; status("saved"); return true; }
     busy = true;
     pending = false;
     status("saving");
@@ -149,19 +154,23 @@ export function createSettingsSync({ api, read, apply, status: reportStatus, sig
         method: "PUT", signal,
         body: JSON.stringify({ ...sent, expected_revision: revision }),
       });
-      if (!active()) return;
+      if (!active()) return false;
       base = editable(result);
       revision = result.revision;
       status("saved");
       pending = !equal(read(), sent);
       persistLocal();
+      return true;
     } catch (error) {
-      if (!active()) return;
+      if (!active()) return false;
       if (error.status === 409) {
         busy = false;
-        await refresh();
-        pending = !remoteConflict;
+        try { await refresh(); }
+        catch (failure) { status("error", failure.message); return false; }
+        pending = false;
+        if (!remoteConflict && retryConflict) return await save(false);
       } else status("error", error.message);
+      return false;
     } finally {
       busy = false;
       release();

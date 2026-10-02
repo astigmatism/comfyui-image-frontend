@@ -45,10 +45,16 @@ parent's numbering from a complete permutation. The existing `ix_collections_own
 already covers the sibling lookup, so no index is added. Its downgrade drops the column and loses
 only the chosen order.
 
-Migration `2f8d6a1c4b90_add_checkpoint_tiers.py` adds the JSON preference that stores ordered
-checkpoint values under each source and public selector ID. Existing users receive an empty object;
-the browser reconciles it with the currently published choices and initially places every choice in
-Unsorted.
+Migration `2f8d6a1c4b90_add_checkpoint_tiers.py` introduced workflow-local checkpoint tiers.
+Migration `c73e2a9140bd_shared_checkpoint_ranks.py` replaces their contents with account-wide
+A/B/C/D/F rank arrays. It resets the old preference to `{}` once (all checkpoints default to C)
+and increments the settings revision so old clients cannot overwrite it with a stale revision.
+It adds nullable `generations.checkpoint_id` and backfills identities in bounded batches from
+frozen contracts, effective controls, and private compiled graphs. Historical image data and
+source settings remain intact. New generations store the same opaque identity at acceptance;
+copies retain it. Rank changes update only the owner's preference, so older images show the
+current rank without rewriting generation rows. Re-running an already-applied migration does
+not reset grades again. Downgrade removes the identity column and clears rank preferences.
 
 Migration `4b9d2e6f8a1c_add_generation_prompt_assistant_snapshot.py` adds nullable
 `generations.prompt_assistant_json`, a point-in-time snapshot of the Creative Direction inputs used

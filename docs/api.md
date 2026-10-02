@@ -810,7 +810,7 @@ The transcription request is multipart with one `file` field whose media type is
 | `PUT` | `/api/collections/{id}/favorite` | Idempotently bookmark an owned collection; returns updated `Collection` |
 | `DELETE` | `/api/collections/{id}/favorite` | Remove collection bookmark; returns `204` |
 | `GET` | `/api/preferences` | Read owner gallery scale and checkpoint tier/order preferences; legacy source rating/color fields remain for stored-data compatibility |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or per-workflow checkpoint tiers; legacy source rating/color updates remain accepted |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or account-wide checkpoint ranks; legacy source rating/color updates remain accepted |
 
 Favorites are private, binary bookmarks. List endpoints expose them as an `is_favorite` boolean:
 every `GenerationSummary` (gallery pages and single-generation reads) and every `Collection`
@@ -824,7 +824,20 @@ for missing or cross-owner IDs, including for administrators. Removing a bookmar
 content; bookmarking a folder does not bookmark its children or generations. Deleting the target or
 its owner cascades the bookmark.
 
-`checkpoint_tiers` is keyed by opaque source key and public selector parameter ID. Each selector maps the fixed tier IDs `top_picks`, `preferred`, `occasional`, and `unsorted` to ordered arrays of stable public checkpoint values. A value may appear at most once per selector. The client reconciles this preference with the current publication so newly published values appear in Unsorted and values no longer published disappear from the dialog.
+`checkpoint_tiers` maps `A`, `B`, `C`, `D`, and `F` to ordered arrays of opaque
+`checkpoint_id` strings (`cp1_` plus 64 hexadecimal characters). Missing checkpoints
+have rank C. Each identity may occur only once across all five arrays. Writes require
+`expected_revision`; stale or missing revisions return 409. The rank is private to the
+signed-in account and shared across workflows. Concurrent rank-board changes use the
+existing settings conflict flow rather than merging individual tier arrays.
+
+Model selector choices and generation summaries expose `checkpoint_id`. The server derives
+it from normalized private model bindings, independent of public labels, choice aliases,
+workflow publication versions, and worker assignment. Unresolvable bindings use a source-local
+fallback instead of joining models by name; images with no identifiable model return null.
+The client resolves the current rank by identity on every appearance, including older images.
+Picker changes commit on Apply; Cancel discards them. Fullscreen arrows move one grade and
+save immediately, showing saving/saved feedback or rolling back with a Retry action on failure.
 
 ## Authentication and account routes
 

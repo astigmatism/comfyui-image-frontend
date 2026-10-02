@@ -1602,24 +1602,21 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   await trigger.click();
   const dialog = page.locator("#source-picker-dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator("[data-checkpoint-tier]")).toHaveCount(4);
+  await expect(dialog.locator("[data-checkpoint-tier]")).toHaveCount(5);
   await expect(dialog.locator(".checkpoint-tier-rail > strong")).toHaveText([
-    "Top picks",
-    "Preferred",
-    "Occasional",
-    "Unsorted",
+    "A", "B", "C", "D", "F",
   ]);
-  await expect(dialog.locator(".checkpoint-tier-occasional .checkpoint-tier-empty")).toHaveText(
+  await expect(dialog.locator(".checkpoint-tier-D .checkpoint-tier-empty")).toHaveText(
     "Drop checkpoints here",
   );
 
   const v4Card = dialog
     .locator("[data-checkpoint-card]")
     .filter({ hasText: "Moody Krea 2 V4 INT8 ConvRot" });
-  const topGrid = dialog.locator(".checkpoint-tier-top_picks .checkpoint-tier-grid");
+  const topGrid = dialog.locator(".checkpoint-tier-A .checkpoint-tier-grid");
   await v4Card.locator("[data-checkpoint-drag-handle]").dragTo(topGrid);
   await expect(topGrid).toContainText("Moody Krea 2 V4 INT8 ConvRot");
-  await expect(dialog.locator(".checkpoint-tier-unsorted")).not.toContainText(
+  await expect(dialog.locator(".checkpoint-tier-C")).not.toContainText(
     "Moody Krea 2 V4 INT8 ConvRot",
   );
 
@@ -1637,7 +1634,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   await expect(trigger).toContainText("5 checkpoints selected");
 
   await trigger.click();
-  await expect(dialog.locator(".checkpoint-tier-top_picks")).toContainText(
+  await expect(dialog.locator(".checkpoint-tier-A")).toContainText(
     "Moody Krea 2 V4 INT8 ConvRot",
   );
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -1740,12 +1737,12 @@ test("checkpoint search is non-destructive and Clear all prevents Apply", async 
   await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
 
   const unsortedToggle = dialog
-    .locator(".checkpoint-tier-unsorted")
-    .getByRole("checkbox", { name: /every checkpoint in Unsorted/ });
+    .locator(".checkpoint-tier-C")
+    .getByRole("checkbox", { name: /every checkpoint in C/ });
   if (await unsortedToggle.isEnabled()) await unsortedToggle.check();
   const topToggle = dialog
-    .locator(".checkpoint-tier-top_picks")
-    .getByRole("checkbox", { name: /every checkpoint in Top picks/ });
+    .locator(".checkpoint-tier-A")
+    .getByRole("checkbox", { name: /every checkpoint in A/ });
   if (await topToggle.isEnabled()) await topToggle.check();
   await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -1772,17 +1769,19 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
     .filter({ hasText: "Moody Krea 2 TYJR MXFP8" })
     .locator("[data-checkpoint-drag-handle]");
   await tyjrHandle.press("Alt+ArrowUp");
-  await expect(dialog.locator(".checkpoint-tier-preferred")).toContainText(
+  await expect(dialog.locator(".checkpoint-tier-A")).toContainText(
     "Moody Krea 2 TYJR MXFP8",
   );
+
+  const workflows = await (await page.request.get("/api/workflows")).json();
+  const moody = workflows.find(source => source.display_name === "Moody Krea 2 Mix V4");
+  const checkpointId = moody.model_selectors[0].choices.find(choice => choice.value === "tyjr_mxfp8").checkpoint_id;
 
   const saved = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/preferences" &&
       response.request().method() === "PUT" &&
-      Object.values(response.request().postDataJSON()?.checkpoint_tiers || {})
-        .flatMap((selectors) => Object.values(selectors))
-        .some((tiers) => tiers.preferred?.includes("tyjr_mxfp8")),
+      response.request().postDataJSON()?.checkpoint_tiers?.A?.includes(checkpointId),
   );
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   expect((await saved).ok()).toBe(true);
@@ -1790,9 +1789,7 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
   await page.reload();
   const preferences = await (await page.request.get("/api/preferences")).json();
   expect(
-    Object.values(preferences.checkpoint_tiers)
-      .flatMap((selectors) => Object.values(selectors))
-      .some((tiers) => tiers.preferred?.includes("tyjr_mxfp8")),
+    preferences.checkpoint_tiers.A.includes(checkpointId),
   ).toBe(true);
 
   await expect(page.locator("#workflow-source")).toBeEnabled();
@@ -1804,7 +1801,7 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
   const moodyKey = await reloadedWorkflow.locator("option")
     .filter({ hasText: "Moody Krea 2 Mix V4" }).getAttribute("value");
   await reloadedWorkflow.selectOption(moodyKey);
-  await expect(dialog.locator(".checkpoint-tier-preferred")).toContainText(
+  await expect(dialog.locator(".checkpoint-tier-A")).toContainText(
     "Moody Krea 2 TYJR MXFP8",
   );
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -1853,24 +1850,24 @@ test("gallery defaults to request initiation order when the page arrives unsorte
   expect(cardIds).toEqual(["newest-active", "previous", "oldest"]);
 });
 
-test("empty checkpoint tiers retain their drop area and vertical rail label", async ({ page }) => {
+test("empty checkpoint tiers retain their drop area and upright grade", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await signInAdminWithCurrentFixturePassword(page);
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
   await page.locator("#workflow-source").click();
 
-  const occasional = page.locator("#source-picker-dialog .checkpoint-tier-occasional");
+  const occasional = page.locator("#source-picker-dialog .checkpoint-tier-D");
   await expect(occasional.locator(".checkpoint-tier-empty")).toHaveText("Drop checkpoints here");
   await expect(
-    occasional.getByRole("checkbox", { name: /every checkpoint in Occasional/ }),
+    occasional.getByRole("checkbox", { name: /every checkpoint in D/ }),
   ).toBeDisabled();
   expect((await occasional.boundingBox())?.height).toBeGreaterThanOrEqual(90);
   expect(
     await occasional
       .locator(".checkpoint-tier-rail > strong")
       .evaluate((element) => getComputedStyle(element).writingMode),
-  ).toBe("vertical-rl");
+  ).toBe("horizontal-tb");
 });
 
 

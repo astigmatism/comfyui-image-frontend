@@ -52,7 +52,7 @@ export function defaultRerunFolderName(source, selections, now = Date.now()) {
 }
 
 // The modal starts from the control panel's current settings and never writes back.
-export function promptRerunDraft({ source, parameters, selections, quantity, collectionId, checkpointTiers = {}, loraMemory = {}, loraImages = {}, recentResolutions = [], now = Date.now() }) {
+export function promptRerunDraft({ source, parameters, selections, quantity, collectionId, checkpointTiers = {}, loraMemory = {}, loraImages = {}, recentResolutions = [], promptAssistant = {}, now = Date.now() }) {
   const contract = source?.interface || source?.contract || null;
   const normalizedSelections = normalizeSourceModelSelections(source, selections || {}, parameters || {});
   return {
@@ -71,6 +71,11 @@ export function promptRerunDraft({ source, parameters, selections, quantity, col
     loraMemory: structuredClone(loraMemory),
     loraImages: structuredClone(loraImages),
     recentResolutions: structuredClone(recentResolutions),
+    refine: false,
+    creativeDirection: promptAssistant.creativeDirection || "",
+    instructions: promptAssistant.instructionOverrides?.refine ?? promptAssistant.defaultInstructions?.refine ?? "",
+    defaultInstructions: promptAssistant.defaultInstructions?.refine || "",
+    think: promptAssistant.think !== false,
   };
 }
 
@@ -140,6 +145,11 @@ export function validatePromptRerunDraft(draft, preview) {
   }
   if (draft.seedMode === "original" && draft.quantity !== 1) errors.quantity = "Reusing original seeds queues one image per prompt.";
   if (!rerunPromptCount(draft, preview)) errors.prompts = "None of the selected images has a prompt to re-run.";
+  if (draft.refine) {
+    if (!draft.creativeDirection.trim()) errors.direction = "Enter Creative Direction for these prompts.";
+    if (!draft.instructions.trim()) errors.instructions = "Enter refinement instructions or reset to the default.";
+    else if (draft.instructions.length > 8000) errors.instructions = "Use at most 8000 characters.";
+  }
   const total = promptRerunPlannedTotal(draft, preview);
   if (total > MAX_BATCH_GENERATION_ITEMS) {
     errors.total = `${total} planned generations exceeds the ${MAX_BATCH_GENERATION_ITEMS}-item limit. Lower the count per prompt, choose fewer checkpoints, or select fewer images.`;
@@ -165,6 +175,9 @@ export function promptRerunRequest(draft, selectionBody) {
     keep_original_resolution: draft.keepOriginalResolution,
     seed_mode: inputs.seed ? draft.seedMode : "random",
     skip_duplicates: draft.skipDuplicates,
+    ...(draft.refine ? { refinement: {
+      creative_direction: draft.creativeDirection.trim(), instructions: draft.instructions.trim(), think: draft.think,
+    } } : {}),
   };
 }
 
@@ -175,6 +188,7 @@ function fieldError(errors, key) {
 
 export function promptRerunSubmitLabel(draft, preview, loading = false) {
   if (loading) return "Queueing…";
+  if (preview && draft.refine) return "Refine & Queue";
   return preview ? `Queue ${plural(promptRerunPlannedTotal(draft, preview), "generation")}` : "Loading…";
 }
 
@@ -188,7 +202,25 @@ function previewSummary(preview, draft) {
 
 export function promptRerunSummaryMarkup(draft, preview, errors = validatePromptRerunDraft(draft, preview)) {
   const total = promptRerunPlannedTotal(draft, preview);
-  return `<span data-rerun-total>${preview ? `Queues ${plural(total, "generation")}` : ""}</span>${fieldError(errors, "total")}${fieldError(errors, "prompts")}`;
+  const text = draft.refine ? `Refine ${plural(rerunPromptCount(draft, preview), "prompt")} · Generate up to ${plural(total, "image")}` : `Queues ${plural(total, "generation")}`;
+  return `<span data-rerun-total>${preview ? text : ""}</span>${fieldError(errors, "total")}${fieldError(errors, "prompts")}`;
+}
+
+function creativeDirectionMarkup(draft, errors) {
+  return controlSectionMarkup({
+    key: "creative-direction", title: "Creative Direction", status: draft.refine ? "Refine each prompt" : "Off",
+    idPrefix: "rerun-", className: "control-section-creative-direction",
+    open: Boolean(draft.sectionOpen?.["creative-direction"]),
+    actions: `<div class="control-section-actions feature-section-switch"><label class="switch"><input type="checkbox" role="switch" name="rerun_refine" aria-label="Use Creative Direction" ${draft.refine ? "checked" : ""} /><span aria-hidden="true"></span><em>${draft.refine ? "On" : "Off"}</em></label></div>`,
+    content: `<p class="help-text">Refine each saved prompt with the same direction. Images queue as each refinement finishes.</p>
+      <label class="field">Creative Direction<textarea name="rerun_direction" rows="3" aria-label="Creative Direction" aria-invalid="${Boolean(errors.direction)}">${escapeHtml(draft.creativeDirection)}</textarea>${fieldError(errors, "direction")}</label>
+      <details class="prompt-preprocessor" ${draft.refine && errors.instructions ? "open" : ""}><summary>Prompt pre-processor</summary><div class="prompt-preprocessor-content">
+        <p class="prompt-preprocessor-context">Instructions for refining your prompt</p>
+        <label class="field">Refinement instructions<textarea name="rerun_instructions" rows="8" maxlength="8000" aria-label="Refinement instructions" aria-invalid="${Boolean(errors.instructions)}">${escapeHtml(draft.instructions)}</textarea>${fieldError(errors, "instructions")}</label>
+        <div class="prompt-preprocessor-tools"><button type="button" class="button low" data-rerun-action="reset-instructions" ${draft.defaultInstructions ? "" : "disabled"}>Reset to default</button></div>
+        <label class="prompt-assistant-thinking-option"><input type="checkbox" name="rerun_think" ${draft.think ? "checked" : ""} /> Thinking mode</label>
+      </div></details>`,
+  });
 }
 
 export function promptRerunMarkup(draft, preview, { parentName = "Home", loading = false, error = "" } = {}) {
@@ -224,7 +256,7 @@ export function promptRerunMarkup(draft, preview, { parentName = "Home", loading
     <div class="rerun-dialog-content" ${loading ? "inert" : ""}>
       ${sourcePickerMarkup({ selectedGenerationTargetCount: rerunVariants(draft).length }, draft.source ? [draft.source] : [], draft.sourceKey, loading, { idPrefix: "rerun-" })}
       ${fieldError(errors, "source")}${fieldError(errors, "checkpoints")}
-      <div class="rerun-sections">${loras}${resolution}</div>
+      <div class="rerun-sections">${creativeDirectionMarkup(draft, errors)}${loras}${resolution}</div>
       <div class="rerun-options">
         ${inputs.seed ? `<fieldset class="field rerun-seed"><legend>Seed</legend>
           <label class="rerun-check"><input type="radio" name="rerun_seed" value="random" ${draft.seedMode === "random" ? "checked" : ""} /><span>Random per image</span></label>
@@ -248,6 +280,13 @@ export function updateRerunDraft(draft, name, value) {
   else if (name === "rerun_quantity") next.quantity = clampGenerationQuantity(value);
   else if (name === "rerun_keep_resolution") next.keepOriginalResolution = Boolean(value);
   else if (name === "rerun_skip_duplicates") next.skipDuplicates = Boolean(value);
+  else if (name === "rerun_refine") {
+    next.refine = Boolean(value);
+    if (next.refine) next.sectionOpen = { ...next.sectionOpen, "creative-direction": true };
+  }
+  else if (name === "rerun_direction") next.creativeDirection = String(value);
+  else if (name === "rerun_instructions") next.instructions = String(value);
+  else if (name === "rerun_think") next.think = Boolean(value);
   else if (name === "rerun_seed") {
     next.seedMode = value === "original" ? "original" : "random";
     if (next.seedMode === "original") next.quantity = 1;
@@ -277,7 +316,9 @@ export function createPromptRerun(dialog, deps) {
       ? `[name="${focused.name}"]${["radio", "checkbox"].includes(focused.type) ? `[value="${CSS.escape(focused.value)}"]` : ""}` : null;
     const position = focused?.type === "text" ? focused.selectionStart : null;
     const scrollTop = dialog.querySelector(".rerun-dialog-content")?.scrollTop || 0;
+    const preprocessorOpen = dialog.querySelector(".prompt-preprocessor")?.open || false;
     dialog.innerHTML = promptRerunMarkup(draft, preview, { parentName: deps.collectionName(draft.parentCollectionId), loading, error });
+    dialog.querySelector(".prompt-preprocessor").open = preprocessorOpen || Boolean(draft.refine && errors.instructions);
     dialog.querySelector(".rerun-dialog-content").scrollTop = scrollTop;
     if (selector) {
       const replacement = dialog.querySelector(selector);
@@ -289,10 +330,11 @@ export function createPromptRerun(dialog, deps) {
   function refreshDerived() {
     if (!draft) return;
     const errors = preview ? validatePromptRerunDraft(draft, preview) : {};
+    if (draft.refine && errors.instructions) dialog.querySelector(".prompt-preprocessor").open = true;
     for (const slot of dialog.querySelectorAll("[data-rerun-error]")) {
       if (slot.closest(".rerun-total")) continue;
       slot.textContent = errors[slot.dataset.rerunError] || "";
-      const field = slot.closest("label")?.querySelector("input");
+      const field = slot.closest("label")?.querySelector("input, textarea");
       if (field) field.setAttribute("aria-invalid", String(Boolean(errors[slot.dataset.rerunError])));
     }
     const inputs = rerunInputs(draft.source?.interface || draft.source?.contract);
@@ -422,15 +464,20 @@ export function createPromptRerun(dialog, deps) {
     event.preventDefault();
     if (action === "close" && !loading) dialog.close();
     else if (action === "submit") void submit();
+    else if (action === "reset-instructions" && draft && !loading) {
+      draft.instructions = draft.defaultInstructions;
+      dialog.querySelector('[name="rerun_instructions"]').value = draft.instructions;
+      refreshDerived();
+    }
   });
   const handle = (event) => {
     const target = event.target;
     if (!draft || !target.name?.startsWith("rerun_") || loading) return;
     draft = updateRerunDraft(draft, target.name, target.type === "checkbox" ? target.checked : target.value);
-    if (target.type === "text" || target.type === "number") refreshDerived();
+    if (target.type === "text" || target.type === "number" || target.tagName === "TEXTAREA") refreshDerived();
     else render();
   };
-  dialog.addEventListener("input", (event) => { if (["text", "number"].includes(event.target.type)) handle(event); });
+  dialog.addEventListener("input", (event) => { if (["text", "number", "textarea"].includes(event.target.type)) handle(event); });
   dialog.addEventListener("change", handle);
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && event.target.matches('input[type="text"], input[type="number"]')) {
