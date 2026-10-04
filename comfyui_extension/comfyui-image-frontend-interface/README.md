@@ -149,3 +149,19 @@ to frontend bypass/mute state.
 ## Ordered model-only LoRA stack
 
 `CIFLoraStack` accepts a base MODEL, private `catalog_json` (`[{"id":"style","label":"Style","filename":"installed/file.safetensors"}]`), and an ordered JSON `value` (`[{"id":"style","strength":0}]`). Publish all entries with zero default strengths and semantic role `lora`; set the parameter group to `LoRAs`, required to false, and the desired nonnegative bounds/step (Moody Krea2 uses 0–2 in 0.05 increments). Catalog items may also include an optional `description` (nonblank plain text, maximum 1000 characters) for usage guidance and an optional `trigger_word` (nonblank text, maximum 120 characters) for the verified prompt subject. The frontend receives public IDs, labels, usage descriptions, and explicit trigger words; filenames stay private. Existing catalogs without these optional fields remain valid. Do not infer a trigger word from a label or filename. Apply strength > 0 sequentially with the native model-only loader. All-zero input passes the exact model through. Full integration, rollout and rollback instructions are in `docs/lora-controls.md` in the frontend repository.
+
+## Administrator LoRA management routes
+
+When `CIF_LORA_MANAGEMENT_SECRET` is configured, the package also serves the
+server-to-server `/cif/lora-management` routes that the frontend uses for
+administrator LoRA installs, edits, removals, and library syncs. Capability
+`version` 2 (`multi_source: true`) accepts one operation that changes several
+publications of a shared LoRA library: `POST /operations/{id}/prepare` takes
+`{"targets": [{"source_path", "expected_revision", "publication_id"}], "change",
+"published_at"}` with `change.action` one of `install`, `edit`, `remove`, or
+`set_catalog` (sync; never drops an existing LoRA). Each target keeps its own
+journaled bytes, `GET /operations/{id}/candidate?source_path=...` returns one
+target's candidate, and commit writes targets in path order with the manifest
+last, restoring every written target on failure. The single-source version 1
+request shape remains accepted. See `docs/lora-administration.md` in the
+frontend repository for the full lifecycle.

@@ -71,6 +71,24 @@ republishing. The per-item revision supports conditional updates, including remo
 stores only an opaque relative path; normalized small WebP files live beneath the application data
 root. Personal LoRA order, enabled states, and remembered strengths remain in each user's settings.
 
+Migration `946b609a5db1_shared_lora_library.py` introduces the shared LoRA library. A LoRA's
+identity is `lr1_` plus the SHA-256 of `["lora-binding-v1", <normalized private filename>]`
+(`app/domain/lora_identity.py`; keep the algorithm stable). The migration:
+
+- adds `lora_library_images` (one thumbnail per identity, with a revision for conditional
+  updates) and fills it from `lora_images` by resolving each legacy binding hash through the
+  stored publication graphs; when several workflows had an image for the same LoRA, the newest
+  wins. The legacy table is kept, read-only, so a downgrade loses nothing;
+- adds `generation_loras` (enabled LoRAs of each accepted generation, in application order, with
+  the label and strength at acceptance) and backfills it in bounded batches from each generation's
+  effective controls and frozen graph;
+- adds `user_preferences.lora_tiers_json` (empty: every LoRA starts at rank C);
+- adds `lora_operations.scope` (`source` for older single-workflow records, `library` for new ones)
+  and `lora_operation_targets`, one row per publication changed by a library operation with its
+  expected and candidate revisions. Older records without target rows still recover.
+
+The downgrade drops only these objects.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -78,13 +96,16 @@ root. Personal LoRA order, enabled states, and remembered strengths remain in ea
 | `users` | Local account, role, forced-change state, session epoch |
 | `sessions` | HMAC token ID, CSRF, expiry/revocation, privacy-safe client metadata |
 | `login_throttles` | Username/IP-keyed attempt windows and temporary blocks |
-| `user_preferences` | Owner gallery scale, persisted checkpoint tier/order layout, and retained legacy source rating/color data |
+| `user_preferences` | Owner gallery scale, persisted checkpoint and LoRA tier layouts, and retained legacy source rating/color data |
 | `workflow_profiles` | Immutable accepted publication revisions plus retained legacy snapshots |
 | `workflow_diagnostics` | Safe latest transport/candidate discovery diagnostics |
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |
 | `comfyui_instance_health` | Last bounded availability result for each configured ComfyUI execution ID |
 | `uploads` | Owner-scoped application source/mask metadata |
-| `lora_images` | Shared, workflow-scoped LoRA thumbnail paths and per-item revisions |
+| `lora_library_images` | One shared thumbnail path and revision per LoRA identity, used by every workflow |
+| `lora_images` | Legacy workflow-scoped LoRA thumbnail rows, retained read-only since the shared library |
+| `lora_operation_targets` | Publications changed by a library-wide LoRA operation |
+| `generation_loras` | Enabled LoRA identities, labels, and strengths of each accepted generation |
 | `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) carrying the owner's sibling order |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |

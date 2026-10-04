@@ -10,7 +10,7 @@ All routes are same-origin and served beneath `/api`. The application never inje
 X-CSRF-Token: <csrf_token>
 ```
 
-Generation, upload, and gallery content lookups are scoped to the current owner. Cross-user requests, including administrator attempts, return not found rather than revealing existence. Workflow LoRA thumbnails are a deliberate exception: they are shared with all signed-in users of that workflow.
+Generation, upload, and gallery content lookups are scoped to the current owner. Cross-user requests, including administrator attempts, return not found rather than revealing existence. LoRA thumbnails are a deliberate exception: they are shared with all signed-in users and with every workflow that lists the same LoRA.
 
 Errors use a safe machine-readable envelope:
 
@@ -103,12 +103,13 @@ Items follow deployment-configuration order. `configuration_mode` is `explicit` 
 | `GET` | `/api/workflows/{source_key}` | Get the selected source's allowlisted public interface |
 | `GET` | `/api/workflows/{source_key}/lora-images/{control_id}` | Get versioned shared images for one published `lora_stack` control |
 | `POST` | `/api/workflows/{source_key}/lora-images/{control_id}` | Atomically set/remove selected LoRA images with per-item version checks |
-| `GET` | `/api/workflows/{source_key}/lora-images/{control_id}/{item_id}/content?v={version}` | Read one authenticated WebP thumbnail |
+| `GET` | `/api/workflows/{source_key}/lora-images/{control_id}/{item_id}/content?v={version}` | Read one authenticated WebP thumbnail (kept for open editors; serves the library image) |
+| `GET` | `/api/lora-library/images/{lora_identity}/content?v={version}` | Read the shared WebP thumbnail of one LoRA identity |
 | `GET` | `/api/services` | Restrained ComfyUI/Ollama availability state |
 | `POST` | `/api/admin/workflows/refresh` | Administrator: rediscover and atomically validate publications |
 | `GET` | `/api/admin/workflows/diagnostics` | Administrator: safe per-transport/per-candidate diagnostics |
-| `GET` | `/api/admin/workflows/{source_key}/loras` | Administrator: inspect LoRA management eligibility, full revision, and public catalog |
-| `POST` | `/api/admin/lora-operations` | Administrator: reserve a conditional install, metadata edit, or removal |
+| `GET` | `/api/admin/lora-library` | Administrator: inspect the shared LoRA libraries, their member workflows, sync state, and eligibility |
+| `POST` | `/api/admin/lora-operations` | Administrator: reserve a conditional library install, metadata edit, removal, or sync |
 | `PUT` | `/api/admin/lora-operations/{id}/file` | Administrator: stream one raw `.safetensors` body for a reserved install |
 | `GET` | `/api/admin/lora-operations/{id}` | Administrator: read operation progress and result |
 | `POST` | `/api/admin/lora-operations/{id}/cancel` | Administrator: cancel an install that is still awaiting its file |
@@ -119,34 +120,33 @@ The historical route name `workflows` is retained, but objects now represent del
 
 The management routes require an administrator session and the session CSRF header on mutations. The browser sends no request to ComfyUI. These routes are unavailable until the application and every participating ComfyUI companion have the backend-only management secret configured. They expose public IDs and labels, never private model filenames, graph bindings, or model paths. See [Administrator LoRA management](lora-administration.md) for ownership and failure behavior.
 
-The catalog GET returns the source's full four-part `revision`, an `eligible` flag and safe `reason`, and `items` containing the published `id`, `label`, optional `description`, and optional `trigger_word`. Existing items without trigger words remain valid. An eligible source has exactly one supported published `lora_stack`, matching healthy publication replicas and shared model inventory.
+The library GET returns `{libraries, active_operation}`. Every current image workflow with exactly one supported published `lora_stack` belongs to the library of its base-model family (`generation_source.base_model.family`, for example `krea2`); one library never mixes model families. Each library has a `key`, `label`, `members` (`source_key`, `display_name`, four-part `revision`, `in_sync`, `missing_count`, `item_count`), `items` (published `id`, `label`, optional `description`, optional `trigger_word`, and the opaque shared `lora_identity`), `in_sync`, `conflicts`, `eligible` and a safe `reason`, `can_sync`, and `expected_library` — the member revisions a change must name. Members are in sync when they list the same items (ID, title, trigger, description, private file) in the same order. Install, edit, and removal require a synced, conflict-free library; `can_sync` reports when **sync** is available instead. Conflicts (one ID naming different files, or one file listed under different IDs) block every change until the workflows are republished consistently.
 
 To install, first reserve an operation with `POST /api/admin/lora-operations`:
 
 ```json
 {
   "kind": "install",
-  "source_key": "<source-key>",
-  "expected_revision": {
-    "publication_id": "<publication-id>",
-    "workflow_sha256": "<sha256>",
-    "api_sha256": "<sha256>",
-    "manifest_sha256": "<sha256>"
-  },
-  "idempotency_key": "<client-generated-uuid>",
-  "filename": "character.safetensors",
-  "display_name": "Character",
-  "trigger_word": "character_token"
+  "library": "krea2",
+  "expected_library": [
+    {"source_key": "<64-hex>", "revision": {"publication_id": "...", "workflow_sha256": "...", "api_sha256": "...", "manifest_sha256": "..."}}
+  ],
+  "idempotency_key": "<uuid>",
+  "filename": "portrait.safetensors",
+  "display_name": "Portrait",
+  "trigger_word": "portrait subject"
 }
 ```
 
-The `filename` is the name of the local file being uploaded; it is not a destination path. The server assigns the public catalog ID. A successful reservation returns an operation ID and `awaiting_upload` status. Send the file once as the raw `application/octet-stream` body of `PUT /api/admin/lora-operations/{id}/file` with a bounded `Content-Length`. The application streams it to the authorized ComfyUI model writer; neither the browser nor the app chooses a model directory. Poll the operation GET until it reports `succeeded`, `failed`, or `repair_required`.
+`expected_library` must list exactly the library's current members and revisions, otherwise the request returns `library_changed`; reload the library and retry. The `filename` is the name of the local file being uploaded; it is not a destination path. The server assigns the public catalog ID, which is the same in every member. A successful reservation returns an operation ID and `awaiting_upload` status. Send the file once as the raw `application/octet-stream` body of `PUT /api/admin/lora-operations/{id}/file` with a bounded `Content-Length`. The application streams it to the authorized ComfyUI model writer; neither the browser nor the app chooses a model directory. Poll the operation GET until it reports `succeeded`, `failed`, or `repair_required`.
 
-An `awaiting_upload` install can be cancelled with the CSRF-protected cancel POST. This clears any matching companion stage and releases the reservation; after upload processing starts, the operation must finish or be recovered instead. When a new operation is requested for the source, the server clears reservations that have waited more than one hour after verifying companion rollback.
+To change an existing title or trigger word, use the same POST with `kind: "edit"`, `library`, `expected_library`, `idempotency_key`, the published `lora_id`, `display_name`, and `trigger_word`. The title must be nonblank; send an empty trigger word to clear it. An edit has no file PUT: it preserves the catalog ID, private filename, model bytes, and description while publishing a new revision of every member on every replica. The request is rejected if neither normalized field changes.
 
-To change an existing title or trigger word, use the same POST with `kind: "edit"`, `source_key`, `expected_revision`, `idempotency_key`, the published `lora_id`, `display_name`, and `trigger_word`. The title must be nonblank; send an empty trigger word to clear it. An edit has no file PUT: it preserves the catalog ID, private filename, model bytes, and description while publishing a new revision on every replica. The request is rejected if neither normalized field changes. Reload the catalog after success or a revision conflict.
+Removal uses the same POST with `kind: "remove"` and the published `lora_id`; there is no file PUT. It removes the LoRA from every member and then deletes the weight once. The library's own members never block their shared LoRA's removal. A removal can still report `failed` with safe `blockers` when the file is referenced by a publication outside the library, an active job, native ComfyUI work, or an authoring workflow.
 
-Removal uses the same POST with `kind: "remove"`, `source_key`, `expected_revision`, `idempotency_key`, and the published `lora_id`; there is no file PUT. A removal can report `failed` with safe `blockers` when the file is still referenced by another publication, an active job, native ComfyUI work, or an authoring workflow. The catalog revision is conditional, so the client must reload after a conflict or source refresh. Reusing the same idempotency key for a different request is a conflict. A `repair_required` operation needs operator reconciliation before further changes to the source.
+`kind: "sync"` takes no LoRA fields. It republishes only the out-of-sync members with the library catalog (the ordered union of every member's LoRAs; the newest publication supplies titles and triggers). Sync never removes a LoRA from a workflow.
+
+Only one LoRA operation runs at a time. Reusing the same idempotency key for a different request is a conflict. A `repair_required` operation needs operator reconciliation before further changes. Each operation needs the version 2 (multi-source) ComfyUI companion; an older companion reports `lora_companion_upgrade_required`.
 
 ### Shared LoRA images
 
@@ -155,7 +155,7 @@ Image metadata is separate from the public workflow interface and generation par
 ```json
 {
   "items": [
-    {"id": "tifa", "version": "<opaque-version-token>", "image_url": "/api/workflows/<source-key>/lora-images/loras/tifa/content?v=<opaque-version-token>"},
+    {"id": "tifa", "lora_identity": "lr1_<64-hex>", "version": "<opaque-version-token>", "image_url": "/api/lora-library/images/lr1_<64-hex>/content?v=<opaque-version-token>"},
     {"id": "claire", "version": "<opaque-version-token>", "image_url": null}
   ]
 }
@@ -170,7 +170,7 @@ To save staged changes, send one `multipart/form-data` POST with a `changes` JSO
 ]
 ```
 
-The multipart part named `image_0` contains the local file. Static PNG, JPEG, and WebP files are accepted within the configured upload byte and pixel limits; the server stores only a small normalized WebP thumbnail. The request requires the session CSRF header and returns the same shape as the metadata GET. The batch is conditional on every item's opaque `version`. If any changed item has a stale version, the entire update returns HTTP 409 with `lora_image_conflict`; the client must reload and let the user review the latest images. Unknown control or catalog IDs and malformed parts are rejected. Content URLs require authentication and use a versioned private cache policy. Images are scoped to the logical published workflow and retained across compatible revisions; a removed or rebound catalog member loses its prior image.
+The multipart part named `image_0` contains the local file. Static PNG, JPEG, and WebP files are accepted within the configured upload byte and pixel limits; the server stores only a small normalized WebP thumbnail. The request requires the session CSRF header and returns the same shape as the metadata GET. The batch is conditional on every item's opaque `version`. If any changed item has a stale version, the entire update returns HTTP 409 with `lora_image_conflict`; the client must reload and let the user review the latest images. Unknown control or catalog IDs and malformed parts are rejected. Content URLs require authentication and use a versioned private cache policy. Images belong to the LoRA's shared identity (a hash of its private model file), so every workflow that lists the LoRA shows the same image and a change in one workflow appears in all of them. Republishing never hides an image; only a verified LoRA removal does.
 
 The `instance_id` on a workflow summary identifies its authoritative catalog and execution service: the image assignment for `/api/workflows`, the prompt assignment for `/api/workflows?output_kind=text`. Other copies appear only in safe `replicas` metadata. Old source keys may resolve to the authoritative profile by logical identity; controls and submitted revisions are checked against that profile.
 
@@ -525,6 +525,10 @@ The same field is an array in prompt-group lookup bodies and selection scopes. O
 and F are accepted; omission or an empty list excludes nothing, and all five excludes every image.
 Ranks use the current owner's saved checkpoint tiers. Unassigned checkpoints and missing identities
 are C. Rank and Favorites predicates intersect before pagination; all filtered views omit folders.
+`excluded_lora_ranks` works the same way with the owner's saved LoRA tiers: an image is excluded
+when any LoRA it used (strength above zero) has an excluded rank, unranked LoRAs count as C, and
+images that used no LoRA are never excluded by this filter. View inventory rows carry
+`lora_identities` for client-side matching of live arrivals.
 Prompt groups retain their original boundaries and comparisons while reporting matching counts
 and returning matching members. Group selection's 500-card limit applies to matching members.
 
@@ -819,8 +823,8 @@ The transcription request is multipart with one `file` field whose media type is
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
 | `PUT` | `/api/collections/{id}/favorite` | Idempotently bookmark an owned collection; returns updated `Collection` |
 | `DELETE` | `/api/collections/{id}/favorite` | Remove collection bookmark; returns `204` |
-| `GET` | `/api/preferences` | Read owner gallery scale and checkpoint tier/order preferences; legacy source rating/color fields remain for stored-data compatibility |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or account-wide checkpoint ranks; legacy source rating/color updates remain accepted |
+| `GET` | `/api/preferences` | Read owner gallery scale, checkpoint tiers, and LoRA tiers; legacy source rating/color fields remain for stored-data compatibility |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or account-wide checkpoint or LoRA ranks; legacy source rating/color updates remain accepted |
 
 Favorites are private, binary bookmarks. List endpoints expose them as an `is_favorite` boolean:
 every `GenerationSummary` (gallery pages and single-generation reads) and every `Collection`
@@ -848,6 +852,13 @@ fallback instead of joining models by name; images with no identifiable model re
 The client resolves the current rank by identity on every appearance, including older images.
 Picker changes commit on Apply; Cancel discards them. Fullscreen arrows move one grade and
 save immediately, showing saving/saved feedback or rolling back with a Retry action on failure.
+
+`lora_tiers` has the same shape and rules for opaque LoRA identities (`lr1_` plus 64
+hexadecimal characters). The identity hashes the LoRA's normalized private model filename,
+so one rank applies in every workflow that lists the LoRA and to every image that used it.
+Workflow detail exposes `lora_identity` on each `lora_stack` item; generation summaries expose
+`loras: [{lora_identity, label, strength}]` for the enabled LoRAs in application order. LoRA
+manager rows and the photo viewer offer one-grade arrows that save immediately.
 
 ## Authentication and account routes
 
