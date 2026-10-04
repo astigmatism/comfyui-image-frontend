@@ -25,7 +25,11 @@ def _require_browser_publisher(request: web.Request) -> None:
     # remain the authority for who may publish a workflow.
     if request.headers.get("X-CIF-Publisher-Lease") != "1":
         raise ManagementError("Publisher lease request is invalid", 403)
-    if request.headers.get("Sec-Fetch-Site") != "same-origin":
+    # Browsers send Fetch Metadata only to secure contexts. A plain-HTTP LAN editor
+    # omits Sec-Fetch-Site but still sends Origin on this POST, so a present value
+    # must be same-origin and the exact same-host Origin check below always applies.
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site is not None and fetch_site != "same-origin":
         raise ManagementError("Publisher lease requires a same-origin browser request", 403)
     origin = request.headers.get("Origin", "")
     try:
@@ -57,7 +61,9 @@ def _service(request: web.Request, *, publisher: bool = False) -> LoraManagement
         if not hmac.compare_digest(secret, supplied):
             raise ManagementError("Management authentication failed", 403)
     user = os.environ.get("CIF_LORA_MANAGEMENT_USER", "default")
-    if request.headers.get("Comfy-User", "default") != user:
+    # ComfyUI's single-user editor sends an empty Comfy-User header; the server
+    # itself resolves that request to the default userdata namespace.
+    if (request.headers.get("Comfy-User") or "default") != user:
         raise ManagementError("Management user namespace differs", 403)
     root = os.environ.get("CIF_LORA_MANAGEMENT_ROOT", "")
     if not root or not Path(root).is_absolute():
@@ -147,7 +153,9 @@ async def capabilities(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "enabled": True,
-                "version": 1,
+                "version": 2,
+                "multi_source": True,
+                "actions": ["install", "edit", "remove", "set_catalog"],
                 "max_upload_bytes": service.max_upload,
                 "model_writer": service.model_writer,
                 "model_root_id": service.model_root_id,
@@ -195,7 +203,11 @@ async def prepare(request: web.Request) -> web.Response:
 async def candidate(request: web.Request) -> web.Response:
     try:
         service = _service(request)
-        return web.json_response(service.candidate(request.match_info["operation_id"]))
+        return web.json_response(
+            service.candidate(
+                request.match_info["operation_id"], request.query.get("source_path") or None
+            )
+        )
     except ManagementError as exc:
         return _error(exc)
 

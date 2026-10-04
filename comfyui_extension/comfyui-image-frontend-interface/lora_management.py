@@ -1,8 +1,12 @@
-"""Narrow, opt-in ComfyUI authority for a published CIFLoraStack catalog.
+"""Narrow, opt-in ComfyUI authority for published CIFLoraStack catalogs.
 
 The application orchestrates replicas. This module never accepts a replacement graph:
 it derives each candidate from a byte-verified existing publication and changes only
 the LoRA declaration. Operation files live in ComfyUI userdata, not /tmp.
+
+One operation may change several publications (a shared LoRA library). Each target
+keeps its own journaled before/after bytes; commit writes targets in path order with
+the manifest last, and any failure restores every target that was already written.
 """
 
 from __future__ import annotations
@@ -20,17 +24,22 @@ import stat
 import struct
 import time
 import uuid
-from contextlib import contextmanager
+from collections.abc import Iterable
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 PUBLIC_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 SAFE_USER = re.compile(r"[a-zA-Z0-9_-]{1,100}\Z")
+TARGET_DIR = re.compile(r"t[0-9]{1,3}\Z")
 MAX_JSON = 64 * 1024
 MAX_BUNDLE = 32 * 1024 * 1024
 MAX_HEADER = 16 * 1024 * 1024
+MAX_TARGETS = 50
+MAX_CATALOG = 100
 DEFAULT_MAX_UPLOAD = 8 * 1024 * 1024 * 1024
+ACTIONS = ("install", "remove", "edit", "set_catalog")
 WIDGETS = (
     "catalog_json",
     "value",
@@ -64,6 +73,9 @@ class ManagementError(ValueError):
             "LoRA is used by another loader in this authoring workflow": "same_workflow_loader",
             "LoRA file is shared by another catalog entry": "shared_catalog_file",
             "Publication revision changed": "publication_changed",
+            "LoRA file differs between workflows": "library_file_mismatch",
+            "LoRA catalog is already current": "catalog_unchanged",
+            "LoRA catalog change would drop an existing LoRA": "catalog_would_drop",
         }.get(str(self), "lora_management_error")
 
 
@@ -388,6 +400,82 @@ def _active_editable_reference(
     return False
 
 
+def _public_items(catalog: list[dict]) -> list[dict]:
+    return [
+        {key: item[key] for key in ("id", "label", "description", "trigger_word") if key in item}
+        for item in catalog
+    ]
+
+
+def _journal_targets(journal: dict) -> list[dict]:
+    """Targets of a journal; single-source journals written before v2 keep root files."""
+
+    targets = journal.get("targets")
+    if isinstance(targets, list):
+        return targets
+    if "source_path" in journal:
+        return [
+            {
+                "source_path": journal["source_path"],
+                "dir": "",
+                "expected_revision": journal.get("expected_revision"),
+                "candidate_revision": journal.get("candidate_revision"),
+            }
+        ]
+    return []
+
+
+def _requested_targets(payload: dict) -> tuple[list[dict], bool]:
+    """Normalize a v1 single-source or v2 multi-source prepare request."""
+
+    if "targets" in payload:
+        if any(key in payload for key in ("source_path", "expected_revision", "publication_id")):
+            raise ManagementError("Invalid operation request", 400)
+        raw = payload.get("targets")
+        if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_TARGETS:
+            raise ManagementError("Invalid operation targets", 400)
+        targets = []
+        for entry in raw:
+            if not isinstance(entry, dict) or set(entry) != {
+                "source_path",
+                "expected_revision",
+                "publication_id",
+            }:
+                raise ManagementError("Invalid operation target", 400)
+            targets.append(dict(entry))
+        multi = True
+    else:
+        targets = [
+            {
+                "source_path": payload.get("source_path"),
+                "expected_revision": payload.get("expected_revision"),
+                "publication_id": payload.get("publication_id"),
+            }
+        ]
+        multi = False
+    for target in targets:
+        target["source_path"] = _safe_source(target["source_path"])
+        if not isinstance(target["expected_revision"], dict):
+            raise ManagementError("Invalid operation request", 400)
+        try:
+            uuid.UUID(target["publication_id"])
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ManagementError("Invalid new publication identity", 400) from exc
+    paths = [target["source_path"] for target in targets]
+    identities = [str(target["publication_id"]) for target in targets]
+    if len(set(paths)) != len(paths) or len(set(identities)) != len(identities):
+        raise ManagementError("Duplicate operation target", 400)
+    return sorted(targets, key=lambda target: target["source_path"]), multi
+
+
+def _text(value: Any, *, limit: int, required: bool) -> str | None:
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise ManagementError("Invalid LoRA catalog text", 400)
+    return value.strip()
+
+
 class LoraManagement:
     def __init__(
         self,
@@ -433,6 +521,22 @@ class LoraManagement:
             finally:
                 fcntl.flock(stream, fcntl.LOCK_UN)
 
+    @contextmanager
+    def _source_guards(self, sources: Iterable[str]):
+        # Sorted acquisition keeps concurrent multi-source operations deadlock-free.
+        with ExitStack() as stack:
+            for source in sorted(set(sources)):
+                stack.enter_context(self._source_guard(source))
+            yield
+
+    def _target_dir(self, operation_id: str, target: dict) -> Path:
+        name = target.get("dir", "")
+        if name == "":
+            return self._opdir(operation_id)
+        if not isinstance(name, str) or not TARGET_DIR.fullmatch(name):
+            raise ManagementError("Invalid operation journal")
+        return self._opdir(operation_id) / name
+
     def _publisher_locked(self, source: str) -> bool:
         path = self._publish_lock_path(source)
         if not path.exists():
@@ -459,9 +563,8 @@ class LoraManagement:
             for path in operations.glob("*/journal.json"):
                 path = _confined(self.userdata, path.relative_to(self.userdata).as_posix())
                 journal = _parse(_regular_bytes(path))
-                if journal.get("source_path") == source and journal.get("state") not in (
-                    "rolled_back",
-                    "finalized",
+                if journal.get("state") not in ("rolled_back", "finalized") and any(
+                    target.get("source_path") == source for target in _journal_targets(journal)
                 ):
                     raise ManagementError("LoRA administration is active for this workflow")
         token = str(uuid.uuid4())
@@ -599,7 +702,10 @@ class LoraManagement:
         self._save(operation_id, journal)
         return result
 
-    def _references(self, source: str, filename: str) -> None:
+    def _references(self, sources: str | Iterable[str], filename: str) -> None:
+        """Refuse removal while anything outside this operation's targets needs the file."""
+
+        excluded = {sources} if isinstance(sources, str) else set(sources)
         workflows = _confined(self.userdata, "workflows")
         for path in workflows.rglob("*.interface.json"):
             path = _confined(self.userdata, path.relative_to(self.userdata).as_posix())
@@ -607,20 +713,17 @@ class LoraManagement:
                 raise ManagementError("Cannot safely inspect another publication")
             manifest = _parse(_regular_bytes(path))
             other_source = manifest.get("source_id")
-            if other_source == source:
+            if other_source in excluded:
                 continue
-            try:
-                other_api = self._bundle_paths(_safe_source(other_source))["api"]
-                if _active_api_reference(_parse(_regular_bytes(other_api)), filename):
-                    raise ManagementError("LoRA is used by another published workflow")
-            except ManagementError:
-                raise
+            other_api = self._bundle_paths(_safe_source(other_source))["api"]
+            if _active_api_reference(_parse(_regular_bytes(other_api)), filename):
+                raise ManagementError("LoRA is used by another published workflow")
         for path in workflows.rglob("*.json"):
             path = _confined(self.userdata, path.relative_to(self.userdata).as_posix())
             if path.name.endswith((".api.json", ".interface.json")) or path.is_symlink():
                 continue
             relative = path.relative_to(self.userdata).as_posix()
-            if relative == source:
+            if relative in excluded:
                 continue
             if _active_editable_reference(_parse(_regular_bytes(path)), filename):
                 raise ManagementError("LoRA is used by another authoring workflow")
@@ -635,94 +738,126 @@ class LoraManagement:
         except Exception as exc:
             raise ManagementError("Cannot inspect native ComfyUI queue") from exc
 
-    def prepare(self, operation_id: str, payload: dict) -> dict:
-        source = _safe_source(payload.get("source_path"))
-        with self._source_guard(source):
-            return self._prepare_locked(operation_id, payload, source)
+    def _catalog_items(self, items: Any) -> list[dict]:
+        """Validate a complete library catalog for a set_catalog (sync) change."""
 
-    def _prepare_locked(self, operation_id: str, payload: dict, source: str) -> dict:
-        _safe_id(operation_id)
-        if self._publisher_locked(source):
-            raise ManagementError("Save & Publish is active for this workflow")
-        expected = payload.get("expected_revision")
-        change = payload.get("change")
-        new_id = payload.get("publication_id")
-        published_at = payload.get("published_at")
-        if not isinstance(expected, dict) or not isinstance(change, dict):
-            raise ManagementError("Invalid operation request", 400)
-        try:
-            uuid.UUID(new_id)
-            datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-        except (TypeError, ValueError, AttributeError) as exc:
-            raise ManagementError("Invalid new publication identity", 400) from exc
-        opdir = self._opdir(operation_id)
-        if (opdir / "journal.json").exists():
-            current_journal = self._journal(operation_id)
-            if current_journal.get("state") == "prepared":
-                if current_journal.get("request") != payload:
-                    raise ManagementError("Operation ID is already prepared for another change")
-                return {
-                    "state": "prepared",
-                    "candidate_revision": current_journal["candidate_revision"],
-                    "candidate_hashes": current_journal["candidate_revision"],
-                    "filename": current_journal["filename"],
-                }
-            if current_journal.get("state") != "staged":
-                raise ManagementError("Operation is already in progress")
-            if change.get("action") != "install":
-                raise ManagementError("Staged upload belongs to an install operation")
-        raw = self._bundle(source)
-        old = _revision(raw)
-        if old != expected:
-            raise ManagementError("Publication revision changed")
-        workflow, api, manifest = (
-            copy.deepcopy(_parse(raw[key])) for key in ("workflow", "api", "manifest")
-        )
-        self.bundle(source)  # verify hashes and publication structure before changing anything
-        editable, frozen, declaration, inventory, catalog = _stack(workflow, api, manifest)
-        action = change.get("action")
-        if action == "install":
-            lora_id, label, trigger = (
-                change.get("id"),
-                change.get("label"),
-                change.get("trigger_word"),
-            )
-            filename, expected_hash = change.get("filename"), change.get("sha256")
+        if not isinstance(items, list) or not items or len(items) > MAX_CATALOG:
+            raise ManagementError("Invalid LoRA catalog", 400)
+        result: list[dict] = []
+        ids: set[str] = set()
+        filenames: set[str] = set()
+        allowed = {"id", "label", "filename", "trigger_word", "description"}
+        for item in items:
             if (
-                not isinstance(lora_id, str)
-                or not PUBLIC_ID.fullmatch(lora_id)
-                or any(item["id"] == lora_id for item in catalog)
+                not isinstance(item, dict)
+                or not {"id", "label", "filename"}.issubset(item)
+                or set(item) - allowed
             ):
+                raise ManagementError("Invalid LoRA catalog entry", 400)
+            lora_id = item["id"]
+            if not isinstance(lora_id, str) or not PUBLIC_ID.fullmatch(lora_id) or lora_id in ids:
                 raise ManagementError("Invalid or duplicate LoRA ID", 400)
-            if (
-                not isinstance(label, str)
-                or not label.strip()
-                or len(label) > 120
-                or not isinstance(trigger, str)
-                or not trigger.strip()
-                or len(trigger) > 120
-            ):
-                raise ManagementError("LoRA title and trigger word are required", 400)
-            if (
-                len(catalog) >= 100
-                or filename != f"cif-managed/{operation_id}.safetensors"
-                or not isinstance(expected_hash, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
-            ):
-                raise ManagementError("Invalid LoRA upload declaration", 400)
-            stage = self._stage_path(operation_id)
-            if not stage.is_file() or stage.is_symlink() or _sha_file(stage) != expected_hash:
-                raise ManagementError("Validated LoRA upload is unavailable")
-            _safetensors(stage)
-            catalog.append(
+            filename = _safe_model_name(item["filename"])
+            if filename in filenames:
+                raise ManagementError("LoRA file is shared by another catalog entry")
+            _file_under(self.root, filename)
+            entry = {
+                "id": lora_id,
+                "label": _text(item["label"], limit=120, required=True),
+                "filename": filename,
+            }
+            trigger = _text(item.get("trigger_word"), limit=120, required=False)
+            if trigger:
+                entry["trigger_word"] = trigger
+            description = _text(item.get("description"), limit=1000, required=False)
+            if description:
+                entry["description"] = description
+            ids.add(lora_id)
+            filenames.add(filename)
+            result.append(entry)
+        return result
+
+    def prepare(self, operation_id: str, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ManagementError("Invalid operation request", 400)
+        targets, multi = _requested_targets(payload)
+        with self._source_guards(target["source_path"] for target in targets):
+            return self._prepare_locked(operation_id, payload, targets, multi)
+
+    @staticmethod
+    def _prepared_response(journal: dict, multi: bool) -> dict:
+        targets = _journal_targets(journal)
+        if not multi:
+            revision = targets[0]["candidate_revision"]
+            return {
+                "state": "prepared",
+                "candidate_revision": revision,
+                "candidate_hashes": revision,
+                "filename": journal.get("filename"),
+            }
+        return {
+            "state": "prepared",
+            "filename": journal.get("filename"),
+            "targets": [
                 {
-                    "id": lora_id,
-                    "label": label.strip(),
-                    "filename": filename,
-                    "trigger_word": trigger.strip(),
+                    "source_path": target["source_path"],
+                    "expected_revision": target["expected_revision"],
+                    "candidate_revision": target["candidate_revision"],
                 }
+                for target in targets
+            ],
+        }
+
+    def _validated_install(self, operation_id: str, change: dict) -> tuple[str, str, str, str]:
+        lora_id, label, trigger = change.get("id"), change.get("label"), change.get("trigger_word")
+        filename, expected_hash = change.get("filename"), change.get("sha256")
+        if not isinstance(lora_id, str) or not PUBLIC_ID.fullmatch(lora_id):
+            raise ManagementError("Invalid or duplicate LoRA ID", 400)
+        if (
+            not isinstance(label, str)
+            or not label.strip()
+            or len(label) > 120
+            or not isinstance(trigger, str)
+            or not trigger.strip()
+            or len(trigger) > 120
+        ):
+            raise ManagementError("LoRA title and trigger word are required", 400)
+        if (
+            filename != f"cif-managed/{operation_id}.safetensors"
+            or not isinstance(expected_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+        ):
+            raise ManagementError("Invalid LoRA upload declaration", 400)
+        stage = self._stage_path(operation_id)
+        if not stage.is_file() or stage.is_symlink() or _sha_file(stage) != expected_hash:
+            raise ManagementError("Validated LoRA upload is unavailable")
+        _safetensors(stage)
+        return lora_id, label.strip(), trigger.strip(), filename
+
+    def _apply_change(
+        self,
+        action: str,
+        change: dict,
+        catalog: list[dict],
+        workflow: dict,
+        api: dict,
+        editable: dict,
+        *,
+        install: tuple[str, str, str, str] | None,
+        library: list[dict] | None,
+    ) -> str | None:
+        if action == "install":
+            assert install is not None
+            lora_id, label, trigger, filename = install
+            if any(item["id"] == lora_id for item in catalog):
+                raise ManagementError("Invalid or duplicate LoRA ID", 400)
+            if len(catalog) >= MAX_CATALOG:
+                raise ManagementError("Invalid LoRA upload declaration", 400)
+            catalog.append(
+                {"id": lora_id, "label": label, "filename": filename, "trigger_word": trigger}
             )
-        elif action == "remove":
+            return filename
+        if action == "remove":
             lora_id = change.get("id")
             found = [item for item in catalog if item.get("id") == lora_id]
             if len(found) != 1:
@@ -735,9 +870,9 @@ class LoraManagement:
                 raise ManagementError("LoRA is used by another active loader in this workflow")
             if _active_editable_reference(workflow, filename, ignore_stack_id=str(editable["id"])):
                 raise ManagementError("LoRA is used by another loader in this authoring workflow")
-            self._references(source, filename)
             catalog.remove(found[0])
-        elif action == "edit":
+            return filename
+        if action == "edit":
             lora_id, label, trigger = (
                 change.get("id"),
                 change.get("label"),
@@ -767,120 +902,227 @@ class LoraManagement:
                 item["trigger_word"] = next_trigger
             else:
                 item.pop("trigger_word", None)
-        else:
+            return filename
+        if action == "set_catalog":
+            assert library is not None
+            # Sync only adds LoRAs or updates their text; it never drops a weight binding.
+            wanted = {item["id"]: item["filename"] for item in library}
+            if any(wanted.get(item.get("id")) != item.get("filename") for item in catalog):
+                raise ManagementError("LoRA catalog change would drop an existing LoRA")
+            if catalog == library:
+                raise ManagementError("LoRA catalog is already current")
+            catalog[:] = copy.deepcopy(library)
+            return None
+        raise ManagementError("Unsupported LoRA change", 400)
+
+    def _prepare_locked(
+        self, operation_id: str, payload: dict, targets: list[dict], multi: bool
+    ) -> dict:
+        _safe_id(operation_id)
+        for target in targets:
+            if self._publisher_locked(target["source_path"]):
+                raise ManagementError("Save & Publish is active for this workflow")
+        change = payload.get("change")
+        published_at = payload.get("published_at")
+        if not isinstance(change, dict):
+            raise ManagementError("Invalid operation request", 400)
+        try:
+            datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ManagementError("Invalid new publication identity", 400) from exc
+        opdir = self._opdir(operation_id)
+        if (opdir / "journal.json").exists():
+            current_journal = self._journal(operation_id)
+            if current_journal.get("state") == "prepared":
+                if current_journal.get("request") != payload:
+                    raise ManagementError("Operation ID is already prepared for another change")
+                return self._prepared_response(current_journal, multi)
+            if current_journal.get("state") != "staged":
+                raise ManagementError("Operation is already in progress")
+            if change.get("action") != "install":
+                raise ManagementError("Staged upload belongs to an install operation")
+        action = change.get("action")
+        if action not in ACTIONS:
             raise ManagementError("Unsupported LoRA change", 400)
-        default = [{"id": item["id"], "strength": 0} for item in catalog]
-        public = [
-            {
-                key: item[key]
-                for key in ("id", "label", "description", "trigger_word")
-                if key in item
-            }
-            for item in catalog
-        ]
-        editable["widgets_values"][0] = frozen["catalog_json"] = json.dumps(
-            catalog, ensure_ascii=False
-        )
-        editable["widgets_values"][1] = frozen["value"] = json.dumps(default, ensure_ascii=False)
-        declaration["items"] = inventory["items"] = public
-        declaration["default"] = inventory["default"] = default
-        manifest["publication_id"] = new_id
-        manifest["published_at"] = published_at
-        manifest["workflow"].pop("compiled_sha256", None)
-        new_raw = {"workflow": _json_bytes(workflow), "api": _json_bytes(api)}
-        manifest["workflow"]["sha256"] = _sha(new_raw["workflow"])
-        manifest["api"]["sha256"] = _sha(new_raw["api"])
-        new_raw["manifest"] = _json_bytes(manifest)
-        candidate = _revision(new_raw)
-        if candidate["publication_id"] != new_id:
-            raise ManagementError("Candidate publication identity mismatch")
+        install = self._validated_install(operation_id, change) if action == "install" else None
+        library = self._catalog_items(change.get("items")) if action == "set_catalog" else None
+        filename: str | None = None
+        prepared: list[tuple[dict, dict[str, bytes], dict[str, bytes], dict, dict]] = []
+        for target in targets:
+            source = target["source_path"]
+            raw = self._bundle(source)
+            old = _revision(raw)
+            if old != target["expected_revision"]:
+                raise ManagementError("Publication revision changed")
+            workflow, api, manifest = (
+                copy.deepcopy(_parse(raw[key])) for key in ("workflow", "api", "manifest")
+            )
+            self.bundle(source)  # verify hashes and publication structure before changing
+            editable, frozen, declaration, inventory, catalog = _stack(workflow, api, manifest)
+            target_filename = self._apply_change(
+                action,
+                change,
+                catalog,
+                workflow,
+                api,
+                editable,
+                install=install,
+                library=library,
+            )
+            if prepared and target_filename != filename:
+                raise ManagementError("LoRA file differs between workflows")
+            filename = target_filename
+            default = [{"id": item["id"], "strength": 0} for item in catalog]
+            public = _public_items(catalog)
+            editable["widgets_values"][0] = frozen["catalog_json"] = json.dumps(
+                catalog, ensure_ascii=False
+            )
+            editable["widgets_values"][1] = frozen["value"] = json.dumps(
+                default, ensure_ascii=False
+            )
+            declaration["items"] = inventory["items"] = public
+            declaration["default"] = inventory["default"] = default
+            manifest["publication_id"] = target["publication_id"]
+            manifest["published_at"] = published_at
+            manifest["workflow"].pop("compiled_sha256", None)
+            new_raw = {"workflow": _json_bytes(workflow), "api": _json_bytes(api)}
+            manifest["workflow"]["sha256"] = _sha(new_raw["workflow"])
+            manifest["api"]["sha256"] = _sha(new_raw["api"])
+            new_raw["manifest"] = _json_bytes(manifest)
+            candidate = _revision(new_raw)
+            if candidate["publication_id"] != target["publication_id"]:
+                raise ManagementError("Candidate publication identity mismatch")
+            prepared.append((target, raw, new_raw, old, candidate))
+        if action == "remove":
+            assert filename is not None
+            self._references({target["source_path"] for target in targets}, filename)
         opdir.mkdir(parents=True, exist_ok=True)
-        for key in ("workflow", "api", "manifest"):
-            _atomic(opdir / f"old.{key}", raw[key])
-            _atomic(opdir / f"new.{key}", new_raw[key])
-        journal = {
+        journal_targets = []
+        for index, (target, raw, new_raw, old, candidate) in enumerate(prepared):
+            entry = {
+                "source_path": target["source_path"],
+                "dir": f"t{index}",
+                "expected_revision": old,
+                "candidate_revision": candidate,
+            }
+            directory = self._target_dir(operation_id, entry)
+            for key in ("workflow", "api", "manifest"):
+                _atomic(directory / f"old.{key}", raw[key])
+                _atomic(directory / f"new.{key}", new_raw[key])
+            journal_targets.append(entry)
+        journal: dict[str, Any] = {
+            "version": 2,
             "state": "prepared",
             "action": action,
-            "source_path": source,
-            "expected_revision": old,
-            "candidate_revision": candidate,
+            "targets": journal_targets,
             "filename": filename,
             "model_writer": self.model_writer,
             "request": payload,
         }
+        if not multi:
+            journal["source_path"] = journal_targets[0]["source_path"]
+            journal["expected_revision"] = journal_targets[0]["expected_revision"]
+            journal["candidate_revision"] = journal_targets[0]["candidate_revision"]
         self._save(operation_id, journal)
-        return {
-            "state": "prepared",
-            "candidate_revision": candidate,
-            "candidate_hashes": candidate,
-            "filename": filename,
-        }
+        return self._prepared_response(journal, multi)
 
-    def candidate(self, operation_id: str) -> dict:
+    def _journal_target(self, journal: dict, source_path: str | None) -> dict:
+        targets = _journal_targets(journal)
+        if source_path is None:
+            if len(targets) != 1:
+                raise ManagementError("Choose a candidate workflow", 400)
+            return targets[0]
+        matches = [target for target in targets if target["source_path"] == source_path]
+        if len(matches) != 1:
+            raise ManagementError("Workflow is not part of this operation", 404)
+        return matches[0]
+
+    def candidate(self, operation_id: str, source_path: str | None = None) -> dict:
         journal = self._journal(operation_id)
         if journal["state"] not in ("prepared", "committing", "committed", "quarantined"):
             raise ManagementError("Candidate is unavailable")
-        opdir = self._opdir(operation_id)
+        target = self._journal_target(journal, source_path)
+        directory = self._target_dir(operation_id, target)
         return {
-            "workflow_b64": base64.b64encode((opdir / "new.workflow").read_bytes()).decode(),
-            "api_b64": base64.b64encode((opdir / "new.api").read_bytes()).decode(),
-            "manifest_b64": base64.b64encode((opdir / "new.manifest").read_bytes()).decode(),
-            "revision": journal["candidate_revision"],
+            "source_path": target["source_path"],
+            "workflow_b64": base64.b64encode((directory / "new.workflow").read_bytes()).decode(),
+            "api_b64": base64.b64encode((directory / "new.api").read_bytes()).decode(),
+            "manifest_b64": base64.b64encode((directory / "new.manifest").read_bytes()).decode(),
+            "revision": target["candidate_revision"],
         }
+
+    @staticmethod
+    def _committed_response(journal: dict) -> dict:
+        targets = _journal_targets(journal)
+        response: dict[str, Any] = {
+            "state": "committed",
+            "targets": [
+                {"source_path": target["source_path"], "revision": target["candidate_revision"]}
+                for target in targets
+            ],
+        }
+        if len(targets) == 1:
+            response["revision"] = targets[0]["candidate_revision"]
+        return response
 
     def commit(self, operation_id: str) -> dict:
         journal = self._journal(operation_id)
-        if "source_path" not in journal:
+        targets = _journal_targets(journal)
+        if not targets:
             raise ManagementError("Operation is not prepared")
-        with self._source_guard(journal["source_path"]):
+        with self._source_guards(target["source_path"] for target in targets):
             return self._commit_locked(operation_id)
 
     def _commit_locked(self, operation_id: str) -> dict:
         journal = self._journal(operation_id)
         if journal["state"] == "committed":
-            return {"state": "committed", "revision": journal["candidate_revision"]}
+            return self._committed_response(journal)
         if journal["state"] not in ("prepared", "committing"):
             raise ManagementError("Operation is not prepared")
-        source = journal["source_path"]
-        if self._publisher_locked(source):
-            raise ManagementError("Save & Publish is active for this workflow")
-        paths = self._bundle_paths(source)
-        opdir = self._opdir(operation_id)
-        current = {key: _regular_bytes(path) for key, path in paths.items()}
-        for key in paths:
-            if current[key] not in (
-                (opdir / f"old.{key}").read_bytes(),
-                (opdir / f"new.{key}").read_bytes(),
-            ):
-                raise ManagementError("Publication changed during operation")
+        targets = _journal_targets(journal)
+        for target in targets:
+            if self._publisher_locked(target["source_path"]):
+                raise ManagementError("Save & Publish is active for this workflow")
+        for target in targets:
+            paths = self._bundle_paths(target["source_path"])
+            directory = self._target_dir(operation_id, target)
+            for key, path in paths.items():
+                if _regular_bytes(path) not in (
+                    (directory / f"old.{key}").read_bytes(),
+                    (directory / f"new.{key}").read_bytes(),
+                ):
+                    raise ManagementError("Publication changed during operation")
         if journal["action"] == "install":
             filename = journal["filename"]
-            target = _file_under(self.root, filename, must_exist=False)
+            target_file = _file_under(self.root, filename, must_exist=False)
             stage = self._stage_path(operation_id)
             expected_hash = journal["request"]["change"]["sha256"]
-            if self.model_writer and not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
+            if self.model_writer and not target_file.exists():
+                target_file.parent.mkdir(parents=True, exist_ok=True)
                 if not stage.is_file() or stage.is_symlink():
                     raise ManagementError("Uploaded LoRA staging file is missing")
                 if _sha_file(stage) != expected_hash:
                     raise ManagementError("Uploaded LoRA staging file changed")
-                os.replace(stage, target)
+                os.replace(stage, target_file)
             _file_under(self.root, filename)
-            if _sha_file(target) != expected_hash:
+            if _sha_file(target_file) != expected_hash:
                 raise ManagementError("Installed LoRA file changed")
         journal["state"] = "committing"
         self._save(operation_id, journal)
         try:
-            for key in ("workflow", "api", "manifest"):
-                _atomic(paths[key], (opdir / f"new.{key}").read_bytes())
-            if _revision(self._bundle(source)) != journal["candidate_revision"]:
-                raise ManagementError("Committed publication did not verify")
+            for target in targets:
+                paths = self._bundle_paths(target["source_path"])
+                directory = self._target_dir(operation_id, target)
+                for key in ("workflow", "api", "manifest"):
+                    _atomic(paths[key], (directory / f"new.{key}").read_bytes())
+                if _revision(self._bundle(target["source_path"])) != target["candidate_revision"]:
+                    raise ManagementError("Committed publication did not verify")
         except Exception:
             self.rollback(operation_id)
             raise
         journal["state"] = "committed"
         self._save(operation_id, journal)
-        return {"state": "committed", "revision": journal["candidate_revision"]}
+        return self._committed_response(journal)
 
     def quarantine(self, operation_id: str) -> dict:
         journal = self._journal(operation_id)
@@ -892,10 +1134,13 @@ class LoraManagement:
             raise ManagementError("Removal must be committed before quarantine")
         if self.model_writer:
             filename = journal["filename"]
-            self._references(journal["source_path"], filename)
-            target = _file_under(self.root, filename)
+            # Every target is committed without the file now, so only outside
+            # publications, authoring workflows, and the native queue can still block.
+            sources = {target["source_path"] for target in _journal_targets(journal)}
+            self._references(sources, filename)
+            target_file = _file_under(self.root, filename)
             quarantine = self._stage_path(operation_id, ".quarantine")
-            os.replace(target, quarantine)
+            os.replace(target_file, quarantine)
         journal["state"] = "quarantined"
         self._save(operation_id, journal)
         return {"state": "quarantined"}
@@ -920,30 +1165,33 @@ class LoraManagement:
             return {"state": "rolled_back"}
         if journal["state"] == "finalized":
             raise ManagementError("Finalized operation cannot be rolled back")
-        opdir = self._opdir(operation_id)
+        targets = _journal_targets(journal)
         try:
-            if "source_path" in journal:
-                paths = self._bundle_paths(journal["source_path"])
+            for target in targets:
+                paths = self._bundle_paths(target["source_path"])
+                directory = self._target_dir(operation_id, target)
                 for key in ("workflow", "api", "manifest"):
                     current = _regular_bytes(paths[key])
                     if current not in (
-                        (opdir / f"old.{key}").read_bytes(),
-                        (opdir / f"new.{key}").read_bytes(),
+                        (directory / f"old.{key}").read_bytes(),
+                        (directory / f"new.{key}").read_bytes(),
                     ):
                         raise ManagementError("External publication edit prevents rollback")
             if self.model_writer and journal["action"] == "remove":
                 quarantine = self._stage_path(operation_id, ".quarantine")
                 if quarantine.is_file():
-                    target = _file_under(self.root, journal["filename"], must_exist=False)
-                    if target.exists():
+                    target_file = _file_under(self.root, journal["filename"], must_exist=False)
+                    if target_file.exists():
                         raise ManagementError("LoRA file was replaced during rollback")
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(quarantine, target)
-            if "source_path" in journal:
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(quarantine, target_file)
+            for target in targets:
+                paths = self._bundle_paths(target["source_path"])
+                directory = self._target_dir(operation_id, target)
                 for key in ("workflow", "api", "manifest"):
-                    _atomic(paths[key], (opdir / f"old.{key}").read_bytes())
+                    _atomic(paths[key], (directory / f"old.{key}").read_bytes())
             if self.model_writer and journal["action"] == "install":
-                if "source_path" in journal:
+                if targets:
                     _file_under(self.root, journal["filename"], must_exist=False).unlink(
                         missing_ok=True
                     )
@@ -974,14 +1222,29 @@ class LoraManagement:
             self._stage_path(operation_id, ".quarantine").unlink(missing_ok=True)
         journal["state"] = "finalized"
         self._save(operation_id, journal)
-        for key in ("workflow", "api", "manifest"):
-            for prefix in ("old", "new"):
-                (self._opdir(operation_id) / f"{prefix}.{key}").unlink(missing_ok=True)
+        for target in _journal_targets(journal):
+            directory = self._target_dir(operation_id, target)
+            for key in ("workflow", "api", "manifest"):
+                for prefix in ("old", "new"):
+                    (directory / f"{prefix}.{key}").unlink(missing_ok=True)
         return {"state": "finalized"}
 
     def status(self, operation_id: str) -> dict:
         journal = self._journal(operation_id)
-        return {
-            key: journal.get(key)
-            for key in ("state", "action", "candidate_revision", "expected_revision")
-        }
+        targets = _journal_targets(journal)
+        result = {key: journal.get(key) for key in ("state", "action")}
+        if len(targets) == 1:
+            result["candidate_revision"] = targets[0].get("candidate_revision")
+            result["expected_revision"] = targets[0].get("expected_revision")
+        else:
+            result["candidate_revision"] = journal.get("candidate_revision")
+            result["expected_revision"] = journal.get("expected_revision")
+        result["targets"] = [
+            {
+                "source_path": target["source_path"],
+                "expected_revision": target.get("expected_revision"),
+                "candidate_revision": target.get("candidate_revision"),
+            }
+            for target in targets
+        ]
+        return result

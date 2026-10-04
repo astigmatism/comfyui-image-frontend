@@ -44,7 +44,9 @@ class EmptyQueue:
         return ([], [])
 
 
-def publication(userdata: Path, catalog: list[dict], *, node_id: int = 42) -> None:
+def publication(
+    userdata: Path, catalog: list[dict], *, node_id: int = 42, source: str = SOURCE
+) -> None:
     names = management.WIDGETS
     defaults = [{"id": item["id"], "strength": 0} for item in catalog]
     public = [
@@ -96,10 +98,10 @@ def publication(userdata: Path, catalog: list[dict], *, node_id: int = 42) -> No
         "step": 0.05,
     }
     manifest = {
-        "source_id": SOURCE,
+        "source_id": source,
         "publication_id": str(uuid.uuid4()),
-        "workflow": {"path": SOURCE},
-        "api": {"path": "workflows/team/test.api.json"},
+        "workflow": {"path": source},
+        "api": {"path": source[:-5] + ".api.json"},
         "interface": {"inputs": [declaration]},
         "technical_inventory": {
             "loras": [
@@ -115,15 +117,15 @@ def publication(userdata: Path, catalog: list[dict], *, node_id: int = 42) -> No
             ]
         },
     }
-    folder = userdata / "workflows" / "team"
-    folder.mkdir(parents=True, exist_ok=True)
+    stem = userdata / source[:-5]
+    stem.parent.mkdir(parents=True, exist_ok=True)
     w = management._json_bytes(workflow)
     a = management._json_bytes(api)
     manifest["workflow"]["sha256"] = management._sha(w)
     manifest["api"]["sha256"] = management._sha(a)
-    (folder / "test.json").write_bytes(w)
-    (folder / "test.api.json").write_bytes(a)
-    (folder / "test.interface.json").write_bytes(management._json_bytes(manifest))
+    (userdata / source).write_bytes(w)
+    stem.with_name(stem.name + ".api.json").write_bytes(a)
+    stem.with_name(stem.name + ".interface.json").write_bytes(management._json_bytes(manifest))
 
 
 class ManagementTests(unittest.TestCase):

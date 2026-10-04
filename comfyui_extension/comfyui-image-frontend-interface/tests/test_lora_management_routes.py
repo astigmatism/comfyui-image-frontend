@@ -129,6 +129,26 @@ class RouteBoundaryTests(unittest.TestCase):
             with self.subTest(headers=headers), self.assertRaises(routes.ManagementError):
                 routes._service(request(headers), publisher=True)
 
+    def test_plain_http_editor_without_fetch_metadata_still_needs_same_origin(self):
+        # Browsers omit Sec-Fetch-* outside secure contexts (http://<lan-ip>:8188).
+        plain = {"X-CIF-Publisher-Lease": "1", "Origin": "http://comfy.example:8188"}
+        self.assertIsNotNone(
+            routes._service(request(plain, host="comfy.example:8188"), publisher=True)
+        )
+        for headers in (
+            {**plain, "Origin": "http://attacker.example:8188"},
+            {"X-CIF-Publisher-Lease": "1"},
+            {**plain, "Sec-Fetch-Site": "same-site"},
+        ):
+            with self.subTest(headers=headers), self.assertRaises(routes.ManagementError):
+                routes._service(request(headers, host="comfy.example:8188"), publisher=True)
+
+    def test_empty_comfy_user_header_means_the_default_namespace(self):
+        token = {"X-CIF-Management-Token": "s" * 32}
+        self.assertIsNotNone(routes._service(request({**token, "Comfy-User": ""})))
+        with self.assertRaisesRegex(routes.ManagementError, "namespace differs"):
+            routes._service(request({**token, "Comfy-User": "someone"}))
+
 
 if __name__ == "__main__":
     unittest.main()
