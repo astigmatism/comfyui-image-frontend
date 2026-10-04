@@ -57,7 +57,11 @@ import {
   insertTranscription,
   latestCompletedImageGeneration,
   loadRecentResolutions,
+  mapModelChoiceValue,
+  mapModelSelections,
   migrateInterfaceState,
+  migrateLoraStrengthMemory,
+  recentResolutionsForInterface,
   normalizeCheckpointTierLayout,
   normalizeCheckpointRanks,
   normalizeLoraRanks,
@@ -1013,6 +1017,10 @@ function openSourcePickerDialog(button) {
     checkpointTierBaseline: structuredClone(state.checkpointTiers),
     ranksEdited: false,
     searchQuery: "",
+    // The panel's source: other workflows preview its checkpoints until edited here.
+    originSourceKey: activeKey,
+    editedSourceKeys: new Set(),
+    carriedSourceKeys: new Set(),
   };
   ensureSourcePickerDraftPreferences(
     sources.find((source) => sourceKey(source) === activeKey),
@@ -1071,6 +1079,45 @@ function ensureSourcePickerDraftPreferences(source) {
   draft.checkpointTiers = normalizeCheckpointRanks(draft.checkpointTiers, [selector]);
 }
 
+// Main panel only: choosing another workflow previews the panel source's checkpoints
+// mapped into it, so applying the change keeps the same checkpoints where possible.
+// Prompt Re-run keeps its own source-switching rules.
+function carrySourcePickerDraftSelections(source) {
+  const draft = state.sourcePickerDraft;
+  const key = sourceKey(source);
+  if (
+    !draft ||
+    sourcePickerContext ||
+    !key ||
+    key === draft.originSourceKey ||
+    draft.editedSourceKeys?.has(key)
+  ) {
+    return;
+  }
+  const origin = sourcesForPicker().find((item) => sourceKey(item) === draft.originSourceKey);
+  const carried = origin
+    ? mapModelSelections(origin, draft.modelSelectionsBySource?.[draft.originSourceKey] || {}, source)
+    : null;
+  if (carried) {
+    draft.modelSelectionsBySource[key] = carried;
+    draft.carriedSourceKeys.add(key);
+  }
+}
+
+// A workflow only previewed with carried checkpoints keeps its stored selection
+// unless it becomes the applied source or is edited in the picker.
+function sourcePickerDraftOnlyPreviewed(draft, key) {
+  return Boolean(
+    draft?.carriedSourceKeys?.has(key) &&
+      !draft.editedSourceKeys?.has(key) &&
+      key !== draft.sourceKey,
+  );
+}
+
+function markSourcePickerDraftEdited(key) {
+  state.sourcePickerDraft?.editedSourceKeys?.add(key);
+}
+
 function updateSourcePickerDraftWorkflow(key) {
   const draft = state.sourcePickerDraft;
   const source = sourcesForPicker().find(
@@ -1080,6 +1127,7 @@ function updateSourcePickerDraftWorkflow(key) {
   draft.sourceKey = key;
   draft.searchQuery = "";
   ensureSourcePickerDraftPreferences(source);
+  carrySourcePickerDraftSelections(source);
   renderSourcePickerDialog();
   queueMicrotask(() => {
     document
@@ -1130,6 +1178,7 @@ function updateSourcePickerDraftModelSelection(
   );
   if (checked) selected.add(value);
   else selected.delete(value);
+  markSourcePickerDraftEdited(key);
   draft.modelSelectionsBySource[key] = {
     ...draft.modelSelectionsBySource[key],
     [parameterId]: [...selected],
@@ -1160,6 +1209,7 @@ function updateAllSourcePickerCheckpoints(checked, tierId = null) {
     if (checked) current.add(value);
     else current.delete(value);
   }
+  markSourcePickerDraftEdited(key);
   draft.modelSelectionsBySource[key] = {
     ...draft.modelSelectionsBySource[key],
     [selector.parameter_id]: [...current],
@@ -1251,6 +1301,7 @@ async function applySourcePickerDialog() {
   }
   const sourceChanged = draft.sourceKey !== state.activeSourceKey;
   for (const source of sources) {
+    if (sourcePickerDraftOnlyPreviewed(draft, sourceKey(source))) continue;
     setModelSelectionsForSource(
       source,
       draft.modelSelectionsBySource?.[sourceKey(source)] || {},
@@ -1259,7 +1310,10 @@ async function applySourcePickerDialog() {
   closeSourcePickerDialog("apply", { flushDeferredUpdates: false });
   state.serverFieldErrors = {};
   state.formError = null;
-  if (sourceChanged) await selectSource(draft.sourceKey, { summary: selectedSource });
+  if (sourceChanged) {
+    // The draft already carried (and possibly edited) this workflow's checkpoints.
+    await selectSource(draft.sourceKey, { summary: selectedSource, carryModelSelections: false });
+  }
   applyStoredModelSelectionsToActiveParameters();
   renderPanel();
   await saveCheckpointTierPreferences();
@@ -3745,18 +3799,65 @@ async function loadSources({ signal, diagnostic = false } = {}) {
   }
 }
 
-async function selectSource(key, { summary = null, signal, diagnostic = false } = {}) {
+// Checkpoints follow the shared checkpoint identity (then the public value) into the
+// newly loaded source. With nothing in common the source keeps its own selection.
+function carryModelSelection(migration, { carrySelections = true } = {}) {
+  const source = state.activeSource;
+  const contract = sourceInterface(source);
+  const selector = sourceModelSelectors(source)[0];
+  const previousSelector = sourceModelSelectors(migration?.source)[0];
+  if (!selector || !previousSelector) return;
+  const primary = mapModelChoiceValue(
+    migration.source,
+    source,
+    migration.values?.[previousSelector.parameter_id],
+  );
+  const declared = interfaceInputs(contract).some(
+    (input) => input.id === selector.parameter_id && input.type === "choice",
+  );
+  if (primary && declared) {
+    const changed = state.parameters[selector.parameter_id] !== primary;
+    state.parameters[selector.parameter_id] = primary;
+    if ((migration.explicitInputIds || []).includes(previousSelector.parameter_id)) {
+      state.explicitParameterIds.add(selector.parameter_id);
+    }
+    if (changed) {
+      state.parameters = applyChoiceStrengthDefaults(
+        contract,
+        state.parameters,
+        state.explicitParameterIds,
+        selector.parameter_id,
+      );
+    }
+  }
+  if (!carrySelections) return;
+  const carried = mapModelSelections(migration.source, migration.modelSelections, source);
+  if (carried) setModelSelectionsForSource(source, carried);
+}
+
+// Changing the source keeps the control panel: every value the destination accepts
+// carries over (inputs, checkpoints, LoRAs, preset, recent resolutions). Values it
+// rejects and inputs only it declares use its own last-used values or defaults.
+async function selectSource(key, { summary = null, signal, diagnostic = false, carryModelSelections = true } = {}) {
   const canonical = reconcileSourceKey(state.sources, key, state.parameterStateBySource);
   if (canonical !== key) { key = canonical; summary = null; }
   const previousSource = state.activeSource;
   if (previousSource && sourceKey(previousSource) !== key) loraManagerController?.invalidateSource(sourceKey(previousSource));
   syncServerControls();
-  const activeMigration = sourceInterface(state.activeSource)
+  const previousContract = sourceInterface(state.activeSource);
+  const activeMigration = previousContract
     ? {
         sourceKey: state.activeSourceKey,
-        interface: structuredClone(sourceInterface(state.activeSource)),
+        source: structuredClone(state.activeSource),
+        interface: structuredClone(previousContract),
         values: structuredClone(state.parameters),
         explicitInputIds: [...state.explicitParameterIds],
+        modelSelections: structuredClone(modelSelectionsForSource(state.activeSource)),
+        loraStrengthMemory: structuredClone(state.loraStrengthMemory),
+        selectedPreset: state.selectedPreset,
+        recentResolutions: recentResolutionsForInterface(state.recentResolutions, previousContract) === null
+          ? null
+          : structuredClone(state.recentResolutions),
       }
     : state.pendingSourceMigration;
   const migration = activeMigration?.sourceKey !== key ? activeMigration : null;
@@ -3816,14 +3917,24 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
       migration?.explicitInputIds || [],
       baseValues,
       saved?.explicitInputIds || [],
-      { carryLoraStacks: false },
+      { rejectInvalid: true },
     );
     state.parameters = migrated.values;
-    state.loraStrengthMemory = reconcileLoraStrengthMemory(contract, state.loraStrengthMemory);
     state.explicitParameterIds = new Set(migrated.explicitInputIds);
-    const savedPresetId = saved?.selectedPreset || null;
-    if (savedPresetId && (contract.presets || []).some((preset) => preset.id === savedPresetId)) {
-      state.selectedPreset = savedPresetId;
+    if (migration) {
+      state.loraStrengthMemory = migrateLoraStrengthMemory(
+        contract,
+        migration.interface,
+        migration.values,
+        migration.loraStrengthMemory,
+        state.loraStrengthMemory,
+      );
+      carryModelSelection(migration, { carrySelections: carryModelSelections });
+    }
+    state.loraStrengthMemory = reconcileLoraStrengthMemory(contract, state.loraStrengthMemory);
+    const presetId = migration ? migration.selectedPreset || null : saved?.selectedPreset || null;
+    if (presetId && (contract.presets || []).some((preset) => preset.id === presetId)) {
+      state.selectedPreset = presetId;
     }
     const selectionKey = modelSelectionStoreKey(state.activeSource);
     if (selectionKey && !state.modelSelectionsBySourceRevision.has(selectionKey)) {
@@ -3831,6 +3942,17 @@ async function selectSource(key, { summary = null, signal, diagnostic = false } 
         state.activeSource,
         normalizeSourceModelSelections(state.activeSource, {}, state.parameters),
       );
+    }
+    if (migration) {
+      // Keep the checkpoint value and the fan-out selection in agreement on every path.
+      applyStoredModelSelectionsToActiveParameters();
+      const recent = Array.isArray(migration.recentResolutions)
+        ? recentResolutionsForInterface(migration.recentResolutions, contract)
+        : null;
+      if (recent !== null) {
+        state.recentResolutions = recent;
+        persistRecentResolutions();
+      }
     }
     state.pendingSourceMigration = null;
     state.sourceDetailError = null;

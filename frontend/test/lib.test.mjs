@@ -38,6 +38,8 @@ import {
   creativeDirectionWarningText,
   isRetryablePromptAssistantError,
   latestCompletedImageGeneration,
+  mapModelChoiceValue,
+  mapModelSelections,
   migrateInterfaceState,
   normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
@@ -52,6 +54,7 @@ import {
   photoViewerImageLayout,
   loadRecentResolutions,
   recentResolutionKey,
+  recentResolutionsForInterface,
   recordRecentResolution,
   RECENT_RESOLUTIONS_LIMIT,
   RESOLUTION_PRESET_GROUPS,
@@ -1402,6 +1405,184 @@ test("source changes keep destination defaults for incompatible and ambiguous co
     values: { new_choice: "new", toggle: false },
     explicitInputIds: [],
   });
+});
+
+function twinWorkflowInterface() {
+  return {
+    inputs: [
+      ...structuredClone(publishedInterface.inputs),
+      {
+        id: "checkpoint",
+        label: "Checkpoint",
+        type: "choice",
+        semantic_role: "checkpoint",
+        default: "v4_int8",
+        choices: [
+          { value: "v4_int8", label: "V4 INT8" },
+          { value: "v5_bf16", label: "V5 BF16" },
+        ],
+      },
+      {
+        id: "style",
+        label: "Style",
+        type: "choice",
+        semantic_role: "style",
+        default: "soft",
+        choices: [
+          { value: "soft", label: "Soft", default_strength: 0.5 },
+          { value: "hard", label: "Hard", default_strength: 1 },
+        ],
+      },
+      { id: "style_strength", label: "Style strength", type: "number", semantic_role: "style", minimum: 0, maximum: 2, step: 0.05, default: 0.5 },
+      { id: "guidance", label: "Guidance", type: "number", minimum: 1, maximum: 10, step: 0.5, default: 4 },
+      { id: "reference_image", label: "Reference", type: "image" },
+      {
+        id: "loras",
+        label: "LoRAs",
+        type: "lora_stack",
+        semantic_role: "lora",
+        items: [
+          { id: "a", label: "Alpha", lora_identity: `lr1_${"a".repeat(64)}` },
+          { id: "b", label: "Beta", lora_identity: `lr1_${"b".repeat(64)}` },
+        ],
+        default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }],
+        minimum: 0,
+        maximum: 2,
+        step: 0.05,
+      },
+    ],
+  };
+}
+
+test("switching between twin workflows keeps every control-panel value", () => {
+  const contract = twinWorkflowInterface();
+  const previous = {
+    ...defaultsForInterface(contract),
+    prompt: "harbor at dusk",
+    width: 1280,
+    height: 960,
+    seed: { mode: "fixed", value: "987654321" },
+    enable_seedvr2_upscale: true,
+    knpv4_1_strength: 1.35,
+    checkpoint: "v5_bf16",
+    style: "hard",
+    style_strength: 1.4,
+    guidance: 6.5,
+    reference_image: { asset_id: "asset-1" },
+    loras: [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }],
+  };
+  const previousExplicit = Object.keys(previous).filter((id) => id !== "enable_seedvr2_upscale");
+  const own = {
+    ...defaultsForInterface(contract),
+    prompt: "last time in the other workflow",
+    width: 512,
+    checkpoint: "v4_int8",
+    guidance: 2,
+    loras: [{ id: "a", strength: 0.7 }, { id: "b", strength: 0 }],
+  };
+  const migrated = migrateInterfaceState(
+    contract,
+    structuredClone(contract),
+    previous,
+    previousExplicit,
+    own,
+    ["prompt", "width", "guidance", "enable_seedvr2_upscale"],
+    { rejectInvalid: true },
+  );
+  assert.deepEqual(migrated.values, previous);
+  assert.deepEqual(new Set(migrated.explicitInputIds), new Set(previousExplicit));
+  assert.deepEqual(clientValidate(contract, migrated.values), {});
+});
+
+test("source changes fall back to the destination's own value where it rejects a carried one", () => {
+  const source = twinWorkflowInterface();
+  const target = twinWorkflowInterface();
+  const guidance = target.inputs.find((input) => input.id === "guidance");
+  guidance.maximum = 5;
+  target.inputs.find((input) => input.id === "width").maximum = 1024;
+  const seed = target.inputs.find((input) => input.id === "seed");
+  seed.maximum = "1000";
+  const previous = {
+    ...defaultsForInterface(source),
+    prompt: "carried prompt",
+    width: 1280,
+    seed: { mode: "fixed", value: "987654321" },
+    guidance: 6.5,
+    checkpoint: "v5_bf16",
+  };
+  const own = { ...defaultsForInterface(target), width: 768, guidance: 3, seed: { mode: "fixed", value: "42" } };
+  const migrated = migrateInterfaceState(
+    target,
+    source,
+    previous,
+    ["prompt", "width", "seed", "guidance", "checkpoint"],
+    own,
+    ["seed"],
+    { rejectInvalid: true },
+  );
+  assert.equal(migrated.values.prompt, "carried prompt");
+  assert.equal(migrated.values.checkpoint, "v5_bf16");
+  assert.equal(migrated.values.width, 768);
+  assert.equal(migrated.values.guidance, 3);
+  assert.deepEqual(migrated.values.seed, { mode: "fixed", value: "42" });
+  assert.deepEqual(new Set(migrated.explicitInputIds), new Set(["prompt", "checkpoint", "seed"]));
+  assert.deepEqual(clientValidate(target, migrated.values), {});
+  // Without the option (recall of an unavailable source) values carry unchanged.
+  const unchecked = migrateInterfaceState(target, source, previous, ["width"], own, []);
+  assert.equal(unchecked.values.width, 1280);
+  // A carried value is kept when the destination's own value is no better.
+  const invalidOwn = migrateInterfaceState(target, source, previous, ["width"], { ...own, width: 4000 }, [], { rejectInvalid: true });
+  assert.equal(invalidOwn.values.width, 1280);
+});
+
+function checkpointSource(choices, parameterId = "checkpoint") {
+  return {
+    model_selectors: [{ parameter_id: parameterId, choices: choices.map(([value, checkpoint_id]) => ({ value, label: value, checkpoint_id })) }],
+    interface: {
+      inputs: [{
+        id: parameterId,
+        type: "choice",
+        semantic_role: "checkpoint",
+        default: choices[0][0],
+        choices: choices.map(([value]) => ({ value, label: value })),
+      }],
+    },
+  };
+}
+
+test("checkpoint selections follow the shared checkpoint identity, then the public value", () => {
+  const cp = (character) => `cp1_${character.repeat(64)}`;
+  const from = checkpointSource([["v4", cp("1")], ["v5", cp("2")], ["only_here", cp("3")], ["tyjr", cp("4")]]);
+  const to = checkpointSource([["v4_int8", cp("1")], ["tyjr", cp("9")], ["x", cp("5")]], "model");
+  assert.deepEqual(
+    mapModelSelections(from, { checkpoint: ["tyjr", "only_here", "v4", "v4"] }, to),
+    { model: ["tyjr", "v4_int8"] },
+  );
+  assert.equal(mapModelChoiceValue(from, to, "v4"), "v4_int8");
+  assert.equal(mapModelChoiceValue(from, to, "tyjr"), "tyjr");
+  assert.equal(mapModelChoiceValue(from, to, "only_here"), null);
+  assert.equal(mapModelSelections(from, { checkpoint: ["only_here"] }, to), null);
+  assert.equal(mapModelSelections(from, { checkpoint: [] }, to), null);
+  assert.equal(mapModelSelections(from, { checkpoint: ["v4"] }, { interface: { inputs: [] } }), null);
+  assert.equal(mapModelSelections({ interface: { inputs: [] } }, {}, to), null);
+  // Identical workflows map one-to-one in the selected order.
+  assert.deepEqual(mapModelSelections(from, { checkpoint: ["v5", "v4"] }, structuredClone(from)), { checkpoint: ["v5", "v4"] });
+});
+
+test("recent resolutions carry only into a source with a resolution control that accepts them", () => {
+  const recents = [{ width: 1280, height: 960 }, { width: 2048, height: 512 }, { width: 1001, height: 1000 }];
+  const pair = twinWorkflowInterface();
+  pair.inputs.find((input) => input.id === "width").maximum = 1536;
+  assert.deepEqual(recentResolutionsForInterface(recents, pair), [{ width: 1280, height: 960 }]);
+  assert.deepEqual(recentResolutionsForInterface([], pair), []);
+  const hidden = twinWorkflowInterface();
+  for (const input of hidden.inputs) if (["width", "height"].includes(input.id)) input.conditions = [{ when: { input: "prompt", equals: "never" }, effect: "hidden" }];
+  assert.equal(recentResolutionsForInterface(recents, hidden).length, 2);
+  const composite = {
+    inputs: [{ id: "size", type: "resolution", constraints: { minimum: 64, maximum: 1600, multiple: 64 } }],
+  };
+  assert.deepEqual(recentResolutionsForInterface(recents, composite), [{ width: 1280, height: 960 }]);
+  assert.equal(recentResolutionsForInterface(recents, { inputs: [{ id: "prompt", type: "string" }] }), null);
 });
 
 test("choice defaults and requests use stable public values", () => {

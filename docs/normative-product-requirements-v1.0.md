@@ -327,7 +327,7 @@ This convention avoids requiring a new custom-node schema field and aligns with 
 - **WF-018:** Dynamic options MUST be resolved according to the contract and current ComfyUI runtime capabilities.
 - **WF-019:** Unknown controls and values outside allowed constraints MUST be rejected before queue acceptance.
 - **WF-020:** Upload controls MUST use application-owned upload IDs and server-side upload/patch behavior. The browser MUST NOT receive arbitrary ComfyUI filesystem paths.
-- **WF-021:** Changing the generation source replaces the dynamic control surface with the newly selected profile's defaults. No preservation dialog is required.
+- **WF-021:** Changing the generation source MUST keep every control-panel value the newly selected source accepts: inputs by public ID and type (or a unique semantic role), checkpoints by shared checkpoint identity and then public value, LoRA entries by library ID and then shared LoRA identity, and the recently used resolutions. Values it does not accept, and inputs only it declares, use that source's last-used values or defaults. No preservation dialog is required.
 
 ---
 

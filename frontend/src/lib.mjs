@@ -874,11 +874,9 @@ export function applyChoiceStrengthDefaults(
   return result;
 }
 
-function reconcileLoraStack(input, value) {
-  if (!Array.isArray(value)) return structuredClone(input.default);
-  const currentIds = new Set(input.items.map((item) => item.id));
+function wellFormedLoraStack(value) {
+  if (!Array.isArray(value)) return false;
   const seen = new Set();
-  const result = [];
   for (const entry of value) {
     if (
       !entry ||
@@ -888,7 +886,18 @@ function reconcileLoraStack(input, value) {
       typeof entry.strength !== "number" ||
       !Number.isFinite(entry.strength) ||
       seen.has(entry.id)
-    ) return structuredClone(input.default);
+    ) return false;
+    seen.add(entry.id);
+  }
+  return true;
+}
+
+function reconcileLoraStack(input, value) {
+  if (!wellFormedLoraStack(value)) return structuredClone(input.default);
+  const currentIds = new Set(input.items.map((item) => item.id));
+  const seen = new Set();
+  const result = [];
+  for (const entry of value) {
     seen.add(entry.id);
     if (currentIds.has(entry.id)) result.push({ id: entry.id, strength: entry.strength });
   }
@@ -955,6 +964,49 @@ function interfaceMigrationPairs(targetContract, sourceContract) {
   });
 }
 
+// Workflows of one LoRA library share item IDs; the shared lr1_ identity (a hash of the
+// weight file) still proves two differently named entries apply the same LoRA.
+function loraItemMapper(sourceControl, targetControl) {
+  const targetItems = Array.isArray(targetControl?.items) ? targetControl.items : [];
+  const targetIds = new Set(targetItems.map((item) => item?.id).filter((id) => typeof id === "string"));
+  const targetByIdentity = new Map();
+  for (const item of targetItems) {
+    if (typeof item?.lora_identity === "string" && !targetByIdentity.has(item.lora_identity)) {
+      targetByIdentity.set(item.lora_identity, item.id);
+    }
+  }
+  const sourceIdentities = new Map(
+    (Array.isArray(sourceControl?.items) ? sourceControl.items : [])
+      .filter((item) => typeof item?.id === "string")
+      .map((item) => [item.id, item.lora_identity]),
+  );
+  return (id) => {
+    if (typeof id !== "string") return null;
+    if (targetIds.has(id)) return id;
+    const identity = sourceIdentities.get(id);
+    return typeof identity === "string" ? targetByIdentity.get(identity) ?? null : null;
+  };
+}
+
+function migrateLoraStackValue(sourceControl, targetControl, value) {
+  // A malformed stack restores the destination's complete default, as reconciliation does.
+  if (!wellFormedLoraStack(value)) return structuredClone(targetControl.default);
+  const mapId = loraItemMapper(sourceControl, targetControl);
+  const mapped = [];
+  for (const entry of value) {
+    const id = mapId(entry.id);
+    if (id && !mapped.some((item) => item.id === id)) mapped.push({ id, strength: entry.strength });
+  }
+  // Nothing in common: keep the destination's own picks rather than resetting them.
+  if (!mapped.length) return null;
+  return reconcileLoraStack(targetControl, mapped);
+}
+
+function carriedValueRejected(input, value, contract, values) {
+  const probe = { ...structuredClone(values), [input.id]: value };
+  return Boolean(clientValidate(contract, probe)[input.id]);
+}
+
 export function migrateInterfaceState(
   targetContract,
   sourceContract,
@@ -962,15 +1014,15 @@ export function migrateInterfaceState(
   sourceExplicitInputIds = [],
   baseValues = defaultsForInterface(targetContract),
   baseExplicitInputIds = [],
-  { carryLoraStacks = true } = {},
+  { rejectInvalid = false } = {},
 ) {
   const result = structuredClone(baseValues || {});
   const explicit = new Set(baseExplicitInputIds || []);
+  const baseExplicit = new Set(baseExplicitInputIds || []);
   const sourceExplicit = new Set(sourceExplicitInputIds || []);
+  const carried = [];
   for (const { source, target } of interfaceMigrationPairs(targetContract, sourceContract)) {
     if (!Object.hasOwn(sourceValues || {}, source.id)) continue;
-    // Workflows share one LoRA library, but each keeps its own LoRA picks.
-    if (target.type === "lora_stack" && !carryLoraStacks) continue;
     const value = sourceValues[source.id];
     if (
       target.type === "choice" &&
@@ -978,20 +1030,112 @@ export function migrateInterfaceState(
     )
       continue;
     if (target.type === "lora_stack") {
-      result[target.id] = reconcileLoraStack(target, value);
+      const stack = migrateLoraStackValue(source, target, value);
+      if (!stack) continue;
+      result[target.id] = stack;
     } else {
       result[target.id] =
         target.type === "seed" ? seedFormValue(target, value) : structuredClone(value);
     }
+    carried.push(target);
     if (sourceExplicit.has(source.id)) explicit.add(target.id);
     else explicit.delete(target.id);
   }
   const targetIds = new Set(interfaceInputs(targetContract).map((input) => input.id));
-  const explicitInputIds = [...explicit].filter((id) => targetIds.has(id));
+  let explicitInputIds = [...explicit].filter((id) => targetIds.has(id));
+  let values = applyChoiceStrengthDefaults(targetContract, result, explicitInputIds);
+  if (rejectInvalid && carried.length) {
+    // A carried value the destination rejects falls back to the destination's own value.
+    const base = applyChoiceStrengthDefaults(
+      targetContract,
+      structuredClone(baseValues || {}),
+      [...baseExplicit].filter((id) => targetIds.has(id)),
+    );
+    const errors = clientValidate(targetContract, values);
+    let reverted = false;
+    for (const target of carried) {
+      if (!errors[target.id]) continue;
+      if (!Object.hasOwn(base, target.id)) continue;
+      if (carriedValueRejected(target, base[target.id], targetContract, values)) continue;
+      values[target.id] = structuredClone(base[target.id]);
+      if (baseExplicit.has(target.id)) explicit.add(target.id);
+      else explicit.delete(target.id);
+      reverted = true;
+    }
+    if (reverted) {
+      explicitInputIds = [...explicit].filter((id) => targetIds.has(id));
+      values = applyChoiceStrengthDefaults(targetContract, values, explicitInputIds);
+    }
+  }
+  return { values, explicitInputIds };
+}
+
+// Remembered LoRA strengths follow their stack: replaced exactly when the stack carries.
+export function migrateLoraStrengthMemory(
+  targetContract,
+  sourceContract,
+  sourceValues = {},
+  sourceMemory = {},
+  baseMemory = {},
+) {
+  const result = structuredClone(baseMemory || {});
+  for (const { source, target } of interfaceMigrationPairs(targetContract, sourceContract)) {
+    if (target.type !== "lora_stack") continue;
+    const value = sourceValues?.[source.id];
+    const mapId = loraItemMapper(source, target);
+    if (!wellFormedLoraStack(value) || !value.some((entry) => mapId(entry.id))) continue;
+    const remembered = sourceMemory?.[source.id];
+    const mapped = {};
+    for (const [itemId, strength] of Object.entries(remembered && typeof remembered === "object" ? remembered : {})) {
+      const id = mapId(itemId);
+      if (id && !Object.hasOwn(mapped, id)) mapped[id] = strength;
+    }
+    result[target.id] = mapped;
+  }
+  return result;
+}
+
+function modelChoiceMatcher(fromSource, toSource) {
+  const from = sourceModelSelectors(fromSource)[0];
+  const to = sourceModelSelectors(toSource)[0];
+  if (!from || !to) return null;
+  const toByIdentity = new Map();
+  for (const choice of to.choices) {
+    if (typeof choice.checkpoint_id === "string" && !toByIdentity.has(choice.checkpoint_id)) {
+      toByIdentity.set(choice.checkpoint_id, choice.value);
+    }
+  }
+  const toValues = new Set(to.choices.map((choice) => choice.value));
+  const fromByValue = new Map(from.choices.map((choice) => [choice.value, choice]));
   return {
-    values: applyChoiceStrengthDefaults(targetContract, result, explicitInputIds),
-    explicitInputIds,
+    from,
+    to,
+    map(value) {
+      if (typeof value !== "string") return null;
+      const identity = fromByValue.get(value)?.checkpoint_id;
+      if (typeof identity === "string" && toByIdentity.has(identity)) return toByIdentity.get(identity);
+      return toValues.has(value) ? value : null;
+    },
   };
+}
+
+// Map a checkpoint selection between workflows: the shared cp1_ checkpoint identity
+// first, then an identical public value. Null when nothing carries.
+export function mapModelSelections(fromSource, fromSelections = {}, toSource) {
+  const matcher = modelChoiceMatcher(fromSource, toSource);
+  if (!matcher) return null;
+  const raw = fromSelections?.[matcher.from.parameter_id];
+  const requested = raw instanceof Set ? [...raw] : Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  const selected = [];
+  for (const value of requested) {
+    const mapped = matcher.map(value);
+    if (mapped && !selected.includes(mapped)) selected.push(mapped);
+  }
+  return selected.length ? { [matcher.to.parameter_id]: selected } : null;
+}
+
+export function mapModelChoiceValue(fromSource, toSource, value) {
+  return modelChoiceMatcher(fromSource, toSource)?.map(value) ?? null;
 }
 
 export function applyRecallSeedMode(currentParameters, contract, parameters) {
@@ -1245,6 +1389,38 @@ export function recordRecentResolution(entries, value, limit = RECENT_RESOLUTION
     0,
     limit,
   );
+}
+
+function resolutionInputsOf(contract) {
+  const inputs = interfaceInputs(contract);
+  const composite = inputs.filter((input) => input.type === "resolution");
+  if (composite.length) return { composite: composite[0] };
+  const widths = inputs.filter((input) => input.type === "integer" && input.semantic_role === "width");
+  const heights = inputs.filter((input) => input.type === "integer" && input.semantic_role === "height");
+  return widths.length === 1 && heights.length === 1 ? { width: widths[0], height: heights[0] } : null;
+}
+
+// The recent-resolutions row a source change carries: entries the destination's
+// resolution control accepts, or null when the destination has no resolution control.
+export function recentResolutionsForInterface(entries, contract) {
+  const controls = resolutionInputsOf(contract);
+  if (!controls) return null;
+  const unconditional = (input) => ({ ...input, conditions: [], available: true, capability: undefined });
+  const accepts = (entry) => {
+    if (controls.composite) {
+      const control = unconditional(controls.composite);
+      return !clientValidate({ inputs: [control] }, { [control.id]: { width: entry.width, height: entry.height } })[control.id];
+    }
+    const width = unconditional(controls.width);
+    const height = unconditional(controls.height);
+    const errors = clientValidate({ inputs: [width, height] }, { [width.id]: entry.width, [height.id]: entry.height });
+    return !errors[width.id] && !errors[height.id];
+  };
+  return (Array.isArray(entries) ? entries : [])
+    .filter((entry) => isValidRecentResolution(entry))
+    .map((entry) => ({ width: Number(entry.width), height: Number(entry.height) }))
+    .filter(accepts)
+    .slice(0, RECENT_RESOLUTIONS_LIMIT);
 }
 
 export function removeRecentResolution(entries, width, height) {

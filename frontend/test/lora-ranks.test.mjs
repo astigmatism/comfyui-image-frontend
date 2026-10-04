@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { excludedLoraRanks, galleryFilterActive, galleryGenerationMatches, galleryViewParameters, loraRankFilterMarkup } from "../src/gallery-view.mjs";
-import { loraRank, lowestLoraRank, migrateInterfaceState, moveLoraRank, normalizeLoraRanks, stepLoraRank } from "../src/lib.mjs";
+import { loraRank, lowestLoraRank, migrateInterfaceState, migrateLoraStrengthMemory, moveLoraRank, normalizeLoraRanks, stepLoraRank } from "../src/lib.mjs";
 import { loraManagerMarkup, loraRankControlMarkup } from "../src/lora-manager.mjs";
 import { galleryCardMarkup, photoViewerMarkup } from "../src/render.mjs";
 
@@ -60,15 +60,39 @@ test("the LoRA manager shows each row's shared rank with immediate arrows", () =
   assert.match(loraRankControlMarkup(identity(4), "Alpha", ranks, { identity: identity(4), status: "saving" }), /Saving…/);
 });
 
-test("switching workflows keeps each workflow's own LoRA picks", () => {
+test("switching workflows carries LoRA picks through the shared library", () => {
   const stack = { id: "loras", type: "lora_stack", semantic_role: "lora", items: [{ id: "a" }, { id: "b" }], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }], minimum: 0, maximum: 2, step: 0.05 };
   const prompt = { id: "prompt", type: "string", semantic_role: "positive_prompt", default: "" };
   const contract = { inputs: [prompt, stack] };
   const previous = { prompt: "carried prompt", loras: [{ id: "b", strength: 1 }, { id: "a", strength: 0 }] };
   const own = { prompt: "", loras: [{ id: "a", strength: 0.7 }, { id: "b", strength: 0 }] };
-  const switched = migrateInterfaceState(contract, contract, previous, ["prompt", "loras"], own, [], { carryLoraStacks: false });
-  assert.deepEqual(switched.values.loras, own.loras);
+  const switched = migrateInterfaceState(contract, contract, previous, ["prompt", "loras"], own, [], { rejectInvalid: true });
+  assert.deepEqual(switched.values.loras, previous.loras);
   assert.equal(switched.values.prompt, "carried prompt");
-  const recalled = migrateInterfaceState(contract, contract, previous, ["loras"], own, []);
-  assert.deepEqual(recalled.values.loras, previous.loras);
+  assert.deepEqual(new Set(switched.explicitInputIds), new Set(["prompt", "loras"]));
+});
+
+test("LoRA picks follow the shared identity when library item IDs differ", () => {
+  const stack = (items) => ({ id: "loras", type: "lora_stack", semantic_role: "lora", items, default: items.map(({ id }) => ({ id, strength: 0 })), minimum: 0, maximum: 2, step: 0.05 });
+  const source = { inputs: [stack([{ id: "a", lora_identity: identity(1) }, { id: "b", lora_identity: identity(2) }])] };
+  const target = { inputs: [stack([{ id: "renamed_b", lora_identity: identity(2) }, { id: "a", lora_identity: identity(1) }, { id: "only_here", lora_identity: identity(3) }])] };
+  const own = { loras: [{ id: "only_here", strength: 0.5 }, { id: "renamed_b", strength: 0 }, { id: "a", strength: 0 }] };
+  const previous = { loras: [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }] };
+  const { values } = migrateInterfaceState(target, source, previous, ["loras"], own, [], { rejectInvalid: true });
+  // Carried order and strengths; a LoRA only the destination publishes starts at its default.
+  assert.deepEqual(values.loras, [{ id: "renamed_b", strength: 1.25 }, { id: "a", strength: 0 }, { id: "only_here", strength: 0 }]);
+  const memory = migrateLoraStrengthMemory(target, source, previous, { loras: { a: 0.7, gone: 1 } }, { loras: { only_here: 0.4 } });
+  assert.deepEqual(memory, { loras: { a: 0.7 } });
+});
+
+test("a stack with nothing in common keeps the destination's own LoRA picks and memory", () => {
+  const stack = (ids, offset) => ({ id: "loras", type: "lora_stack", semantic_role: "lora", items: ids.map((id, index) => ({ id, lora_identity: identity(offset + index) })), default: ids.map((id) => ({ id, strength: 0 })), minimum: 0, maximum: 2, step: 0.05 });
+  const source = { inputs: [stack(["a", "b"], 10)] };
+  const target = { inputs: [stack(["x", "y"], 20)] };
+  const own = { loras: [{ id: "y", strength: 0.6 }, { id: "x", strength: 0 }] };
+  const previous = { loras: [{ id: "b", strength: 1 }, { id: "a", strength: 0 }] };
+  const { values } = migrateInterfaceState(target, source, previous, ["loras"], own, ["loras"], { rejectInvalid: true });
+  assert.deepEqual(values.loras, own.loras);
+  const memory = migrateLoraStrengthMemory(target, source, previous, { loras: { a: 1 } }, { loras: { x: 0.3 } });
+  assert.deepEqual(memory, { loras: { x: 0.3 } });
 });

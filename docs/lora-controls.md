@@ -8,7 +8,7 @@ Order, enabled states, and strengths remain in a draft until **Apply**. **Cancel
 
 Each row also shows the account's rank for that LoRA (A–F, unranked is C) with arrows that move it one grade and save immediately, outside the Apply draft. The rank follows the LoRA into every workflow, the photo viewer lists each LoRA an image used with the same arrows, gallery cards show the lowest rank among an image's LoRAs, and the gallery's **LoRA** rank filter hides images that used a LoRA of a hidden rank.
 
-The LoRA list itself is a shared library maintained by administrators (see [Administrator LoRA management](lora-administration.md)), but each workflow keeps its own order, enabled states, and strengths: switching workflows does not carry one workflow's LoRA picks into another.
+The LoRA list itself is a shared library maintained by administrators (see [Administrator LoRA management](lora-administration.md)). Switching workflows carries the LoRA picks with the rest of the control panel: order, enabled states, strengths, and remembered strengths follow each LoRA by its library ID, or by its shared identity when the IDs differ. A LoRA the new workflow does not publish is dropped, one only it publishes starts at its default strength, and when the two lists have nothing in common the new workflow keeps its own picks.
 
 When Apply enables at least one LoRA, the strongest enabled LoRA supplies Prompt Generation → Subject name through its published `trigger_word`, or its published title when no trigger word is available. A strength tie uses the first LoRA in application order. The manager previews the result before Apply and identifies title fallbacks. **All off** leaves Subject name unchanged.
 

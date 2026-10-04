@@ -1891,6 +1891,149 @@ test("generation source trigger shows only workflow and checkpoint count", async
   expect(await trigger.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(false);
 });
 
+test("changing the generation source keeps the control panel", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/");
+  await signInFreshUser(page, "source.switch");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+
+  const sectionTrigger = (key) =>
+    page.locator(`[data-control-section="${key}"] .control-section-trigger`);
+  for (const key of ["prompt", "seed", "resolution"]) {
+    if ((await sectionTrigger(key).getAttribute("aria-expanded")) !== "true") {
+      await sectionTrigger(key).click();
+    }
+  }
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const randomSeed = page.getByLabel("Random seed", { exact: true });
+  const seedValue = page.getByLabel("Seed value", { exact: true });
+  const width = page.getByRole("spinbutton", { name: "Width", exact: true });
+  const height = page.getByRole("spinbutton", { name: "Height", exact: true });
+  const recentBadge = page.locator('[data-resolution-recent] .resolution-recent-badge[data-resolution-recent-value="1280x960"]');
+  const trigger = page.locator("#workflow-source");
+
+  await prompt.fill("source switch lighthouse");
+  await randomSeed.uncheck();
+  await seedValue.fill("13579");
+  await width.fill("1280");
+  await height.fill("960");
+  await expect(recentBadge).toBeVisible();
+
+  // Two checkpoints and one LoRA, all specific to the Moody workflow.
+  await trigger.click();
+  const picker = page.locator("#source-picker-dialog");
+  await picker.getByRole("checkbox", { name: "Moody Krea 2 TYJR MXFP8", exact: true }).check();
+  await picker.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(trigger).toContainText("2 checkpoints selected");
+  await ensureControlSectionExpanded(page, "LoRAs");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  const loraDialog = page.locator("#lora-manager-dialog");
+  await loraDialog.getByRole("button", { name: "Toggle Beta" }).click();
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
+
+  // The other workflow shows the same values, including the recent-resolutions row.
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await expect(prompt).toHaveValue("source switch lighthouse");
+  await expect(randomSeed).not.toBeChecked();
+  await expect(seedValue).toHaveValue("13579");
+  await expect(width).toHaveValue("1280");
+  await expect(height).toHaveValue("960");
+  await expect(recentBadge).toBeVisible();
+  await prompt.fill("edited in the other workflow");
+
+  // Returning carries the latest values instead of recalling the last visit, while
+  // the checkpoints and LoRAs the other workflow lacks stay as they were.
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  await expect(prompt).toHaveValue("edited in the other workflow");
+  await expect(randomSeed).not.toBeChecked();
+  await expect(seedValue).toHaveValue("13579");
+  await expect(width).toHaveValue("1280");
+  await expect(height).toHaveValue("960");
+  await expect(recentBadge).toBeVisible();
+  await expect(trigger).toContainText("2 checkpoints selected");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await expect(loraDialog.getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
+  await expect(loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
+  await loraDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+test("changing between twin workflows keeps checkpoints and LoRA picks", async ({ page }) => {
+  test.setTimeout(90_000);
+  // Production publishes two Moody workflows with the same inputs; mirror that with
+  // a second catalog entry served from the same publication.
+  const twinKey = "f".repeat(64);
+  let moodyKey = null;
+  await page.route("**/api/workflows", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const sources = await response.json();
+    const moody = sources.find((source) => source.display_name === "Moody Krea 2 Mix V4");
+    moodyKey = moody.source_key;
+    const twin = { ...structuredClone(moody), source_key: twinKey, display_name: "Moody Twin Workflow", replicas: [] };
+    await route.fulfill({ response, json: [...sources, twin] });
+  });
+  await page.route(`**/api/workflows/${twinKey}`, async (route) => {
+    const response = await route.fetch({ url: route.request().url().replace(twinKey, moodyKey) });
+    const detail = await response.json();
+    await route.fulfill({ response, json: { ...detail, source_key: twinKey, display_name: "Moody Twin Workflow", replicas: [] } });
+  });
+  await page.goto("/");
+  await signInFreshUser(page, "source.twin");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+
+  const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });
+  const promptSection = page.locator('[data-control-section="prompt"] .control-section-trigger');
+  if ((await promptSection.getAttribute("aria-expanded")) !== "true") await promptSection.click();
+  await prompt.fill("twin workflow lighthouse");
+  const trigger = page.locator("#workflow-source");
+  await trigger.click();
+  const picker = page.locator("#source-picker-dialog");
+  await picker.getByRole("checkbox", { name: "Moody Krea 2 TYJR MXFP8", exact: true }).check();
+  await picker.getByRole("checkbox", { name: "Moody Krea 2 V5 BF16", exact: true }).check();
+  await expect(picker.locator("[data-source-selection-count]")).toHaveText("3 of 5 selected");
+  await picker.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(trigger).toContainText("3 checkpoints selected");
+  await ensureControlSectionExpanded(page, "LoRAs");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  const loraDialog = page.locator("#lora-manager-dialog");
+  await loraDialog.getByRole("button", { name: "Toggle Beta" }).click();
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
+  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
+
+  // The picker previews the same checkpoints in the twin before anything is applied.
+  await trigger.click();
+  const workflow = picker.locator("[data-source-workflow-choice]");
+  await workflow.selectOption(twinKey);
+  await expect(picker.locator("[data-source-selection-count]")).toHaveText("3 of 5 selected");
+  for (const name of ["Moody Krea 2 V4 INT8 ConvRot", "Moody Krea 2 TYJR MXFP8", "Moody Krea 2 V5 BF16"]) {
+    await expect(picker.getByRole("checkbox", { name, exact: true })).toBeChecked();
+  }
+  await picker.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(trigger).toHaveAttribute("data-source-key", twinKey);
+  await expect(trigger).toContainText("Moody Twin Workflow");
+  await expect(trigger).toContainText("3 checkpoints selected");
+  await expect(prompt).toHaveValue("twin workflow lighthouse");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
+  await expect(loraDialog.getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
+  await expect(loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
+  await loraDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  // A change made in the twin follows the switch back as well.
+  await trigger.click();
+  await picker.getByRole("checkbox", { name: "Moody Krea 2 V5 BF16", exact: true }).uncheck();
+  await picker.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(trigger).toContainText("2 checkpoints selected");
+  await selectPublishedSource(page, "Moody Krea 2 Mix V4");
+  await expect(trigger).toContainText("2 checkpoints selected");
+  await trigger.click();
+  await expect(picker.getByRole("checkbox", { name: "Moody Krea 2 V5 BF16", exact: true })).not.toBeChecked();
+  await expect(picker.getByRole("checkbox", { name: "Moody Krea 2 TYJR MXFP8", exact: true })).toBeChecked();
+  await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
 
 test("focused prompt editor isolates canceled drafts and applies composed prompts and assistant settings", async ({
   page,
@@ -2574,7 +2717,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
   await detailDialog.getByRole("button", { name: "Close", exact: true }).click();
 });
 
-test("recently used resolutions record on commit, restore on click, persist, and scope per source", async ({
+test("recently used resolutions record on commit, restore on click, persist, and follow source changes", async ({
   page,
 }) => {
   test.setTimeout(60_000);
@@ -2643,11 +2786,13 @@ test("recently used resolutions record on commit, restore on click, persist, and
   await expect(recentRow.locator(".resolution-recent-badge")).toHaveCount(1);
   await expect(badgeFor("1024x1920")).toBeVisible();
 
-  // Recents are scoped per source: another source starts empty, switching back restores.
+  // A source change carries the row into another source that accepts its sizes.
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
-  await expect(page.locator("[data-resolution-recent]")).toHaveCount(0);
+  await expect(page.locator("[data-resolution-recent] .resolution-recent-badge")).toHaveCount(1);
+  await expect(badgeFor("1024x1920")).toBeVisible();
   await selectPublishedSource(page, "Krea 2 NSFW V4");
-  await expect(page.locator("[data-resolution-recent]")).toHaveCount(1);
+  await expect(page.locator("[data-resolution-recent] .resolution-recent-badge")).toHaveCount(1);
+  await expect(badgeFor("1024x1920")).toBeVisible();
 });
 
 test("backend field errors disclose Advanced controls and stale compositions do not cross sources", async ({
