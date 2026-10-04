@@ -1,3 +1,4 @@
+import { CHECKPOINT_TIER_DEFINITIONS, loraRank } from "./lib.mjs";
 import { loraDefaultPositiveStrength, loraStackError, moveLora, strongestLoraTrigger } from "./lora-stack.mjs";
 
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -21,7 +22,24 @@ function subjectPreview(control, values, subjectAvailable = true) {
   return `Subject on Apply: ${strongest.triggerWord}${strongest.triggerSource === "title" ? " (LoRA title)" : ""}`;
 }
 
-export function loraManagerMarkup({ control, values, memory = {}, images = {}, sourceName = "Workflow", subjectAvailable = true, error = "", busy = false, imageStates = {}, imagesLoading = false, imageError = "" }) {
+// A LoRA's rank belongs to the account and its shared identity, not to this workflow.
+// Arrows save immediately; they are not part of the Apply draft.
+export function loraRankControlMarkup(identity, label, ranks = {}, change = null) {
+  if (!/^lr1_[0-9a-f]{64}$/.test(identity || "")) return "";
+  const grade = loraRank(identity, ranks);
+  const index = CHECKPOINT_TIER_DEFINITIONS.findIndex((tier) => tier.id === grade);
+  const busy = change?.status === "saving";
+  const notice = change?.identity === identity ? change : null;
+  const arrows = [-1, 1].map((step) => {
+    const next = CHECKPOINT_TIER_DEFINITIONS[index + step]?.id;
+    const text = next ? `${step < 0 ? "Raise" : "Lower"} ${label} from ${grade} to ${next}` : `${label} is already at the ${step < 0 ? "highest" : "lowest"} rank ${grade}`;
+    return `<button type="button" class="checkpoint-rank-arrow" data-action="rank-lora" data-lora-identity="${escape(identity)}" data-rank-step="${step}" aria-label="${escape(text)}" title="${escape(text)}" ${!next || busy ? "disabled" : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="${step < 0 ? "m5 9 5-5 5 5M10 4v12" : "m5 11 5 5 5-5M10 4v12"}" /></svg></button>`;
+  }).join("");
+  const feedback = notice ? (notice.status === "error" ? "Not saved" : notice.status === "saving" ? "Saving…" : "Saved") : "";
+  return `<span class="lm-rank checkpoint-tier-${grade}"><span class="checkpoint-rank checkpoint-tier-${grade}" aria-label="LoRA rank ${grade}"><span>${grade}</span></span><span class="checkpoint-rank-actions" role="group" aria-label="${escape(label)} rank">${arrows}</span><span class="lm-rank-status" role="status">${escape(feedback)}</span></span>`;
+}
+
+export function loraManagerMarkup({ control, values, memory = {}, images = {}, sourceName = "Workflow", subjectAvailable = true, error = "", busy = false, imageStates = {}, imagesLoading = false, imageError = "", loraTiers = {}, loraRankChange = null }) {
   const rows = Array.isArray(values) ? values : control.default;
   const items = new Map(control.items.map((item) => [item.id, item]));
   const enabledCount = rows.filter((entry) => entry.strength > 0).length;
@@ -41,16 +59,16 @@ export function loraManagerMarkup({ control, values, memory = {}, images = {}, s
       <button type="button" class="lm-row-select" data-lora-toggle="${id}" aria-label="Toggle ${label}" aria-pressed="${!disabled}" title="${disabled ? "Enable" : "Disable"} ${label}" ${minimum === null ? "disabled" : ""}></button>
       <div class="lm-image-cell"><button type="button" class="lm-image-button" data-lora-image-change="${id}" aria-label="${image ? "Change" : "Add"} image for ${label}" ${imageDisabled ? "disabled" : ""}>${image ? `<img src="${escape(image)}" alt="" />` : '<span class="lm-add-image" aria-hidden="true"><b>＋</b><span>Add image</span></span>'}</button><button type="button" class="lm-image-action" data-lora-image-remove="${id}" aria-label="Remove image for ${label}" title="Remove image for ${label}" ${image ? "" : "hidden"} ${imageDisabled ? "disabled" : ""}>×</button><span class="lm-image-status${imageState.error ? " is-error" : ""}" role="${imageState.error ? "alert" : "status"}">${escape(imageState.saving ? "Saving…" : imageState.message || "")}</span></div>
       <button type="button" class="icon-button lm-drag-handle" data-lora-handle draggable="true" aria-label="Reorder ${label}" aria-description="Drag to reorder, or use the Up and Down arrow keys.">⠿</button>
-      <div class="lm-row-info"><span class="lm-row-heading"><span class="lm-row-name" title="${escape(item.description || "No verified trigger word is published; Subject name uses this LoRA title.")}">${label}</span><span class="lm-row-state">${disabled ? "Off" : "✓ Enabled"}</span></span><span class="lm-row-description">${escape(item.description || "Usage guidance not published")}</span></div>
+      <div class="lm-row-info"><span class="lm-row-heading"><span class="lm-row-name" title="${escape(item.description || "No verified trigger word is published; Subject name uses this LoRA title.")}">${label}</span><span class="lm-row-state">${disabled ? "Off" : "✓ Enabled"}</span>${loraRankControlMarkup(item.lora_identity, item.label || entry.id, loraTiers, loraRankChange)}</span><span class="lm-row-description">${escape(item.description || "Usage guidance not published")}</span></div>
     <div class="lm-strength"><span class="lm-strength-label">${disabled ? "Strength when enabled" : "Strength"}</span><input type="range" data-lora-range="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${strength}" aria-label="${label} strength slider" ${disabled ? "disabled" : ""} /><input type="number" data-lora-number="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${Number(strength).toFixed(2)}" aria-label="${label} strength" ${disabled ? "disabled" : ""} /></div>
     </li>`;
   }).join("");
-  return `<form method="dialog" class="dialog-frame lm-dialog-frame"><header class="dialog-header lm-dialog-header"><div><h2 id="lora-manager-title">Manage LoRAs</h2><p>${escape(sourceName)} · Available for this workflow</p></div><button type="button" class="icon-button lm-close-button" data-lora-cancel aria-label="Cancel and close LoRA manager">×</button></header>
+  return `<form method="dialog" class="dialog-frame lm-dialog-frame"><header class="dialog-header lm-dialog-header"><div><h2 id="lora-manager-title">Manage LoRAs</h2><p>${escape(sourceName)} · Shared LoRA library</p></div><button type="button" class="icon-button lm-close-button" data-lora-cancel aria-label="Cancel and close LoRA manager">×</button></header>
     <div class="lm-dialog-content"><div class="lm-dialog-intro"><div><strong>${enabledCount} of ${rows.length} enabled</strong><span>Applied in list order, top to bottom</span></div><p>Thumbnail changes save automatically and are shared with everyone. Cancel does not undo them.</p></div>${imageError ? `<p class="form-error lm-image-load-error" role="alert">${escape(imageError)} <button type="button" class="button low" data-lora-images-reload>Reload images</button></p>` : ""}<ol class="lm-list" aria-label="Available LoRAs">${list}</ol><p class="visually-hidden" data-lora-reorder-status role="status" aria-live="polite"></p></div>
     <footer class="dialog-actions lm-dialog-footer"><button type="button" class="button low" data-lora-all-off ${enabledCount ? "" : "disabled"}>All off</button><span class="lm-subject-preview" data-lora-subject-preview>${escape(subject)}</span><div class="lm-footer-buttons"><button type="button" class="button secondary" data-lora-cancel>Cancel</button><button type="button" class="button primary" data-lora-apply ${busy ? "disabled" : ""}>${busy ? "Applying…" : "Apply"}</button></div>${error ? `<p class="form-error lm-error" role="alert">${escape(error)}</p>` : ""}</footer></form><input class="visually-hidden" type="file" data-lora-file accept="image/png,image/jpeg,image/webp" tabindex="-1" aria-hidden="true" />`;
 }
 
-export function installLoraManager(root, { api, context, apply, onImages, notify = () => {} }) {
+export function installLoraManager(root, { api, context, apply, onImages, notify = () => {}, loraTiers = () => ({}), loraRankChange = () => null }) {
   let draft = null;
   let returnFocus = null;
   let fileTarget = null;
@@ -66,6 +84,16 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   const publishImages = (store) => {
     for (const owner of ["panel", "rerun"]) {
       if (matches(store, context(store.controlId, owner))) onImages(store.sourceKey, store.controlId, structuredClone(store.images), owner);
+    }
+  };
+  // Thumbnails are shared by every workflow that lists the LoRA, so a saved change
+  // makes other workflows' cached image lists stale; they reload when next opened.
+  const forgetOtherStores = (store) => {
+    for (const [key, other] of imageStores) {
+      if (other !== store && !other.loading && !Object.values(other.states || {}).some((item) => item?.saving)) {
+        other.active = false;
+        imageStores.delete(key);
+      }
     }
   };
   function loadImages(store) {
@@ -116,6 +144,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
         store.images = Object.fromEntries((result.items || []).map((item) => [item.id, item]));
         store.states[id] = { message: "Saved" };
         publishImages(store);
+        forgetOtherStores(store);
       } catch (error) {
         const conflict = error.code === "lora_image_conflict";
         const message = conflict
@@ -146,7 +175,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       }
     }
     const scrollTop = target.querySelector(".lm-dialog-content")?.scrollTop || 0;
-    const markup = loraManagerMarkup({ control: draft.control, values: draft.values, memory: draft.memory, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError, sourceName: draft.sourceName, subjectAvailable: draft.subjectAvailable, error: draft.error, busy: draft.busy });
+    const markup = loraManagerMarkup({ control: draft.control, values: draft.values, memory: draft.memory, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError, sourceName: draft.sourceName, subjectAvailable: draft.subjectAvailable, error: draft.error, busy: draft.busy, loraTiers: loraTiers(), loraRankChange: loraRankChange() });
     const frame = target.querySelector(".lm-dialog-frame");
     if (frame) {
       // Keep the file input alive if another thumbnail finishes saving while
@@ -361,12 +390,14 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     close,
     closeForOwner: (owner) => { if (draft?.owner === owner) close(); },
     isOpen: () => Boolean(dialog()?.open),
+    // A null key means every workflow changed (a shared LoRA library operation).
     invalidateSource: (sourceKey) => {
       for (const [key, store] of imageStores) {
-        if (store.sourceKey === sourceKey) { store.active = false; imageStores.delete(key); }
+        if (sourceKey === null || store.sourceKey === sourceKey) { store.active = false; imageStores.delete(key); }
       }
-      if (draft?.sourceKey !== sourceKey) return;
-      close();
+      if (sourceKey !== null && draft?.sourceKey !== sourceKey) return;
+      if (draft) close();
     },
+    refresh: () => { if (draft && dialog()?.open) render(); },
   };
 }

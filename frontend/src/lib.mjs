@@ -284,6 +284,49 @@ export function moveCheckpointRank(ranks, identity, destination, before = null) 
   return result;
 }
 
+const LORA_IDENTITY = /^lr1_[0-9a-f]{64}$/;
+
+// LoRA ranks mirror checkpoint ranks: per account, keyed by the shared LoRA identity
+// (a hash of the weight file), so a rank follows the LoRA into every workflow.
+export function normalizeLoraRanks(value = {}) {
+  const seen = new Set();
+  return Object.fromEntries(CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => [id,
+    (Array.isArray(value?.[id]) ? value[id] : []).filter((identity) => {
+      if (typeof identity !== "string" || !LORA_IDENTITY.test(identity) || seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    }),
+  ]));
+}
+
+export function loraRank(identity, ranks = {}) {
+  return checkpointRank(identity, ranks);
+}
+
+export function moveLoraRank(ranks, identity, destination) {
+  const result = normalizeLoraRanks(ranks);
+  if (!LORA_IDENTITY.test(identity || "") || !Object.hasOwn(result, destination)) return result;
+  for (const values of Object.values(result)) {
+    const index = values.indexOf(identity);
+    if (index >= 0) values.splice(index, 1);
+  }
+  result[destination].push(identity);
+  return result;
+}
+
+export function stepLoraRank(ranks, identity, step) {
+  const index = CHECKPOINT_TIER_DEFINITIONS.findIndex((tier) => tier.id === loraRank(identity, ranks));
+  const next = CHECKPOINT_TIER_DEFINITIONS[index + Number(step)]?.id;
+  return next ? { from: CHECKPOINT_TIER_DEFINITIONS[index].id, to: next, ranks: moveLoraRank(ranks, identity, next) } : null;
+}
+
+// The lowest rank among an image's LoRAs: hiding that rank hides the image.
+export function lowestLoraRank(loras = [], ranks = {}) {
+  const grades = (Array.isArray(loras) ? loras : []).map((item) => loraRank(item?.lora_identity || item, ranks));
+  if (!grades.length) return null;
+  return CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => id).reverse().find((id) => grades.includes(id)) || null;
+}
+
 export function normalizeCheckpointTierLayout(selector, ranks = {}) {
   const choices = Array.isArray(selector?.choices) ? selector.choices : [];
   const seen = new Set();
@@ -919,12 +962,15 @@ export function migrateInterfaceState(
   sourceExplicitInputIds = [],
   baseValues = defaultsForInterface(targetContract),
   baseExplicitInputIds = [],
+  { carryLoraStacks = true } = {},
 ) {
   const result = structuredClone(baseValues || {});
   const explicit = new Set(baseExplicitInputIds || []);
   const sourceExplicit = new Set(sourceExplicitInputIds || []);
   for (const { source, target } of interfaceMigrationPairs(targetContract, sourceContract)) {
     if (!Object.hasOwn(sourceValues || {}, source.id)) continue;
+    // Workflows share one LoRA library, but each keeps its own LoRA picks.
+    if (target.type === "lora_stack" && !carryLoraStacks) continue;
     const value = sourceValues[source.id];
     if (
       target.type === "choice" &&

@@ -67,7 +67,7 @@ test("production build emits one content-addressed frontend module graph", async
     generation_countdown: new Set([first.assets.render]),
     lib: new Set([first.assets.lora_stack]),
     lora_stack: new Set(),
-    lora_manager: new Set([first.assets.lora_stack]),
+    lora_manager: new Set([first.assets.lib, first.assets.lora_stack]),
     admin_loras: new Set(),
     render: new Set([first.assets.prompt_routing, first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view]),
   };

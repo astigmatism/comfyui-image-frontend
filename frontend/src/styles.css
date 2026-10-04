@@ -6526,3 +6526,114 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   .topbar .scale-control input { width: 66px; }
   .topbar-right { gap: 8px; }
 }
+
+/* Shared LoRA library: ranks follow the LoRA identity into every workflow. */
+.card-lora-rank {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: 42px;
+  left: 12px;
+  z-index: 2;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 65%);
+}
+.gallery-selection-mode .card-lora-rank { display: none; }
+.lora-rank-caption,
+.rank-filter-caption {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.lora-rank-menu { position: relative; flex: 0 0 auto; }
+.lora-rank-launch {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  list-style: none;
+}
+.lora-rank-launch::-webkit-details-marker { display: none; }
+.lora-rank-menu[open] > .lora-rank-launch,
+.lora-rank-launch:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.lora-rank-popover { min-width: 0; gap: 8px; padding: 10px; }
+.lora-rank-popover p { margin: 0; color: var(--text-soft); font-size: 0.8rem; white-space: nowrap; }
+.lora-rank-popover .rank-filter-button { text-align: center; }
+.photo-viewer-loras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 520px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 360ms ease;
+}
+.photo-viewer.controls-visible .photo-viewer-loras,
+.photo-viewer .photo-viewer-loras:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+.photo-viewer-lora {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--tier-accent) 40%, #33404e);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tier-accent) 8%, #080d14);
+  color: #f4f7fb;
+  font-size: 0.74rem;
+  font-weight: 700;
+  backdrop-filter: blur(9px);
+}
+.photo-viewer-lora > .checkpoint-rank { align-self: stretch; border-radius: 0; padding: 0 10px; }
+.photo-viewer-lora > .checkpoint-name { max-width: 150px; padding: 0 8px; }
+.photo-viewer-lora .checkpoint-rank-feedback { padding-right: 8px; font-size: 0.7rem; font-weight: 600; }
+.photo-viewer-lora .checkpoint-rank-feedback:empty { display: none; }
+.lm-rank { position: relative; z-index: 2; display: inline-flex; align-items: center; gap: 4px; }
+.lm-rank .checkpoint-rank-actions { display: inline-flex; }
+.lm-rank .checkpoint-rank-arrow { width: 24px; height: 24px; }
+.lm-rank-status { font-size: 0.72rem; color: var(--muted, #9aa5b1); }
+.lm-rank-status:empty { display: none; }
+.admin-lora-members {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.admin-lora-member {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.admin-lora-member-state { color: var(--muted, #9aa5b1); font-size: 0.85rem; }
+.admin-lora-member.is-out-of-sync .admin-lora-member-state { color: var(--warning, #e0a43a); }
+.admin-lora-sync {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 10px;
+}
+.admin-lora-sync p { margin: 0; }
+.admin-lora-conflicts ul { margin: 6px 0 0; padding-left: 18px; }

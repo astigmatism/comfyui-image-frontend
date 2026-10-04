@@ -8,7 +8,7 @@ async function mount(page) {
     const { loraStackMarkup, installLoraStackControls } = await import(new URL("./lora-stack.mjs", base));
     const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
     const control = { id: "loras", type: "lora_stack", label: "LoRAs", items: [
-      { id: "a", label: "Alpha", trigger_word: "AlphaCharacter", description: "Use AlphaCharacter in the prompt." },
+      { id: "a", label: "Alpha", trigger_word: "AlphaCharacter", description: "Use AlphaCharacter in the prompt.", lora_identity: `lr1_${"a".repeat(64)}` },
       { id: "b", label: "Beta" }, { id: "c", label: "Gamma" },
     ], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }], minimum: 0, maximum: 2, step: 0.05 };
     window.stack = structuredClone(control.default);
@@ -28,7 +28,9 @@ async function mount(page) {
       context: () => ({ control, sourceKey: window.sourceKey, values: window.stack, memory: window.memory }),
       apply: (_id, values, memory) => { window.stack = structuredClone(values); window.memory = structuredClone(memory); },
     });
+    window.tiers = {};
     window.manager = installLoraManager(root, {
+      loraTiers: () => window.tiers,
       api: async (path, options) => {
         if (!options) {
           if (window.holdLoad) await new Promise((resolve) => { window.finishLoad = resolve; });
@@ -320,4 +322,31 @@ test("manager fits a narrow viewport with all rows and actions reachable", async
   await expect(page.getByRole("button", { name: "Disable Alpha" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await context.close();
+});
+
+test("LoRA rank arrows change the shared rank without toggling the row or the draft", async ({ page }) => {
+  await mount(page);
+  await page.evaluate(() => {
+    document.addEventListener("click", (event) => {
+      const arrow = event.target.closest('[data-action="rank-lora"]');
+      if (!arrow) return;
+      const order = ["A", "B", "C", "D", "F"];
+      const identity = arrow.dataset.loraIdentity;
+      const current = order.find((grade) => window.tiers[grade]?.includes(identity)) || "C";
+      const next = order[order.indexOf(current) + Number(arrow.dataset.rankStep)];
+      window.tiers = { [next]: [identity] };
+      window.manager.refresh();
+    });
+  });
+  await open(page);
+  const row = dialog(page).locator('[data-lora-id="a"]');
+  await expect(row.getByLabel("LoRA rank C")).toBeVisible();
+  await expect(dialog(page).locator('[data-lora-id="b"] .lm-rank')).toHaveCount(0);
+  await row.getByRole("button", { name: "Raise Alpha from C to B" }).click();
+  await expect(row.getByLabel("LoRA rank B")).toBeVisible();
+  await expect(row.getByRole("button", { name: "Toggle Alpha" })).toHaveAttribute("aria-pressed", "false");
+  await row.getByRole("button", { name: "Raise Alpha from B to A" }).click();
+  await expect(row.getByRole("button", { name: "Alpha is already at the highest rank A" })).toBeDisabled();
+  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(await page.evaluate(() => window.stack.every((entry) => entry.strength === 0))).toBe(true);
 });

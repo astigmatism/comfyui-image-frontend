@@ -13,7 +13,7 @@ export function mergeSettings(base, local, remote, path = "") {
   if (equal(remote, base) || equal(local, remote)) return { value: structuredClone(local), conflicts: [] };
   // A rank move removes from one tier and inserts into another. Merge the board
   // atomically so concurrent moves cannot duplicate a checkpoint across tiers.
-  if (path === "checkpoint_tiers") return { value: structuredClone(local), conflicts: [path] };
+  if (path === "checkpoint_tiers" || path === "lora_tiers") return { value: structuredClone(local), conflicts: [path] };
   if (object(base) && object(local) && object(remote)) {
     const value = {};
     const conflicts = [];
@@ -31,6 +31,7 @@ const editable = (response) => ({
   settings: response.settings,
   gallery_scale: response.gallery_scale,
   checkpoint_tiers: response.checkpoint_tiers,
+  lora_tiers: response.lora_tiers || {},
 });
 
 export function createSettingsSync({ api, read, apply, status: reportStatus, signal, storage = null, storageKey = null, normalize = (value) => value, prepareMerge = async () => {} }) {

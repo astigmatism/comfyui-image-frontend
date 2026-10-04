@@ -1,6 +1,5 @@
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const terminalStatuses = new Set(["succeeded", "failed", "blocked", "repair_required"]);
-const sourceKey = (source) => source?.source_key || source?.profile_id || null;
 
 export function newLoraOperationKey() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -40,23 +39,28 @@ export function reconcileLoraStrengthMemory(contract, memory) {
   return Object.fromEntries(Object.entries(memory || {}).filter(([id]) => controls.has(id)).map(([id, strengths]) => [id, Object.fromEntries(Object.entries(strengths || {}).filter(([itemId, strength]) => controls.get(id).has(itemId) && typeof strength === "number" && Number.isFinite(strength) && strength > 0))]));
 }
 
-export function adminLoraMarkup({ sources = [], selectedSourceKey = null, catalog = null, loading = false, busy = false, uploadPercent = null, operation = null, operationSourceKey = null, canRetryUpload = false, editingLoraId = null, editDraft = null, status = "", error = "" } = {}) {
-  const selected = sources.find((source) => sourceKey(source) === selectedSourceKey);
-  const catalogReady = Boolean(catalog?.eligible && catalog?.revision && !loading);
-  const currentOperation = operationSourceKey === selectedSourceKey ? operation : null;
-  const available = catalogReady && !["awaiting_upload", "running", "repair_required"].includes(currentOperation?.status);
-  const items = Array.isArray(catalog?.items) ? catalog.items : [];
-  const options = sources.map((source) => {
-    const key = sourceKey(source);
-    return `<option value="${escape(key)}" ${key === selectedSourceKey ? "selected" : ""}>${escape(source.display_name || source.name || key)}</option>`;
-  }).join("");
-  const message = loading ? "Checking this workflow…" : !selected ? "No published image source is available."
-    : !catalog ? "Select a published workflow to inspect its LoRAs."
-      : !catalog.eligible ? catalog.reason || "LoRA administration is unavailable for this workflow."
-        : currentOperation?.status === "repair_required" ? "This workflow needs repair before another LoRA change."
-          : currentOperation?.status === "awaiting_upload" ? "An installation is waiting for its file upload."
-            : currentOperation?.status === "running" ? "A LoRA change is still running for this workflow."
-        : `${items.length} LoRA${items.length === 1 ? "" : "s"} published for this workflow.`;
+const libraryKeyPattern = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+const pendingStatuses = ["awaiting_upload", "running", "repair_required"];
+
+function memberMarkup(member) {
+  const state = member.in_sync ? "In sync" : `Needs sync${member.missing_count ? ` · ${member.missing_count} missing` : ""}`;
+  return `<li class="admin-lora-member${member.in_sync ? "" : " is-out-of-sync"}"><span>${escape(member.display_name || member.source_key)}</span><span class="admin-lora-member-state">${escape(state)}</span></li>`;
+}
+
+export function adminLoraMarkup({ libraries = [], selectedLibraryKey = null, library = null, loading = false, busy = false, uploadPercent = null, operation = null, canRetryUpload = false, editingLoraId = null, editDraft = null, status = "", error = "" } = {}) {
+  const selected = library || libraries.find((item) => item.key === selectedLibraryKey) || null;
+  const pending = pendingStatuses.includes(operation?.status);
+  const available = Boolean(selected?.eligible && !loading && !pending);
+  const syncable = Boolean(selected?.can_sync && !loading && !pending);
+  const items = Array.isArray(selected?.items) ? selected.items : [];
+  const members = Array.isArray(selected?.members) ? selected.members : [];
+  const options = libraries.length > 1 ? `<label class="field admin-lora-source"><span>Model family</span><select data-admin-lora-library ${busy ? "disabled" : ""}>${libraries.map((item) => `<option value="${escape(item.key)}" ${item.key === selected?.key ? "selected" : ""}>${escape(item.label || item.key)}</option>`).join("")}</select></label>` : "";
+  const message = loading ? "Checking the LoRA library…" : !selected ? "No published workflow has a LoRA list yet."
+    : operation?.status === "repair_required" ? "A LoRA change needs repair before another change."
+      : operation?.status === "awaiting_upload" ? "An installation is waiting for its file upload."
+        : operation?.status === "running" ? "A LoRA change is still running."
+          : !selected.eligible ? selected.reason || "LoRA administration is unavailable."
+            : `${items.length} LoRA${items.length === 1 ? "" : "s"} shared by ${members.length} workflow${members.length === 1 ? "" : "s"}.`;
   const rows = items.map((item) => {
     if (editingLoraId === item.id) {
       const title = editDraft?.displayName ?? item.label ?? "";
@@ -65,15 +69,21 @@ export function adminLoraMarkup({ sources = [], selectedSourceKey = null, catalo
     }
     return `<li class="admin-lora-row"><div class="admin-lora-summary"><strong>${escape(item.label || item.id)}</strong><span>${escape(item.trigger_word || "No published trigger word")}</span></div><div class="admin-lora-actions"><button type="button" class="button low" data-admin-lora-edit="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Edit ${escape(item.label || item.id)}">Edit</button><button type="button" class="button destructive low" data-admin-lora-remove="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Remove ${escape(item.label || item.id)}">Remove</button></div></li>`;
   }).join("");
+  const conflicts = Array.isArray(selected?.conflicts) && selected.conflicts.length
+    ? `<div class="form-error admin-lora-conflicts" role="alert"><p>These workflows disagree about some LoRAs. Republish them so each LoRA uses one file and one ID:</p><ul>${selected.conflicts.map((item) => `<li>${escape(item)}</li>`).join("")}</ul></div>` : "";
+  const sync = selected && !selected.in_sync && !selected.conflicts?.length
+    ? `<div class="admin-lora-sync"><p>Some workflows are missing library LoRAs. Sync adds them; it never removes a LoRA.</p><button type="button" class="button secondary" data-admin-lora-sync ${busy || !syncable ? "disabled" : ""}>Sync library</button></div>` : "";
   const progress = busy && uploadPercent !== null ? `<progress max="100" value="${Math.max(0, Math.min(100, Number(uploadPercent) || 0))}" aria-label="LoRA upload progress"></progress>` : "";
   return `<div class="section-heading"><h3>LoRA library</h3></div>
-    <p class="muted">Install, edit, or remove LoRAs in the selected ComfyUI published workflow.</p>
-    <label class="field admin-lora-source"><span>Published workflow</span><select data-admin-lora-source ${busy || !sources.length ? "disabled" : ""}>${options}</select></label>
+    <p class="muted">LoRAs are shared by every workflow below. Installing, editing, or removing one changes all of them.</p>
+    ${options}
+    ${members.length ? `<ul class="admin-lora-members" aria-label="Workflows using this library">${members.map(memberMarkup).join("")}</ul>` : ""}
+    ${conflicts}${sync}
     <p class="admin-lora-message" role="status">${escape(message)}</p>
-    ${catalogReady ? `<ul class="admin-lora-list" aria-label="Published LoRAs">${rows || '<li class="muted">No LoRAs published yet.</li>'}</ul>
+    ${selected?.eligible && !loading ? `<ul class="admin-lora-list" aria-label="Library LoRAs">${rows || '<li class="muted">No LoRAs in the library yet.</li>'}</ul>
     <form id="admin-lora-install-form" class="admin-lora-install"><h4>Install a LoRA</h4><div class="admin-lora-fields"><label class="field"><span>Weight file</span><input type="file" name="file" accept=".safetensors" required ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Display title</span><input name="display_name" maxlength="120" required ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Trigger word</span><input name="trigger_word" maxlength="120" required ${busy || !available ? "disabled" : ""} /></label></div><button class="button primary" type="submit" ${busy || !available ? "disabled" : ""}>Install LoRA</button></form>` : ""}
-    ${canRetryUpload && currentOperation?.status === "awaiting_upload" && !busy ? '<button type="button" class="button secondary" data-admin-lora-retry-upload>Retry upload</button>' : ""}
-    ${currentOperation?.status === "awaiting_upload" && !busy ? '<button type="button" class="button low" data-admin-lora-cancel-upload>Cancel pending upload</button>' : ""}
+    ${canRetryUpload && operation?.status === "awaiting_upload" && !busy ? '<button type="button" class="button secondary" data-admin-lora-retry-upload>Retry upload</button>' : ""}
+    ${operation?.status === "awaiting_upload" && !busy ? '<button type="button" class="button low" data-admin-lora-cancel-upload>Cancel pending upload</button>' : ""}
     ${progress}<p class="admin-lora-status" role="status" aria-live="polite">${escape(status)}</p>${error ? `<p class="form-error" role="alert">${escape(error)}</p>` : ""}`;
 }
 
@@ -104,9 +114,16 @@ export function uploadLoraFile(path, file, { csrfToken, onProgress, XMLHttpReque
   });
 }
 
+const successMessages = {
+  install: "LoRA installed in every library workflow.",
+  edit: "LoRA details updated in every library workflow.",
+  remove: "LoRA removed from every library workflow and ComfyUI.",
+  sync: "Library workflows now share the same LoRAs.",
+};
+
 export function createAdminLoraController({ api, getCsrfToken, refreshSources, notify, confirm = (message) => window.confirm(message), uploadFile = uploadLoraFile, createId = newLoraOperationKey, readForm = (form) => new FormData(form), storage = () => null, actorId = () => null, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
-  const state = { host: null, sources: [], selectedSourceKey: null, catalog: null, loading: false, busy: false, uploadPercent: null, status: "", error: "", editingLoraId: null, editDraft: null, operation: null, operationSourceKey: null, operationsBySource: new Map(), operationKinds: new Map(), pendingUploads: new Map(), recoveringSources: new Set(), restoredKey: null, requestToken: 0 };
-  const currentOperation = () => state.operationsBySource.get(state.selectedSourceKey);
+  const state = { host: null, libraries: [], selectedLibraryKey: null, library: null, loading: false, busy: false, uploadPercent: null, status: "", error: "", editingLoraId: null, editDraft: null, operations: new Map(), operationKinds: new Map(), pendingUploads: new Map(), recovering: new Set(), restoredKey: null, requestToken: 0 };
+  const currentOperation = () => state.operations.get(state.selectedLibraryKey);
   const storageKey = () => actorId() ? `cif-admin-lora-operations:${actorId()}` : null;
   const persistOperations = () => {
     const key = storageKey();
@@ -114,73 +131,70 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     try {
       const target = storage();
       if (!target) return;
-      const entries = [...state.operationsBySource.entries()]
-        .filter(([, operation]) => ["awaiting_upload", "running", "repair_required"].includes(operation?.status))
-        .map(([source, operation]) => [source, { id: operation.id, kind: state.operationKinds.get(source) || "install" }]);
+      const entries = [...state.operations.entries()]
+        .filter(([, operation]) => pendingStatuses.includes(operation?.status))
+        .map(([library, operation]) => [library, { id: operation.id, kind: state.operationKinds.get(library) || "install" }]);
       if (entries.length) target.setItem(key, JSON.stringify(Object.fromEntries(entries)));
       else target.removeItem(key);
     } catch { /* Storage failure does not change the server operation. */ }
   };
-  const setOperation = (operation, source = state.operationSourceKey, kind = null) => {
-    state.operation = operation;
-    if (operation && source) {
-      state.operationsBySource.set(source, operation);
-      if (kind) state.operationKinds.set(source, kind);
-      persistOperations();
-    }
+  const setOperation = (operation, library, kind = null) => {
+    if (!operation || !library) return;
+    state.operations.set(library, operation);
+    if (kind) state.operationKinds.set(library, kind);
+    persistOperations();
   };
   const restoreOperations = () => {
     const key = storageKey();
     if (state.restoredKey === key) return;
     state.restoredKey = key;
-    state.operationsBySource.clear();
+    state.operations.clear();
     state.operationKinds.clear();
     state.pendingUploads.clear();
     if (!key) return;
     try {
       const saved = JSON.parse(storage()?.getItem(key) || "{}");
-      for (const [source, entry] of Object.entries(saved || {})) {
-        if (!/^[a-f0-9]{64}$/.test(source) || !/^[a-f0-9-]{36}$/.test(entry?.id) || !["install", "remove", "edit"].includes(entry?.kind)) continue;
-        state.operationsBySource.set(source, { id: entry.id, status: "running" });
-        state.operationKinds.set(source, entry.kind);
+      for (const [library, entry] of Object.entries(saved || {})) {
+        if (!libraryKeyPattern.test(library) || !/^[a-f0-9-]{36}$/.test(entry?.id) || !["install", "remove", "edit", "sync"].includes(entry?.kind)) continue;
+        state.operations.set(library, { id: entry.id, status: "running" });
+        state.operationKinds.set(library, entry.kind);
       }
     } catch { /* A missing or damaged browser journal does not affect ComfyUI state. */ }
   };
   const render = () => {
-    if (state.host?.isConnected) state.host.innerHTML = adminLoraMarkup({ ...state, operation: currentOperation(), operationSourceKey: state.selectedSourceKey, canRetryUpload: state.pendingUploads.has(state.selectedSourceKey) });
+    if (state.host?.isConnected) state.host.innerHTML = adminLoraMarkup({ ...state, operation: currentOperation(), canRetryUpload: state.pendingUploads.has(state.selectedLibraryKey) });
   };
-  const setSources = (sources, preferredKey = null) => {
-    state.sources = sources.filter((source) => sourceKey(source));
-    if (!state.sources.some((source) => sourceKey(source) === state.selectedSourceKey)) {
-      state.selectedSourceKey = state.sources.some((source) => sourceKey(source) === preferredKey) ? preferredKey : sourceKey(state.sources[0]);
-    }
+  const selectLibrary = (preferred = state.selectedLibraryKey) => {
+    state.library = state.libraries.find((item) => item.key === preferred) || state.libraries[0] || null;
+    state.selectedLibraryKey = state.library?.key || null;
   };
-  async function loadCatalog() {
+  async function loadLibrary() {
     const token = ++state.requestToken;
-    state.catalog = null;
     state.editingLoraId = null;
     state.editDraft = null;
-    state.loading = Boolean(state.selectedSourceKey);
+    state.loading = true;
     state.error = "";
     render();
-    if (!state.selectedSourceKey) return;
     try {
-      const catalog = await api(`/api/admin/workflows/${encodeURIComponent(state.selectedSourceKey)}/loras`);
+      const view = await api("/api/admin/lora-library");
       if (token !== state.requestToken) return;
-      state.catalog = catalog;
+      state.libraries = Array.isArray(view?.libraries) ? view.libraries : [];
+      selectLibrary();
     } catch (error) {
       if (token !== state.requestToken) return;
-      state.error = error.message || "Could not load the LoRA catalog.";
+      state.libraries = [];
+      state.library = null;
+      state.error = error.message || "Could not load the LoRA library.";
     } finally {
       if (token === state.requestToken) { state.loading = false; render(); }
     }
   }
-  async function pollOperation(id, file = null, source = state.operationSourceKey) {
+  async function pollOperation(id, file, library) {
     let resumedUploads = 0;
     for (;;) {
       const operation = await api(`/api/admin/lora-operations/${encodeURIComponent(id)}`);
-      setOperation(operation, source);
-      state.status = operation.message || (operation.status === "running" ? "Updating ComfyUI publication and replicas…" : "");
+      setOperation(operation, library);
+      state.status = operation.message || (operation.status === "running" ? "Updating every library workflow in ComfyUI…" : "");
       render();
       if (terminalStatuses.has(operation.status)) return operation;
       if (operation.status === "awaiting_upload") {
@@ -189,13 +203,13 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
         state.status = "Resuming the interrupted upload…";
         state.uploadPercent = 0;
         render();
-        const observed = await sendFileWithRecovery(id, file, source);
+        const observed = await sendFileWithRecovery(id, file, library);
         if (terminalStatuses.has(observed?.status)) return observed;
       }
       await pause(1000);
     }
   }
-  async function sendFileWithRecovery(operationId, file, source = state.operationSourceKey) {
+  async function sendFileWithRecovery(operationId, file, library) {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         await uploadFile(`/api/admin/lora-operations/${encodeURIComponent(operationId)}/file`, file, { csrfToken: getCsrfToken(), onProgress: (percent) => { state.uploadPercent = percent; render(); } });
@@ -203,7 +217,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
         return null;
       } catch (uploadError) {
         const current = await api(`/api/admin/lora-operations/${encodeURIComponent(operationId)}`);
-        setOperation(current, source);
+        setOperation(current, library);
         if (current.status !== "awaiting_upload") return current;
         if (attempt === 2) throw uploadError;
         state.status = "The upload was interrupted. Retrying the same operation…";
@@ -212,8 +226,8 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       }
     }
   }
-  async function finish(operation, kind, source) {
-    state.pendingUploads.delete(source);
+  async function finish(operation, kind, library) {
+    state.pendingUploads.delete(library);
     if (operation.status !== "succeeded") {
       const blocker = Array.isArray(operation.blockers) && operation.blockers.length ? ` ${operation.blockers.map((item) => typeof item === "string" ? item : item.message || item.code || "Dependency blocked removal").join(" ")}` : "";
       state.error = `${operation.message || (operation.status === "repair_required" ? "LoRA operation requires repair." : "LoRA operation failed.")}${blocker}`;
@@ -221,62 +235,61 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       render();
       return;
     }
-    state.status = kind === "install" ? "LoRA installed and published." : kind === "edit" ? "LoRA details updated and published." : "LoRA removed from ComfyUI and the published workflow.";
+    state.status = successMessages[kind] || successMessages.install;
     state.error = "";
     state.editingLoraId = null;
     state.editDraft = null;
     try {
-      const sources = await refreshSources(source);
-      if (Array.isArray(sources)) setSources(sources);
-      await loadCatalog();
+      await refreshSources(null);
+      await loadLibrary();
       notify?.(state.status, "success");
     } catch (error) {
-      state.error = `The LoRA operation succeeded, but source refresh failed: ${error.message}`;
+      state.error = `The LoRA operation succeeded, but refreshing workflows failed: ${error.message}`;
     }
     render();
   }
   async function runOperation(kind, data, file = null) {
-    if (state.busy || ["awaiting_upload", "running", "repair_required"].includes(currentOperation()?.status) || !state.catalog?.eligible || !state.catalog.revision || !state.selectedSourceKey) return;
-    const source = state.selectedSourceKey;
+    const library = state.library;
+    const allowed = kind === "sync" ? library?.can_sync : library?.eligible;
+    if (state.busy || pendingStatuses.includes(currentOperation()?.status) || !allowed || !library?.expected_library?.length) return;
+    const key = library.key;
     const idempotencyKey = createId();
-    state.operation = null;
-    state.operationSourceKey = source;
     state.busy = true;
     state.uploadPercent = null;
     state.error = "";
-    state.status = kind === "install" ? "Creating installation operation…" : kind === "edit" ? "Updating LoRA details…" : "Checking dependencies before removal…";
+    state.status = { install: "Creating installation operation…", edit: "Updating LoRA details…", remove: "Checking dependencies before removal…", sync: "Syncing library workflows…" }[kind];
     render();
     try {
-      const request = { method: "POST", body: JSON.stringify({ kind, source_key: source, expected_revision: state.catalog.revision, idempotency_key: idempotencyKey, ...data }) };
+      const request = { method: "POST", body: JSON.stringify({ kind, library: key, expected_library: library.expected_library, idempotency_key: idempotencyKey, ...data }) };
       let operation;
       try { operation = await api("/api/admin/lora-operations", request); }
       catch (error) {
         if (error.status && ![429, 500, 502, 503, 504].includes(error.status)) throw error;
         operation = await api("/api/admin/lora-operations", request);
       }
-      setOperation(operation, source, kind);
-      if (file && operation.status === "awaiting_upload") state.pendingUploads.set(source, file);
+      setOperation(operation, key, kind);
+      if (file && operation.status === "awaiting_upload") state.pendingUploads.set(key, file);
       let observed = null;
       if (file && operation.status === "awaiting_upload") {
         state.status = "Uploading weight file to ComfyUI…";
         state.uploadPercent = 0;
         render();
-        observed = await sendFileWithRecovery(operation.id, file);
+        observed = await sendFileWithRecovery(operation.id, file, key);
       }
-      const result = terminalStatuses.has(observed?.status || operation.status) ? observed || operation : await pollOperation(operation.id, file);
-      await finish(result, kind, source);
+      const result = terminalStatuses.has(observed?.status || operation.status) ? observed || operation : await pollOperation(operation.id, file, key);
+      await finish(result, kind, key);
     } catch (error) {
-      if (["source_republished", "lora_not_found"].includes(error.code)) {
+      if (["library_changed", "lora_not_found", "lora_library_out_of_sync", "lora_library_in_sync"].includes(error.code)) {
         try {
-          const sources = await refreshSources(source);
-          if (Array.isArray(sources)) setSources(sources);
-          await loadCatalog();
+          await refreshSources(null);
+          await loadLibrary();
         } catch { /* The original conflict remains the actionable error. */ }
       }
+      const operation = state.operations.get(key);
       state.error = error.message || "LoRA operation failed.";
-      state.status = state.operation?.status === "awaiting_upload"
+      state.status = operation?.status === "awaiting_upload"
         ? "The upload is incomplete. Review this operation before starting another."
-        : state.operation?.id ? "The operation may still be running. Reopen Administration to check its status." : "";
+        : operation?.id && pendingStatuses.includes(operation.status) ? "The operation may still be running. Reopen Administration to check its status." : "";
       render();
     } finally {
       state.busy = false;
@@ -284,8 +297,9 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       render();
     }
   }
+  const findItem = (id) => state.library?.items?.find((candidate) => candidate.id === id);
   async function install(form) {
-    if (!state.catalog?.eligible || ["awaiting_upload", "running", "repair_required"].includes(currentOperation()?.status)) return;
+    if (!state.library?.eligible || pendingStatuses.includes(currentOperation()?.status)) return;
     const fields = readForm(form);
     const file = fields.get("file");
     const displayName = String(fields.get("display_name") || "").trim();
@@ -295,14 +309,19 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     await runOperation("install", { filename: file.name, display_name: displayName, trigger_word: triggerWord }, file);
   }
   async function remove(id) {
-    const item = state.catalog?.items?.find((candidate) => candidate.id === id);
+    const item = findItem(id);
     if (!item || state.busy) return;
-    if (!confirm(`Remove “${item.label || item.id}” from this workflow and delete its weight file? Historical generations stay visible, but exact regeneration with that weight will no longer be possible.`)) return;
+    const count = state.library?.members?.length || 0;
+    if (!confirm(`Remove “${item.label || item.id}” from all ${count} library workflow${count === 1 ? "" : "s"} and delete its weight file? Historical generations stay visible, but exact regeneration with that weight will no longer be possible.`)) return;
     await runOperation("remove", { lora_id: id });
   }
+  async function sync() {
+    if (state.busy || !state.library?.can_sync) return;
+    await runOperation("sync", {});
+  }
   function beginEdit(id) {
-    const item = state.catalog?.items?.find((candidate) => candidate.id === id);
-    if (!item || state.busy || !state.catalog?.eligible || ["awaiting_upload", "running", "repair_required"].includes(currentOperation()?.status)) return;
+    const item = findItem(id);
+    if (!item || state.busy || !state.library?.eligible || pendingStatuses.includes(currentOperation()?.status)) return;
     state.editingLoraId = id;
     state.editDraft = { displayName: item.label || "", triggerWord: item.trigger_word || "" };
     state.error = "";
@@ -318,7 +337,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     state.host?.querySelector?.(`[data-admin-lora-edit="${id}"]`)?.focus();
   }
   async function edit(id, form) {
-    const item = state.catalog?.items?.find((candidate) => candidate.id === id);
+    const item = findItem(id);
     if (!item || state.editingLoraId !== id || state.busy) return;
     const fields = readForm(form);
     const displayName = String(fields.get("display_name") ?? "").trim();
@@ -329,20 +348,19 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     await runOperation("edit", { lora_id: id, display_name: displayName, trigger_word: triggerWord });
   }
   async function retryUpload() {
-    const source = state.selectedSourceKey;
+    const key = state.selectedLibraryKey;
     const operation = currentOperation();
-    const file = state.pendingUploads.get(source);
+    const file = state.pendingUploads.get(key);
     if (state.busy || operation?.status !== "awaiting_upload" || !file) return;
     state.busy = true;
-    state.operationSourceKey = source;
     state.uploadPercent = 0;
     state.error = "";
     state.status = "Retrying the selected file upload…";
     render();
     try {
-      const observed = await sendFileWithRecovery(operation.id, file);
-      const result = terminalStatuses.has(observed?.status) ? observed : await pollOperation(operation.id, file);
-      await finish(result, "install", source);
+      const observed = await sendFileWithRecovery(operation.id, file, key);
+      const result = terminalStatuses.has(observed?.status) ? observed : await pollOperation(operation.id, file, key);
+      await finish(result, "install", key);
     } catch (error) {
       state.error = error.message || "The upload did not complete.";
       state.status = "The same operation still awaits its file.";
@@ -353,24 +371,23 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     }
   }
   async function cancelPendingUpload() {
-    const source = state.selectedSourceKey;
+    const key = state.selectedLibraryKey;
     const operation = currentOperation();
     if (state.busy || operation?.status !== "awaiting_upload") return;
     state.busy = true;
-    state.operationSourceKey = source;
     state.status = "Cancelling the pending upload…";
     state.error = "";
     render();
     try {
       const result = await api(`/api/admin/lora-operations/${encodeURIComponent(operation.id)}/cancel`, { method: "POST" });
-      setOperation(result);
-      state.pendingUploads.delete(source);
+      setOperation(result, key);
+      state.pendingUploads.delete(key);
       if (result.status === "repair_required") {
-        state.error = result.message || "The upload could not be cleaned up. This source requires repair.";
+        state.error = result.message || "The upload could not be cleaned up. The library requires repair.";
         state.status = "";
       } else {
         state.status = "Pending upload cancelled.";
-        await loadCatalog();
+        await loadLibrary();
       }
     } catch (error) {
       state.error = error.message || "Could not cancel the pending upload.";
@@ -380,38 +397,37 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       render();
     }
   }
-  async function recoverSource(source) {
-    const pending = state.operationsBySource.get(source);
-    if (!pending?.id || state.busy || state.recoveringSources.has(source)) return;
-    state.recoveringSources.add(source);
-    try {
-      let operation = await api(`/api/admin/lora-operations/${encodeURIComponent(pending.id)}`);
-      setOperation(operation, source);
-      if (operation.status === "running") operation = await pollOperation(operation.id, null, source);
-      if (terminalStatuses.has(operation.status) && operation.status !== "repair_required") {
-        await finish(operation, state.operationKinds.get(source) || "install", source);
-      } else if (operation.status === "repair_required") {
-        state.error = operation.message || "This LoRA operation requires repair.";
-      } else if (operation.status === "awaiting_upload") {
-        state.status = "The previous upload still awaits a file. Cancel it to start again.";
+  async function recoverOperations() {
+    for (const [key, pending] of [...state.operations.entries()]) {
+      if (!pending?.id || state.busy || state.recovering.has(key)) continue;
+      state.recovering.add(key);
+      try {
+        let operation = await api(`/api/admin/lora-operations/${encodeURIComponent(pending.id)}`);
+        setOperation(operation, key);
+        if (operation.status === "running") operation = await pollOperation(operation.id, null, key);
+        if (terminalStatuses.has(operation.status) && operation.status !== "repair_required") {
+          await finish(operation, state.operationKinds.get(key) || "install", key);
+        } else if (operation.status === "repair_required") {
+          state.error = operation.message || "This LoRA operation requires repair.";
+        } else if (operation.status === "awaiting_upload") {
+          state.status = "The previous upload still awaits a file. Cancel it to start again.";
+        }
+      } catch (error) {
+        state.error = `Could not check the previous LoRA operation: ${error.message}`;
+      } finally {
+        state.recovering.delete(key);
+        render();
       }
-    } catch (error) {
-      state.error = `Could not check the previous LoRA operation: ${error.message}`;
-    } finally {
-      state.recoveringSources.delete(source);
-      render();
     }
   }
-  function mount(host, sources, preferredKey = null) {
+  function mount(host) {
     state.host = host;
     restoreOperations();
-    setSources(sources, preferredKey);
     host.addEventListener("change", (event) => {
-      if (!event.target.matches("[data-admin-lora-source]") || state.busy) return;
-      state.selectedSourceKey = event.target.value;
+      if (!event.target.matches?.("[data-admin-lora-library]") || state.busy) return;
+      selectLibrary(event.target.value);
       state.status = "";
-      void loadCatalog();
-      void recoverSource(state.selectedSourceKey);
+      render();
     });
     host.addEventListener("input", (event) => {
       if (!state.editingLoraId || !state.editDraft || !event.target.closest?.("[data-admin-lora-edit-form]")) return;
@@ -428,6 +444,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     host.addEventListener("click", (event) => {
       if (event.target.closest("[data-admin-lora-retry-upload]")) { void retryUpload(); return; }
       if (event.target.closest("[data-admin-lora-cancel-upload]")) { void cancelPendingUpload(); return; }
+      if (event.target.closest("[data-admin-lora-sync]")) { void sync(); return; }
       const editButton = event.target.closest("[data-admin-lora-edit]");
       if (editButton) { beginEdit(editButton.dataset.adminLoraEdit); return; }
       const cancelButton = event.target.closest("[data-admin-lora-edit-cancel]");
@@ -436,7 +453,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
       if (button) void remove(button.dataset.adminLoraRemove);
     });
     if (state.busy) render();
-    else { void loadCatalog(); void recoverSource(state.selectedSourceKey); }
+    else void loadLibrary().then(recoverOperations);
   }
-  return { mount, loadCatalog, state };
+  return { mount, loadLibrary, state };
 }

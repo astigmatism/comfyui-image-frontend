@@ -1,10 +1,12 @@
 import { promptRuntimeError } from "./prompt-routing.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
-import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup } from "./gallery-view.mjs";
+import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup, loraRankFilterMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
   checkpointRank,
+  loraRank,
+  lowestLoraRank,
   DEFAULT_OPEN_CONTROL_SECTION_KINDS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
@@ -101,6 +103,7 @@ export function shellMarkup(state) {
           <button type="button" class="button low favorites-launch-button" data-action="toggle-favorites-filter" aria-label="Favorites" title="${presentation.title}" aria-pressed="${presentation.pressed}" data-favorites-mode="${mode}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /><path class="favorites-slash-backing" d="M4.5 20.5 20 4.2" /><path class="favorites-slash" d="M4.5 20.5 20 4.2" /></svg><span class="favorites-launch-label">${presentation.label}</span></button>
           ${checkpointRankFilterMarkup(state)}
           </div>
+          ${loraRankFilterMarkup(state)}
           ${galleryLayoutMarkup(state.galleryLayout)}
           <label class="scale-control">
             <span>Gallery scale</span>
@@ -1447,9 +1450,11 @@ export function galleryMarkup(
     galleryLayout = "grouped",
     hideThumbnails = false,
     checkpointTiers = {},
+    loraTiers = {},
+    excludedLoraRanks = [],
   } = {},
 ) {
-  const cardMarkup = (generation) => galleryCardMarkup(generation, { hideThumbnail: hideThumbnails, checkpointTiers });
+  const cardMarkup = (generation) => galleryCardMarkup(generation, { hideThumbnail: hideThumbnails, checkpointTiers, loraTiers });
   const tiles = collections
     .filter((collection) => (collection.parent_id ?? null) === currentCollectionId)
     .map((collection) => collectionTileMarkup(collection))
@@ -1469,7 +1474,7 @@ export function galleryMarkup(
     if (excludedCheckpointRanks.length === CHECKPOINT_TIER_DEFINITIONS.length) {
       return `${tileGrid}<section class="empty-gallery"><h2>All model ranks are hidden</h2><p>Turn on a rank above to show its images.</p><button type="button" class="button secondary" data-action="show-all-checkpoint-ranks">Show all ranks</button></section>`;
     }
-    if (excludedCheckpointRanks.length || mode !== "all") {
+    if (excludedCheckpointRanks.length || excludedLoraRanks.length || mode !== "all") {
       return `${tileGrid}<section class="empty-gallery"><h2>No images match these filters</h2><p>Turn on more ranks or change the Favorites filter.</p></section>`;
     }
     if (currentCollectionId) {
@@ -1666,7 +1671,11 @@ export function collectionThumbnailsHidden(collections, collectionId) {
   return collections.find((collection) => collection?.id === collectionId)?.previews_enabled === false;
 }
 
-export function galleryCardMarkup(generation, { hideThumbnail = false, checkpointTiers = {} } = {}) {
+function loraRanksTitle(loras, ranks) {
+  return loras.map((item) => `${item.label} · ${loraRank(item.lora_identity, ranks)}`).join("\n");
+}
+
+export function galleryCardMarkup(generation, { hideThumbnail = false, checkpointTiers = {}, loraTiers = {} } = {}) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
   const thumbnailHidden = Boolean(hasImage && hideThumbnail);
@@ -1688,6 +1697,11 @@ export function galleryCardMarkup(generation, { hideThumbnail = false, checkpoin
   const checkpoint = checkpointName
     ? `<span class="card-checkpoint card-hover-reveal" title="${escapeHtml(checkpointName)}">${generation.checkpoint_id ? checkpointRankMarkup(checkpointRank(generation.checkpoint_id, checkpointTiers)) : ""}<span class="checkpoint-name">${escapeHtml(checkpointName)}</span></span>`
     : "";
+  const loras = Array.isArray(generation.loras) ? generation.loras : [];
+  const loraGrade = lowestLoraRank(loras, loraTiers);
+  const lora = loraGrade
+    ? `<span class="card-lora-rank card-hover-reveal" title="${escapeHtml(`LoRAs (lowest rank ${loraGrade})\n${loraRanksTitle(loras, loraTiers)}`)}"><span class="lora-rank-caption" aria-hidden="true">LoRA</span>${checkpointRankMarkup(loraGrade)}</span>`
+    : "";
   const width = positiveNumber(generation.expected_width) || positiveNumber(artifact?.width);
   const height = positiveNumber(generation.expected_height) || positiveNumber(artifact?.height);
   const aspectStyle = width && height ? ` style="--gallery-media-aspect: ${width} / ${height}"` : "";
@@ -1698,7 +1712,7 @@ export function galleryCardMarkup(generation, { hideThumbnail = false, checkpoin
     <div class="card-media-frame"${aspectStyle}>
       ${hasImage ? `<button type="button" class="card-media" data-action="open-photo" data-generation-id="${escapeHtml(generation.id)}" aria-label="View ${escapeHtml(generationName)} image">${media}</button>` : `<div class="card-media" aria-label="${escapeHtml(`${generationName}, ${statusLabel(generation.status)}`)}">${media}</div>`}
       <div class="card-hover-scrim" aria-hidden="true"></div>
-      ${checkpoint}${count}
+      ${checkpoint}${lora}${count}
       <div class="card-bottom-overlay">
         <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
         ${cardActionsMarkup(generation)}
@@ -1990,17 +2004,40 @@ function photoCheckpointMarkup(generation, ranks, change) {
   return `<div class="photo-viewer-checkpoint-block"><div class="photo-viewer-checkpoint checkpoint-tier-${grade}" title="${escapeHtml(name)}">${identity ? checkpointRankMarkup(grade) : ""}<span class="checkpoint-name">${escapeHtml(name)}</span>${arrows}</div><div class="checkpoint-rank-feedback" role="${notice?.status === "error" ? "alert" : "status"}" ${notice?.status === "error" ? 'data-rank-error="true"' : ""}>${feedback}</div></div>`;
 }
 
+export function loraRankArrowsMarkup(identity, grade, { busy = false, label = "LoRA", action = "rank-lora" } = {}) {
+  const index = CHECKPOINT_TIER_DEFINITIONS.findIndex((tier) => tier.id === grade);
+  return `<span class="checkpoint-rank-actions lora-rank-actions" role="group" aria-label="${escapeHtml(label)} rank">${[-1, 1].map((step) => {
+    const next = CHECKPOINT_TIER_DEFINITIONS[index + step]?.id;
+    const text = next ? `${step < 0 ? "Raise" : "Lower"} ${label} from ${grade} to ${next}` : `${label} is already at the ${step < 0 ? "highest" : "lowest"} rank ${grade}`;
+    return `<button type="button" class="checkpoint-rank-arrow" data-action="${action}" data-lora-identity="${escapeHtml(identity)}" data-rank-step="${step}" aria-label="${escapeHtml(text)}" title="${escapeHtml(text)}" ${!next || busy ? "disabled" : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="${step < 0 ? "m5 9 5-5 5 5M10 4v12" : "m5 11 5 5 5-5M10 4v12"}" /></svg></button>`;
+  }).join("")}</span>`;
+}
+
+function photoLoraMarkup(generation, ranks, change) {
+  const loras = Array.isArray(generation?.loras) ? generation.loras : [];
+  if (!loras.length) return "";
+  const rows = loras.map((item) => {
+    const grade = loraRank(item.lora_identity, ranks);
+    const notice = change?.identity === item.lora_identity ? change : null;
+    const feedback = notice ? notice.status === "error"
+      ? `${escapeHtml(`${notice.from} → ${notice.to} wasn’t saved.`)} <button type="button" data-action="retry-lora-rank" data-lora-identity="${escapeHtml(item.lora_identity)}" title="${escapeHtml(notice.message || "Retry saving rank")}">Retry</button>`
+      : escapeHtml(`${notice.from} → ${notice.to} · ${notice.status === "saving" ? "Saving…" : "Saved"}`) : "";
+    return `<li class="photo-viewer-lora checkpoint-tier-${grade}" title="${escapeHtml(`${item.label} · strength ${Number(item.strength).toFixed(2)}`)}">${checkpointRankMarkup(grade)}<span class="checkpoint-name">${escapeHtml(item.label)}</span>${loraRankArrowsMarkup(item.lora_identity, grade, { busy: change?.status === "saving", label: item.label })}<span class="checkpoint-rank-feedback" role="${notice?.status === "error" ? "alert" : "status"}">${feedback}</span></li>`;
+  }).join("");
+  return `<ul class="photo-viewer-loras" aria-label="LoRAs used">${rows}</ul>`;
+}
+
 export function photoViewerMarkup(
   generation,
   navigation = {},
   requestedViewMode = "fill",
   requestedPlaybackMode = "hold",
-  { activity = "", loading = false, loadError = null, checkpointTiers = {}, checkpointRankChange = null } = {},
+  { activity = "", loading = false, loadError = null, checkpointTiers = {}, checkpointRankChange = null, loraTiers = {}, loraRankChange = null } = {},
 ) {
   const artifact = generation?.display_artifact;
   const sourceName = generationSourceName(generation);
   const runtimeName = generationComfyuiInstanceName(generation);
-  const checkpointLabel = photoCheckpointMarkup(generation, checkpointTiers, checkpointRankChange);
+  const checkpointLabel = `${photoCheckpointMarkup(generation, checkpointTiers, checkpointRankChange)}${photoLoraMarkup(generation, loraTiers, loraRankChange)}`;
   const hasImage = artifact?.kind === "image";
   const viewMode = ["actual", "fit"].includes(requestedViewMode) ? requestedViewMode : "fill";
   const playbackMode = requestedPlaybackMode === "slideshow" ? "slideshow" : "hold";

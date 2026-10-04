@@ -3,6 +3,17 @@ import { test } from "node:test";
 import { adminLoraMarkup, createAdminLoraController, newLoraOperationKey, reconcileLoraStrengthMemory, uploadLoraFile, validateLoraEdit, validateLoraInstall } from "../src/admin-loras.mjs";
 
 const revision = { publication_id: "publication-1", workflow_sha256: "a", api_sha256: "b", manifest_sha256: "c" };
+const expectedLibrary = [
+  { source_key: "a".repeat(64), revision },
+  { source_key: "b".repeat(64), revision: { ...revision, publication_id: "publication-2" } },
+];
+const members = [
+  { source_key: "a".repeat(64), display_name: "Moody Krea2 Advanced v1", revision, in_sync: true, missing_count: 0, item_count: 1 },
+  { source_key: "b".repeat(64), display_name: "Moody Krea2 Minimal v1", revision: expectedLibrary[1].revision, in_sync: true, missing_count: 0, item_count: 1 },
+];
+const library = (items, extra = {}) => ({ key: "krea2", label: "Krea 2", members, items, in_sync: true, conflicts: [], eligible: true, reason: null, can_sync: false, expected_library: expectedLibrary, ...extra });
+const view = (items, extra = {}) => ({ libraries: [library(items, extra)], active_operation: null });
+const isLibrary = (path) => path === "/api/admin/lora-library";
 
 test("operation keys have the backend UUID shape when randomUUID is unavailable", () => {
   assert.match(newLoraOperationKey(), /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
@@ -10,11 +21,11 @@ test("operation keys have the backend UUID shape when randomUUID is unavailable"
 
 test("LoRA administration presents public catalog data without exposing server filenames", () => {
   const markup = adminLoraMarkup({
-    sources: [{ source_key: "source-1", display_name: "Image & workflow" }],
-    selectedSourceKey: "source-1",
-    catalog: { eligible: true, revision, items: [{ id: "portrait", label: '<Portrait & "style">', trigger_word: "portrait subject", filename: "private/portrait.safetensors" }] },
+    library: library([{ id: "portrait", label: '<Portrait & "style">', trigger_word: "portrait subject", filename: "private/portrait.safetensors" }], { members: [{ ...members[0], display_name: "Image & workflow" }, members[1]] }),
   });
   assert.match(markup, /Image &amp; workflow/);
+  assert.match(markup, /Moody Krea2 Minimal v1/);
+  assert.match(markup, /shared by 2 workflows/);
   assert.match(markup, /&lt;Portrait &amp; &quot;style&quot;&gt;/);
   assert.match(markup, /portrait subject/);
   assert.match(markup, /data-admin-lora-remove="portrait"/);
@@ -22,15 +33,20 @@ test("LoRA administration presents public catalog data without exposing server f
   assert.match(markup, /name="display_name"/);
   assert.match(markup, /name="trigger_word"/);
   assert.doesNotMatch(markup, /private\/portrait\.safetensors/);
-  const blocked = adminLoraMarkup({ sources: [{ source_key: "source-1" }], selectedSourceKey: "source-1", catalog: { eligible: false, reason: "Replica is offline", items: [] } });
+  const blocked = adminLoraMarkup({ library: library([], { eligible: false, reason: "Replica is offline" }) });
   assert.match(blocked, /Replica is offline/);
   assert.doesNotMatch(blocked, /admin-lora-install-form/);
+  const drifted = adminLoraMarkup({ library: library([{ id: "portrait", label: "Portrait" }], { in_sync: false, eligible: false, can_sync: true, reason: "Sync the library before other changes.", members: [members[0], { ...members[1], in_sync: false, missing_count: 1 }] }) });
+  assert.match(drifted, /Needs sync · 1 missing/);
+  assert.match(drifted, /data-admin-lora-sync(?! disabled)/);
+  const conflicted = adminLoraMarkup({ library: library([], { in_sync: false, eligible: false, conflicts: ["LoRA 'Beta' uses different files in different workflows."] }) });
+  assert.match(conflicted, /uses different files/);
+  assert.doesNotMatch(conflicted, /data-admin-lora-sync/);
 });
 
 test("editing preloads public title and trigger without exposing private filename", () => {
   const markup = adminLoraMarkup({
-    sources: [{ source_key: "source-1" }], selectedSourceKey: "source-1",
-    catalog: { eligible: true, revision, items: [{ id: "portrait", label: '<Portrait & "style">', trigger_word: "portrait subject", filename: "private/portrait.safetensors" }] },
+    library: library([{ id: "portrait", label: '<Portrait & "style">', trigger_word: "portrait subject", filename: "private/portrait.safetensors" }]),
     editingLoraId: "portrait",
   });
   assert.match(markup, /data-admin-lora-edit-form="portrait"/);
@@ -93,7 +109,7 @@ test("remove sends an exact revision and refreshes after confirmed success", asy
   let items = [{ id: "portrait", label: "Portrait", trigger_word: "person" }];
   const api = async (path, options) => {
     calls.push({ path, options });
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items };
+    if (isLibrary(path)) return view(items);
     if (path === "/api/admin/lora-operations") return { id: "operation-1", status: "running" };
     if (path.endsWith("/operation-1")) return { id: "operation-1", status: "succeeded" };
     throw new Error(`Unexpected path ${path}`);
@@ -103,13 +119,13 @@ test("remove sends an exact revision and refreshes after confirmed success", asy
   let refreshes = 0;
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => "request-1", confirm: () => true, pause: async () => {}, refreshSources: async () => { refreshes += 1; items = []; } });
   controller.mount(host, [{ source_key: "source-1", display_name: "Image workflow" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-remove]" ? { dataset: { adminLoraRemove: "portrait" } } : null } });
   await waitFor(() => refreshes === 1 && !controller.state.busy);
   const request = calls.find((call) => call.path === "/api/admin/lora-operations");
-  assert.deepEqual(JSON.parse(request.options.body), { kind: "remove", source_key: "source-1", expected_revision: revision, idempotency_key: "request-1", lora_id: "portrait" });
+  assert.deepEqual(JSON.parse(request.options.body), { kind: "remove", library: "krea2", expected_library: expectedLibrary, idempotency_key: "request-1", lora_id: "portrait" });
   assert.equal(request.options.method, "POST");
-  assert.equal(controller.state.catalog.items.length, 0);
+  assert.equal(controller.state.library.items.length, 0);
   assert.doesNotMatch(host.innerHTML, /Remove Portrait/);
 });
 
@@ -119,7 +135,7 @@ test("install sends title, trigger, filename, then uploads one raw file before r
   let items = [];
   const api = async (path, options) => {
     calls.push({ path, options });
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items };
+    if (isLibrary(path)) return view(items);
     if (path === "/api/admin/lora-operations") return { id: "operation-2", status: "awaiting_upload" };
     if (path.endsWith("/operation-2")) return { id: "operation-2", status: "succeeded" };
     throw new Error(`Unexpected path ${path}`);
@@ -130,15 +146,15 @@ test("install sends title, trigger, filename, then uploads one raw file before r
   let refreshes = 0;
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => "request-2", pause: async () => {}, readForm: () => ({ get: (name) => ({ file, display_name: "Portrait", trigger_word: "person" })[name] }), uploadFile: async (path, body, options) => { upload = { path, body, options }; options.onProgress(100); }, refreshSources: async () => { refreshes += 1; items = [{ id: "portrait", label: "Portrait", trigger_word: "person" }]; } });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.submit({ target: { id: "admin-lora-install-form" }, preventDefault() {} });
   await waitFor(() => refreshes === 1 && !controller.state.busy);
   const request = calls.find((call) => call.path === "/api/admin/lora-operations");
-  assert.deepEqual(JSON.parse(request.options.body), { kind: "install", source_key: "source-1", expected_revision: revision, idempotency_key: "request-2", filename: "portrait.safetensors", display_name: "Portrait", trigger_word: "person" });
+  assert.deepEqual(JSON.parse(request.options.body), { kind: "install", library: "krea2", expected_library: expectedLibrary, idempotency_key: "request-2", filename: "portrait.safetensors", display_name: "Portrait", trigger_word: "person" });
   assert.equal(upload.path, "/api/admin/lora-operations/operation-2/file");
   assert.equal(upload.body, file);
   assert.equal(upload.options.csrfToken, "token");
-  assert.equal(controller.state.catalog.items.length, 1);
+  assert.equal(controller.state.library.items.length, 1);
 });
 
 test("edit sends a trimmed title and an empty trigger without upload or confirmation", async () => {
@@ -146,7 +162,7 @@ test("edit sends a trimmed title and an empty trigger without upload or confirma
   let items = [{ id: "portrait", label: "Portrait" }];
   const api = async (path, options) => {
     calls.push({ path, options });
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items };
+    if (isLibrary(path)) return view(items);
     if (path === "/api/admin/lora-operations") return { id: "operation-edit", status: "running" };
     if (path.endsWith("/operation-edit")) return { id: "operation-edit", status: "succeeded" };
     throw new Error(`Unexpected path ${path}`);
@@ -162,30 +178,30 @@ test("edit sends a trimmed title and an empty trigger without upload or confirma
     refreshSources: async () => { refreshes += 1; items = [{ id: "portrait", label: "New Portrait" }]; },
   });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-edit]" ? { dataset: { adminLoraEdit: "portrait" } } : null } });
   assert.match(host.innerHTML, /data-admin-lora-edit-form="portrait"/);
   listeners.submit({ target: { dataset: { adminLoraEditForm: "portrait" } }, preventDefault() {} });
   await waitFor(() => refreshes === 1 && !controller.state.busy);
   const request = calls.find((call) => call.path === "/api/admin/lora-operations");
-  assert.deepEqual(JSON.parse(request.options.body), { kind: "edit", source_key: "source-1", expected_revision: revision, idempotency_key: "request-edit", lora_id: "portrait", display_name: "New Portrait", trigger_word: "" });
-  assert.equal(controller.state.status, "LoRA details updated and published.");
+  assert.deepEqual(JSON.parse(request.options.body), { kind: "edit", library: "krea2", expected_library: expectedLibrary, idempotency_key: "request-edit", lora_id: "portrait", display_name: "New Portrait", trigger_word: "" });
+  assert.equal(controller.state.status, "LoRA details updated in every library workflow.");
   assert.equal(controller.state.editingLoraId, null);
-  assert.equal(controller.state.catalog.items[0].label, "New Portrait");
+  assert.equal(controller.state.library.items[0].label, "New Portrait");
 });
 
 test("edit no-op stays local, and Cancel discards the draft", async () => {
   const calls = [];
   const api = async (path, options) => {
     calls.push({ path, options });
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items: [{ id: "portrait", label: "Portrait" }] };
+    if (isLibrary(path)) return view([{ id: "portrait", label: "Portrait" }]);
     throw new Error(`Unexpected path ${path}`);
   };
   const listeners = {};
   const host = { isConnected: true, innerHTML: "", addEventListener(type, listener) { listeners[type] = listener; } };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", readForm: () => ({ get: (name) => ({ display_name: " Portrait ", trigger_word: " " })[name] }), refreshSources: async () => {} });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-edit]" ? { dataset: { adminLoraEdit: "portrait" } } : null } });
   listeners.submit({ target: { dataset: { adminLoraEditForm: "portrait" } }, preventDefault() {} });
   await waitFor(() => /Change the title or trigger word/.test(controller.state.error));
@@ -200,13 +216,13 @@ test("stale edit revision refreshes the catalog and closes the old draft", async
   let catalogCalls = 0;
   let refreshes = 0;
   const api = async (path) => {
-    if (path.endsWith("/loras")) {
+    if (isLibrary(path)) {
       catalogCalls += 1;
-      return { source_key: "source-1", revision: catalogCalls === 1 ? revision : { ...revision, manifest_sha256: "new" }, eligible: true, items: [{ id: "portrait", label: catalogCalls === 1 ? "Portrait" : "Other title" }] };
+      return view([{ id: "portrait", label: catalogCalls === 1 ? "Portrait" : "Other title" }]);
     }
     if (path === "/api/admin/lora-operations") {
       const error = new Error("The publication changed.");
-      error.code = "source_republished";
+      error.code = "library_changed";
       error.status = 409;
       throw error;
     }
@@ -216,12 +232,12 @@ test("stale edit revision refreshes the catalog and closes the old draft", async
   const host = { isConnected: true, innerHTML: "", addEventListener(type, listener) { listeners[type] = listener; } };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", readForm: () => ({ get: (name) => ({ display_name: "Changed", trigger_word: "" })[name] }), refreshSources: async () => { refreshes += 1; } });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-edit]" ? { dataset: { adminLoraEdit: "portrait" } } : null } });
   listeners.submit({ target: { dataset: { adminLoraEditForm: "portrait" } }, preventDefault() {} });
   await waitFor(() => refreshes === 1 && catalogCalls === 2 && !controller.state.busy);
   assert.equal(controller.state.editingLoraId, null);
-  assert.equal(controller.state.catalog.items[0].label, "Other title");
+  assert.equal(controller.state.library.items[0].label, "Other title");
   assert.match(controller.state.error, /publication changed/);
 });
 
@@ -231,7 +247,7 @@ test("interrupted upload checks operation state and retries the same operation",
   let uploads = 0;
   let refreshes = 0;
   const api = async (path) => {
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items: [] };
+    if (isLibrary(path)) return view([]);
     if (path === "/api/admin/lora-operations") return { id: "operation-3", status: "awaiting_upload" };
     if (path.endsWith("/operation-3")) return { id: "operation-3", status: observed.shift() };
     throw new Error(`Unexpected path ${path}`);
@@ -240,7 +256,7 @@ test("interrupted upload checks operation state and retries the same operation",
   const host = { isConnected: true, innerHTML: "", addEventListener(type, listener) { listeners[type] = listener; } };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => "request-3", pause: async () => {}, readForm: () => ({ get: (name) => ({ file, display_name: "Portrait", trigger_word: "person" })[name] }), uploadFile: async (path, body) => { assert.equal(path, "/api/admin/lora-operations/operation-3/file"); assert.equal(body, file); uploads += 1; if (uploads === 1) throw new Error("Connection lost"); }, refreshSources: async () => { refreshes += 1; } });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.submit({ target: { id: "admin-lora-install-form" }, preventDefault() {} });
   await waitFor(() => refreshes === 1 && !controller.state.busy);
   assert.equal(uploads, 2);
@@ -249,7 +265,7 @@ test("interrupted upload checks operation state and retries the same operation",
 
 test("removal blocker leaves the published item and reports the reason", async () => {
   const api = async (path) => {
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items: [{ id: "portrait", label: "Portrait" }] };
+    if (isLibrary(path)) return view([{ id: "portrait", label: "Portrait" }]);
     if (path === "/api/admin/lora-operations") return { id: "operation-4", status: "running" };
     if (path.endsWith("/operation-4")) return { id: "operation-4", status: "failed", message: "Removal was blocked.", blockers: ["An active generation needs this LoRA."] };
     throw new Error(`Unexpected path ${path}`);
@@ -259,11 +275,11 @@ test("removal blocker leaves the published item and reports the reason", async (
   let refreshes = 0;
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => "request-4", confirm: () => true, pause: async () => {}, refreshSources: async () => { refreshes += 1; } });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-remove]" ? { dataset: { adminLoraRemove: "portrait" } } : null } });
   await waitFor(() => !controller.state.busy && controller.state.error);
   assert.equal(refreshes, 0);
-  assert.equal(controller.state.catalog.items.length, 1);
+  assert.equal(controller.state.library.items.length, 1);
   assert.match(controller.state.error, /active generation/);
 });
 
@@ -272,7 +288,7 @@ test("an incomplete upload can be resumed with the selected file", async () => {
   let uploads = 0;
   let refreshes = 0;
   const api = async (path) => {
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items: [] };
+    if (isLibrary(path)) return view([]);
     if (path === "/api/admin/lora-operations") return { id: "operation-5", status: "awaiting_upload" };
     if (path.endsWith("/operation-5")) return { id: "operation-5", status: uploads < 3 ? "awaiting_upload" : "succeeded" };
     throw new Error(`Unexpected path ${path}`);
@@ -281,7 +297,7 @@ test("an incomplete upload can be resumed with the selected file", async () => {
   const host = { isConnected: true, innerHTML: "", addEventListener(type, listener) { listeners[type] = listener; } };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => "request-5", pause: async () => {}, readForm: () => ({ get: (name) => ({ file, display_name: "Portrait", trigger_word: "person" })[name] }), uploadFile: async () => { uploads += 1; if (uploads <= 2) throw new Error("Connection lost"); }, refreshSources: async () => { refreshes += 1; } });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   listeners.submit({ target: { id: "admin-lora-install-form" }, preventDefault() {} });
   await waitFor(() => !controller.state.busy && uploads === 2);
   assert.match(host.innerHTML, /Retry upload/);
@@ -295,20 +311,20 @@ test("pending upload can be cancelled without a file", async () => {
   const calls = [];
   const api = async (path, options) => {
     calls.push({ path, options });
-    if (path.endsWith("/loras")) return { source_key: "source-1", revision, eligible: true, items: [] };
+    if (isLibrary(path)) return view([]);
     if (path.endsWith("/operation-6/cancel")) return { id: "operation-6", status: "failed", message: "Upload cancelled." };
     throw new Error(`Unexpected path ${path}`);
   };
   const listeners = {};
   const host = { isConnected: true, innerHTML: "", addEventListener(type, listener) { listeners[type] = listener; } };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", refreshSources: async () => {} });
-  controller.state.operationsBySource.set("source-1", { id: "operation-6", status: "awaiting_upload" });
+  controller.state.operations.set("krea2", { id: "operation-6", status: "awaiting_upload" });
   controller.mount(host, [{ source_key: "source-1" }], "source-1");
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   assert.match(host.innerHTML, /Cancel pending upload/);
   assert.doesNotMatch(host.innerHTML, /Retry upload/);
   listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-cancel-upload]" ? {} : null } });
-  await waitFor(() => controller.state.operationsBySource.get("source-1")?.status === "failed" && !controller.state.busy);
+  await waitFor(() => controller.state.operations.get("krea2")?.status === "failed" && !controller.state.busy);
   assert.equal(calls.find((call) => call.path.endsWith("/cancel")).options.method, "POST");
   assert.match(host.innerHTML, /Pending upload cancelled/);
 });
@@ -320,7 +336,7 @@ test("pending operation ID survives a page reload so upload can be cancelled", a
   const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
   let uploads = 0;
   const api = async (path) => {
-    if (path.endsWith("/loras")) return { source_key: source, revision, eligible: true, items: [] };
+    if (isLibrary(path)) return view([]);
     if (path === "/api/admin/lora-operations") return { id: operationId, status: "awaiting_upload" };
     if (path.endsWith(`/${operationId}`)) return { id: operationId, status: "awaiting_upload" };
     if (path.endsWith(`/${operationId}/cancel`)) return { id: operationId, status: "failed", message: "Upload cancelled." };
@@ -334,7 +350,7 @@ test("pending operation ID survives a page reload so upload can be cancelled", a
   const file = { name: "portrait.safetensors", size: 96 };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => operationId, storage: () => storage, actorId: () => "admin-1", readForm: () => ({ get: (name) => ({ file, display_name: "Portrait", trigger_word: "person" })[name] }), uploadFile: async () => { uploads += 1; throw new Error("Connection lost"); }, refreshSources: async () => {} });
   controller.mount(first.host, [{ source_key: source }], source);
-  await waitFor(() => controller.state.catalog);
+  await waitFor(() => controller.state.library);
   first.listeners.submit({ target: { id: "admin-lora-install-form" }, preventDefault() {} });
   await waitFor(() => uploads === 2 && !controller.state.busy);
   assert.match(values.get("cif-admin-lora-operations:admin-1"), new RegExp(operationId));
@@ -342,32 +358,58 @@ test("pending operation ID survives a page reload so upload can be cancelled", a
   const second = makeHost();
   const restored = createAdminLoraController({ api, getCsrfToken: () => "token", storage: () => storage, actorId: () => "admin-1", refreshSources: async () => {} });
   restored.mount(second.host, [{ source_key: source }], source);
-  await waitFor(() => restored.state.catalog && restored.state.operationsBySource.get(source)?.status === "awaiting_upload");
+  await waitFor(() => restored.state.library && restored.state.operations.get("krea2")?.status === "awaiting_upload");
   assert.match(second.host.innerHTML, /Cancel pending upload/);
   assert.doesNotMatch(second.host.innerHTML, /Retry upload/);
   second.listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-cancel-upload]" ? {} : null } });
-  await waitFor(() => restored.state.operationsBySource.get(source)?.status === "failed" && !restored.state.busy);
+  await waitFor(() => restored.state.operations.get("krea2")?.status === "failed" && !restored.state.busy);
   assert.equal(values.has("cif-admin-lora-operations:admin-1"), false);
 });
 
 test("a running edit resumes after reload and reports edit success", async () => {
   const source = "b".repeat(64);
   const operationId = "22222222-2222-4222-8222-222222222222";
-  const values = new Map([["cif-admin-lora-operations:admin-1", JSON.stringify({ [source]: { id: operationId, kind: "edit" } })]]);
+  const values = new Map([["cif-admin-lora-operations:admin-1", JSON.stringify({ krea2: { id: operationId, kind: "edit" } })]]);
   const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
   let statusCalls = 0;
   let refreshes = 0;
   const api = async (path) => {
-    if (path.endsWith("/loras")) return { source_key: source, revision, eligible: true, items: [{ id: "portrait", label: "New title" }] };
+    if (isLibrary(path)) return view([{ id: "portrait", label: "New title" }]);
     if (path.endsWith(`/${operationId}`)) return { id: operationId, status: ++statusCalls === 1 ? "running" : "succeeded" };
     throw new Error(`Unexpected path ${path}`);
   };
   const host = { isConnected: true, innerHTML: "", addEventListener() {} };
   const controller = createAdminLoraController({ api, getCsrfToken: () => "token", storage: () => storage, actorId: () => "admin-1", pause: async () => {}, refreshSources: async () => { refreshes += 1; } });
   controller.mount(host, [{ source_key: source }], source);
-  await waitFor(() => refreshes === 1 && controller.state.operationsBySource.get(source)?.status === "succeeded");
-  assert.equal(controller.state.status, "LoRA details updated and published.");
+  await waitFor(() => refreshes === 1 && controller.state.operations.get("krea2")?.status === "succeeded");
+  assert.equal(controller.state.status, "LoRA details updated in every library workflow.");
   assert.equal(values.has("cif-admin-lora-operations:admin-1"), false);
+});
+
+test("sync adds missing library LoRAs to drifted workflows in one operation", async () => {
+  const calls = [];
+  let synced = false;
+  const api = async (path, options) => {
+    calls.push({ path, options });
+    if (isLibrary(path)) return synced ? view([{ id: "portrait", label: "Portrait" }]) : view([{ id: "portrait", label: "Portrait" }], { in_sync: false, eligible: false, can_sync: true, reason: "Sync the library before other changes." });
+    if (path === "/api/admin/lora-operations") return { id: "operation-sync", status: "running" };
+    if (path.endsWith("/operation-sync")) return { id: "operation-sync", status: "succeeded" };
+    throw new Error(`Unexpected path ${path}`);
+  };
+  const listeners = {};
+  const host = { isConnected: true, innerHTML: "", addEventListener(type, listener) { listeners[type] = listener; } };
+  let refreshes = 0;
+  const controller = createAdminLoraController({ api, getCsrfToken: () => "token", createId: () => "request-sync", pause: async () => {}, refreshSources: async (key) => { assert.equal(key, null); refreshes += 1; synced = true; } });
+  controller.mount(host);
+  await waitFor(() => controller.state.library);
+  assert.doesNotMatch(host.innerHTML, /admin-lora-install-form/);
+  listeners.click({ target: { closest: (selector) => selector === "[data-admin-lora-sync]" ? {} : null } });
+  await waitFor(() => refreshes === 1 && !controller.state.busy);
+  const request = calls.find((call) => call.path === "/api/admin/lora-operations");
+  assert.deepEqual(JSON.parse(request.options.body), { kind: "sync", library: "krea2", expected_library: expectedLibrary, idempotency_key: "request-sync" });
+  assert.equal(controller.state.status, "Library workflows now share the same LoRAs.");
+  assert.equal(controller.state.library.in_sync, true);
+  assert.match(host.innerHTML, /admin-lora-install-form/);
 });
 
 test("reconciliation removes strengths for unpublished LoRAs", () => {

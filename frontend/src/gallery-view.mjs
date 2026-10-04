@@ -1,33 +1,62 @@
-import { CHECKPOINT_TIER_DEFINITIONS, checkpointRank } from "./lib.mjs";
+import { CHECKPOINT_TIER_DEFINITIONS, checkpointRank, loraRank } from "./lib.mjs";
 
 export function excludedCheckpointRanks(state) {
   return CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => id).filter((id) => state?.excludedCheckpointRanks?.includes(id));
 }
 
+export function excludedLoraRanks(state) {
+  return CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => id).filter((id) => state?.excludedLoraRanks?.includes(id));
+}
+
 export function galleryFilterActive(state) {
-  return favoritesFilterActive(favoritesMode(state)) || excludedCheckpointRanks(state).length > 0;
+  return favoritesFilterActive(favoritesMode(state)) || excludedCheckpointRanks(state).length > 0 || excludedLoraRanks(state).length > 0;
+}
+
+function generationLoraIdentities(item) {
+  if (Array.isArray(item?.loras)) return item.loras.map((entry) => entry?.lora_identity).filter(Boolean);
+  return Array.isArray(item?.lora_identities) ? item.lora_identities : [];
 }
 
 export function galleryGenerationMatches(state, item) {
   const excluded = excludedCheckpointRanks(state);
+  const excludedLoras = excludedLoraRanks(state);
+  // Matches the server: any used LoRA with a hidden rank hides the image; unranked is C.
   return favoritesModeMatches(favoritesMode(state), item)
-    && (!excluded.length || !excluded.includes(checkpointRank(item?.checkpoint_id, state?.checkpointTiers)));
+    && (!excluded.length || !excluded.includes(checkpointRank(item?.checkpoint_id, state?.checkpointTiers)))
+    && (!excludedLoras.length || !generationLoraIdentities(item).some((identity) => excludedLoras.includes(loraRank(identity, state?.loraTiers))));
 }
 
 export function galleryFilterSignature(state) {
-  return JSON.stringify([galleryViewScope(state), excludedCheckpointRanks(state).length ? state?.checkpointTiers : null]);
+  return JSON.stringify([
+    galleryViewScope(state),
+    excludedCheckpointRanks(state).length ? state?.checkpointTiers : null,
+    excludedLoraRanks(state).length ? state?.loraTiers : null,
+  ]);
 }
 
 export function galleryViewParameters(state, extras = {}) {
   const scope = galleryViewScope(state);
   const parameters = new URLSearchParams({ collection_id: scope.collection_id || "", favorites_only: String(scope.favorites_only), unfavorited_only: String(scope.unfavorited_only), ...extras });
   for (const rank of scope.excluded_checkpoint_ranks || []) parameters.append("excluded_checkpoint_ranks", rank);
+  for (const rank of scope.excluded_lora_ranks || []) parameters.append("excluded_lora_ranks", rank);
   return parameters;
 }
 
 export function checkpointRankFilterMarkup(state) {
   const excluded = excludedCheckpointRanks(state);
   return `<div class="checkpoint-rank-filter" role="group" aria-label="Visible model ranks"><div class="rank-filter-segments">${CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => `<button type="button" class="rank-filter-button checkpoint-tier-${id}" data-action="toggle-checkpoint-rank-filter" data-checkpoint-rank="${id}" aria-label="Show rank ${id}" aria-pressed="${!excluded.includes(id)}" title="${excluded.includes(id) ? "Show" : "Hide"} images from rank ${id}${id === "C" ? " (includes unranked models)" : ""}">${id}</button>`).join("")}</div></div>`;
+}
+
+export function loraRankFilterSummary(state) {
+  const hidden = excludedLoraRanks(state);
+  return hidden.length ? `LoRA · ${hidden.length} hidden` : "LoRA";
+}
+
+// A compact disclosure keeps the header width of the checkpoint filter; its five
+// toggles hide images that used a LoRA of that rank (unranked LoRAs count as C).
+export function loraRankFilterMarkup(state) {
+  const excluded = excludedLoraRanks(state);
+  return `<details class="lora-rank-menu"><summary class="lora-rank-launch" aria-label="LoRA rank filter" title="Filter images by the rank of the LoRAs they used"><span class="lora-rank-launch-label">${loraRankFilterSummary(state)}</span></summary><div class="menu-popover lora-rank-popover" role="group" aria-label="Visible LoRA ranks"><p>Show images whose LoRAs are ranked:</p><div class="rank-filter-segments">${CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => `<button type="button" class="rank-filter-button checkpoint-tier-${id}" data-action="toggle-lora-rank-filter" data-lora-rank="${id}" aria-label="Show LoRA rank ${id}" aria-pressed="${!excluded.includes(id)}" title="${excluded.includes(id) ? "Show" : "Hide"} images that use a rank ${id} LoRA${id === "C" ? " (includes unranked LoRAs)" : ""}">${id}</button>`).join("")}</div></div></details>`;
 }
 
 export function galleryLayoutMarkup(layout = "grouped") {
@@ -93,6 +122,7 @@ export function galleryViewScope(state) {
     favorites_only: mode === "favorites",
     unfavorited_only: mode === "unfavorited",
     ...(excludedCheckpointRanks(state).length ? { excluded_checkpoint_ranks: excludedCheckpointRanks(state) } : {}),
+    ...(excludedLoraRanks(state).length ? { excluded_lora_ranks: excludedLoraRanks(state) } : {}),
   };
 }
 
