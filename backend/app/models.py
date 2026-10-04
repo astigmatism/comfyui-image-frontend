@@ -171,6 +171,7 @@ class UserPreference(Base):
     checkpoint_tiers_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    lora_tiers_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     settings_initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -268,8 +269,21 @@ class WorkflowProfile(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class LoraLibraryImage(Base):
+    """One thumbnail per shared LoRA identity, used by every workflow that lists it."""
+
+    __tablename__ = "lora_library_images"
+
+    lora_identity: Mapped[str] = mapped_column(String(68), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    storage_path: Mapped[str | None] = mapped_column(String(500), unique=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class LoraImage(Base):
-    """Shared LoRA thumbnail for a logical workflow and published catalog item."""
+    """Legacy per-workflow thumbnail rows (read-only since the shared LoRA library)."""
 
     __tablename__ = "lora_images"
 
@@ -298,8 +312,11 @@ class LoraOperation(Base):
     actor_id: Mapped[str] = mapped_column(String(36), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(36), nullable=False)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The first target, for single-source records and older readers.
     source_key: Mapped[str] = mapped_column(String(64), nullable=False)
     source_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # "source" (one publication, before the shared library) or "library".
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="source")
     action: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     expected_revision_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -312,6 +329,22 @@ class LoraOperation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class LoraOperationTarget(Base):
+    """One publication changed by a library-wide LoRA operation."""
+
+    __tablename__ = "lora_operation_targets"
+    __table_args__ = (Index("ix_lora_operation_targets_source", "source_id"),)
+
+    operation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("lora_operations.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_id: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    source_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_revision_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    candidate_revision_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class WorkflowDiagnostic(Base):
@@ -578,6 +611,21 @@ class Generation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class GenerationLora(Base):
+    """An enabled LoRA of one accepted generation, keyed by its shared identity."""
+
+    __tablename__ = "generation_loras"
+    __table_args__ = (Index("ix_generation_loras_identity", "lora_identity", "generation_id"),)
+
+    generation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generations.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lora_identity: Mapped[str] = mapped_column(String(68), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    strength: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class Favorite(Base):

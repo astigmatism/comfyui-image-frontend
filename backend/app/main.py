@@ -413,6 +413,7 @@ def create_app(
     app.include_router(comfyui_instances.router)
     app.include_router(workflows.router)
     app.include_router(lora_images.router)
+    app.include_router(lora_images.library_router)
     app.include_router(uploads.router)
     app.include_router(prompt_assistant.router)
     app.include_router(prompt_generation.router)

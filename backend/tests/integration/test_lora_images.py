@@ -102,3 +102,47 @@ def test_lora_image_batch_is_atomic_when_upload_invalid(fake_state, settings_fac
         response = _update(client, path, changes, {"image_0": _png(), "image_1": b"not an image"})
         assert response.status_code in {400, 415, 422}
         assert client.get(path).json()["items"] == list(items.values())
+
+
+def test_one_lora_image_is_shared_by_every_workflow_that_lists_it(fake_state, settings_factory):
+    from tests.publication_fixtures import moody_lora_library_files
+
+    fake_state.workflow_files = moody_lora_library_files()
+    with TestClient(create_app(settings_factory())) as client:
+        provision_user(client, username="lora.library.images")
+        keys = []
+        for item in client.get("/api/workflows").json():
+            detail = client.get(f"/api/workflows/{item['source_key']}").json()
+            if any(control["type"] == "lora_stack" for control in detail["interface"]["inputs"]):
+                keys.append(item["source_key"])
+        assert len(keys) == 2
+        first, second = (f"/api/workflows/{key}/lora-images/loras" for key in keys)
+        items = {item["id"]: item for item in client.get(first).json()["items"]}
+        assert items["a"]["lora_identity"].startswith("lr1_")
+        saved = _update(
+            client,
+            first,
+            [{"id": "a", "version": items["a"]["version"], "action": "set", "file_key": "image_0"}],
+            {"image_0": _png()},
+        )
+        assert saved.status_code == 200, saved.text
+        shared = {item["id"]: item for item in client.get(second).json()["items"]}
+        published = {item["id"]: item for item in saved.json()["items"]}
+        assert shared["a"] == published["a"]
+        assert shared["a"]["image_url"].startswith("/api/lora-library/images/lr1_")
+        assert client.get(shared["a"]["image_url"]).status_code == 200
+        stale = _update(
+            client,
+            second,
+            [{"id": "a", "version": items["a"]["version"], "action": "remove"}],
+        )
+        assert stale.status_code == 409
+        removed = _update(
+            client,
+            second,
+            [{"id": "a", "version": shared["a"]["version"], "action": "remove"}],
+        )
+        assert removed.status_code == 200, removed.text
+        assert {item["id"]: item for item in client.get(first).json()["items"]}["a"][
+            "image_url"
+        ] is None

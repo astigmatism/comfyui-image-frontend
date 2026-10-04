@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..dependencies import AuthContext, database_handler, get_container, get_db, require_ready_user
 from ..domain.checkpoint_identity import checkpoint_identity_v1
+from ..domain.lora_identity import item_identities
 from ..domain.publication import publication_kind, source_key_for
 from ..domain.source_metadata import TIMELINE_MONTH_PATTERN, recognize_source_metadata
 from ..models import ServiceHealth, WorkflowCatalogHealth
@@ -149,7 +150,8 @@ def get_workflow(
     )
     summary.replicas = group[0].replicas if group else []
     return WorkflowDetail(
-        **summary.model_dump(), interface=_public_interface(profile.resolved_contract_json)
+        **summary.model_dump(),
+        interface=_public_interface(profile.resolved_contract_json, profile.source_api_json),
     )
 
 
@@ -244,8 +246,14 @@ def _summary(profile: Any, health: ServiceHealth | WorkflowCatalogHealth | None)
     )
 
 
-def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
-    """Construct an allowlist projection; private bindings are never copied then removed."""
+def _public_interface(
+    contract: Mapping[str, Any], api_document: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Construct an allowlist projection; private bindings are never copied then removed.
+
+    With the frozen graph, each LoRA item also carries its opaque shared identity (a hash
+    of the private filename), so ranks and thumbnails follow the LoRA across workflows.
+    """
 
     inputs: list[dict[str, Any]] = []
     for raw in contract.get("inputs", []):
@@ -281,11 +289,19 @@ def _public_interface(contract: Mapping[str, Any]) -> dict[str, Any]:
                 else str(public_input.get("default"))
             )
         elif public_input.get("type") == "lora_stack":
+            identities = item_identities(raw, api_document) if api_document is not None else {}
             public_input["items"] = [
                 {
-                    key: item[key]
-                    for key in ("id", "label", "description", "trigger_word")
-                    if key in item
+                    **{
+                        key: item[key]
+                        for key in ("id", "label", "description", "trigger_word")
+                        if key in item
+                    },
+                    **(
+                        {"lora_identity": identities[item["id"]]}
+                        if item.get("id") in identities
+                        else {}
+                    ),
                 }
                 for item in raw.get("items", [])
             ]

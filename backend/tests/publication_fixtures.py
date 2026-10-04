@@ -995,3 +995,43 @@ def add_lora_stack(manifest: JsonObject, workflow: JsonObject, api: JsonObject) 
         }
     )
     manifest["dependencies"]["class_types"] = sorted({node["class_type"] for node in api.values()})
+
+
+def relocated_bundle(
+    bundle: PublicationBundle, stem: str, *, publication_id: str
+) -> PublicationBundle:
+    """The same publication bytes under another userdata path (another library member)."""
+
+    manifest = json.loads(bundle.manifest_bytes)
+    manifest["publication_id"] = publication_id
+    manifest["source_id"] = f"{stem}.json"
+    manifest["workflow"]["path"] = f"{stem}.json"
+    manifest["api"]["path"] = f"{stem}.api.json"
+    manifest["manifest"]["path"] = f"{stem}.interface.json"
+    return PublicationBundle(
+        stem=stem,
+        manifest_path=f"{stem}.interface.json",
+        workflow_path=f"{stem}.json",
+        api_path=f"{stem}.api.json",
+        manifest_bytes=exact_json_bytes(manifest),
+        workflow_bytes=bundle.workflow_bytes,
+        api_bytes=bundle.api_bytes,
+    )
+
+
+def moody_lora_library_files(*, second_mutation: ArtifactMutator | None = None) -> dict[str, bytes]:
+    """Two Krea 2 workflows that share one LoRA library (the Advanced/Minimal pair)."""
+
+    first = build_publication_bundle("moody", mutate_artifacts=add_lora_stack)
+
+    def second_artifacts(manifest: JsonObject, workflow: JsonObject, api: JsonObject) -> None:
+        add_lora_stack(manifest, workflow, api)
+        if second_mutation:
+            second_mutation(manifest, workflow, api)
+
+    second = relocated_bundle(
+        build_publication_bundle("moody", mutate_artifacts=second_artifacts),
+        MOODY_KREA_STEM + " Minimal",
+        publication_id="66666666-6666-4666-8666-666666666666",
+    )
+    return {**first.files, **second.files}

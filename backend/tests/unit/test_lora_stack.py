@@ -94,13 +94,13 @@ def test_empty_catalog_is_a_published_model_passthrough():
     with pytest.raises(ValueError, match="LoRA Stack node"):
         validate_lora_runtime(selected.api_document, {})
 
-    from app.services.lora_images import control_bindings
+    from app.services.lora_images import control_identities
 
     profile = SimpleNamespace(
         resolved_contract_json=selected.private_contract,
         source_api_json=selected.api_document,
     )
-    assert control_bindings(profile, "loras") == {}
+    assert control_identities(profile, "loras") == {}
 
 
 def test_usage_description_is_public_and_does_not_change_execution():

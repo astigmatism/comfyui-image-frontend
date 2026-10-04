@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.datastructures import FormData, UploadFile
 
@@ -21,16 +21,17 @@ from ..dependencies import (
 )
 from ..errors import AppError
 from ..file_response import StoredFileResponse as FileResponse
-from ..models import LoraImage
+from ..models import LoraLibraryImage
 from ..services.assets import StoredImage
 from ..services.lora_images import (
-    control_bindings,
+    control_identities,
     image_items,
     image_version,
-    logical_workflow_key,
+    library_rows,
 )
 
 router = APIRouter(prefix="/api/workflows", tags=["generation-sources"])
+library_router = APIRouter(prefix="/api/lora-library", tags=["generation-sources"])
 
 
 @dataclass(frozen=True)
@@ -118,34 +119,24 @@ def _check_versions(
     control_id: str,
     changes: list[ImageChange],
     request: Request,
-) -> tuple[Any, dict[str, str], dict[str, LoraImage]]:
+) -> tuple[Any, dict[str, str], dict[str, LoraLibraryImage]]:
     container = get_container(request)
     profile = container.registry.resolve_source(
         session, source_key=source_key, require_dependencies=False
     )
-    bindings = control_bindings(profile, control_id)
-    workflow_key = logical_workflow_key(profile)
-    rows = {
-        row.item_id: row
-        for row in session.scalars(
-            select(LoraImage).where(
-                LoraImage.workflow_key == workflow_key,
-                LoraImage.control_id == control_id,
-            )
-        )
-    }
+    identities = control_identities(profile, control_id)
+    if len({identities.get(change.item_id) for change in changes}) != len(changes):
+        raise AppError("lora_image_invalid", "Each LoRA image is changed once.", status_code=422)
+    rows = library_rows(session, identities.values())
     for change in changes:
-        binding = bindings.get(change.item_id)
-        if binding is None:
+        identity = identities.get(change.item_id)
+        if identity is None:
             raise AppError("lora_image_invalid", "LoRA item is not published.", status_code=422)
-        row = rows.get(change.item_id)
+        row = rows.get(identity)
         current = image_version(
             container.settings.session_secret.get_secret_value(),
-            workflow_key,
-            control_id,
-            change.item_id,
+            identity,
             row.revision if row else 0,
-            binding,
         )
         if change.version != current:
             raise AppError(
@@ -155,7 +146,7 @@ def _check_versions(
                 status_code=409,
                 details={"item_id": change.item_id},
             )
-    return profile, bindings, rows
+    return profile, identities, rows
 
 
 @router.get("/{source_key}/lora-images/{control_id}")
@@ -215,30 +206,23 @@ async def update_lora_images(
                 with container.db.session_factory() as session:
                     # SQLite's write lock covers every version check and the whole batch.
                     session.execute(text("BEGIN IMMEDIATE"))
-                    profile, bindings, rows = _check_versions(
+                    profile, identities, rows = _check_versions(
                         session,
                         source_key=source_key,
                         control_id=control_id,
                         changes=changes,
                         request=request,
                     )
-                    workflow_key = logical_workflow_key(profile)
                     for change in changes:
-                        row = rows.get(change.item_id)
+                        identity = identities[change.item_id]
+                        row = rows.get(identity)
                         if row is None:
-                            row = LoraImage(
-                                workflow_key=workflow_key,
-                                control_id=control_id,
-                                item_id=change.item_id,
-                                binding_hash=bindings[change.item_id],
-                                revision=1,
-                            )
+                            row = LoraLibraryImage(lora_identity=identity, revision=1)
                             session.add(row)
                         else:
                             if row.storage_path:
                                 superseded_paths.append(row.storage_path)
                             row.revision += 1
-                            row.binding_hash = bindings[change.item_id]
                         row.storage_path = (
                             staged[change.item_id].relative_path if change.action == "set" else None
                         )
@@ -283,6 +267,41 @@ async def _delete_staged(assets: Any, staged: dict[str, StoredImage]) -> None:
     )
 
 
+def _image_response(row: LoraLibraryImage | None, v: str, request: Request) -> FileResponse:
+    container = get_container(request)
+    if (
+        row is None
+        or not row.storage_path
+        or v
+        != image_version(
+            container.settings.session_secret.get_secret_value(), row.lora_identity, row.revision
+        )
+    ):
+        raise AppError("not_found", "LoRA image was not found.", status_code=404)
+    return FileResponse(
+        container.assets.open(row.storage_path),
+        media_type="image/webp",
+        headers={
+            "Cache-Control": "private, max-age=86400, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@library_router.get("/images/{lora_identity}/content")
+@database_handler
+def lora_library_image_content(
+    lora_identity: str,
+    v: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    _: Annotated[AuthContext, Depends(require_ready_user)],
+) -> FileResponse:
+    row = session.get(LoraLibraryImage, lora_identity)
+    session.close()
+    return _image_response(row, v, request)
+
+
 @router.get("/{source_key}/lora-images/{control_id}/{item_id}/content")
 @database_handler
 def lora_image_content(
@@ -294,36 +313,12 @@ def lora_image_content(
     session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> FileResponse:
-    container = get_container(request)
-    profile = container.registry.resolve_source(
+    """Workflow-scoped URL kept for already open editors; it serves the library image."""
+
+    profile = get_container(request).registry.resolve_source(
         session, source_key=source_key, require_dependencies=False
     )
-    binding = control_bindings(profile, control_id).get(item_id)
-    if binding is None:
-        raise AppError("not_found", "LoRA image was not found.", status_code=404)
-    row = session.get(LoraImage, (logical_workflow_key(profile), control_id, item_id))
-    if (
-        row is None
-        or row.binding_hash != binding
-        or not row.storage_path
-        or v
-        != image_version(
-            container.settings.session_secret.get_secret_value(),
-            row.workflow_key,
-            control_id,
-            item_id,
-            row.revision,
-            binding,
-        )
-    ):
-        raise AppError("not_found", "LoRA image was not found.", status_code=404)
-    path = container.assets.open(row.storage_path)
+    identity = control_identities(profile, control_id).get(item_id)
+    row = session.get(LoraLibraryImage, identity) if identity else None
     session.close()
-    return FileResponse(
-        path,
-        media_type="image/webp",
-        headers={
-            "Cache-Control": "private, max-age=86400, immutable",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    return _image_response(row, v, request)

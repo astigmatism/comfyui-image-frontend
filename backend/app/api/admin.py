@@ -18,7 +18,7 @@ from ..errors import AppError
 from ..models import User, UserRole
 from ..schemas import (
     AdminDiagnostic,
-    AdminLoraCatalog,
+    AdminLoraLibraries,
     CreateUserRequest,
     LoraOperationCreate,
     LoraOperationPublic,
@@ -152,13 +152,12 @@ def workflow_diagnostics(
     ]
 
 
-@router.get("/workflows/{source_key}/loras", response_model=AdminLoraCatalog)
-async def admin_lora_catalog(
-    source_key: str,
+@router.get("/lora-library", response_model=AdminLoraLibraries)
+async def admin_lora_library(
     request: Request,
     _: Annotated[AuthContext, Depends(require_admin)],
-) -> AdminLoraCatalog:
-    return await get_container(request).lora_operations.catalog(source_key)
+) -> AdminLoraLibraries:
+    return await get_container(request).lora_operations.library()
 
 
 @router.post("/lora-operations", response_model=LoraOperationPublic, status_code=201)

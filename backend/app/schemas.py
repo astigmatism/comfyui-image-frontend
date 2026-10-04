@@ -132,6 +132,7 @@ class PreferenceResponse(APIModel):
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
     checkpoint_tiers: dict[str, list[str]] = Field(default_factory=dict)
+    lora_tiers: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class PreferenceUpdate(APIModel):
@@ -142,6 +143,7 @@ class PreferenceUpdate(APIModel):
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
     checkpoint_tiers: dict[StrictStr, list[StrictStr]] | None = None
+    lora_tiers: dict[StrictStr, list[StrictStr]] | None = None
 
     @field_validator("source_ratings")
     @classmethod
@@ -197,6 +199,25 @@ class PreferenceUpdate(APIModel):
             raise ValueError("checkpoint_tiers cannot contain more than 25000 checkpoints")
         return value
 
+    @field_validator("lora_tiers")
+    @classmethod
+    def validate_lora_tiers(cls, value: dict[str, list[str]] | None) -> dict[str, list[str]] | None:
+        if value is None:
+            return None
+        if set(value) - {"A", "B", "C", "D", "F"}:
+            raise ValueError("LoRA tier names must be A, B, C, D, or F")
+        seen: set[str] = set()
+        for identities in value.values():
+            for identity in identities:
+                if not re.fullmatch(r"lr1_[0-9a-f]{64}", identity):
+                    raise ValueError("LoRA tiers require opaque LoRA identities")
+                if identity in seen:
+                    raise ValueError("a LoRA cannot appear in more than one tier")
+                seen.add(identity)
+        if len(seen) > 25_000:
+            raise ValueError("lora_tiers cannot contain more than 25000 LoRAs")
+        return value
+
     @model_validator(mode="after")
     def validate_update_fields(self) -> PreferenceUpdate:
         if (
@@ -204,6 +225,7 @@ class PreferenceUpdate(APIModel):
             and self.source_ratings is None
             and self.source_colors is None
             and self.checkpoint_tiers is None
+            and self.lora_tiers is None
             and self.settings is None
         ):
             raise ValueError("at least one preference field is required")
@@ -230,20 +252,45 @@ class AdminLoraItem(APIModel):
     label: str
     description: str | None = None
     trigger_word: str | None = None
+    lora_identity: str | None = None
 
 
-class AdminLoraCatalog(APIModel):
-    source_key: str
+class LibraryMemberRevision(APIModel):
+    source_key: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
     revision: SourceRevision
+
+
+class AdminLoraLibraryMember(APIModel):
+    source_key: str
+    display_name: str
+    revision: SourceRevision
+    in_sync: bool
+    missing_count: int = 0
+    item_count: int = 0
+
+
+class AdminLoraLibrary(APIModel):
+    key: str
+    label: str
+    members: list[AdminLoraLibraryMember] = Field(default_factory=list)
+    items: list[AdminLoraItem] = Field(default_factory=list)
+    in_sync: bool
+    conflicts: list[str] = Field(default_factory=list)
     eligible: bool
     reason: str | None = None
-    items: list[AdminLoraItem] = Field(default_factory=list)
+    can_sync: bool = False
+    expected_library: list[LibraryMemberRevision] = Field(default_factory=list)
+
+
+class AdminLoraLibraries(APIModel):
+    libraries: list[AdminLoraLibrary] = Field(default_factory=list)
+    active_operation: str | None = None
 
 
 class LoraOperationCreate(APIModel):
-    kind: Literal["install", "remove", "edit"]
-    source_key: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
-    expected_revision: SourceRevision
+    kind: Literal["install", "remove", "edit", "sync"]
+    library: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+    expected_library: list[LibraryMemberRevision] = Field(min_length=1, max_length=50)
     idempotency_key: str = Field(pattern=r"^[a-f0-9-]{36}$")
     filename: str | None = Field(default=None, max_length=255)
     display_name: str | None = Field(default=None, max_length=120)
@@ -281,10 +328,19 @@ class LoraOperationCreate(APIModel):
                 raise ValueError("Editing requires a published LoRA ID, title, and trigger word.")
             self.display_name = self.display_name.strip()
             self.trigger_word = self.trigger_word.strip()
+        elif self.kind == "sync":
+            if any(
+                value is not None
+                for value in (self.lora_id, self.filename, self.display_name, self.trigger_word)
+            ):
+                raise ValueError("Library sync takes no LoRA fields.")
         elif self.lora_id is None or any(
             value is not None for value in (self.filename, self.display_name, self.trigger_word)
         ):
             raise ValueError("Removal requires only a published LoRA ID.")
+        keys = [member.source_key for member in self.expected_library]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Each library member appears once.")
         return self
 
 
@@ -530,6 +586,12 @@ class GenerationProgress(APIModel):
     updated_at: datetime
 
 
+class GenerationLoraSummary(APIModel):
+    lora_identity: str
+    label: str
+    strength: float
+
+
 class GenerationSummary(APIModel):
     id: str
     prompt_fingerprint: str | None = None
@@ -537,6 +599,8 @@ class GenerationSummary(APIModel):
     workflow_display_name: str
     checkpoint_label: str | None = None
     checkpoint_id: str | None = None
+    # Enabled LoRAs in application order, keyed by their shared identity.
+    loras: list[GenerationLoraSummary] = Field(default_factory=list)
     # Null until an image worker claims the generation.
     comfyui_instance_id: str | None = None
     comfyui_instance_label: str | None = None
@@ -587,17 +651,24 @@ class GalleryFilters(APIModel):
     favorites_only: bool = False
     unfavorited_only: bool = False
     excluded_checkpoint_ranks: list[CheckpointRank] = Field(default_factory=list)
+    excluded_lora_ranks: list[CheckpointRank] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_filters(self) -> GalleryFilters:
         if self.favorites_only and self.unfavorited_only:
             raise ValueError("A view is filtered to favorites or to unfavorited items, not both.")
         self.excluded_checkpoint_ranks = list(dict.fromkeys(self.excluded_checkpoint_ranks))
+        self.excluded_lora_ranks = list(dict.fromkeys(self.excluded_lora_ranks))
         return self
 
     @property
     def filtered(self) -> bool:
-        return bool(self.favorites_only or self.unfavorited_only or self.excluded_checkpoint_ranks)
+        return bool(
+            self.favorites_only
+            or self.unfavorited_only
+            or self.excluded_checkpoint_ranks
+            or self.excluded_lora_ranks
+        )
 
 
 class PromptGroupLookup(GalleryFilters):
@@ -755,6 +826,7 @@ class GallerySelectionScope(GalleryFilters):
 class GallerySelectionGeneration(APIModel):
     id: str
     checkpoint_id: str | None = None
+    lora_identities: list[str] = Field(default_factory=list)
     collection_id: str | None
     status: str
     image_count: int

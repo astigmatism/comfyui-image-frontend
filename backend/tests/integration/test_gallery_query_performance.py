@@ -81,7 +81,8 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
 
         one_count, one_statements = _statement_count_for_page(client, str(user["id"]), 1)
         page_count, page_statements = _statement_count_for_page(client, str(user["id"]), 24)
-        assert one_count == page_count == 6
+        # Includes one batched read of the page's enabled LoRAs.
+        assert one_count == page_count == 7
 
         with client.app.state.container.db.session_factory() as session:
             collection = Collection(owner_id=str(user["id"]), name="Performance")
@@ -106,7 +107,7 @@ def test_gallery_query_count_is_constant_and_detail_json_is_not_selected(
             collection_id=collection_id,
             collection_scoped=True,
         )
-        assert one_scoped_count == page_scoped_count == 7
+        assert one_scoped_count == page_scoped_count == 8
 
         assert other["id"] not in {
             item["id"] for item in client.get("/api/generations?limit=60").json()["items"]

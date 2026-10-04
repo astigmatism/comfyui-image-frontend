@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "c73e2a9140bd"
+HEAD_REVISION = "946b609a5db1"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -116,6 +116,88 @@ def test_checkpoint_ranks_reset_once_and_historical_identity_is_backfilled(tmp_p
             "A": [expected_id],
         }
         assert session.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
+def test_shared_lora_library_backfills_identities_thumbnails_and_usage(tmp_path):
+    import json
+
+    from app.domain.lora_identity import lora_identity_v1
+    from app.models import GenerationLora, LoraLibraryImage
+
+    path = tmp_path / "lora-library.db"
+    config = _config(path)
+    command.upgrade(config, LEGACY_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    _insert_populated_legacy_rows(engine)
+    engine.dispose()
+    command.upgrade(config, "c73e2a9140bd")
+    engine = create_engine(f"sqlite:///{path}")
+    catalog = [
+        {"id": "lora_a", "label": "Alpha", "filename": "cif-managed/a.safetensors"},
+        {"id": "lora_b", "label": "Beta", "filename": "cif-managed/b.safetensors"},
+    ]
+    declaration = {
+        "id": "loras",
+        "type": "lora_stack",
+        "items": [{"id": "lora_a", "label": "Alpha"}, {"id": "lora_b", "label": "Beta"}],
+        "bindings": [{"node_id": "906", "input": "value"}],
+    }
+    graph = {"906": {"class_type": "CIFLoraStack", "inputs": {"catalog_json": json.dumps(catalog)}}}
+    binding = sha256(b"cif-managed/a.safetensors").hexdigest()
+    with engine.begin() as connection:
+        metadata = MetaData()
+        metadata.reflect(bind=connection, only=["generations", "workflow_profiles", "lora_images"])
+        connection.execute(
+            metadata.tables["workflow_profiles"].update().values(source_api_json=graph)
+        )
+        connection.execute(
+            metadata.tables["generations"]
+            .update()
+            .values(
+                resolved_contract_json={"inputs": [declaration]},
+                effective_controls_json={
+                    "loras": [{"id": "lora_b", "strength": 0.8}, {"id": "lora_a", "strength": 0}]
+                },
+                compiled_graph_json=graph,
+            )
+        )
+        images = metadata.tables["lora_images"]
+        for workflow_key, path_name, updated in (
+            ("advanced", "lora-images/old.webp", datetime(2026, 9, 1, tzinfo=UTC)),
+            ("minimal", "lora-images/new.webp", datetime(2026, 10, 1, tzinfo=UTC)),
+        ):
+            connection.execute(
+                images.insert().values(
+                    workflow_key=workflow_key,
+                    control_id="loras",
+                    item_id="lora_a",
+                    binding_hash=binding,
+                    revision=3,
+                    storage_path=path_name,
+                    updated_at=updated,
+                )
+            )
+    engine.dispose()
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with Session(engine) as session:
+        alpha = lora_identity_v1("cif-managed/a.safetensors")
+        image = session.get(LoraLibraryImage, alpha)
+        assert image is not None and image.storage_path == "lora-images/new.webp"
+        assert image.revision == 3
+        usages = list(session.scalars(select(GenerationLora)))
+        assert [(u.lora_identity, u.label, u.strength) for u in usages] == [
+            (lora_identity_v1("cif-managed/b.safetensors"), "Beta", 0.8)
+        ]
+        assert session.get(UserPreference, LEGACY_USER_ID).lora_tiers_json == {}
+        assert session.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+    command.downgrade(config, "c73e2a9140bd")
+    engine = create_engine(f"sqlite:///{path}")
+    tables = inspect(engine).get_table_names()
+    assert "lora_library_images" not in tables and "generation_loras" not in tables
+    assert "lora_images" in tables
     engine.dispose()
 
 

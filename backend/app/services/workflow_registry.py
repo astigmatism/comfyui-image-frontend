@@ -22,17 +22,14 @@ from ..domain.publication import (
 )
 from ..errors import AppError, ContractError
 from ..models import (
-    LoraOperation,
     ServiceHealth,
     WorkflowCatalogHealth,
     WorkflowDiagnostic,
     WorkflowProfile,
     WorkflowState,
 )
-from .assets import AssetStore
 from .comfyui import ComfyUIAdapter
 from .comfyui_instances import ComfyUIInstances
-from .lora_images import catalog_bindings, prune_lora_images
 
 logger = logging.getLogger(__name__)
 PUBLIC_DEPENDENCY_MESSAGE = "Required ComfyUI node classes are unavailable for this source."
@@ -253,21 +250,17 @@ class WorkflowRegistry:
             )
             session.commit()
 
-    async def refresh(
-        self, instance_id: str | None = None, *, prune_images: bool = True
-    ) -> list[WorkflowDiagnostic]:
+    async def refresh(self, instance_id: str | None = None) -> list[WorkflowDiagnostic]:
         targets = (
             [self._registries[instance_id]] if instance_id else list(self._registries.values())
         )
-        results = await asyncio.gather(
-            *(target._refresh_one(prune_images=prune_images) for target in targets)
-        )
+        results = await asyncio.gather(*(target._refresh_one() for target in targets))
         return [diagnostic for result in results for diagnostic in result]
 
-    async def _refresh_one(self, *, prune_images: bool = True) -> list[WorkflowDiagnostic]:
+    async def _refresh_one(self) -> list[WorkflowDiagnostic]:
         async with self._refresh_lock:
             try:
-                return await self._refresh_unlocked(prune_images=prune_images)
+                return await self._refresh_unlocked()
             except Exception:
                 logger.exception(
                     "workflow_catalog_refresh_failed", extra={"instance_id": self.instance_id}
@@ -279,7 +272,7 @@ class WorkflowRegistry:
                     message="ComfyUI source discovery failed.",
                 )
 
-    async def _refresh_unlocked(self, *, prune_images: bool = True) -> list[WorkflowDiagnostic]:
+    async def _refresh_unlocked(self) -> list[WorkflowDiagnostic]:
         now = datetime.now(UTC)
         try:
             capabilities = await self.adapter.probe()
@@ -463,7 +456,6 @@ class WorkflowRegistry:
             validated=validated,
             diagnostics=diagnostics,
             object_info=capabilities.object_info,
-            prune_images=prune_images,
         )
 
     def _commit_refresh(
@@ -474,9 +466,7 @@ class WorkflowRegistry:
         validated: list[ValidatedPublication],
         diagnostics: list[WorkflowDiagnostic],
         object_info: dict[str, Any],
-        prune_images: bool = True,
     ) -> list[WorkflowDiagnostic]:
-        pruned_paths: list[str] = []
         with self.session_factory() as session:
             session.execute(
                 delete(WorkflowDiagnostic).where(WorkflowDiagnostic.instance_id == self.instance_id)
@@ -506,32 +496,10 @@ class WorkflowRegistry:
                 if row.source_key and row.source_key not in candidate_keys:
                     row.is_current = False
                     row.state = WorkflowState.STALE
+            # LoRA thumbnails belong to the shared library identity (the weight file), so a
+            # republish never rebinds or hides them; only a verified LoRA removal does.
             for publication in validated:
                 self._publish_revision(session, publication, now)
-                changing_loras = session.scalar(
-                    select(LoraOperation.id)
-                    .where(
-                        LoraOperation.source_id == publication.source_id,
-                        LoraOperation.action == "remove",
-                        LoraOperation.status.in_(("running", "repair_required")),
-                    )
-                    .limit(1)
-                )
-                if (
-                    prune_images
-                    and not changing_loras
-                    and self.instance_id
-                    == self.assigned_instance_id(publication_kind(publication.private_contract))
-                ):
-                    pruned_paths.extend(
-                        prune_lora_images(
-                            session,
-                            workflow_key=source_key_for("", publication.source_id),
-                            current_bindings=catalog_bindings(
-                                publication.private_contract, publication.api_document
-                            ),
-                        )
-                    )
             dependency_unavailable_source_keys = self._current_dependency_failures(
                 session, object_info
             )
@@ -565,8 +533,6 @@ class WorkflowRegistry:
                 },
             )
             session.commit()
-        if pruned_paths:
-            AssetStore(self.adapter.settings).delete_paths(pruned_paths)
         return diagnostics
 
     async def _fetch_candidate_artifact(
