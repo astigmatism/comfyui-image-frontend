@@ -38,8 +38,6 @@ import {
   favoritesFilterPresentation,
   favoritesMode,
   excludedCheckpointRanks,
-  excludedLoraRanks,
-  loraRankFilterSummary,
   galleryFilterActive,
   galleryGenerationMatches,
   galleryViewParameters,
@@ -82,8 +80,6 @@ import {
   normalizeCheckpointTierLayout,
   normalizeCheckpointRanks,
   normalizeExpectationSettings,
-  normalizeLoraRanks,
-  stepLoraRank,
   checkpointRank,
   moveCheckpointRank,
   normalizeSourceModelSelections,
@@ -198,7 +194,6 @@ const state = {
   sourcePickerDialogOpen: false,
   sourcePickerDraft: null,
   checkpointTiers: {},
-  loraTiers: {},
   modelSelectionsBySourceRevision: new Map(),
   selectedGenerationTargetCount: 0,
   generationQuantity: MIN_GENERATION_QUANTITY,
@@ -246,7 +241,6 @@ const state = {
   loadingMore: false,
   favoritesMode: "all",
   excludedCheckpointRanks: [],
-  excludedLoraRanks: [],
   photoViewerDetachedGeneration: null,
   galleryScale: 45,
   galleryLayout: "grouped",
@@ -342,7 +336,6 @@ let collectionDeleteReturnFocus = null;
 let moveDialogReturnFocus = null;
 let checkpointTiersRevision = 0;
 let checkpointRankChange = null;
-let loraRankChange = null;
 let activeSpeechSession = null;
 let speechSessionSequence = 0;
 let applicationStartupController = null;
@@ -509,8 +502,6 @@ function bindDelegatedEvents() {
   });
   loraManagerController = installLoraManager(root, {
     api,
-    loraTiers: () => state.loraTiers,
-    loraRankChange: () => loraRankChange,
     context: (id, owner) => {
       if (owner === "rerun") return promptRerun?.controller.loraContext(id);
       const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
@@ -836,7 +827,6 @@ async function handleClick(event) {
     else if (action === "toggle-collection-favorite") await toggleCollectionFavorite(target.dataset.collectionId, target);
     else if (action === "toggle-favorites-filter") toggleFavoritesFilter();
     else if (action === "toggle-checkpoint-rank-filter") toggleCheckpointRankFilter(target.dataset.checkpointRank);
-    else if (action === "toggle-lora-rank-filter") toggleLoraRankFilter(target.dataset.loraRank);
     else if (action === "show-all-checkpoint-ranks") {
       state.excludedCheckpointRanks = [];
       syncRankFilterControls();
@@ -855,7 +845,6 @@ async function handleClick(event) {
       setPhotoViewerPlaybackMode(target.dataset.photoPlaybackMode);
     }
     else if (action === "rank-checkpoint" || action === "retry-checkpoint-rank") await changePhotoCheckpointRank(target);
-    else if (action === "rank-lora" || action === "retry-lora-rank") await changeLoraRank(target.dataset.loraIdentity, action === "retry-lora-rank" ? null : Number(target.dataset.rankStep), { focus: target });
     else if (action === "navigate-photo") await navigatePhotoViewer(target.dataset.direction);
     else if (action === "cancel-generation") await cancelGeneration(target.dataset.generationId, target);
     else if (action === "delete-generation") await deleteGeneration(target.dataset.generationId);
@@ -2810,9 +2799,6 @@ async function logout() {
   state.checkpointTiers = {};
   state.excludedCheckpointRanks = [];
   checkpointRankChange = null;
-  state.loraTiers = {};
-  state.excludedLoraRanks = [];
-  loraRankChange = null;
   state.modelSelectionsBySourceRevision = new Map();
   state.selectedGenerationTargetCount = 0;
   checkpointTiersRevision += 1;
@@ -2915,7 +2901,6 @@ async function enterApplication() {
   state.galleryLayout = "grouped";
   state.favoritesMode = "all";
   state.excludedCheckpointRanks = [];
-  state.excludedLoraRanks = [];
   state.galleryStatus = "loading";
   state.galleryMessage = null;
   state.autoGenerate = false;
@@ -2932,8 +2917,6 @@ async function enterApplication() {
   state.checkpointTiers = {};
   checkpointRankChange = null;
   checkpointTiersRevision += 1;
-  state.loraTiers = {};
-  loraRankChange = null;
   state.parameterStateBySource = normalizeStoredParameterState(
     readStoredItem(parameterStateStorageKey(sessionStorageUserId())),
   );
@@ -5942,12 +5925,10 @@ function renderGallery() {
       currentCollectionId: state.currentCollectionId,
       favoritesMode: mode,
       excludedCheckpointRanks: excludedCheckpointRanks(state),
-      excludedLoraRanks: excludedLoraRanks(state),
       promptGroups: state.galleryLayout === "classic" ? null : galleryGroups?.options(),
       galleryLayout: state.galleryLayout,
       hideThumbnails: currentViewHidesThumbnails(),
       checkpointTiers: state.checkpointTiers,
-      loraTiers: state.loraTiers,
     }));
   });
   applyCollectionActivity({ counts: false });
@@ -6224,7 +6205,7 @@ async function toggleCollectionPreviews(collectionId) {
 function upsertGalleryCard(generation) {
   const card = document.querySelector(`#gallery [data-gallery-card="generation"][data-generation-id="${CSS.escape(generation.id)}"]`);
   if (!card) { renderGallery(); return; }
-  galleryHover.preserveDuring(() => reconcileGalleryCard(card, galleryCardMarkup(generation, { hideThumbnail: currentViewHidesThumbnails(), checkpointTiers: state.checkpointTiers, loraTiers: state.loraTiers })));
+  galleryHover.preserveDuring(() => reconcileGalleryCard(card, galleryCardMarkup(generation, { hideThumbnail: currentViewHidesThumbnails(), checkpointTiers: state.checkpointTiers })));
   gallerySelection?.sync();
 }
 
@@ -6525,76 +6506,6 @@ function syncRankFilterControls() {
   }
 }
 
-function syncLoraRankFilterControls() {
-  const excluded = excludedLoraRanks(state);
-  for (const button of document.querySelectorAll('[data-action="toggle-lora-rank-filter"]')) {
-    const rank = button.dataset.loraRank;
-    button.setAttribute("aria-pressed", String(!excluded.includes(rank)));
-    button.title = `${excluded.includes(rank) ? "Show" : "Hide"} images that use a rank ${rank} LoRA${rank === "C" ? " (includes unranked LoRAs)" : ""}`;
-  }
-  for (const label of document.querySelectorAll(".lora-rank-launch-label")) label.textContent = loraRankFilterSummary(state);
-}
-
-function toggleLoraRankFilter(rank) {
-  if (!CHECKPOINT_TIER_DEFINITIONS.some(({ id }) => id === rank)) return;
-  const excluded = excludedLoraRanks(state);
-  state.excludedLoraRanks = excluded.includes(rank) ? excluded.filter((id) => id !== rank) : [...excluded, rank];
-  syncLoraRankFilterControls();
-  void reloadGalleryFilters();
-}
-
-// One rank per LoRA identity, shared by every workflow. Saved optimistically like
-// checkpoint ranks: the badge moves at once and rolls back if the save fails.
-async function changeLoraRank(identity, step, { focus = null } = {}) {
-  if (loraRankChange?.status === "saving" || !/^lr1_[0-9a-f]{64}$/.test(identity || "")) return;
-  const previous = state.loraTiers;
-  let move;
-  if (step === null) {
-    if (loraRankChange?.identity !== identity || loraRankChange.status !== "error") return;
-    move = { from: loraRankChange.from, to: loraRankChange.to, ranks: normalizeLoraRanks(previous) };
-    const cleaned = Object.fromEntries(Object.entries(move.ranks).map(([tier, values]) => [tier, values.filter((value) => value !== identity)]));
-    cleaned[move.to].push(identity);
-    move.ranks = cleaned;
-  } else {
-    move = stepLoraRank(previous, identity, step);
-  }
-  if (!move) return;
-  const change = { identity, from: move.from, to: move.to, status: "saving" };
-  const sessionId = state.session?.user?.id;
-  const wasFocused = focus && document.activeElement === focus;
-  const stepValue = focus?.dataset?.rankStep || "-1";
-  loraRankChange = change;
-  state.loraTiers = move.ranks;
-  renderGallery();
-  renderPhotoViewer();
-  loraManagerController?.refresh();
-  const saved = await settingsSync?.save();
-  if (sessionId !== state.session?.user?.id || loraRankChange !== change) return;
-  if (saved) change.status = "saved";
-  else {
-    if (settingsEqual(state.loraTiers, move.ranks)) state.loraTiers = previous;
-    settingsSync?.persistLocal();
-    change.status = "error";
-    change.message = state.sharedSettingsMessage || "The rank could not be saved. Try again.";
-    toast(change.message, "error");
-  }
-  renderGallery();
-  renderPhotoViewer();
-  loraManagerController?.refresh();
-  if (wasFocused) {
-    const scope = focus.closest("dialog") || document;
-    const controls = [...scope.querySelectorAll(`[data-lora-identity="${CSS.escape(identity)}"][data-rank-step]`)];
-    (controls.find((control) => control.dataset.rankStep === stepValue && !control.disabled) || controls.find((control) => !control.disabled))?.focus({ preventScroll: true });
-  }
-  if (excludedLoraRanks(state).length) void reloadGalleryFilters();
-  if (saved) setTimeout(() => {
-    if (loraRankChange !== change) return;
-    loraRankChange = null;
-    renderPhotoViewer();
-    loraManagerController?.refresh();
-  }, 2600);
-}
-
 function toggleCheckpointRankFilter(rank) {
   if (!CHECKPOINT_TIER_DEFINITIONS.some(({ id }) => id === rank)) return;
   const excluded = excludedCheckpointRanks(state);
@@ -6714,7 +6625,7 @@ function renderPhotoViewer() {
   const displayed = photoViewerDisplayed
     ? { ...(photoViewerGeneration(photoViewerDisplayed.id) || photoViewerDisplayed), display_artifact: photoViewerDisplayed.display_artifact }
     : { ...generation, display_artifact: null };
-  const dock = { ...photoViewerGenerationDock(), checkpointTiers: state.checkpointTiers, checkpointRankChange, loraTiers: state.loraTiers, loraRankChange, loading: photoViewerLoading || photoViewerPaging, loadError: photoViewerLoadError };
+  const dock = { ...photoViewerGenerationDock(), checkpointTiers: state.checkpointTiers, checkpointRankChange, loading: photoViewerLoading || photoViewerPaging, loadError: photoViewerLoadError };
   const host = dialog.querySelector(".photo-viewer-host");
   reconcilePhotoViewer(host, photoViewerMarkup(displayed, photoViewerNavigation(generation.id), state.photoViewerMode, state.photoViewerPlaybackMode, dock), photoViewerImage);
   const activityHost = host.querySelector(".photo-viewer-activity-host");
@@ -7760,7 +7671,7 @@ function captureSharedSettings() {
       recent[key] ||= loadRecentResolutions(readStoredItem(recentResolutionKey(sessionStorageUserId(), key)));
     }
   }
-  return { gallery_scale: state.galleryScale, checkpoint_tiers: structuredClone(state.checkpointTiers), lora_tiers: structuredClone(state.loraTiers), settings: {
+  return { gallery_scale: state.galleryScale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
     gallery_layout: state.galleryLayout,
     prompt_generation: structuredClone(state.promptGeneration),
     active_source: state.activeSourceKey,
@@ -7787,12 +7698,6 @@ async function applySharedSettings(preferences) {
   if (ranksChanged) {
     checkpointTiersRevision += 1; renderGallery(); renderPhotoViewer();
     if (excludedCheckpointRanks(state).length) void reloadGalleryFilters();
-  }
-  const loraTiers = normalizeLoraRanks(preferences.lora_tiers);
-  if (!settingsEqual(state.loraTiers, loraTiers)) {
-    state.loraTiers = loraTiers;
-    renderGallery(); renderPhotoViewer(); loraManagerController?.refresh();
-    if (excludedLoraRanks(state).length) void reloadGalleryFilters();
   }
   state.parameterStateBySource = normalizeStoredParameterState(JSON.stringify(saved.sources));
   state.activeSourceKey = saved.active_source;
@@ -8061,7 +7966,6 @@ function normalizePanelSettings(value) {
   if (!value?.settings) return value;
   const normalized = structuredClone(value);
   normalized.checkpoint_tiers = normalizeCheckpointRanks(normalized.checkpoint_tiers);
-  normalized.lora_tiers = normalizeLoraRanks(normalized.lora_tiers);
   delete normalized.settings.runtime_id;
   if (normalized.settings.prompt_generation) delete normalized.settings.prompt_generation.runtime_id;
   normalized.settings.gallery_layout = normalized.settings.gallery_layout === "classic" ? "classic" : "grouped";

@@ -44,7 +44,7 @@ from ..schemas import (
 )
 from .collections import MAX_COLLECTION_DEPTH, CollectionService
 from .gallery_filters import gallery_filter_predicate
-from .generations import GenerationService, generation_lora_summaries
+from .generations import GenerationService
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +166,6 @@ class GalleryService:
         generations = [
             GallerySelectionGeneration.model_validate(row) for row in session.execute(query)
         ]
-        identities = generation_lora_summaries(session, [item.id for item in generations])
-        for item in generations:
-            item.lora_identities = [lora.lora_identity for lora in identities.get(item.id, [])]
         return GalleryViewItems(generations=generations, collection_ids=folder_ids)
 
     def _selected_items(

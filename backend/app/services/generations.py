@@ -5,7 +5,7 @@ import copy
 import json
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -17,7 +17,6 @@ from ..blocking import run_blocking
 from ..config import ComfyUIInstanceConfig
 from ..domain.checkpoint_identity import generation_checkpoint_identity_v1
 from ..domain.compiler import CompileResult, WorkflowCompiler
-from ..domain.lora_identity import generation_lora_usage_v1
 from ..domain.lora_stack import validate_lora_runtime
 from ..domain.publication import publication_kind
 from ..domain.results import project_public_declared_outputs, project_public_result
@@ -34,7 +33,6 @@ from ..models import (
     Favorite,
     Generation,
     GenerationEvent,
-    GenerationLora,
     GenerationStatus,
     GenerationUpload,
     LoraOperation,
@@ -55,7 +53,6 @@ from ..schemas import (
     GenerationBatchResult,
     GenerationCreate,
     GenerationDetail,
-    GenerationLoraSummary,
     GenerationMove,
     GenerationPage,
     GenerationProgress,
@@ -134,25 +131,6 @@ class _SummaryContext:
     display_artifacts: Mapping[str, ArtifactSummary]
     favorite_generation_ids: frozenset[str]
     recallable_identities: frozenset[tuple[str, str, str, str, str]]
-    loras: Mapping[str, list[GenerationLoraSummary]] = field(default_factory=dict)
-
-
-def generation_lora_summaries(
-    session: Session, generation_ids: list[str]
-) -> dict[str, list[GenerationLoraSummary]]:
-    result: dict[str, list[GenerationLoraSummary]] = {}
-    for start in range(0, len(generation_ids), 500):
-        for row in session.scalars(
-            select(GenerationLora)
-            .where(GenerationLora.generation_id.in_(generation_ids[start : start + 500]))
-            .order_by(GenerationLora.generation_id, GenerationLora.position)
-        ):
-            result.setdefault(row.generation_id, []).append(
-                GenerationLoraSummary(
-                    lora_identity=row.lora_identity, label=row.label, strength=row.strength
-                )
-            )
-    return result
 
 
 class GenerationService:
@@ -302,20 +280,6 @@ class GenerationService:
         )
         session.add(generation)
         session.flush()
-        session.add_all(
-            GenerationLora(
-                generation_id=generation.id,
-                position=usage.position,
-                lora_identity=usage.lora_identity,
-                label=usage.label,
-                strength=usage.strength,
-            )
-            for usage in generation_lora_usage_v1(
-                profile.resolved_contract_json,
-                compiled.effective_controls,
-                profile.source_api_json,
-            )
-        )
         for control_id, upload in uploads.items():
             session.add(
                 GenerationUpload(
@@ -844,7 +808,6 @@ class GenerationService:
             display_artifacts=display_artifacts,
             favorite_generation_ids=favorite_generation_ids,
             recallable_identities=recallable_identities,
-            loras=generation_lora_summaries(session, generation_ids),
         )
 
     @staticmethod
@@ -934,7 +897,6 @@ class GenerationService:
             workflow_display_name=row.workflow_display_name,
             checkpoint_label=row.checkpoint_label,
             checkpoint_id=row.checkpoint_id,
-            loras=list(context.loras.get(row.id, [])),
             comfyui_instance_id=row.comfyui_instance_id,
             comfyui_instance_label=row.comfyui_instance_label,
             accepted_at=row.accepted_at,
@@ -1031,7 +993,6 @@ class GenerationService:
             status=generation.status.value,
             workflow_display_name=generation.workflow_display_name,
             checkpoint_id=generation.checkpoint_id,
-            loras=generation_lora_summaries(session, [generation.id]).get(generation.id, []),
             checkpoint_label=_checkpoint_label(
                 generation.resolved_contract_json,
                 generation.effective_controls_json,

@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "5e2c9a7d4b13"
+HEAD_REVISION = "b2f4d8a6c931"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -123,7 +123,7 @@ def test_shared_lora_library_backfills_identities_thumbnails_and_usage(tmp_path)
     import json
 
     from app.domain.lora_identity import lora_identity_v1
-    from app.models import GenerationLora, LoraLibraryImage
+    from app.models import LoraLibraryImage
 
     path = tmp_path / "lora-library.db"
     config = _config(path)
@@ -186,11 +186,6 @@ def test_shared_lora_library_backfills_identities_thumbnails_and_usage(tmp_path)
         image = session.get(LoraLibraryImage, alpha)
         assert image is not None and image.storage_path == "lora-images/new.webp"
         assert image.revision == 3
-        usages = list(session.scalars(select(GenerationLora)))
-        assert [(u.lora_identity, u.label, u.strength) for u in usages] == [
-            (lora_identity_v1("cif-managed/b.safetensors"), "Beta", 0.8)
-        ]
-        assert session.get(UserPreference, LEGACY_USER_ID).lora_tiers_json == {}
         assert session.execute(text("PRAGMA foreign_key_check")).all() == []
     engine.dispose()
     command.downgrade(config, "c73e2a9140bd")

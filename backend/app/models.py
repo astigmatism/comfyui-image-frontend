@@ -171,7 +171,6 @@ class UserPreference(Base):
     checkpoint_tiers_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
-    lora_tiers_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     settings_initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -611,21 +610,6 @@ class Generation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-
-
-class GenerationLora(Base):
-    """An enabled LoRA of one accepted generation, keyed by its shared identity."""
-
-    __tablename__ = "generation_loras"
-    __table_args__ = (Index("ix_generation_loras_identity", "lora_identity", "generation_id"),)
-
-    generation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("generations.id", ondelete="CASCADE"), primary_key=True
-    )
-    position: Mapped[int] = mapped_column(Integer, primary_key=True)
-    lora_identity: Mapped[str] = mapped_column(String(68), nullable=False)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
-    strength: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class Favorite(Base):

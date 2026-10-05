@@ -47,7 +47,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {},
             "source_colors": {},
             "checkpoint_tiers": {},
-            "lora_tiers": {},
         }
 
         saved = first.put(
@@ -64,7 +63,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {},
             "source_colors": {},
             "checkpoint_tiers": {},
-            "lora_tiers": {},
         }
         ratings_saved = first.put(
             "/api/preferences",
@@ -80,7 +78,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
             "checkpoint_tiers": {},
-            "lora_tiers": {},
         }
         checkpoint_tiers = {
             "A": ["cp1_" + "a" * 64],
@@ -165,7 +162,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
             "checkpoint_tiers": checkpoint_tiers,
-            "lora_tiers": {},
         }
 
 

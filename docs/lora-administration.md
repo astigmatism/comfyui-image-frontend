@@ -15,7 +15,7 @@ LoRA administration manages a **library**, not one workflow. Every current image
 - **Install, edit, and remove** require a synced library and change every member in one operation. A LoRA installed once appears in every member with the same public ID; removing it takes it out of every member and then deletes the weight once. The members never block their own shared LoRA's removal.
 - **Sync** republishes only the out-of-sync members (for example a newly published workflow whose catalog is empty or older) with the library catalog: the ordered union of all members' LoRAs, led by the largest catalog, with titles and triggers from the newest publication. Sync never removes a LoRA.
 - **Conflicts** — one public ID naming different files, or one file listed under different IDs — block every change until the workflows are republished consistently.
-- Thumbnails and per-account LoRA ranks belong to the LoRA's shared identity (a hash of its normalized private filename), so they are the same in every workflow. Each workflow still keeps its own per-user LoRA order, enabled state, and strengths.
+- Thumbnails belong to the LoRA's shared identity (a hash of its normalized private filename), so they are the same in every workflow. Each workflow still keeps its own per-user LoRA order, enabled state, and strengths.
 
 Only one LoRA operation runs at a time. Library operations need the version 2 companion (`multi_source: true` in `/cif/lora-management/capabilities`).
 

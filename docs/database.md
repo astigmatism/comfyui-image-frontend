@@ -79,10 +79,6 @@ identity is `lr1_` plus the SHA-256 of `["lora-binding-v1", <normalized private 
   updates) and fills it from `lora_images` by resolving each legacy binding hash through the
   stored publication graphs; when several workflows had an image for the same LoRA, the newest
   wins. The legacy table is kept, read-only, so a downgrade loses nothing;
-- adds `generation_loras` (enabled LoRAs of each accepted generation, in application order, with
-  the label and strength at acceptance) and backfills it in bounded batches from each generation's
-  effective controls and frozen graph;
-- adds `user_preferences.lora_tiers_json` (empty: every LoRA starts at rank C);
 - adds `lora_operations.scope` (`source` for older single-workflow records, `library` for new ones)
   and `lora_operation_targets`, one row per publication changed by a library operation with its
   expected and candidate revisions. Older records without target rows still recover.
@@ -99,6 +95,12 @@ per check and number. Probe images remain ordinary `generations` rows; deleting 
 attempt's reference to `NULL`. No existing table changes, and the downgrade drops only the two new
 tables.
 
+Migration `b2f4d8a6c931_remove_lora_ranks.py` removes the LoRA ranking feature added by
+`946b609a5db1_shared_lora_library.py`. It drops the `generation_loras` table and its identity
+index, and the `user_preferences.lora_tiers_json` column. Accepted generations no longer record
+the LoRAs they used, and per-account LoRA ranks no longer exist; checkpoint ranks and the shared
+LoRA library are unchanged. The downgrade re-creates the empty table, index, and column.
+
 ## Main tables
 
 | Table | Ownership and purpose |
@@ -106,7 +108,7 @@ tables.
 | `users` | Local account, role, forced-change state, session epoch |
 | `sessions` | HMAC token ID, CSRF, expiry/revocation, privacy-safe client metadata |
 | `login_throttles` | Username/IP-keyed attempt windows and temporary blocks |
-| `user_preferences` | Owner gallery scale, persisted checkpoint and LoRA tier layouts, and retained legacy source rating/color data |
+| `user_preferences` | Owner gallery scale, persisted checkpoint tier layout, and retained legacy source rating/color data |
 | `workflow_profiles` | Immutable accepted publication revisions plus retained legacy snapshots |
 | `workflow_diagnostics` | Safe latest transport/candidate discovery diagnostics |
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |
@@ -115,7 +117,6 @@ tables.
 | `lora_library_images` | One shared thumbnail path and revision per LoRA identity, used by every workflow |
 | `lora_images` | Legacy workflow-scoped LoRA thumbnail rows, retained read-only since the shared library |
 | `lora_operation_targets` | Publications changed by a library-wide LoRA operation |
-| `generation_loras` | Enabled LoRA identities, labels, and strengths of each accepted generation |
 | `collections` | Owner-scoped, self-referencing gallery collection tree (maximum depth 5) carrying the owner's sibling order |
 | `generations` | Immutable accepted request/source/graph plus lifecycle and complete results |
 | `favorites` | Owner bookmark linking one owned generation |

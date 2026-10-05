@@ -35,7 +35,6 @@ def test_whole_view_snapshot_exclusions_and_bulk_actions_beyond_500(app_client):
     assert set(inventory["generations"][0]) == {
         "id",
         "checkpoint_id",
-        "lora_identities",
         "status",
         "collection_id",
         "is_favorite",

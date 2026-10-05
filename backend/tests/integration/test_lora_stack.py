@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 
-from app.domain.lora_identity import lora_identity_v1
 from app.main import create_app
 from app.models import Generation
 from fastapi.testclient import TestClient
@@ -44,15 +43,6 @@ def test_checkpoint_batch_persists_stack_and_recalls_exactly(fake_state, setting
                 assert generation.requested_controls_json["loras"] == stack
                 assert generation.effective_controls_json["loras"] == stack
                 assert json.loads(generation.compiled_graph_json["99"]["inputs"]["value"]) == stack
-            # Only enabled LoRAs are recorded, under the identity shared by every workflow.
-            detail = client.get(f"/api/generations/{generation_id}").json()
-            assert detail["loras"] == [
-                {
-                    "lora_identity": lora_identity_v1("private/b.safetensors"),
-                    "label": "Beta",
-                    "strength": 1.25,
-                }
-            ]
             recalled = client.get(f"/api/generations/{generation_id}/recall").json()
             assert recalled["parameters"]["loras"] == stack
             assert next(item for item in recalled["input_definitions"] if item["id"] == "loras")[

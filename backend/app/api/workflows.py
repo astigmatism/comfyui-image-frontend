@@ -252,7 +252,7 @@ def _public_interface(
     """Construct an allowlist projection; private bindings are never copied then removed.
 
     With the frozen graph, each LoRA item also carries its opaque shared identity (a hash
-    of the private filename), so ranks and thumbnails follow the LoRA across workflows.
+    of the private filename), so thumbnails follow the LoRA across workflows.
     """
 
     inputs: list[dict[str, Any]] = []

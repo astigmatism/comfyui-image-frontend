@@ -40,7 +40,6 @@ def preference_response(preference: UserPreference | None) -> PreferenceResponse
         source_ratings=preference.source_ratings_json if preference else {},
         source_colors=preference.source_colors_json if preference else {},
         checkpoint_tiers=preference.checkpoint_tiers_json if preference else {},
-        lora_tiers=preference.lora_tiers_json if preference else {},
     )
 
 
@@ -63,7 +62,6 @@ async def update_preferences(
                     source_ratings_json={},
                     source_colors_json={},
                     checkpoint_tiers_json={},
-                    lora_tiers_json={},
                 )
                 session.add(preference)
                 session.flush()
@@ -115,14 +113,6 @@ async def update_preferences(
                     )
                 preference.checkpoint_tiers_json = {
                     tier: list(identities) for tier, identities in payload.checkpoint_tiers.items()
-                }
-            if payload.lora_tiers is not None:
-                if payload.expected_revision is None:
-                    raise AppError(
-                        "revision_required", "A settings revision is required.", status_code=409
-                    )
-                preference.lora_tiers_json = {
-                    tier: list(identities) for tier, identities in payload.lora_tiers.items()
                 }
             preference.revision += 1
             session.commit()

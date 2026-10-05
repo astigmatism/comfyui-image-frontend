@@ -6,7 +6,7 @@ from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from ..models import Favorite, Generation, GenerationLora, UserPreference
+from ..models import Favorite, Generation, UserPreference
 from ..schemas import GalleryFilters
 
 
@@ -23,9 +23,7 @@ def gallery_filter_predicate(
         )
         predicates.append(favorite if filters.favorites_only else ~favorite)
     preference = (
-        session.get(UserPreference, owner_id)
-        if filters.excluded_checkpoint_ranks or filters.excluded_lora_ranks
-        else None
+        session.get(UserPreference, owner_id) if filters.excluded_checkpoint_ranks else None
     )
     excluded = set(filters.excluded_checkpoint_ranks)
     if excluded:
@@ -41,25 +39,6 @@ def gallery_filter_predicate(
         matches = Generation.checkpoint_id.in_(select(values.c.value))
         predicates.append(
             matches if "C" in excluded else or_(Generation.checkpoint_id.is_(None), ~matches)
-        )
-    excluded_loras = set(filters.excluded_lora_ranks)
-    if excluded_loras:
-        ranks = _ranks(preference.lora_tiers_json if preference else {})
-        # An image is hidden when any LoRA it used has an excluded rank; unranked LoRAs
-        # are C. Images without LoRAs never match a LoRA rank, so they stay visible.
-        if "C" in excluded_loras:
-            allowed = [identity for identity, grade in ranks.items() if grade not in excluded_loras]
-            listed = func.json_each(json.dumps(allowed)).table_valued("value")
-            hidden = ~GenerationLora.lora_identity.in_(select(listed.c.value))
-        else:
-            hidden_ids = [identity for identity, grade in ranks.items() if grade in excluded_loras]
-            listed = func.json_each(json.dumps(hidden_ids)).table_valued("value")
-            hidden = GenerationLora.lora_identity.in_(select(listed.c.value))
-        predicates.append(
-            ~select(GenerationLora.generation_id)
-            .where(GenerationLora.generation_id == Generation.id, hidden)
-            .correlate(Generation)
-            .exists()
         )
     return and_(*predicates) if predicates else true()
 

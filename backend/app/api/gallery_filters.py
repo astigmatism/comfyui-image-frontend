@@ -10,7 +10,6 @@ def gallery_filters(
     favorites_only: bool = False,
     unfavorited_only: bool = False,
     excluded_checkpoint_ranks: Annotated[list[CheckpointRank] | None, Query()] = None,
-    excluded_lora_ranks: Annotated[list[CheckpointRank] | None, Query()] = None,
 ) -> GalleryFilters:
     if favorites_only and unfavorited_only:
         raise AppError(
@@ -22,5 +21,4 @@ def gallery_filters(
         favorites_only=favorites_only,
         unfavorited_only=unfavorited_only,
         excluded_checkpoint_ranks=excluded_checkpoint_ranks or [],
-        excluded_lora_ranks=excluded_lora_ranks or [],
     )

@@ -525,10 +525,6 @@ The same field is an array in prompt-group lookup bodies and selection scopes. O
 and F are accepted; omission or an empty list excludes nothing, and all five excludes every image.
 Ranks use the current owner's saved checkpoint tiers. Unassigned checkpoints and missing identities
 are C. Rank and Favorites predicates intersect before pagination; all filtered views omit folders.
-`excluded_lora_ranks` works the same way with the owner's saved LoRA tiers: an image is excluded
-when any LoRA it used (strength above zero) has an excluded rank, unranked LoRAs count as C, and
-images that used no LoRA are never excluded by this filter. View inventory rows carry
-`lora_identities` for client-side matching of live arrivals.
 Prompt groups retain their original boundaries and comparisons while reporting matching counts
 and returning matching members. Group selection's 500-card limit applies to matching members.
 
@@ -886,8 +882,8 @@ The transcription request is multipart with one `file` field whose media type is
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
 | `PUT` | `/api/collections/{id}/favorite` | Idempotently bookmark an owned collection; returns updated `Collection` |
 | `DELETE` | `/api/collections/{id}/favorite` | Remove collection bookmark; returns `204` |
-| `GET` | `/api/preferences` | Read owner gallery scale, checkpoint tiers, and LoRA tiers; legacy source rating/color fields remain for stored-data compatibility |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or account-wide checkpoint or LoRA ranks; legacy source rating/color updates remain accepted |
+| `GET` | `/api/preferences` | Read owner gallery scale and checkpoint tiers; legacy source rating/color fields remain for stored-data compatibility |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or account-wide checkpoint ranks; legacy source rating/color updates remain accepted |
 
 Favorites are private, binary bookmarks. List endpoints expose them as an `is_favorite` boolean:
 every `GenerationSummary` (gallery pages and single-generation reads) and every `Collection`
@@ -915,13 +911,6 @@ fallback instead of joining models by name; images with no identifiable model re
 The client resolves the current rank by identity on every appearance, including older images.
 Picker changes commit on Apply; Cancel discards them. Fullscreen arrows move one grade and
 save immediately, showing saving/saved feedback or rolling back with a Retry action on failure.
-
-`lora_tiers` has the same shape and rules for opaque LoRA identities (`lr1_` plus 64
-hexadecimal characters). The identity hashes the LoRA's normalized private model filename,
-so one rank applies in every workflow that lists the LoRA and to every image that used it.
-Workflow detail exposes `lora_identity` on each `lora_stack` item; generation summaries expose
-`loras: [{lora_identity, label, strength}]` for the enabled LoRAs in application order. LoRA
-manager rows and the photo viewer offer one-grade arrows that save immediately.
 
 ## Authentication and account routes
 
