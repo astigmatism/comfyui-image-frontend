@@ -42,6 +42,7 @@ import {
   mapModelSelections,
   migrateInterfaceState,
   normalizeCheckpointTierLayout,
+  normalizeExpectationSettings,
   normalizeSourceModelSelections,
   normalizeInputValue,
   normalizeStoredActiveSource,
@@ -766,6 +767,41 @@ test("recall restores creative direction, mode, instructions, and thinking mode"
     "current custom instructions",
   );
   assert.equal(recalled.promptAssistant.historicalModel, "ollama-model");
+});
+
+test("recall restores Creative Direction expectations when the generation recorded them", () => {
+  const current = { enabled: false, text: "current line", threshold: 70, maxAttempts: 3 };
+  const state = { activeProfileId: "current", controls: { "prompt.text": "draft" }, promptAssistant: { available: true }, expectations: current };
+  const recalled = overwriteWithRecall(state, {
+    source_key: "krea",
+    parameters: { "prompt.text": "historical prompt" },
+    prompt_assistant: {
+      mode: "refine",
+      creative_direction: "warm light",
+      expectations: { enabled: true, items: ["Curly red hair", "Golden-hour light"], threshold: 90, max_attempts: 7 },
+    },
+  });
+  assert.deepEqual(recalled.expectations, { enabled: true, text: "Curly red hair\nGolden-hour light", threshold: 90, maxAttempts: 7 });
+  // Recalls without expectations leave the panel's expectations unchanged.
+  const legacy = overwriteWithRecall(state, {
+    source_key: "krea",
+    parameters: { "prompt.text": "historical prompt" },
+    prompt_assistant: { mode: "refine", creative_direction: "warm light" },
+  });
+  assert.equal(legacy.expectations, current);
+});
+
+test("expectation settings normalize saved, panel, and out-of-range values", () => {
+  assert.deepEqual(normalizeExpectationSettings(null), { enabled: false, text: "", threshold: 80, maxAttempts: 5 });
+  assert.deepEqual(
+    normalizeExpectationSettings({ enabled: true, text: "a\nb", threshold: 150, max_attempts: 0 }),
+    { enabled: true, text: "a\nb", threshold: 100, maxAttempts: 1 },
+  );
+  assert.deepEqual(
+    normalizeExpectationSettings({ enabled: "yes", text: 5, threshold: "85", maxAttempts: 2.5 }),
+    { enabled: false, text: "", threshold: 85, maxAttempts: 5 },
+  );
+  assert.equal(normalizeExpectationSettings({ text: "x".repeat(5000) }).text.length, 4000);
 });
 
 test("recall preserves the current thinking mode when the recall carries none", () => {

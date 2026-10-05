@@ -2,6 +2,7 @@ import { promptRuntimeError } from "./prompt-routing.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup, loraRankFilterMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
+import { checkIsActive, expectationCheckBusy, expectationPanelPresentation, expectationPipeline, expectationStatusMarkup, expectationsMarkup } from "./expectation-check.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
   checkpointRank,
@@ -21,6 +22,7 @@ import {
   isAdvancedInput,
   normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
+  positivePromptInput,
   resolutionConstraints,
   resolutionGridConstraints,
   resolutionPresetChoiceMarkup,
@@ -142,6 +144,7 @@ export function shellMarkup(state) {
       <dialog id="gallery-transfer-dialog" class="move-dialog gallery-bulk-dialog gallery-transfer-dialog" aria-label="Move or copy selection"></dialog>
       <dialog id="gallery-delete-dialog" class="collection-delete-dialog gallery-bulk-dialog gallery-delete-dialog" aria-label="Delete selection"></dialog>
       <dialog id="gallery-rerun-dialog" class="move-dialog gallery-bulk-dialog gallery-rerun-dialog" aria-label="Prompt Re-run"></dialog>
+      <dialog id="expectation-check-dialog" class="expectation-check-dialog" aria-labelledby="expectation-check-title"></dialog>
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     </div>`;
 }
@@ -222,7 +225,7 @@ export function generationPanelMarkup(state, profile, contract) {
 
 export function generationSubmissionDisabled(state, profile, contract, clientErrors = {}) {
   return Boolean(
-    state.autoGenerate || state.automation?.enabled || state.automationLoaded === false || state.pendingAutoEnabled !== undefined || state.automationBusy || state.autoSettingsSaving || state.pendingSubmission || state.promptGenerationBusy || state.sharedSettingsStatus === "loading" || generationRequestBlocked(state, profile, contract, clientErrors),
+    state.autoGenerate || state.automation?.enabled || state.automationLoaded === false || state.pendingAutoEnabled !== undefined || state.automationBusy || state.autoSettingsSaving || state.pendingSubmission || state.promptGenerationBusy || state.sharedSettingsStatus === "loading" || expectationCheckBusy(state) || generationRequestBlocked(state, profile, contract, clientErrors),
   );
 }
 
@@ -243,6 +246,8 @@ export function generationButtonPresentation(state) {
   if (state.submissionRecoveryPending && state.pendingSubmission?.path !== "/api/prompt-generations") {
     return { label: "Reconnecting…", busy: true };
   }
+  // A server-owned expectation check holds Generate until it finishes.
+  if (expectationCheckBusy(state)) return { label: "Verifying…", busy: true };
   if (state.promptPreparationBusy) return promptGenerationButtonPresentation(state);
   if (state.submitting && !state.promptGenerationRequest) {
     const count = Number(state.selectedGenerationTargetCount) || 1;
@@ -659,7 +664,7 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
       const first = section.controls[0];
       const content =
         section.kind === "creative-direction"
-          ? promptAssistantMarkup(state)
+          ? promptAssistantMarkup(state, values, contract)
           : section.resolutionPair
             ? pairedResolutionMarkup(
                 section.resolutionPair.width,
@@ -842,7 +847,13 @@ export function imageWorkerPoolMarkup(state) {
   return escapeHtml(imageWorkerPoolLabel(state));
 }
 
+function pipelineStageMarkup(id, label, active, extra = "") {
+  return `<span data-pipeline-stage="${id}" class="pipeline-stage${extra}${active ? " is-active" : ""}" role="group" aria-label="${escapeHtml(label)}${active ? " (active)" : ""}">${escapeHtml(label)}</span>`;
+}
+
 export function promptPipelineMarkup(state) {
+  const verified = expectationPipeline(state);
+  if (verified) return verified.stages.map(([id, label, extra]) => pipelineStageMarkup(id, label, verified.active === id, extra)).join(" → ");
   const stages = [];
   // During automation the captured configuration describes the work in progress.
   const snapshot = state.autoGenerate ? state.automation?.snapshot : null;
@@ -1358,7 +1369,11 @@ function promptInstructionsMarkup(id, assistant = {}) {
   </details>`;
 }
 
-function promptAssistantMarkup(state = {}) {
+function promptAssistantMarkup(state = {}, values = {}, contract = null) {
+  const expectations = expectationPanelPresentation(state);
+  const promptInput = positivePromptInput(contract) || interfaceInputs(contract).find((input) => input.id === "prompt.text");
+  const check = state.expectationCheck;
+  const composeDisabled = checkIsActive(check) || state.expectationCheckStarting;
   return `<section class="prompt-assistant" id="prompt-assistant" aria-label="Creative Direction">
     <div class="assistant-body">
       ${promptInstructionsMarkup("prompt-assistant-instructions")}
@@ -1366,7 +1381,9 @@ function promptAssistantMarkup(state = {}) {
       ${creativeDirectionWarningMarkup("creative-direction", "")}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
       ${thinkingModeMarkup("prompt-assistant-thinking-mode", state.promptAssistant)}
-      <button type="button" class="button secondary" data-action="compose-prompt">Apply Creative Direction</button>
+      ${expectationsMarkup(state)}
+      <button type="button" class="button secondary" data-action="compose-prompt" ${composeDisabled ? "disabled" : ""}>${escapeHtml(expectations.composeLabel)}</button>
+      ${expectationStatusMarkup(check, { dismissed: Boolean(check?.id) && state.expectationStatusDismissedId === check.id, currentPrompt: promptInput ? values?.[promptInput.id] ?? null : null })}
       <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
   </section>`;
@@ -1407,7 +1424,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
           ${thinkingModeMarkup("prompt-editor-thinking-mode", promptAssistant)}
-          <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable ? "" : "disabled"}>Apply Creative Direction</button></div>
+          <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable && !promptAssistant.composeDisabled ? "" : "disabled"}>${escapeHtml(promptAssistant.composeLabel || "Apply Creative Direction")}</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
         </div>
       </section>

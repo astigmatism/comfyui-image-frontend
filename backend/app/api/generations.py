@@ -278,8 +278,13 @@ def require_generation_protocol(request: Request) -> str:
 async def submission_status(
     key: UUID, request: Request, context: Annotated[AuthContext, Depends(require_ready_user)]
 ) -> dict[str, Any]:
+    container = get_container(request)
     return await run_blocking(
-        submissions.lookup, get_container(request).generations, context.user.id, str(key)
+        submissions.lookup,
+        container.generations,
+        context.user.id,
+        str(key),
+        expectation_checks=container.expectation_checks,
     )
 
 

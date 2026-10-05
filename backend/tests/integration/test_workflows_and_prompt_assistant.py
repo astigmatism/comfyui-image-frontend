@@ -1444,6 +1444,7 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
     assert response.json() == {
         "available": True,
         "message": None,
+        "vision_available": False,
         "default_instructions": DEFAULT_PROMPT_INSTRUCTIONS,
     }
 
@@ -1455,6 +1456,7 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
     stale = app_client.get("/api/prompt-assistant/status")
     assert stale.status_code == 200
     assert stale.json()["available"] is False
+    assert stale.json()["vision_available"] is False
     assert "stale" in stale.json()["message"]
 
 

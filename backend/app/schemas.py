@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from .config import COMFYUI_INSTANCE_ID_PATTERN
+from .domain import expectations as expectation_rules
 from .domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
 
@@ -92,6 +93,17 @@ class PromptGenerationSettings(APIModel):
     sources: dict[str, SourceSettings] = Field(default_factory=dict)
 
 
+class ExpectationSettings(APIModel):
+    """Creative Direction expectations as edited in the panel (raw text, one per line)."""
+
+    enabled: bool = False
+    text: str = Field(default="", max_length=expectation_rules.MAX_EXPECTATIONS_TEXT_LENGTH)
+    threshold: int = Field(default=expectation_rules.DEFAULT_THRESHOLD, ge=1, le=100)
+    max_attempts: int = Field(
+        default=expectation_rules.DEFAULT_MAX_ATTEMPTS, ge=1, le=expectation_rules.MAX_ATTEMPTS
+    )
+
+
 class SharedSettings(APIModel):
     gallery_layout: Literal["grouped", "classic"] = "grouped"
     prompt_generation: PromptGenerationSettings = Field(default_factory=PromptGenerationSettings)
@@ -106,6 +118,9 @@ class SharedSettings(APIModel):
     assistant_think: bool = True
     assistant_instructions: dict[str, str] = Field(default_factory=dict)
     use_creative_direction: bool = False
+    creative_direction_expectations: ExpectationSettings = Field(
+        default_factory=ExpectationSettings
+    )
     max_generations: int | None = Field(default=200, ge=1, le=1_000_000)
 
     @model_validator(mode="before")
@@ -446,6 +461,29 @@ class ComfyUIInstanceList(APIModel):
     items: list[ComfyUIInstanceStatus]
 
 
+def _normalized_expectations(value: list[str]) -> list[str]:
+    try:
+        return expectation_rules.normalize_expectations(value)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+class ExpectationSnapshot(APIModel):
+    """Expectations in force when a generation was accepted, for recall."""
+
+    enabled: bool = False
+    items: list[str] = Field(default_factory=list, max_length=expectation_rules.MAX_EXPECTATIONS)
+    threshold: int = Field(default=expectation_rules.DEFAULT_THRESHOLD, ge=1, le=100)
+    max_attempts: int = Field(
+        default=expectation_rules.DEFAULT_MAX_ATTEMPTS, ge=1, le=expectation_rules.MAX_ATTEMPTS
+    )
+
+    @field_validator("items")
+    @classmethod
+    def normalize_items(cls, value: list[str]) -> list[str]:
+        return _normalized_expectations(value) if value else []
+
+
 class PromptAssistantSnapshot(APIModel):
     """Assistant inputs in force when a generation was submitted.
 
@@ -459,6 +497,7 @@ class PromptAssistantSnapshot(APIModel):
     creative_direction: str = ""
     instructions: str | None = Field(default=None, max_length=8000)
     thinking_enabled: bool = True
+    expectations: ExpectationSnapshot | None = None
 
     @field_validator("instructions")
     @classmethod
@@ -1052,9 +1091,109 @@ class PromptComposeResponse(APIModel):
     template_version: str
 
 
+EXPECTATION_CHECK_MAX_ITEMS = 256
+
+
+class ExpectationCheckCreate(APIModel):
+    """Verify Creative Direction against expectations with a vision feedback loop.
+
+    ``items`` are the planned image requests exactly as Generate would submit
+    them. The first item is the probe template for every attempt; ``generate``
+    queues the remaining items with the qualified prompt after a pass.
+    """
+
+    purpose: Literal["apply", "generate"]
+    assistant: PromptComposeRequest
+    expectations: list[str] = Field(min_length=1, max_length=expectation_rules.MAX_EXPECTATIONS)
+    threshold: int = Field(default=expectation_rules.DEFAULT_THRESHOLD, ge=1, le=100)
+    max_attempts: int = Field(
+        default=expectation_rules.DEFAULT_MAX_ATTEMPTS, ge=1, le=expectation_rules.MAX_ATTEMPTS
+    )
+    items: list[GenerationCreate] = Field(min_length=1, max_length=EXPECTATION_CHECK_MAX_ITEMS)
+
+    @field_validator("expectations")
+    @classmethod
+    def normalize_expectation_items(cls, value: list[str]) -> list[str]:
+        return _normalized_expectations(value)
+
+    @model_validator(mode="after")
+    def validate_items(self) -> ExpectationCheckCreate:
+        if self.purpose == "apply" and len(self.items) != 1:
+            raise ValueError("Apply verifies one probe image; send exactly one item.")
+        first = self.items[0]
+        identity = (first.source_key, first.revision, first.collection_id, first.profile_id)
+        for item in self.items:
+            if (item.source_key, item.revision, item.collection_id, item.profile_id) != identity:
+                raise ValueError("Every item must use the same source, revision, and folder.")
+            if item.prompt_assistant_run_id is not None:
+                raise ValueError("Expectation checks compose their own prompt.")
+        return self
+
+
+class ExpectationResultPublic(APIModel):
+    expectation: str
+    score: int
+    met: bool
+    observation: str = ""
+
+
+class ExpectationAttemptGeneration(APIModel):
+    id: str
+    status: str
+    thumbnail_url: str | None = None
+    content_url: str | None = None
+
+
+class ExpectationAttemptPublic(APIModel):
+    number: int
+    status: str
+    prompt: str | None = None
+    composition_id: str | None = None
+    generation: ExpectationAttemptGeneration | None = None
+    score: int | None = None
+    passed: bool | None = None
+    results: list[ExpectationResultPublic] = Field(default_factory=list)
+    summary: str | None = None
+    error: dict[str, str] | None = None
+
+
+class ExpectationCheckQueued(APIModel):
+    generation_ids: list[str] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExpectationCheckPublic(APIModel):
+    id: str
+    status: str
+    purpose: Literal["apply", "generate"]
+    mode: Literal["refine", "create"]
+    expectations: list[str]
+    threshold: int
+    max_attempts: int
+    starting_prompt: str
+    collection_id: str | None = None
+    planned_count: int
+    attempts: list[ExpectationAttemptPublic] = Field(default_factory=list)
+    best_attempt: int | None = None
+    final_prompt: str | None = None
+    final_composition_id: str | None = None
+    queued: ExpectationCheckQueued = Field(default_factory=ExpectationCheckQueued)
+    error: dict[str, str] | None = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+
+class ExpectationCheckLatest(APIModel):
+    check: ExpectationCheckPublic | None = None
+
+
 class PromptAssistantStatus(APIModel):
     available: bool
     message: str | None = None
+    # Whether the configured model advertises image input, so Creative Direction
+    # expectations can be verified with vision.
+    vision_available: bool = False
     default_instructions: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_PROMPT_INSTRUCTIONS)
     )

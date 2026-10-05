@@ -60,6 +60,8 @@ from .user_state import lock_user_state
 from .worker_pool import IMAGE_POOL_SCHEDULER_SCOPE, ImageWorkerPool, scheduler_state_key
 
 logger = logging.getLogger(__name__)
+# Router capabilities are catalog facts; re-probe them at most this often.
+CAPABILITY_PROBE_SECONDS = 30.0
 
 DispatcherState = Literal[
     "not_started",
@@ -3435,6 +3437,11 @@ class QueueWorker:
                     ollama_available,
                     ollama_message,
                 )
+                ollama_capabilities = await self._ollama_capabilities(ollama_available)
+                if ollama_capabilities is not None:
+                    await _run_blocking(
+                        self._persist_service_capabilities, "ollama", ollama_capabilities
+                    )
                 catalog_loading, should_refresh_catalog = await _run_blocking(
                     self._comfy_recovery_state,
                     comfy_available,
@@ -3479,6 +3486,11 @@ class QueueWorker:
                 ollama_available,
                 ollama_message,
             )
+            ollama_capabilities = await self._ollama_capabilities(ollama_available)
+            if ollama_capabilities is not None:
+                await _run_blocking(
+                    self._persist_service_capabilities, "ollama", ollama_capabilities
+                )
             comfy_health = {
                 config.id: health_results[index]
                 for index, config in enumerate(instances.configs, start=1)
@@ -3535,6 +3547,35 @@ class QueueWorker:
             )
             return catalog_loading, should_refresh_catalog
 
+    async def _ollama_capabilities(self, available: bool) -> dict[str, Any] | None:
+        """Advertised model capabilities (currently vision) for the Prompt Assistant row.
+
+        Capabilities change only when the router's catalog does, so a successful probe is
+        reused for ``CAPABILITY_PROBE_SECONDS`` instead of on every health pass.
+        """
+
+        probe = getattr(self.ollama, "capabilities", None)
+        if probe is None:
+            return None
+        if not available:
+            self._capability_cache = None
+            return {"vision": False, "capabilities": []}
+        cached: tuple[float, dict[str, Any]] | None = getattr(self, "_capability_cache", None)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < CAPABILITY_PROBE_SECONDS:
+            return cached[1]
+        try:
+            result = await probe()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("ollama_capability_probe_failed", exc_info=True)
+            return {"vision": False, "capabilities": []}
+        if not isinstance(result, dict):
+            return {"vision": False, "capabilities": []}
+        self._capability_cache = (now, result)
+        return result
+
     def _persist_service_health(
         self,
         service: str,
@@ -3546,6 +3587,15 @@ class QueueWorker:
         with self.session_factory() as session:
             self._set_health(session, service, available, message)
             session.commit()
+
+    def _persist_service_capabilities(self, service: str, capabilities: dict[str, Any]) -> None:
+        with self.session_factory() as session:
+            health = session.get(ServiceHealth, service)
+            merged = {**((health.capabilities_json or {}) if health else {}), **capabilities}
+            # Write only on change: the health loop runs often and SQLite has one writer.
+            if health is not None and merged != (health.capabilities_json or {}):
+                health.capabilities_json = merged
+                session.commit()
 
     def _persist_instance_health(
         self,

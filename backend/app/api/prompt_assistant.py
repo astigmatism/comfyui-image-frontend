@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from ..blocking import run_blocking
 from ..dependencies import (
     AuthContext,
     database_handler,
@@ -15,8 +16,16 @@ from ..dependencies import (
     require_ready_user,
 )
 from ..models import ServiceHealth
-from ..schemas import PromptAssistantStatus, PromptComposeRequest, PromptComposeResponse
+from ..schemas import (
+    ExpectationCheckCreate,
+    ExpectationCheckLatest,
+    ExpectationCheckPublic,
+    PromptAssistantStatus,
+    PromptComposeRequest,
+    PromptComposeResponse,
+)
 from ..services.prompt_assistant import compose_prompt
+from .generations import require_generation_protocol
 
 router = APIRouter(prefix="/api/prompt-assistant", tags=["prompt-assistant"])
 
@@ -63,6 +72,9 @@ def status(
             else health.message
             or "Prompt Assistant is temporarily unavailable; manual prompting still works."
         ),
+        vision_available=bool(
+            health.available and (health.capabilities_json or {}).get("vision") is True
+        ),
     )
 
 
@@ -73,3 +85,43 @@ async def compose(
     context: Annotated[AuthContext, Depends(require_ready_csrf)],
 ) -> PromptComposeResponse:
     return await compose_prompt(get_container(request), context.user.id, payload)
+
+
+@router.post("/checks", response_model=ExpectationCheckPublic, status_code=202)
+async def create_expectation_check(
+    payload: ExpectationCheckCreate,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> ExpectationCheckPublic:
+    """Start verifying Creative Direction against expectations with vision."""
+
+    key = require_generation_protocol(request)
+    return await get_container(request).expectation_checks.accept(context.user.id, payload, key)
+
+
+@router.get("/checks/latest", response_model=ExpectationCheckLatest)
+async def latest_expectation_check(
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+) -> ExpectationCheckLatest:
+    checks = get_container(request).expectation_checks
+    return ExpectationCheckLatest(check=await run_blocking(checks.latest, context.user.id))
+
+
+@router.get("/checks/{identity}", response_model=ExpectationCheckPublic)
+async def get_expectation_check(
+    identity: str,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_user)],
+) -> ExpectationCheckPublic:
+    checks = get_container(request).expectation_checks
+    return await run_blocking(checks.get, context.user.id, identity)
+
+
+@router.post("/checks/{identity}/stop", response_model=ExpectationCheckPublic)
+async def stop_expectation_check(
+    identity: str,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> ExpectationCheckPublic:
+    return await get_container(request).expectation_checks.stop_check(context.user.id, identity)

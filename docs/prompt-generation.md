@@ -58,11 +58,45 @@ captured retained text without a text-generation run. Existing preparations keep
 their text-run links. Downgrade refuses to discard retained-text preparations;
 use the supported pre-upgrade backup recovery when necessary.
 
+## Creative Direction expectations (vision check)
+
+Creative Direction can require a prompt to prove itself before it counts as refined. Open
+**Expectations** inside the Creative Direction section, tick **Verify with vision**, list one
+expectation per line (up to 12), and choose a **Pass score** (default 80) and **Max attempts**
+(default 5). The button then reads **Apply & verify**.
+
+Each attempt composes a prompt, generates one image with the first selected model, and asks the
+Creative Direction model to look at that image and score every expectation from 0 to 100. The
+reviewer sees only the image and the expectations, never the prompt. If any expectation is below the
+pass score, the next attempt refines the prompt with the reviewer's observations for the unmet
+expectations and keeps what already works. The check passes when every expectation reaches the pass
+score; otherwise it stops after the last attempt and reports the best attempt.
+
+- **Apply & verify** places the qualified prompt in the Prompt field when the check passes, unless
+  the field was edited meanwhile; then **Use this prompt** applies it explicitly.
+- **Generate** with Use Creative Direction on runs the same check first. The passing image is the
+  first image of the batch, and only the remaining quantity × model items are queued with the
+  qualified prompt. Nothing more is queued when the check is not met.
+- With a blank direction in Refine mode, attempt 1 verifies the current prompt as written. In Create
+  mode a blank direction uses the expectations as the direction.
+- Attempt images are ordinary gallery images in the current folder. When a check ends, the dialog
+  offers **Delete failed attempts** (or **Delete other attempts**, keeping the best, when it was not
+  met), and **Use best prompt** or **Use latest prompt**.
+- The check runs on the server and continues with the browser closed. The dialog and the status line
+  under the button restore after reload; **Stop** ends it and keeps images already queued.
+- Expectations are not applied during Auto-generate, Prompt Re-run, or Generate while Prompt
+  Generation is on; the section says so. Starting a check needs Auto-generate off and is limited to
+  one active check per account. The option is disabled when the router does not advertise vision
+  for the configured model.
+
+Recall restores the expectations recorded with an image. Each attempt costs one image plus one or
+two model calls; with thinking enabled a review typically takes 10–20 seconds on Nighttime.
+
 ## Browser and shared preferences
 
 `cif.control-panel.v1.<user-id>` stores a versioned local snapshot, last synchronized base, server revision, and unresolved conflict. Writes happen on input; only server synchronization is debounced. The origin and authenticated user isolate the journal. Existing local controls are imported into the shared settings format.
 
-Settings include source-specific parameters and interfaces, prompt text, model selection, quantity, seed, resolution, LoRAs, Creative Direction, enabled stages, expansion states, and the draft limit. `cif.panel-draft.<user-id>` retains editor draft protection. `cif.auto-settings.v1.<user-id>` retains unacknowledged automatic settings changes. The server remains authoritative for running automation.
+Settings include source-specific parameters and interfaces, prompt text, model selection, quantity, seed, resolution, LoRAs, Creative Direction and its expectations, enabled stages, expansion states, and the draft limit. `cif.panel-draft.<user-id>` retains editor draft protection. `cif.auto-settings.v1.<user-id>` retains unacknowledged automatic settings changes. The server remains authoritative for running automation.
 
 Restore the journal first. Load current interfaces before comparing local/base/remote values and reconcile all three with the existing interface migration helpers. This avoids treating newly published defaults as edits. LoRA order and strengths survive for retained items, retired items disappear, and new items use published defaults. Historical generation snapshots remain unchanged. The existing conflict controls resolve genuine cross-device conflicts explicitly. Unavailable sources and storage errors are visible; saved selections are not replaced silently. Uploaded asset references retain the existing ownership validation.
 

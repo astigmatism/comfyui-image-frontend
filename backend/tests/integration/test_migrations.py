@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "946b609a5db1"
+HEAD_REVISION = "5e2c9a7d4b13"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -622,6 +622,8 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "collections",
         "collection_favorites",
         "lora_operations",
+        "expectation_checks",
+        "expectation_check_attempts",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")

@@ -89,6 +89,16 @@ identity is `lr1_` plus the SHA-256 of `["lora-binding-v1", <normalized private 
 
 The downgrade drops only these objects.
 
+Migration `5e2c9a7d4b13_expectation_checks.py` adds durable Creative Direction expectation checks.
+`expectation_checks` stores one owner-scoped check (status, purpose, the frozen request including
+the probe template and batch items, destination folder, best attempt, qualified prompt and its
+composition, queued batch outcomes, error, and retry backoff). `expectation_check_attempts` stores
+each attempt's status, prompt, composition, probe generation, structured vision evaluation (scores,
+observations, summary, reviewer model, and metadata-only diagnostics), and headline score, unique
+per check and number. Probe images remain ordinary `generations` rows; deleting one sets the
+attempt's reference to `NULL`. No existing table changes, and the downgrade drops only the two new
+tables.
+
 ## Main tables
 
 | Table | Ownership and purpose |

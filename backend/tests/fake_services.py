@@ -112,6 +112,13 @@ class FakeServiceState:
     ollama_generate_failure_status: int | None = None
     ollama_generate_failures_remaining: int = 0
     ollama_thinking_overflows: bool = False
+    ollama_capabilities: list[str] = field(
+        default_factory=lambda: ["completion", "thinking", "vision"]
+    )
+    # One score list per vision evaluation, in expectation order; empty means all 100.
+    ollama_vision_scores: list[list[int]] = field(default_factory=list)
+    ollama_vision_calls: list[dict[str, Any]] = field(default_factory=list)
+    ollama_vision_seen: dict[str, int] = field(default_factory=dict)
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -171,6 +178,10 @@ class FakeServiceState:
         self.ollama_generate_failure_status = None
         self.ollama_generate_failures_remaining = 0
         self.ollama_thinking_overflows = False
+        self.ollama_capabilities = ["completion", "thinking", "vision"]
+        self.ollama_vision_scores.clear()
+        self.ollama_vision_calls.clear()
+        self.ollama_vision_seen.clear()
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -849,7 +860,12 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
     async def ollama_tags() -> dict[str, Any]:
         if not state.ollama_available:
             raise HTTPException(status_code=503)
-        return {"models": [{"name": name} for name in state.models]}
+        return {
+            "models": [
+                {"name": name, "capabilities": list(state.ollama_capabilities)}
+                for name in state.models
+            ]
+        }
 
     @app.post("/api/chat")
     async def ollama_generate(request: Request) -> dict[str, Any]:
@@ -867,6 +883,54 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             )
         if state.ollama_generate_responses:
             return copy.deepcopy(state.ollama_generate_responses.pop(0))
+        images = (payload.get("messages") or [{}])[0].get("images")
+        if images:
+            # Mirrors the router: image input requires an advertised vision profile.
+            if "vision" not in state.ollama_capabilities:
+                return JSONResponse(
+                    {"error": {"code": "UNSUPPORTED_PROFILE_CAPABILITY"}}, status_code=400
+                )
+            state.ollama_vision_calls.append(copy.deepcopy(payload))
+            count = int(payload["format"]["properties"]["results"]["minItems"])
+            content = str(payload["messages"][0].get("content", ""))
+            listed = content.rsplit("Expectations:\n", 1)[-1].splitlines()
+            expectations = [line.split(". ", 1)[-1].lower() for line in listed[:count]]
+            # Browser journeys cannot reach this state, so marker phrases script the
+            # reviewer: "needs a second look" fails the first review of an expectation set and
+            # "never passes" always fails. Explicit queued scores take precedence.
+            seen_key = "\n".join(expectations)
+            seen = state.ollama_vision_seen.get(seen_key, 0) + 1
+            state.ollama_vision_seen[seen_key] = seen
+            scores = state.ollama_vision_scores.pop(0) if state.ollama_vision_scores else []
+
+            def scripted(index: int) -> int:
+                if index < len(scores):
+                    return scores[index]
+                text = expectations[index] if index < len(expectations) else ""
+                if "never passes" in text:
+                    return 30
+                if "needs a second look" in text and seen == 1:
+                    return 35
+                return 100
+
+            results = [
+                {
+                    "expectation": index + 1,
+                    "score": scripted(index),
+                    "observation": f"Observed expectation {index + 1}.",
+                }
+                for index in range(count)
+            ]
+            effective_model = state.ollama_effective_model or payload.get("model")
+            return {
+                "model": str(effective_model or (state.models[0] if state.models else "")),
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({"results": results, "summary": "Fake vision review."}),
+                },
+                "done": True,
+                "done_reason": "stop",
+            }
         if state.ollama_thinking_overflows and payload.get("think") is not False:
             # Thinking responses outgrow every token allowance; the
             # no-thinking pass still completes within the base allowance.

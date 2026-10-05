@@ -35,6 +35,7 @@ import {
   passwordChangeMarkup,
   photoViewerMarkup,
   promptEditorMarkup,
+  promptPipelineMarkup,
   moveDialogMarkup,
   renderCollectionBar,
   serviceBannerMarkup,
@@ -2980,4 +2981,78 @@ test("folders with previews off hide the thumbnails of their image cards but kee
   assert.equal(collectionThumbnailsHidden(collections, "missing"), false);
   assert.equal(collectionThumbnailsHidden(collections, null), false);
   assert.equal(collectionThumbnailsHidden(undefined, "off"), false);
+});
+
+function expectationPanelState(overrides = {}) {
+  return {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    workflows: [{ profile_id: "p1", display_name: "Portrait" }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "a lighthouse keeper", "sampling.steps": 8 },
+    fieldErrors: {},
+    formError: null,
+    selectedPreset: null,
+    controlSectionOpen: { "creative-direction": true },
+    autoGenerateCreativeDirection: true,
+    promptAssistant: { available: true, mode: "refine", think: true, visionAvailable: true },
+    expectations: { enabled: true, text: "red raincoat\nlit beam", threshold: 80, maxAttempts: 4 },
+    ...overrides,
+  };
+}
+
+const runningExpectationCheck = {
+  id: "check-1",
+  status: "generating",
+  purpose: "apply",
+  mode: "refine",
+  expectations: ["red raincoat", "lit beam"],
+  threshold: 80,
+  max_attempts: 4,
+  planned_count: 1,
+  attempts: [{ number: 1, status: "generating", prompt: "p", generation: { id: "g1", status: "running", thumbnail_url: null, content_url: null }, score: null, passed: null, results: [], summary: null, error: null }],
+  queued: { generation_ids: [], errors: [] },
+  error: null,
+};
+
+test("Creative Direction places Expectations between thinking mode and Apply & verify", () => {
+  const html = generationPanelMarkup(expectationPanelState(), { profile_id: "p1", display_name: "Portrait" }, contract);
+  const section = html.slice(html.indexOf('data-control-section="creative-direction"'));
+  const thinking = section.indexOf('id="prompt-assistant-thinking-mode"');
+  const block = section.indexOf('<details class="prompt-expectations"');
+  const button = section.indexOf('data-action="compose-prompt"');
+  assert.ok(thinking >= 0 && thinking < block && block < button);
+  assert.match(section, /data-action="compose-prompt" >Apply &amp; verify<\/button>/);
+  assert.match(section, /id="expectations-enabled" type="checkbox" checked/);
+  assert.match(section, /data-expectations-badge>On · 2</);
+  assert.match(section, /id="expectations-attempts"[^>]*value="4"/);
+  assert.match(section, /<div id="expectation-status" class="expectation-status" role="status" aria-live="polite" hidden>/);
+  assert.match(promptPipelineMarkup(expectationPanelState()), /Refine<\/span> → <span data-pipeline-stage="vision" class="pipeline-stage is-vision-stage"[^>]*>Vision check \(≤4\)<\/span> → <span data-pipeline-stage="image"/);
+});
+
+test("Expectations explain why they are unavailable or not applied", () => {
+  const unavailable = generationPanelMarkup(
+    expectationPanelState({ promptAssistant: { available: true, mode: "refine", visionAvailable: false } }),
+    { profile_id: "p1", display_name: "Portrait" },
+    contract,
+  );
+  assert.match(unavailable, /id="expectations-enabled" type="checkbox" {2}disabled/);
+  assert.match(unavailable, /data-expectations-note="vision" >The Creative Direction model can&#039;t inspect images/);
+  assert.match(unavailable, /data-action="compose-prompt" >Apply Creative Direction<\/button>/);
+  const prompts = generationPanelMarkup(expectationPanelState({ promptGeneration: { enabled: true } }), { profile_id: "p1", display_name: "Portrait" }, contract);
+  assert.match(prompts, /data-expectations-note="prompt-generation" >Not applied to Generate while Prompt Generation is on/);
+  const auto = generationPanelMarkup(expectationPanelState({ autoGenerate: true }), { profile_id: "p1", display_name: "Portrait" }, contract);
+  assert.match(auto, /data-expectations-note="auto" >Not applied during Auto-generate/);
+  assert.doesNotMatch(promptPipelineMarkup(expectationPanelState({ autoGenerate: true })), /Vision check/);
+});
+
+test("a running expectation check holds Generate and Apply and shows its status line", () => {
+  const state = expectationPanelState({ expectationCheck: runningExpectationCheck });
+  const html = generationPanelMarkup(state, { profile_id: "p1", display_name: "Portrait" }, contract);
+  assert.match(html.match(/<button id="generate-button"[^>]*>[\s\S]*?<\/button>/)[0], /disabled>[\s\S]*Verifying…/);
+  assert.match(html, /data-action="compose-prompt" disabled>Apply &amp; verify<\/button>/);
+  assert.match(html, /<div id="expectation-status" class="expectation-status" role="status" aria-live="polite" >[\s\S]*Verifying expectations[\s\S]*Attempt 1 of 4 · Generating image/);
+  assert.match(html, /id="expectations-enabled" type="checkbox" checked disabled/);
+  assert.match(promptPipelineMarkup(state), /data-pipeline-stage="image" class="pipeline-stage is-active"/);
+  assert.match(shellMarkup({ session: { app_title: "Test", user: { username: "u", role: "user" } }, collections: [] }), /<dialog id="expectation-check-dialog" class="expectation-check-dialog" aria-labelledby="expectation-check-title"><\/dialog>/);
 });

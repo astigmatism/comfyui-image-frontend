@@ -14,3 +14,14 @@ DEFAULT_PROMPT_INSTRUCTIONS = {
         "unchanged:"
     ),
 }
+
+# Sent with the probe image when Creative Direction expectations are verified. The evaluator
+# never sees the prompt, so it judges only what is visible in the image.
+DEFAULT_VISION_CHECK_INSTRUCTIONS = (
+    "You are a meticulous image reviewer. Examine the attached image and judge, for each "
+    "numbered expectation, how completely the visible image satisfies it. Score each "
+    "expectation from 0 to 100: 100 means fully and unambiguously satisfied, 50 means partly "
+    "satisfied, and 0 means absent or contradicted. Judge only what is visible in the image; "
+    "do not assume details you cannot see. For each expectation give one short sentence "
+    "describing what you see that justifies the score, then summarize the most important gaps."
+)

@@ -29,12 +29,15 @@ The principal invariants are:
 - `WorkflowCompiler`: public parameter validation/defaults, exact seed resolution, request-local graph clone/bindings/hash.
 - `GenerationService`: owner-scoped API projection, acceptance transaction, recall, cancellation/deletion.
 - `QueueWorker`: durable fair claim, submission, WebSocket/history monitoring, output normalization/archive, recovery.
-- `OllamaAdapter`: router availability validation, model-free per-request thinking control, safe structured final-prompt extraction, bounded generated-token budget escalation with a single no-thinking fallback per candidate, and effective-model provenance.
+- `OllamaAdapter`: router availability validation, model-free per-request thinking control, safe structured final-prompt extraction, bounded generated-token budget escalation with a single no-thinking fallback per candidate, effective-model provenance, advertised capability discovery, and schema-constrained vision scoring of one inline image.
+- `ExpectationCheckService`: a durable coordinator for Creative Direction expectations. Each step is a short transaction; the composition, probe acceptance, and vision call happen outside it, and every save re-checks that the check is still active, so a stop or restart never accepts late work.
 - `SpeechToTextAdapter`: bounded authenticated forwarding to an OpenAI-compatible transcription endpoint without persisting recordings.
 - `EventBroker`: low-latency owner-specific SSE fan-out; the database is the replay source.
 - `UserDeletionService`: revocation, active-job reconciliation, row/file cleanup without content disclosure.
 
 FastAPI serves the built frontend after `/api` routes. Public source details are constructed by allowlist; private values are never copied and then redacted.
+
+Vision checks send one application-owned image at a time to the configured Ollama-compatible router only: the original artifact is decoded server-side, re-encoded as a JPEG of at most 1024 px, and sent inline as a `data:` URL. The router receives neither prompts nor filenames with the image, and the application stores only the structured scores, observations, and metadata-only diagnostics.
 
 The browser is the only microphone boundary. One `MediaRecorder` session may be active at a time; stopping it uploads the resulting audio through the authenticated, CSRF-protected application route. The browser never receives speech-service connection details or credentials. Transcribed text is inserted at the saved textarea selection and then follows the same editable state path as typed text. HTTPS is required for browser microphone capture outside localhost.
 

@@ -18,6 +18,22 @@ import { bindGallerySelection } from "./gallery-selection.mjs";
 import { createPromptRerun } from "./prompt-rerun.mjs";
 import { createPromptRerunProgress } from "./prompt-rerun-progress.mjs";
 import {
+  EXPECTATION_INPUT_IDS,
+  EXPECTATIONS_SECTION_KEY,
+  checkIsActive,
+  createExpectationCheck,
+  expectationCheckBusy,
+  expectationPanelPresentation,
+  expectationSettingsErrors,
+  expectationSettingsPayload,
+  expectationSnapshotPayload,
+  expectationStatusPresentation,
+  expectationsActive,
+  parseExpectations,
+  scoredAttempt,
+  shouldAutoApply,
+} from "./expectation-check.mjs";
+import {
   favoritesFilterActive,
   favoritesFilterPresentation,
   favoritesMode,
@@ -31,6 +47,7 @@ import {
 } from "./gallery-view.mjs";
 import {
   CHECKPOINT_TIER_DEFINITIONS,
+  EXPECTATION_LIMITS,
   MAX_BATCH_GENERATION_ITEMS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
@@ -64,6 +81,7 @@ import {
   recentResolutionsForInterface,
   normalizeCheckpointTierLayout,
   normalizeCheckpointRanks,
+  normalizeExpectationSettings,
   normalizeLoraRanks,
   stepLoraRank,
   checkpointRank,
@@ -211,7 +229,13 @@ const state = {
     error: null,
     defaultInstructions: {},
     instructionOverrides: {},
+    visionAvailable: undefined,
   },
+  // Creative Direction expectations (panel settings) and the latest server check.
+  expectations: normalizeExpectationSettings(null),
+  expectationCheck: null,
+  expectationCheckStarting: false,
+  expectationStatusDismissedId: null,
   speechToText: { available: false, message: null },
   collections: [],
   collectionsStatus: "idle",
@@ -426,6 +450,9 @@ async function startupGet(path, { operation, deadlineMs, signal } = {}) {
 let galleryGroups = null;
 let gallerySelection = null;
 let promptRerun = null;
+let expectationChecks = null;
+// Checks started in this page: the Prompt field value at start (auto-apply rule).
+const expectationStarts = new Map();
 
 function commitPanelLoras(id, values, memory, sourceKey, { updateSubject = false, refreshPanel = true } = {}) {
   if (sourceKey !== state.activeSourceKey) throw new Error("The workflow changed. Reopen the LoRA manager.");
@@ -510,15 +537,22 @@ function bindDelegatedEvents() {
   });
   root.addEventListener("submit", handleSubmit);
   root.addEventListener("click", handleClick);
+  // Expectations only shape manual checks, so editing them never restages automation.
   root.addEventListener("change", async (event) => {
-    const edit = event.target.closest("#generation-panel") && event.target.id !== "auto-generate";
+    const edit = event.target.closest("#generation-panel") && event.target.id !== "auto-generate" && !EXPECTATION_INPUT_IDS.includes(event.target.id);
     await handleChange(event);
     if (edit) autoSettingsSync?.stage();
   });
   root.addEventListener("input", (event) => {
     handleInput(event);
-    if (event.target.closest("#generation-panel") && !["auto-generate", "auto-generate-limit"].includes(event.target.id)) autoSettingsSync?.stage();
+    if (event.target.closest("#generation-panel") && !["auto-generate", "auto-generate-limit", ...EXPECTATION_INPUT_IDS].includes(event.target.id)) autoSettingsSync?.stage();
   });
+  root.addEventListener("toggle", (event) => {
+    if (!event.target.matches?.("#generation-panel details[data-expectations]")) return;
+    if (state.controlSectionOpen[EXPECTATIONS_SECTION_KEY] === event.target.open) return;
+    state.controlSectionOpen[EXPECTATIONS_SECTION_KEY] = event.target.open;
+    persistControlSections();
+  }, true);
   for (const eventType of ["input", "change"]) root.addEventListener(eventType, (event) => {
     if (eventType === "input" && event.target.matches('input[type="checkbox"], input[type="radio"], select')) return;
     if (event.target.closest("#generation-panel")) queueMicrotask(() => { settingsSync?.schedule(); persistBrowserDraft(); });
@@ -783,7 +817,9 @@ async function handleClick(event) {
     else if (action === "paste-prompt-text") await pastePromptTextFromClipboard(target);
     else if (action === "paste-prompt-editor-text") await pastePromptEditorTextFromClipboard();
     else if (action === "compose-prompt-editor") await composePromptEditor(target);
-    else if (action === "compose-prompt") await composePrompt(target);
+    else if (action === "compose-prompt") await (expectationsActive(state) ? startExpectationCheck("apply") : composePrompt(target));
+    else if (action === "view-expectation-check") openExpectationCheckDialog();
+    else if (action === "dismiss-expectation-status") dismissExpectationStatus();
     else if (action === "reset-prompt-instructions") resetPromptInstructions(target);
     else if (action === "retry-auto-generate") void autoGenerationCommand("/retry");
     else if (action === "retry-auto-settings") await autoSettingsSync?.retry();
@@ -905,6 +941,17 @@ async function handleClick(event) {
     setPromptAssistantError(null);
     persistCreativeDirectionDraft();
     syncServerControls();
+    return;
+  }
+  if (element.id === "expectations-enabled") {
+    state.expectations = { ...state.expectations, enabled: element.checked };
+    setPromptAssistantError(null);
+    settingsSync?.schedule();
+    syncServerControls();
+    return;
+  }
+  if (element.id === "expectations-threshold" || element.id === "expectations-attempts") {
+    updateExpectationLimit(element, true);
     return;
   }
   if (element.matches("[data-source-workflow-choice]")) {
@@ -1522,6 +1569,17 @@ function handleInput(event) {
     syncServerControls();
     return;
   }
+  if (element.id === "creative-direction-expectations") {
+    // Update the badge and count in place so the caret and scroll stay put.
+    state.expectations = { ...state.expectations, text: element.value };
+    setPromptAssistantError(null);
+    syncExpectationControls();
+    return;
+  }
+  if (element.id === "expectations-threshold" || element.id === "expectations-attempts") {
+    updateExpectationLimit(element, false);
+    return;
+  }
   if (element.name === "assistant-mode") {
     const assistant = element.closest("#prompt-assistant");
     capturePromptInstructions(assistant, state.promptAssistant.instructionOverrides);
@@ -1589,7 +1647,12 @@ function openPromptEditor(button) {
   dialog.returnValue = "";
   state.promptEditorDirectionStatus = "idle";
   state.promptEditorDirectionAppliedValue = null;
-  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, { ...state.promptAssistant, promptGenerationEnabled: state.promptGeneration.enabled });
+  dialog.innerHTML = promptEditorMarkup(controlId, label, source.value, {
+    ...state.promptAssistant,
+    promptGenerationEnabled: state.promptGeneration.enabled,
+    composeLabel: expectationPanelPresentation(state).composeLabel,
+    composeDisabled: expectationCheckBusy(state),
+  });
   syncPromptInstructions(dialog, promptEditorInstructionOverrides, state.promptAssistant.mode);
   dialog.showModal();
   syncSpeechControls();
@@ -2894,7 +2957,13 @@ async function enterApplication() {
     available: false,
     message: "Checking Prompt Assistant availability…",
     error: null,
+    visionAvailable: undefined,
   };
+  state.expectations = normalizeExpectationSettings(null);
+  state.expectationCheck = null;
+  state.expectationCheckStarting = false;
+  state.expectationStatusDismissedId = readStoredItem(expectationDismissedStorageKey());
+  expectationStarts.clear();
   state.speechToText = {
     available: false,
     message: "Checking voice input availability…",
@@ -2905,6 +2974,7 @@ async function enterApplication() {
     onRecovered: applyRecoveredSubmission,
     onError: (error, pending) => {
       if (["/api/prompt-generations", "/api/generation-preparations"].includes(pending.path)) state.promptGenerationError = error.message;
+      else if (pending.path === "/api/prompt-assistant/checks") state.promptAssistant.error = error.message;
       else state.formError = error.message;
       renderPanel();
     },
@@ -2919,6 +2989,24 @@ async function enterApplication() {
   promptRerunProgress = createPromptRerunProgress(root.querySelector("#prompt-rerun-progress-host"), {
     api, context: () => ({ collectionId: state.currentCollectionId }),
     changed: scheduleActivityRefresh, notify: toast, signal: controller.signal,
+  });
+  expectationChecks = createExpectationCheck(root.querySelector("#expectation-check-dialog"), {
+    api,
+    signal: controller.signal,
+    currentPrompt: currentPromptValue,
+    sourceName: (check) => expectationStarts.get(check?.id)?.sourceName || null,
+    onChange: handleExpectationCheckChange,
+    applyPrompt: (prompt, attempt) => {
+      if (applyExpectationPrompt(prompt)) toast(`Attempt ${attempt.number}'s prompt was placed in the Prompt field.`, "success");
+    },
+    deleteGenerations: deleteExpectationAttemptImages,
+    openImage: openExpectationAttemptImage,
+    notify: toast,
+    onClose: () => {
+      const target = document.querySelector('#expectation-status:not([hidden]) [data-action="view-expectation-check"]') ||
+        document.querySelector("#prompt-assistant [data-action=compose-prompt]");
+      if (!document.querySelector("dialog[open]")) target?.focus({ preventScroll: true });
+    },
   });
   disposeThumbnails = installThumbnails(document.querySelector("#gallery-viewport"));
   document.querySelector("#photo-viewer")?.addEventListener("close", () => {
@@ -2982,6 +3070,8 @@ async function enterApplication() {
     loadStartupPromptAssistant(controller.signal),
     loadStartupSpeechToText(controller.signal),
     promptContextReady,
+    // Restores the sidebar status line and re-enters a check that is still running.
+    expectationChecks.refresh(),
   ];
   void Promise.allSettled(requests);
   userStateTimer = window.setInterval(() => void refreshUserState(), 15_000);
@@ -3460,7 +3550,7 @@ async function loadStartupGallery(
   syncServerControls();
 }
 
-async function loadStartupPromptAssistant(signal = applicationStartupController?.signal) {
+async function loadStartupPromptAssistant(signal = applicationStartupController?.signal, { quiet = false } = {}) {
   try {
     const assistant = await startupGet("/api/prompt-assistant/status", {
       operation: "Prompt Assistant status",
@@ -3468,19 +3558,30 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
       signal,
     });
     if (signal?.aborted) return;
+    const previous = state.promptAssistant;
     state.promptAssistant = {
       ...state.promptAssistant,
       available: Boolean(assistant.available),
       message: assistant.message,
       defaultInstructions: assistant.default_instructions || {},
+      visionAvailable: Boolean(assistant.vision_available),
     };
+    if (quiet && previous.available === state.promptAssistant.available && previous.visionAvailable === state.promptAssistant.visionAvailable) return;
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
+    if (quiet) return;
     state.promptAssistant = {
       ...state.promptAssistant,
       available: false,
       message: error.message || "Prompt Assistant is temporarily unavailable.",
+      visionAvailable: false,
     };
+  }
+  // A background refresh must not replace a field the user is editing.
+  if (quiet && document.querySelector("#generation-panel")?.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) {
+    syncPromptAssistantAction();
+    syncServerControls();
+    return;
   }
   renderPanel();
 }
@@ -4054,10 +4155,104 @@ function syncPromptAssistantAction() {
   const button = document.querySelector("#prompt-assistant [data-action=compose-prompt]");
   if (!button) return;
   const busy = promptCompositionRequests > 0;
-  button.disabled = busy || !state.promptAssistant.available;
-  button.textContent = busy ? "Applying…" : "Apply Creative Direction";
-  if (busy) button.setAttribute("aria-busy", "true");
+  button.disabled = busy || expectationCheckBusy(state) || !state.promptAssistant.available;
+  const label = busy ? "Applying…" : expectationPanelPresentation(state).composeLabel;
+  if (button.textContent !== label) button.textContent = label;
+  if (busy || state.expectationCheckStarting) button.setAttribute("aria-busy", "true");
   else button.removeAttribute("aria-busy");
+}
+
+function currentPromptValue() {
+  const input = promptDirectionSignalControl();
+  return input ? String(state.parameters[input.id] ?? "") : null;
+}
+
+const expectationStatusMarkupCache = new WeakMap();
+
+// Keeps the Expectations block, the Apply button, and the status line current
+// without re-rendering the panel, so typing keeps its caret and scroll.
+function syncExpectationControls() {
+  syncPromptAssistantAction();
+  const panel = document.querySelector("#generation-panel");
+  if (!panel) return;
+  const view = expectationPanelPresentation(state);
+  const block = panel.querySelector("[data-expectations]");
+  if (block) {
+    const badge = block.querySelector("[data-expectations-badge]");
+    if (badge) {
+      if (badge.textContent !== view.badge) badge.textContent = view.badge;
+      badge.classList.toggle("is-on", view.on);
+    }
+    const toggle = block.querySelector("#expectations-enabled");
+    if (toggle) {
+      toggle.checked = view.on;
+      toggle.disabled = view.toggleDisabled;
+      toggle.closest("label")?.classList.toggle("is-disabled", view.unavailable);
+    }
+    for (const note of block.querySelectorAll("[data-expectations-note]")) note.hidden = !view.notes[note.dataset.expectationsNote];
+    const count = block.querySelector("[data-expectations-count]");
+    if (count && count.textContent !== view.countText) count.textContent = view.countText;
+    for (const [selector, value] of [
+      ["#creative-direction-expectations", view.settings.text],
+      ["#expectations-threshold", String(view.settings.threshold)],
+      ["#expectations-attempts", String(view.settings.maxAttempts)],
+    ]) {
+      const field = block.querySelector(selector);
+      if (!field) continue;
+      field.disabled = view.fieldsDisabled;
+      if (document.activeElement !== field && field.value !== value) field.value = value;
+    }
+  }
+  const status = panel.querySelector("#expectation-status");
+  if (status) {
+    const check = state.expectationCheck;
+    const presentation = expectationStatusPresentation(check, {
+      dismissed: Boolean(check?.id) && state.expectationStatusDismissedId === check.id,
+      currentPrompt: currentPromptValue(),
+    });
+    status.hidden = presentation.hidden;
+    if (status.className !== presentation.className) status.className = presentation.className;
+    if (expectationStatusMarkupCache.get(status) !== presentation.inner) {
+      const focused = status.contains(document.activeElement) ? document.activeElement.dataset.action : null;
+      status.innerHTML = presentation.inner;
+      expectationStatusMarkupCache.set(status, presentation.inner);
+      if (focused) status.querySelector(`[data-action="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+    }
+  }
+}
+
+function updateExpectationLimit(element, commit) {
+  const key = element.id === "expectations-threshold" ? "threshold" : "maxAttempts";
+  const maximum = key === "threshold" ? EXPECTATION_LIMITS.maxThreshold : EXPECTATION_LIMITS.maxAttempts;
+  const value = Number(element.value);
+  if (element.value.trim() !== "" && Number.isInteger(value) && value >= 1 && value <= maximum) {
+    state.expectations = { ...state.expectations, [key]: value };
+  } else if (commit) {
+    // Out-of-range entries snap to the nearest allowed value when the field is left.
+    const bounded = Number.isFinite(value) && element.value.trim() !== "" ? Math.min(maximum, Math.max(1, Math.round(value))) : state.expectations[key];
+    state.expectations = { ...state.expectations, [key]: bounded };
+  }
+  if (commit) element.value = String(state.expectations[key]);
+  setPromptAssistantError(null);
+  settingsSync?.schedule();
+  syncServerControls();
+}
+
+function openExpectationCheckDialog() {
+  if (!expectationChecks?.open()) toast("Start a check with Apply & verify first.");
+}
+
+function expectationDismissedStorageKey() {
+  return `cif.expectation-status-dismissed.${sessionStorageUserId()}`;
+}
+
+function dismissExpectationStatus() {
+  const id = state.expectationCheck?.id;
+  if (!id) return;
+  state.expectationStatusDismissedId = id;
+  writeStoredItem(expectationDismissedStorageKey(), id);
+  syncExpectationControls();
+  document.querySelector("#prompt-assistant [data-action=compose-prompt]")?.focus({ preventScroll: true });
 }
 
 // Creative-direction border signal: the prompt control's border animates
@@ -4550,12 +4745,97 @@ async function generate() {
     toast(state.formError, "error");
     return false;
   }
+  if (expectationCheckBusy(state)) return false;
   if (state.promptGeneration.enabled) return runPromptGeneration(true);
+  // With expectations on, the server composes, verifies, and queues the batch.
+  if (state.autoGenerateCreativeDirection && expectationsActive(state)) return startExpectationCheck("generate");
   if (state.autoGenerateCreativeDirection && !await composePrompt()) return false;
   if (plannedTotal > 1) {
     return generateSelectedCheckpoints();
   }
   return generateSingleSource();
+}
+
+// The request one Generate click submits for a single planned image: the
+// first selected model variant, with the assistant inputs snapshotted.
+function singleGenerationPayload({ sourceKey, collectionId, revision, contract }) {
+  const [modelParameters] = modelParameterVariantsForSource(state.activeSource, contract);
+  return {
+    source_key: sourceKey,
+    collection_id: collectionId,
+    revision,
+    parameters: {
+      ...parametersForRequest(contract, state.parameters),
+      ...modelParameters,
+    },
+    prompt_assistant: promptAssistantSnapshotPayload(),
+  };
+}
+
+// The requests one Generate click submits for several planned images, in
+// submission order (every selected model variant × the quantity).
+async function batchGenerationPayloads({ sourceKey, collectionId, revision, contract, source, parameters, quantity, validationParameters = {}, signal }) {
+  const modelVariants = orderedModelParameterVariants(source, contract, parameters);
+  const sharedParameters = {
+    ...parametersForRequest(contract, parameters),
+    ...modelVariants[0],
+  };
+  const validation = await api("/api/generations/validate", {
+    method: "POST",
+    signal,
+    body: JSON.stringify({
+      source_key: sourceKey,
+      collection_id: collectionId,
+      revision,
+      parameters: { ...sharedParameters, ...validationParameters },
+    }),
+  });
+  const inputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
+  // A single planned item keeps the server-resolved seed aligned across the
+  // selected checkpoints; a quantity over one lets each item resolve its own
+  // seed so random-seed repeats are not duplicates.
+  if (quantity === MIN_GENERATION_QUANTITY) {
+    for (const [parameterId, value] of Object.entries(validation.resolved_seeds || {})) {
+      if (inputs.get(parameterId)?.type === "seed") {
+        sharedParameters[parameterId] = String(value);
+      }
+    }
+  }
+  const payloads = [];
+  for (const modelParameters of modelVariants) {
+    for (let repeat = 0; repeat < quantity; repeat += 1) {
+      payloads.push({
+        source_key: sourceKey,
+        collection_id: collectionId,
+        revision: structuredClone(revision),
+        parameters: { ...sharedParameters, ...modelParameters },
+        prompt_assistant: promptAssistantSnapshotPayload(),
+      });
+    }
+  }
+  return payloads;
+}
+
+// Exactly what Apply (one probe) or Generate (the whole plan) would submit.
+async function planGenerationPayloads(purpose, { signal } = {}) {
+  const contract = sourceInterface(state.activeSource);
+  const context = {
+    sourceKey: state.activeSourceKey,
+    collectionId: state.currentCollectionId,
+    revision: structuredClone(sourceRevision(state.activeSource)),
+    contract,
+  };
+  if (purpose === "apply" || plannedGenerationTotal() <= 1) return [singleGenerationPayload(context)];
+  const prompt = promptDirectionSignalControl();
+  return batchGenerationPayloads({
+    ...context,
+    source: selectedGenerationSource(),
+    parameters: structuredClone(state.parameters),
+    quantity: state.generationQuantity,
+    // The server composes the prompt; seed resolution must not fail on a blank one.
+    validationParameters: prompt && !String(state.parameters[prompt.id] ?? "").trim() ? { [prompt.id]: "expectation check" } : {},
+    signal,
+  });
 }
 
 async function generateSingleSource() {
@@ -4594,21 +4874,13 @@ async function generateSingleSource() {
   setPromptDirectionSignal("idle");
   let focusErrors = false;
   try {
-    const [modelParameters] = modelParameterVariantsForSource(
-      state.activeSource,
-      contract,
-    );
-    const payload = {
-      source_key: requestSourceKey,
-      collection_id: requestCollectionId,
+    const payload = singleGenerationPayload({
+      sourceKey: requestSourceKey,
+      collectionId: requestCollectionId,
       revision: requestRevision,
-      parameters: {
-        ...parametersForRequest(contract, state.parameters),
-        ...modelParameters,
-      },
-    };
+      contract,
+    });
     if (requestCompositionId) payload.prompt_assistant_run_id = requestCompositionId;
-    payload.prompt_assistant = promptAssistantSnapshotPayload();
     const generation = await submitGeneration("/api/generations", payload, null, { signal });
     if (state.session?.user?.id !== requestOwnerId) return false;
     if (!TERMINAL_GENERATION_STATUSES.has(generation.status)) pendingGenerationIds.add(generation.id);
@@ -4712,56 +4984,22 @@ async function generateSelectedCheckpoints() {
   setPromptDirectionSignal("idle");
   let focusErrors = false;
   try {
-    const quantity = state.generationQuantity;
-    const modelVariants = orderedModelParameterVariants(
-      requestSource,
+    const payloads = await batchGenerationPayloads({
+      sourceKey: requestSourceKey,
+      collectionId: requestCollectionId,
+      revision: requestRevision,
       contract,
-      requestParameters,
-    );
-    const sharedParameters = {
-      ...parametersForRequest(contract, requestParameters),
-      ...modelVariants[0],
-    };
-    const validation = await api("/api/generations/validate", {
-      method: "POST",
-      body: JSON.stringify({
-        source_key: requestSourceKey,
-          collection_id: requestCollectionId,
-        revision: requestRevision,
-        parameters: sharedParameters,
-      }),
+      source: requestSource,
+      parameters: requestParameters,
+      quantity: state.generationQuantity,
     });
-    const inputs = new Map(interfaceInputs(contract).map((input) => [input.id, input]));
-    // A single planned item keeps the server-resolved seed aligned across the
-    // selected checkpoints; a quantity over one lets each item resolve its own
-    // seed so random-seed repeats are not duplicates.
-    if (quantity === MIN_GENERATION_QUANTITY) {
-      for (const [parameterId, value] of Object.entries(validation.resolved_seeds || {})) {
-        if (inputs.get(parameterId)?.type === "seed") {
-          sharedParameters[parameterId] = String(value);
-        }
-      }
-    }
-
-    let firstTarget = true;
-    const queueTargets = [];
-    for (const modelParameters of modelVariants) {
-      for (let repeat = 0; repeat < quantity; repeat += 1) {
-        const payload = {
-          source_key: requestSourceKey,
-              collection_id: requestCollectionId,
-          revision: structuredClone(requestRevision),
-          parameters: { ...sharedParameters, ...modelParameters },
-          // Every item snapshots the assistant inputs; only the first may
-          // consume the composition run (a run belongs to one generation).
-          prompt_assistant: promptAssistantSnapshotPayload(),
-        };
-        const usesPromptAssistant = Boolean(requestCompositionId && firstTarget);
-        firstTarget = false;
-        if (usesPromptAssistant) payload.prompt_assistant_run_id = requestCompositionId;
-        queueTargets.push({ payload, usesPromptAssistant });
-      }
-    }
+    // Every item snapshots the assistant inputs; only the first may consume
+    // the composition run (a run belongs to one generation).
+    const queueTargets = payloads.map((payload, index) => {
+      const usesPromptAssistant = Boolean(requestCompositionId && index === 0);
+      if (usesPromptAssistant) payload.prompt_assistant_run_id = requestCompositionId;
+      return { payload, usesPromptAssistant };
+    });
     const batch = await submitGeneration("/api/generations/batch", { items: queueTargets.map(({ payload }) => payload) }, null, { signal });
     if (state.session?.user?.id !== requestOwnerId) return false;
     const queueResults = batch.items.map((item) => item.generation
@@ -4990,8 +5228,185 @@ async function composePrompt(
   }
 }
 
+function expectationCheckBlockedReason() {
+  if (!state.automationLoaded || state.pendingAutoEnabled !== undefined || state.automationBusy || state.autoSettingsSaving) return "Checking auto generation…";
+  if (state.autoGenerate || state.automation?.enabled) return "Turn off Auto-generate to verify expectations.";
+  if (expectationCheckBusy(state)) return "An expectation check is already running. Stop it or wait for it to finish.";
+  if (state.submitting || state.submissionRecoveryPending || state.pendingSubmission || promptCompositionRequests > 0) return "Wait for the current request to finish.";
+  if (!state.promptAssistant.available) return state.promptAssistant.message || "Creative Direction is unavailable.";
+  if (state.promptAssistant.visionAvailable !== true) return "The Creative Direction model can't inspect images right now, so expectations can't be verified. Apply Creative Direction still works without the check.";
+  return null;
+}
+
+// Image validation for a check: the server composes the prompt for every attempt.
+function expectationCheckParameterErrors(contract) {
+  const prompt = promptDirectionSignalControl();
+  return clientValidate(contract, prompt ? { ...state.parameters, [prompt.id]: "Prompt preparation pending." } : state.parameters);
+}
+
+// Start a server-owned check: compose → one probe image → vision scores →
+// revise, until every expectation passes or attempts run out. "generate"
+// queues the rest of the planned batch with the qualified prompt after a pass.
+async function startExpectationCheck(purpose) {
+  const reason = expectationCheckBlockedReason();
+  if (reason) {
+    setPromptAssistantError(reason);
+    return false;
+  }
+  syncPromptAssistantDraftFromPanel();
+  const contract = sourceInterface(state.activeSource);
+  const promptInput = promptDirectionSignalControl();
+  if (!state.activeSourceKey || !state.activeSource || state.activeSource.available === false || !contract || !promptInput) return false;
+  const instructionsInput = document.querySelector("#prompt-assistant-instructions");
+  if (!validatePromptInstructions(instructionsInput)) return false;
+  const settings = normalizeExpectationSettings(state.expectations);
+  const settingsError = Object.values(expectationSettingsErrors(settings))[0];
+  if (settingsError) {
+    setPromptAssistantError(settingsError);
+    document.querySelector("#generation-panel details[data-expectations]")?.setAttribute("open", "");
+    document.querySelector("#creative-direction-expectations")?.focus();
+    return false;
+  }
+  const errors = expectationCheckParameterErrors(contract);
+  if (Object.keys(errors).length) {
+    state.serverFieldErrors = errors;
+    state.formError = "Review the highlighted controls.";
+    syncGenerationSubmissionState();
+    focusFirstInvalid();
+    return false;
+  }
+  const requestOwnerId = state.session.user.id;
+  const signal = applicationStartupController.signal;
+  const startPrompt = String(state.parameters[promptInput.id] ?? "");
+  const requestInstructions = promptInstructionsForMode(state.promptAssistant);
+  const snapshot = expectationSnapshotPayload(settings);
+  state.expectationCheckStarting = true;
+  state.formError = null;
+  state.serverFieldErrors = {};
+  setPromptAssistantError(null);
+  syncGenerationSubmissionState();
+  syncServerControls();
+  try {
+    const items = (await planGenerationPayloads(purpose, { signal })).map((item) => {
+      delete item.prompt_assistant_run_id;
+      return { ...item, prompt_assistant: { ...item.prompt_assistant, expectations: snapshot } };
+    });
+    if (state.session?.user?.id !== requestOwnerId) return false;
+    // The check composes its own prompt; the probe image consumes that composition.
+    state.compositionId = null;
+    setPromptDirectionSignal("idle");
+    const check = await submitGeneration("/api/prompt-assistant/checks", {
+      purpose,
+      assistant: {
+        mode: state.promptAssistant.mode === "create" ? "create" : "refine",
+        prompt: startPrompt,
+        creative_direction: state.promptAssistant.creativeDirection || "",
+        think: state.promptAssistant.think !== false,
+        ...(instructionsInput?.disabled || !requestInstructions ? {} : { instructions: requestInstructions }),
+      },
+      expectations: snapshot.items,
+      threshold: snapshot.threshold,
+      max_attempts: snapshot.max_attempts,
+      items,
+    }, null, { signal });
+    if (state.session?.user?.id !== requestOwnerId) return false;
+    expectationStarts.set(check.id, { prompt: startPrompt, sourceName: state.activeSource?.display_name || null });
+    state.expectationCheckStarting = false;
+    expectationChecks?.track(check, { open: true });
+    return true;
+  } catch (error) {
+    if (signal.aborted || state.session?.user?.id !== requestOwnerId) return false;
+    if (error.code === "submission_status_unknown") { submissionRecovery?.start(); return false; }
+    const message = error.message || "The expectation check could not start.";
+    if (error.code === "vision_unavailable") state.promptAssistant.visionAvailable = false;
+    const fields = normalizeParameterErrors(error.fields);
+    const parameterErrors = Object.fromEntries(Object.entries(fields).filter(([id]) => interfaceInputs(contract).some((input) => input.id === id)));
+    if (Object.keys(parameterErrors).length) {
+      state.serverFieldErrors = parameterErrors;
+      state.formError = message;
+      focusFirstInvalid();
+    }
+    setPromptAssistantError(message);
+    toast(message, "error");
+    if (error.code === "expectation_check_active") void expectationChecks?.refresh().then(() => expectationChecks?.open());
+    if (["source_republished", "source_unavailable"].includes(error.code)) await loadSources();
+    return false;
+  } finally {
+    if (!signal.aborted && state.session?.user?.id === requestOwnerId) {
+      state.expectationCheckStarting = false;
+      syncGenerationSubmissionState();
+      syncServerControls();
+    }
+  }
+}
+
+// The dialog's latest check changed (start, SSE, polling, stop, recovery).
+function handleExpectationCheckChange(check, previous) {
+  state.expectationCheck = check;
+  const record = check ? expectationStarts.get(check.id) : null;
+  const observedFinish = Boolean(check && previous?.id === check.id && checkIsActive(previous));
+  if (check && !checkIsActive(check) && (observedFinish || (record && !record.finished))) finishExpectationCheck(check, record);
+  if (check && checkIsActive(previous) !== checkIsActive(check)) scheduleActivityRefresh();
+  syncServerControls();
+}
+
+function finishExpectationCheck(check, record) {
+  if (record) record.finished = true;
+  if (check.status === "passed") {
+    const startPrompt = record?.prompt ?? check.starting_prompt;
+    // The composition was consumed by the probe image; never reuse its id.
+    const applied = Boolean(check.final_prompt) && shouldAutoApply(startPrompt, currentPromptValue()) && applyExpectationPrompt(check.final_prompt);
+    const queued = check.queued?.generation_ids?.length || 0;
+    toast(check.purpose === "generate" && check.planned_count > 1
+      ? `Expectations met. ${queued} more ${queued === 1 ? "image was" : "images were"} queued.`
+      : applied ? "Expectations met. The qualified prompt was applied."
+        : "Expectations met. Your edited prompt was kept; use the qualified prompt from the check.", "success");
+  } else if (check.status === "not_met") {
+    const best = scoredAttempt(check);
+    toast(best?.score !== null && best?.score !== undefined ? `Expectations weren't met. The best attempt scored ${best.score}/100.` : "Expectations weren't met.", "warning");
+  } else if (check.status === "failed") {
+    toast(check.error?.message || "The expectation check failed.", "error");
+  }
+}
+
+function applyExpectationPrompt(prompt) {
+  const input = promptDirectionSignalControl();
+  if (!input || typeof prompt !== "string") return false;
+  state.parameters[input.id] = normalizeInputValue(input, prompt);
+  state.explicitParameterIds.add(input.id);
+  state.compositionId = null;
+  delete state.serverFieldErrors[input.id];
+  persistActiveParameterState();
+  const field = document.querySelector(`[data-control-id="${CSS.escape(input.id)}"]`);
+  if (field) field.value = prompt;
+  setPromptDirectionSignal("applied", prompt);
+  syncParameterValidation(input.id);
+  syncServerControls();
+  return true;
+}
+
+async function deleteExpectationAttemptImages(ids) {
+  const result = await api("/api/gallery/delete", { method: "POST", body: JSON.stringify({ generation_ids: ids, collection_ids: [] }) });
+  const failures = (result?.items || []).filter((item) => item.status === "failed");
+  await refreshAfterGalleryOperation({ operation: "confirm-delete", plan: { generation_ids: ids }, result });
+  if (failures.length) throw new Error(`${ids.length - failures.length} of ${ids.length} attempt images were deleted. ${failures[0].message || ""}`.trim());
+}
+
+function openExpectationAttemptImage(generation) {
+  const loaded = photoViewerGeneration(generation.id);
+  if (loaded?.display_artifact?.kind === "image") openPhotoViewer(generation.id);
+  else if (generation.content_url) window.open(generation.content_url, "_blank", "noopener");
+}
+
 async function composePromptEditor(button) {
   if (!state.promptAssistant.available) return;
+  if (expectationsActive(state)) {
+    // Apply & verify from the focused editor: keep its drafts, then verify them.
+    if (expectationCheckBusy(state)) return;
+    applyPromptEditor();
+    await startExpectationCheck("apply");
+    return;
+  }
   const dialog = button.closest("#prompt-editor-dialog[open]");
   const editor = dialog?.querySelector("[data-prompt-editor-input]");
   const direction = dialog?.querySelector("#prompt-editor-creative-direction");
@@ -5949,6 +6364,7 @@ async function recall(id) {
     state.parameters = applyRecallSeedMode(preRecallParameters, sourceInterface(state.activeSource), state.parameters);
     state.explicitParameterIds = recalledState.explicitParameterIds;
     state.promptAssistant = recalledState.promptAssistant;
+    state.expectations = recalledState.expectations;
     state.compositionId = null;
     state.serverFieldErrors = {};
     state.formError = null;
@@ -5994,6 +6410,7 @@ async function recall(id) {
   );
   state.parameters = applyRecallSeedMode(preRecallParameters, sourceInterface(state.activeSource), state.parameters);
   state.promptAssistant = recalledState.promptAssistant;
+  state.expectations = recalledState.expectations;
   state.compositionId = null;
   state.serverFieldErrors = {};
   state.formError = null;
@@ -6895,6 +7312,10 @@ function startLiveUpdates({ paused = false } = {}) {
     void promptRerunProgress?.refresh();
     scheduleActivityRefresh();
   });
+  source.addEventListener("expectation_check.updated", () => {
+    if (state.eventSource !== source) return;
+    void expectationChecks?.refresh();
+  });
   for (const type of ["preferences.updated", "auto_generation.updated"]) {
     source.addEventListener(type, () => void refreshUserState());
   }
@@ -6930,7 +7351,7 @@ function startLiveUpdates({ paused = false } = {}) {
     renderGenerationActivity();
     syncServerControls();
   };
-  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); void promptRerunProgress?.refresh(); submissionRecovery?.start({ immediate: true }); };
+  source.onopen = () => { scheduleActivityRefresh(); void refreshUserState(); void promptRerunProgress?.refresh(); void expectationChecks?.refresh(); submissionRecovery?.start({ immediate: true }); };
   state.eventSource = source;
   startGenerationEtaTimer();
 }
@@ -7049,6 +7470,8 @@ function scheduleServicePoll(controller) {
         refreshGenerationActivity(),
         refreshServices(controller.signal),
         loadComfyuiInstances({ signal: controller.signal, showLoading: false }),
+        // Vision support is discovered by the server's health loop; recheck until it is known.
+        ...(state.promptAssistant.available && state.promptAssistant.visionAvailable ? [] : [loadStartupPromptAssistant(controller.signal, { quiet: true })]),
       ]);
     } finally {
       scheduleServicePoll(controller);
@@ -7347,6 +7770,7 @@ function captureSharedSettings() {
     assistant_mode: state.promptAssistant.mode, assistant_think: state.promptAssistant.think !== false,
     assistant_instructions: structuredClone(state.promptAssistant.instructionOverrides),
     use_creative_direction: state.autoGenerateCreativeDirection, max_generations: state.maxAutoGenerations,
+    creative_direction_expectations: expectationSettingsPayload(state.expectations),
   } };
 }
 
@@ -7380,6 +7804,7 @@ async function applySharedSettings(preferences) {
   state.maxAutoGenerations = saved.max_generations;
   Object.assign(state.promptAssistant, { creativeDirection: saved.creative_direction,
     mode: saved.assistant_mode, think: saved.assistant_think, instructionOverrides: saved.assistant_instructions });
+  state.expectations = normalizeExpectationSettings(saved.creative_direction_expectations);
   const parameters = state.parameterStateBySource[state.activeSourceKey];
   if (parameters) {
     state.parameters = structuredClone(parameters.values);
@@ -7573,6 +7998,7 @@ function syncServerControls() {
   if (statusHost) statusHost.innerHTML = automationStatusMarkup(state);
   const settingsHost = document.querySelector("#shared-settings-status-host");
   if (settingsHost) settingsHost.innerHTML = sharedSettingsStatusMarkup(state);
+  syncExpectationControls();
   syncGenerationButtons();
   renderGenerationActivity();
 }
@@ -7588,6 +8014,18 @@ async function applyRecoveredSubmission(recovered) {
   if (["/api/prompt-generations", "/api/generation-preparations"].includes(recovered.pending.path)) {
     state.promptGenerationError = null;
     await refreshPromptJobs();
+    return;
+  }
+  if (recovered.pending.path === "/api/prompt-assistant/checks") {
+    // A recovered receipt is the check itself, not a generation.
+    const check = recovered.result;
+    if (!expectationStarts.has(check.id)) {
+      let prompt = check.starting_prompt;
+      try { prompt = JSON.parse(recovered.pending.body).assistant?.prompt ?? prompt; } catch { /* Use the server's starting prompt. */ }
+      expectationStarts.set(check.id, { prompt, sourceName: null });
+    }
+    setPromptAssistantError(null);
+    expectationChecks?.track(check, { open: true });
     return;
   }
   const items = recovered.pending.path.endsWith("/batch")

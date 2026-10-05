@@ -13,7 +13,16 @@ from typing import Any, Literal
 import httpx
 
 from ..config import Settings
-from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
+from ..domain.expectations import (
+    Evaluation,
+    evaluation_schema,
+    validate_evaluation,
+    vision_instruction,
+)
+from ..domain.prompt_instructions import (
+    DEFAULT_PROMPT_INSTRUCTIONS,
+    DEFAULT_VISION_CHECK_INSTRUCTIONS,
+)
 from ..errors import AppError
 
 CANDIDATE_SEED_MAXIMUM = 2**31 - 1
@@ -43,6 +52,10 @@ THINKING_EFFORT = "xhigh"
 # composition therefore starts with enough room for reasoning and escalates deterministically if
 # the upstream response reports that it exhausted the allowance before completing the schema.
 OUTPUT_TOKEN_BUDGETS = (2_048, 4_096, 8_192)
+# Vision scoring is a judgement, not a creative draw: sample conservatively and redraw a
+# structurally invalid score sheet with the next seed.
+MAX_VISION_CANDIDATES = 3
+VISION_TEMPERATURE = 0.1
 CandidateSeedResolver = Callable[[int, int], int]
 GenerateRetrySleeper = Callable[[float], Awaitable[None]]
 
@@ -54,6 +67,14 @@ class ComposeResult:
     prompt: str
     model: str
     raw_response: dict[str, Any]
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class VisionEvaluationResult:
+    evaluation: Evaluation
+    model: str
+    diagnostics: dict[str, Any]
     duration_ms: int
 
 
@@ -156,6 +177,48 @@ class OllamaAdapter:
         models = await self.available_models()
         message = self._model_unavailable_message(models)
         return message is None, message
+
+    async def capabilities(self) -> dict[str, Any]:
+        """Capabilities the router advertises for the configured model.
+
+        The router publishes them on each ``/api/tags`` entry (top level and under
+        ``x_ollama_router``); ``/api/show`` is the fallback. Image input is never
+        inferred from a model name.
+        """
+
+        if not self._client:
+            return {"vision": False, "capabilities": []}
+        capabilities: list[str] | None = None
+        model = self.settings.ollama_model
+        try:
+            response = await self._client.get("/api/tags", timeout=5)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            payload = None
+        entries = payload.get("models", []) if isinstance(payload, dict) else []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            identities = {entry.get("name"), entry.get("model")}
+            if model and model not in identities:
+                continue
+            capabilities = _capability_list(entry)
+            if model is None and capabilities is None:
+                continue
+            model = model or (entry.get("name") if isinstance(entry.get("name"), str) else None)
+            break
+        if capabilities is None and model:
+            try:
+                response = await self._client.post("/api/show", json={"model": model}, timeout=5)
+                response.raise_for_status()
+                shown = response.json()
+            except (httpx.HTTPError, ValueError):
+                shown = None
+            if isinstance(shown, dict):
+                capabilities = _capability_list(shown)
+        names = sorted(set(capabilities or []))
+        return {"vision": "vision" in names, "capabilities": names}
 
     async def compose(
         self,
@@ -444,6 +507,131 @@ class OllamaAdapter:
                 "validation_stage": "create_distinctness",
                 "attempt_diagnostics": response_diagnostics,
             },
+        )
+
+    async def evaluate_image(
+        self,
+        *,
+        image_data_url: str,
+        expectations: Sequence[str],
+        threshold: int,
+        think: bool = True,
+        instructions: str | None = None,
+    ) -> VisionEvaluationResult:
+        """Score one image against numbered expectations with the vision model.
+
+        The image travels as an inline ``data:`` URL in ``messages[].images``; the
+        router forwards that form unchanged to llama.cpp. The evaluator never sees
+        the prompt that produced the image. Output-budget escalation and the
+        no-thinking fallback mirror composition; a structurally invalid score sheet
+        is redrawn with the next seed.
+        """
+
+        if not self._client:
+            raise AppError(
+                "ollama_unavailable", "Prompt Assistant is not configured.", status_code=503
+            )
+        models = await self.available_models()
+        unavailable_message = self._model_unavailable_message(models)
+        if unavailable_message:
+            raise AppError("ollama_unavailable", unavailable_message, status_code=503)
+        started = time.monotonic()
+        instruction = vision_instruction(
+            instructions or DEFAULT_VISION_CHECK_INSTRUCTIONS, expectations
+        )
+        schema = evaluation_schema(len(expectations))
+        seed = self.seed_resolver(0, CANDIDATE_SEED_MAXIMUM - (MAX_VISION_CANDIDATES - 1))
+        if (
+            not isinstance(seed, int)
+            or isinstance(seed, bool)
+            or not 0 <= seed <= CANDIDATE_SEED_MAXIMUM - (MAX_VISION_CANDIDATES - 1)
+        ):
+            raise RuntimeError("candidate seed resolver returned an out-of-range value")
+        diagnostics: list[dict[str, Any]] = []
+        plan: list[tuple[bool, int]] = [(think, budget) for budget in OUTPUT_TOKEN_BUDGETS]
+        if think:
+            plan.append((False, OUTPUT_TOKEN_BUDGETS[0]))
+        for candidate in range(MAX_VISION_CANDIDATES):
+            for request_think, budget in plan:
+                payload: dict[str, Any] = {
+                    "messages": [
+                        {"role": "user", "content": instruction, "images": [image_data_url]}
+                    ],
+                    "stream": False,
+                    "think": THINKING_EFFORT if request_think else False,
+                    "format": schema,
+                    "options": {
+                        "temperature": VISION_TEMPERATURE,
+                        "seed": seed + candidate,
+                        "num_predict": budget,
+                    },
+                    "seed": seed + candidate,
+                }
+                if self.settings.ollama_model:
+                    payload["model"] = self.settings.ollama_model
+                try:
+                    received = await self._generate(payload, mode="vision", think=request_think)
+                except AppError as exc:
+                    if exc.code == "ollama_generate_rejected":
+                        raise AppError(
+                            "vision_unavailable",
+                            "The Creative Direction model rejected the image. Expectations need "
+                            "a model with vision enabled on the Ollama router.",
+                            status_code=502,
+                            details=exc.details,
+                        ) from exc
+                    raise
+                data = received.data if isinstance(received.data, dict) else {}
+                diagnostic = _response_diagnostics(
+                    data, status=received.status, validation_stage="vision_evaluation"
+                )
+                diagnostic.update(
+                    candidate_attempt=candidate + 1,
+                    output_budget=budget,
+                    thinking_enabled=request_think,
+                    image_bytes=len(image_data_url),
+                )
+                parsed, selected_field = _response_object_with_source(data)
+                if parsed is not None:
+                    try:
+                        evaluation = validate_evaluation(parsed, expectations, threshold)
+                    except ValueError as exc:
+                        # Metadata only: the fault class, never the reviewer's text.
+                        diagnostic["rejection_reason"] = str(exc)
+                        diagnostics.append(diagnostic)
+                        logger.info(
+                            "ollama_vision_candidate_rejected",
+                            extra={
+                                "service": "ollama",
+                                "operation": "vision",
+                                "candidate_attempt": candidate + 1,
+                                "rejection_reason": str(exc),
+                            },
+                        )
+                        break
+                    effective_model = data.get("model")
+                    diagnostic["selected_field"] = selected_field
+                    diagnostic["validation_stage"] = "complete"
+                    diagnostics.append(diagnostic)
+                    return VisionEvaluationResult(
+                        evaluation=evaluation,
+                        model=effective_model.strip()
+                        if isinstance(effective_model, str) and effective_model.strip()
+                        else self.settings.ollama_model or "unknown",
+                        diagnostics={
+                            "attempts": diagnostics,
+                            "selected_attempt": len(diagnostics),
+                        },
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                    )
+                diagnostics.append(diagnostic)
+                if diagnostic["done_reason"] != "length":
+                    break
+        raise AppError(
+            "vision_check_invalid_response",
+            "The vision model did not return a usable score for every expectation.",
+            status_code=502,
+            details={"attempt_diagnostics": diagnostics[-12:]},
         )
 
     @staticmethod
@@ -831,6 +1019,36 @@ def _router_model_is_available(item: dict[str, Any]) -> bool:
     metadata = item.get("x_ollama_router")
     health = metadata.get("health") if isinstance(metadata, dict) else None
     return not (isinstance(health, dict) and health.get("available") is False)
+
+
+def _capability_list(item: dict[str, Any]) -> list[str] | None:
+    for source in (item, item.get("x_ollama_router")):
+        values = source.get("capabilities") if isinstance(source, dict) else None
+        if isinstance(values, list):
+            return [value for value in values if isinstance(value, str)]
+    return None
+
+
+def _json_object(raw_text: str) -> dict[str, Any] | None:
+    text = raw_text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = "\n".join(text.splitlines()[1:-1]).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _response_object_with_source(data: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    # Like prompt composition: final content first, then a schema object a thinking
+    # parser left in ``thinking``. Unstructured reasoning is never accepted.
+    for field in ("response", "thinking"):
+        value = data.get(field)
+        parsed = _json_object(value) if isinstance(value, str) else None
+        if parsed is not None and "results" in parsed:
+            return parsed, field
+    return None, None
 
 
 def _generate_error_details(

@@ -25,6 +25,7 @@ from .generation_activity import begin_run
 from .user_state import lock_user_state, require_manual_generation
 
 if TYPE_CHECKING:
+    from .expectation_checks import ExpectationCheckService
     from .generations import GenerationService
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,13 @@ def project_receipt(
     return GenerationBatchResult(items=items)
 
 
-def lookup(service: GenerationService, owner_id: str, key: str) -> dict[str, Any]:
+def lookup(
+    service: GenerationService,
+    owner_id: str,
+    key: str,
+    *,
+    expectation_checks: ExpectationCheckService | None = None,
+) -> dict[str, Any]:
     with service.session_factory() as session:
         receipt = session.get(GenerationSubmission, (owner_id, key))
         if receipt is None:
@@ -127,6 +134,14 @@ def lookup(service: GenerationService, owner_id: str, key: str) -> dict[str, Any
                 "key": key,
                 "endpoint": receipt.endpoint,
                 "result": project_prompt_receipt(service, session, receipt),
+            }
+        if receipt.endpoint == "expectation" and expectation_checks is not None:
+            return {
+                "key": key,
+                "endpoint": receipt.endpoint,
+                "result": expectation_checks.project_receipt(session, receipt).model_dump(
+                    mode="json"
+                ),
             }
         if receipt.endpoint == "prompt_rerun":
             from .prompt_rerun import project_receipt as project_rerun_receipt

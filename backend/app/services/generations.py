@@ -651,14 +651,20 @@ class GenerationService:
         generations and batch items whose prompt was composed by a run linked
         to a sibling item. Returns None when the client sent no snapshot.
         """
+        snapshot = request.prompt_assistant
+        expectations = (
+            {"expectations": snapshot.expectations.model_dump(mode="json")}
+            if snapshot is not None and snapshot.expectations is not None
+            else {}
+        )
         if run is not None:
             return {
                 "mode": run.mode,
                 "creative_direction": run.creative_direction,
                 "instructions": run.instructions,
                 "thinking_enabled": run.thinking_enabled,
+                **expectations,
             }
-        snapshot = request.prompt_assistant
         if snapshot is None:
             return None
         return {
@@ -666,6 +672,7 @@ class GenerationService:
             "creative_direction": snapshot.creative_direction,
             "instructions": snapshot.instructions,
             "thinking_enabled": snapshot.thinking_enabled,
+            **expectations,
         }
 
     @staticmethod
@@ -1293,6 +1300,8 @@ class GenerationService:
                 "ollama_output": prompt_run.ollama_output if prompt_run is not None else None,
                 "model": prompt_run.model_name if prompt_run is not None else None,
             }
+            if isinstance(snapshot.get("expectations"), Mapping):
+                assistant["expectations"] = dict(snapshot["expectations"])
         elif prompt_run is not None:
             # Legacy rows predate the snapshot; the linked run is the record.
             assistant = {

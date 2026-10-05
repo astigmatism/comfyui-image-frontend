@@ -736,6 +736,38 @@ export function clampGenerationQuantity(value) {
   return Math.min(MAX_GENERATION_QUANTITY, Math.max(MIN_GENERATION_QUANTITY, parsed));
 }
 
+// Creative Direction expectations (backend domain/expectations.py limits).
+export const EXPECTATION_LIMITS = Object.freeze({
+  maxItems: 12,
+  maxLength: 300,
+  maxTextLength: 4000,
+  defaultThreshold: 80,
+  maxThreshold: 100,
+  defaultMaxAttempts: 5,
+  maxAttempts: 10,
+});
+
+function boundedInteger(value, minimum, maximum, fallback) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, parsed));
+}
+
+// Panel expectation settings in browser shape. Accepts the panel shape, the saved
+// preference shape (max_attempts), or a recalled snapshot (items instead of text).
+export function normalizeExpectationSettings(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const text = typeof source.text === "string"
+    ? source.text
+    : Array.isArray(source.items) ? source.items.filter((item) => typeof item === "string").join("\n") : "";
+  return {
+    enabled: source.enabled === true,
+    text: text.slice(0, EXPECTATION_LIMITS.maxTextLength),
+    threshold: boundedInteger(source.threshold, 1, EXPECTATION_LIMITS.maxThreshold, EXPECTATION_LIMITS.defaultThreshold),
+    maxAttempts: boundedInteger(source.maxAttempts ?? source.max_attempts, 1, EXPECTATION_LIMITS.maxAttempts, EXPECTATION_LIMITS.defaultMaxAttempts),
+  };
+}
+
 export const AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS = 3;
 export const AUTO_GENERATE_COMPOSITION_RETRY_BASE_MS = 1_000;
 export const AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS = 5_000;
@@ -1185,8 +1217,14 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
     }
   }
   const historicalRevision = structuredClone(recall.revision || recall.identity || null);
+  const recalledExpectations = recall.prompt_assistant?.expectations;
   return {
     ...current,
+    // Expectations restore only when the recall carries them; older recalls
+    // keep the panel's current expectations.
+    ...(recalledExpectations && typeof recalledExpectations === "object"
+      ? { expectations: normalizeExpectationSettings(recalledExpectations) }
+      : {}),
     activeSourceKey: sourceAvailable ? sourceKey : current.activeSourceKey,
     activeProfileId: sourceAvailable ? sourceKey : current.activeProfileId,
     parameters,

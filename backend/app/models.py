@@ -874,6 +874,69 @@ class PromptRerunRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ExpectationCheck(Base):
+    """A Creative Direction composition verified against expectations with vision."""
+
+    __tablename__ = "expectation_checks"
+    __table_args__ = (Index("ix_expectation_checks_owner_status", "owner_id", "status"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="composing")
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    collection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("collections.id", ondelete="SET NULL")
+    )
+    best_attempt: Mapped[int | None] = mapped_column(Integer)
+    final_prompt: Mapped[str | None] = mapped_column(Text)
+    final_composition_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("prompt_assistant_runs.id", ondelete="SET NULL")
+    )
+    queued_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExpectationCheckAttempt(Base):
+    __tablename__ = "expectation_check_attempts"
+    __table_args__ = (
+        UniqueConstraint("check_id", "number", name="uq_expectation_attempt_number"),
+        Index("ix_expectation_attempts_generation", "generation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    check_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("expectation_checks.id", ondelete="CASCADE"), nullable=False
+    )
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="composing")
+    prompt: Mapped[str | None] = mapped_column(Text)
+    composition_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("prompt_assistant_runs.id", ondelete="SET NULL")
+    )
+    generation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("generations.id", ondelete="SET NULL")
+    )
+    evaluation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    score: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class GenerationPreparation(Base):
     __tablename__ = "generation_preparations"
     __table_args__ = (

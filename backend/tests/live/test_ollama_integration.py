@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 
@@ -9,6 +11,7 @@ from app.main import create_app
 from app.models import PromptAssistantRun
 from app.services.ollama import ComposeResult, OllamaAdapter
 from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
 from tests.conftest import csrf
 from tests.helpers import generation_payload, provision_user
 
@@ -175,4 +178,92 @@ def test_live_composition_api_persists_and_compiles_the_router_output(
             assert run.thinking_enabled is think
             assert run.ollama_output == composed["prompt"]
             assert run.generation_id == generation_id
+        assert fake_state.ollama_calls == []
+
+
+def _vision_image() -> str:
+    """A synthetic scene: a red disc on a white background, as a JPEG data URL."""
+
+    image = Image.new("RGB", (512, 512), (255, 255, 255))
+    ImageDraw.Draw(image).ellipse((96, 96, 416, 416), fill=(220, 20, 20))
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+async def test_live_router_advertises_vision_for_the_configured_model() -> None:
+    adapter = _adapter()
+    try:
+        capabilities = await adapter.capabilities()
+    finally:
+        await adapter.close()
+    assert capabilities["vision"] is True, capabilities
+
+
+@pytest.mark.parametrize("think", [False, True])
+async def test_live_vision_scores_visible_and_absent_expectations(think: bool) -> None:
+    """The router must accept inline data-URL images and the model must judge the image."""
+
+    adapter = _adapter()
+    try:
+        result = await adapter.evaluate_image(
+            image_data_url=_vision_image(),
+            expectations=[
+                "A large red circle is the main subject",
+                "A cat is visible in the image",
+            ],
+            threshold=80,
+            think=think,
+        )
+    finally:
+        await adapter.close()
+    red_circle, cat = result.evaluation.results
+    assert red_circle.score >= 70, result.evaluation
+    assert cat.score <= 30, result.evaluation
+    assert result.evaluation.passed is False
+
+
+def test_live_expectation_check_revises_the_prompt_from_vision_feedback(
+    settings_factory, fake_state
+) -> None:
+    """Real router for composition and review; fake ComfyUI; a synthetic probe image."""
+
+    from tests.integration.test_expectation_checks import (
+        check_body,
+        finish_probe,
+        seed_vision,
+        started,
+        step,
+    )
+
+    settings = settings_factory(ollama_base_url=_BASE_URL)
+    with TestClient(create_app(settings)) as client:
+        provision_user(client, username="live.expectations")
+        seed_vision(client)
+        body = check_body(
+            client,
+            prompt="A simple flat illustration of a red circle on a white background.",
+            direction="Keep it a flat, minimal illustration.",
+            expectations=["A blue square is the main subject"],
+            max_attempts=2,
+        )
+        check = started(client, body)
+        first = step(client, check)["attempts"][0]
+        assert first["status"] == "ready", first
+        assert step(client, check)["attempts"][0]["status"] == "generating"
+        image = io.BytesIO()
+        _red = Image.new("RGB", (512, 512), (255, 255, 255))
+        ImageDraw.Draw(_red).ellipse((96, 96, 416, 416), fill=(220, 20, 20))
+        _red.save(image, "PNG")
+        finish_probe(client, check, content=image.getvalue())
+        reviewed = step(client, check)
+        attempt = reviewed["attempts"][0]
+        assert attempt["status"] == "not_met", attempt
+        assert attempt["score"] <= 40, attempt
+        assert attempt["results"][0]["observation"]
+        revised = step(client, check)["attempts"][1]
+        assert revised["status"] == "ready", revised
+        assert revised["prompt"] != first["prompt"]
+        normalized = revised["prompt"].casefold()
+        assert "blue" in normalized and "square" in normalized, revised["prompt"]
         assert fake_state.ollama_calls == []

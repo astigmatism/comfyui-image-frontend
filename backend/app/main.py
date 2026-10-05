@@ -267,6 +267,7 @@ def create_app(
                 await container.worker.start()
                 await container.prompt_generation.start()
                 await container.automation.start()
+                await container.expectation_checks.start()
             yield
         finally:
             admission.close()

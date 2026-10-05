@@ -36,6 +36,7 @@ from ..schemas import (
 )
 from .auto_generation_progress import project_progress
 from .events import event_payload
+from .expectation_checks import active_check_exists
 from .generation_activity import begin_run
 from .ollama import MAX_REFINE_CHAIN_EXCLUSIONS
 from .prompt_assistant import compose_prompt
@@ -300,6 +301,13 @@ class AutoGenerationService:
                     )
                 if enabled is not None and row.enabled == enabled:
                     return False, response(row, session)
+                if enabled is True and active_check_exists(session, user_id):
+                    raise AppError(
+                        "expectation_check_active",
+                        "Stop the expectation check or wait for it to finish before enabling "
+                        "auto generation.",
+                        status_code=409,
+                    )
                 if enabled is True or snapshot is not None:
                     if snapshot is None:
                         raise AppError(

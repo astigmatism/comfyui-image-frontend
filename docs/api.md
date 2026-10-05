@@ -799,12 +799,75 @@ ComfyUI file references are never accepted from callers. The worker extracts onl
 |---|---|---|
 | `GET` | `/api/prompt-assistant/status` | Availability without exposing server/model inventory |
 | `POST` | `/api/prompt-assistant/compose` | Explicit `refine` or `create` operation |
+| `POST` | `/api/prompt-assistant/checks` | Start verifying Creative Direction against expectations with vision |
+| `GET` | `/api/prompt-assistant/checks/latest` | The account's most recent expectation check, or `null` |
+| `GET` | `/api/prompt-assistant/checks/{id}` | One owner-scoped expectation check with its attempts |
+| `POST` | `/api/prompt-assistant/checks/{id}/stop` | Stop an expectation check (idempotent) |
 
 Composition accepts `mode`, `prompt`, `creative_direction`, and an optional boolean `think` that defaults to `true` for compatibility. It returns `composition_id`, final prompt, selected model, and template version. Pass the owner-scoped ID as `prompt_assistant_run_id` when accepting a generation; the backend then replaces the source's positive-prompt parameter with that run's stored successful output before compilation, regardless of a stale caller-supplied prompt value. Prompt Assistant is never invoked implicitly by generation or recall. Refine requests redraw a normalized unchanged candidate with a new seed, stronger sampling (temperature `0.1 → 0.7 → 1.0`), and an appended correction stating that the previous answer repeated the prompt, up to three candidates before failing. Automatic chained refinement (Auto-generate refining its own previous output) uses `0.7 → 1.0 → 1.0` and also rejects the chain's recent prompts as `repeated_prompt`. Create requests reject any candidate whose normalized text is contained in the normalized Creative Direction (a verbatim echo, truncation, or fragment) and likewise redraw up to three bounded seeds before failing; a candidate must also stay distinct from the current prompt and prior successful outputs for the same direction. The application does not moderate or restrict prompt content.
 
 The status route reads the background health monitor's cached row and never contacts Ollama. A missing or stale check reports unavailable; an old success is not trusted indefinitely. Compose remains authoritative. Transient generate statuses, transport failures, and malformed JSON receive bounded retries. Because Ollama's `num_predict` allowance covers both thinking and final output, a schema-incomplete response with `done_reason: "length"` receives bounded `2048 → 4096 → 8192` budget escalation. Each escalation preserves the requested thinking value, schema, instruction, temperature, and candidate seed; only `num_predict` changes. When thinking is enabled and all three escalations end in `length`, the candidate makes one extra attempt with `think: false` at the base `2048` allowance, reusing the candidate's seed and temperature; the fallback prompt still passes the same distinctness validation, and a failed fallback advances to the next candidate. A complete structured prompt in `response` or the compatibility `thinking` field is accepted even when the done reason is `length`.
 
 Terminal generate errors distinguish rejection (`ollama_generate_rejected`), exhausted transient status (`ollama_generate_unavailable`), timeout (`ollama_generate_timeout`), transport failure (`ollama_generate_transport_error`), malformed JSON (`ollama_generate_invalid_json`), output-budget exhaustion (`ollama_output_budget_exhausted`, HTTP 503), three exhausted normalized-unchanged Refine candidates (`prompt_refinement_unchanged`, HTTP 422), and three Create candidates that never expanded the Creative Direction (`prompt_creation_unchanged`, HTTP 422). Safe `details` include model, HTTP status, `response`/`thinking` presence and lengths, done reason, validation stage, each distinctness candidate's `temperature`, `rejection_reason`, and `candidate_sha256` (a digest of the normalized candidate, which distinguishes an echoed input without retaining text), output-budget attempt count, allowances used, the selected allowance when successful, and the no-thinking fallback flag with per-candidate budget history when every candidate is exhausted; failed-run prompt, Creative Direction, and raw reasoning text are not retained.
+
+### Creative Direction expectations
+
+An expectation check verifies Creative Direction with the vision model before its prompt counts as
+refined. `POST /api/prompt-assistant/checks` is a generation submission: it requires CSRF,
+`X-CIF-Generation-Protocol: 3`, and an account-scoped UUID `Idempotency-Key`, and it writes a
+receipt (`endpoint: "expectation"` in `GET /api/generation-submissions/{key}`). The body is:
+
+```json
+{
+  "purpose": "apply",
+  "assistant": {"mode": "refine", "prompt": "…", "creative_direction": "…", "think": true},
+  "expectations": ["The keeper wears a red raincoat", "A lit lighthouse beam is visible"],
+  "threshold": 80,
+  "max_attempts": 5,
+  "items": [{"source_key": "…", "revision": {…}, "parameters": {…}, "collection_id": null}]
+}
+```
+
+`expectations` holds 1–12 nonblank entries of at most 300 characters (leading list bullets are
+stripped). `threshold` is 1–100 and `max_attempts` 1–10. `items` are the image requests exactly as
+Generate would submit them, sharing one source, revision, and folder; `apply` sends exactly one and
+no item may carry `prompt_assistant_run_id`. The first item is the probe template for every
+attempt. With `generate`, a pass queues the remaining items with the qualified prompt; the passing
+probe counts as the first item.
+
+Each attempt composes a prompt (attempt 1 uses the Creative Direction plus every expectation;
+later attempts refine the previous prompt with the reviewer's per-expectation feedback, rejecting
+earlier prompts), queues one probe image, and sends that image — re-encoded as a JPEG of at most
+1024 px inside a `data:` URL in `messages[].images` — with the numbered expectations to the
+configured model. The reviewer never sees the prompt. It returns a schema-constrained score from 0
+to 100 and one observation per expectation; an attempt passes only when every expectation reaches
+`threshold`, and its headline score is the lowest expectation score. A Refine check with a blank
+direction verifies the current prompt as written on attempt 1.
+
+The 202 response and the read routes return the check: `id`, `status` (`composing`, `generating`,
+`evaluating`, then terminal `passed`, `not_met`, `failed`, or `stopped`), `purpose`, `mode`,
+`expectations`, `threshold`, `max_attempts`, `starting_prompt`, `collection_id`, `planned_count`,
+`attempts` (each with `number`, `status`, `prompt`, `composition_id`, `generation` with thumbnail and
+content URLs, `score`, `passed`, `results`, `summary`, and `error`), `best_attempt`,
+`final_prompt`, `final_composition_id`, `queued` (`generation_ids` and per-item `errors`), `error`,
+and timestamps. The `expectation_check.updated` event announces every transition.
+
+The check runs on the server, survives restarts, and continues with the browser closed. One check
+may be active per account. Starting fails with `auto_generation_enabled` (409) while automation is
+on, `expectation_check_active` (409) while another check runs, `vision_unavailable` (503) when the
+model does not advertise image input, and `prompt_required` for a Refine check without a prompt;
+enabling automation during a check also returns `expectation_check_active`. Transient Ollama or
+image-pool outages retry with backoff; a failed or interrupted probe ends the check as `failed`
+(`expectation_check_image_failed`), a cancelled or deleted probe ends it as `stopped`, a model that
+rejects the image ends it as `failed` with `vision_unavailable`, and an unusable score sheet after
+bounded redraws ends it with `vision_check_invalid_response`. A revision that can no longer change
+the prompt ends as `not_met` with the best attempt reported. Stopping keeps already accepted images.
+
+`GET /api/prompt-assistant/status` adds `vision_available`, read from the health monitor's cached
+router capabilities (the configured model's `/api/tags` capabilities, falling back to `/api/show`).
+Preferences store the panel's expectations under `settings.creative_direction_expectations`
+(`enabled`, raw `text`, `threshold`, `max_attempts`), and recall returns
+`prompt_assistant.expectations` for images accepted by a check or submitted with expectations.
 
 ## Speech to text
 

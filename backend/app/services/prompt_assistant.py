@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from ..blocking import run_blocking as _run_blocking
 from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
@@ -26,12 +27,16 @@ async def compose_prompt(
     *,
     preparation_id: str | None = None,
     chain_history: Sequence[str] = (),
+    link: Callable[[Session, PromptAssistantRun], None] | None = None,
 ) -> PromptComposeResponse:
     """Compose a prompt and durably record the run.
 
     ``chain_history`` holds the recent prompts of a chained automatic refinement, which feeds
     each output back as the next input. Its prompts must not be repeated, and the sequence uses
     warmer sampling so it keeps changing instead of settling on one prompt.
+
+    ``link`` runs inside the transaction that saves a successful run, so a caller can record
+    the composition on its own durable row atomically (a restart never loses or repeats it).
     """
     if payload.mode == "refine" and not payload.prompt.strip():
         raise AppError(
@@ -118,7 +123,7 @@ async def compose_prompt(
         raw_response_json=result.raw_response,
         duration_ms=result.duration_ms,
     )
-    await _run_blocking(_save_run, container, run, preparation_id)
+    await _run_blocking(_save_run, container, run, preparation_id, link)
     return PromptComposeResponse(
         composition_id=run.id,
         prompt=result.prompt,
@@ -128,12 +133,17 @@ async def compose_prompt(
 
 
 def _save_run(
-    container: AppContainer, run: PromptAssistantRun, preparation_id: str | None = None
+    container: AppContainer,
+    run: PromptAssistantRun,
+    preparation_id: str | None = None,
+    link: Callable[[Session, PromptAssistantRun], None] | None = None,
 ) -> None:
     with container.db.session_factory() as session:
         lock_user_state(session)
         session.add(run)
         session.flush()
+        if link is not None:
+            link(session, run)
         if preparation_id:
             prepared = session.get(GenerationPreparation, preparation_id)
             if (

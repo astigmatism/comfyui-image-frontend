@@ -3,7 +3,11 @@ import { api, isTransientError } from "./api.mjs";
 const prefix = "cif.pending-generation.";
 export const SUBMISSION_PATHS = Object.freeze([
   "/api/generations", "/api/generations/batch", "/api/prompt-generations", "/api/generation-preparations", "/api/gallery/prompt-rerun",
+  "/api/prompt-assistant/checks",
 ]);
+// Rejections the server returns before it stores a receipt, even though their
+// HTTP status is otherwise retryable; resending cannot succeed until they clear.
+const DEFINITIVE_REJECTIONS = new Set(["vision_unavailable"]);
 let ownerId = null;
 let active = false;
 
@@ -79,6 +83,10 @@ async function send(pending, deadlineMs = 60_000, previouslyUncertain = false, s
     finish(pending, result);
     return result;
   } catch (error) {
+    if (!signal?.aborted && pending.ownerId === ownerId && error.status && DEFINITIVE_REJECTIONS.has(error.code)) {
+      finish(pending);
+      throw error;
+    }
     if (signal?.aborted || pending.ownerId !== ownerId || error.code === "submission_status_unknown" || previouslyUncertain || error.submissionUncertain || isTransientError(error)
         || error.code === "request_timeout" || error.name === "AbortError") {
       throw unknown(error);
@@ -184,6 +192,8 @@ function validateResult(pending, result) {
   const valid = pending.path === "/api/gallery/prompt-rerun"
     ? typeof result?.collection?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item?.generation?.id || item?.error?.code)
       && (!refinedRerun || (typeof result?.run?.id === "string" && Array.isArray(result.run.items) && result.run.status))
+    : pending.path === "/api/prompt-assistant/checks"
+    ? typeof result?.id === "string" && Array.isArray(result?.attempts) && typeof result?.status === "string"
     : pending.path === "/api/generation-preparations"
     ? typeof result?.id === "string" && Array.isArray(result?.items) && result.items.every((item) => item.id && item.status)
     : pending.path.endsWith("/batch")
