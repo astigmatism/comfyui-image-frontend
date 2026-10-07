@@ -466,10 +466,13 @@ export function expectationDialogMarkup(check, view = {}) {
   const running = checkIsActive(check);
   const current = currentAttempt(check);
   const scored = scoredAttempt(check);
-  const scoreboardTitle = !scored ? "Expectations" : highlightedBest(check) ? `Best scores · attempt ${scored.number}` : `Latest scores · attempt ${scored.number}`;
-  const rows = scored
-    ? scored.results.map((result) => expectationScoreRowMarkup(result, check.threshold)).join("")
-    : (check.expectations || []).map(expectationPendingScoreRowMarkup).join("");
+  // A running attempt must prove every expectation again on its own image: a prompt change can
+  // disturb a detail an earlier attempt scored. The scoreboard stays fresh for the live attempt;
+  // earlier scores remain visible in their attempt entries below.
+  const scoreboardTitle = running ? `Checking attempt ${current?.number ?? 1}` : !scored ? "Expectations" : highlightedBest(check) ? `Best scores · attempt ${scored.number}` : `Latest scores · attempt ${scored.number}`;
+  const rows = running || !scored
+    ? (check.expectations || []).map(expectationPendingScoreRowMarkup).join("")
+    : scored.results.map((result) => expectationScoreRowMarkup(result, check.threshold)).join("");
   const purpose = check.purpose === "generate" ? `Generate · ${plural(check.planned_count, "image")}` : "Apply";
   const mode = check.mode === "create" ? "Create" : "Refine";
   const pill = running

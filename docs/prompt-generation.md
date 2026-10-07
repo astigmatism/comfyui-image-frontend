@@ -70,7 +70,10 @@ Creative Direction model to look at that image and score every expectation from 
 reviewer sees only the image and the expectations, never the prompt. If any expectation is below the
 pass score, the next attempt refines the prompt with the reviewer's observations for the unmet
 expectations and keeps what already works. The check passes when every expectation reaches the pass
-score; otherwise it stops after the last attempt and reports the best attempt.
+score; otherwise it stops after the last attempt and reports the best attempt. Because any prompt
+change can disturb a detail an earlier image proved, every new image is scored against every
+expectation again: while an attempt runs, the dialog's scoreboard shows them all as not yet scored,
+and each earlier attempt's scores remain visible in its own entry.
 
 - **Apply & verify** places the qualified prompt in the Prompt field when the check passes, unless
   the field was edited meanwhile; then **Use this prompt** applies it explicitly.

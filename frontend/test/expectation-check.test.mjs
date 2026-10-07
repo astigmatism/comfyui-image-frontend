@@ -210,12 +210,18 @@ test("the Generate pipeline shows the vision stage and the live phase", () => {
   assert.equal(expectationPipeline({ ...state, autoGenerateCreativeDirection: false, expectationCheck: composing }).active, "creative_direction");
 });
 
-test("the dialog renders a running check with Stop and the latest scores", () => {
+test("the dialog renders a running check with Stop and a fresh scoreboard", () => {
   const html = expectationDialogMarkup(running(), { sourceName: "Moody Krea2" });
   assert.match(html, /Verify expectations <span class="expectation-pill "><span class="activity-spinner"[^>]*><\/span>Generating image/);
   assert.match(html, /Creative Direction · Refine · Apply · pass score 80 · up to 5 attempts/);
   assert.match(html, /Attempt 2 of 5<\/strong> · Generating one image with Moody Krea2/);
-  assert.match(html, /Latest scores · attempt 1/);
+  assert.match(html, /<h3 class="expectation-section-title" id="expectation-scoreboard-title">Checking attempt 2<\/h3>/);
+  // Attempt 1 met its second expectation, but attempt 2's image must re-prove every one.
+  const scoreboard = html.split('class="expectation-scoreboard">')[1].split("</ul>")[0];
+  assert.match(scoreboard, /<span class="expectation-mark is-pending" role="img" aria-label="Not scored yet">/);
+  assert.equal(scoreboard.match(/aria-label="Not scored yet"/g).length, EXPECTATIONS.length);
+  assert.doesNotMatch(scoreboard, /is-met|is-unmet/);
+  assert.equal((html.match(/class="expectation-mark is-met" role="img" aria-label="Met"/g) || []).length, 1);
   assert.match(html, /aria-current="step"/);
   assert.match(html, /data-expectation-action="stop"/);
   assert.match(html, />Hide</);
@@ -223,11 +229,12 @@ test("the dialog renders a running check with Stop and the latest scores", () =>
   assert.ok(html.indexOf('data-attempt-number="2"') < html.indexOf('data-attempt-number="1"'));
   assert.match(html, /src="\/api\/artifacts\/a1\/thumbnail"/);
   const pending = expectationDialogMarkup(check("composing", [attempt(1, "composing")]));
-  assert.match(pending, /<h3 class="expectation-section-title" id="expectation-scoreboard-title">Expectations<\/h3>/);
+  assert.match(pending, /<h3 class="expectation-section-title" id="expectation-scoreboard-title">Checking attempt 1<\/h3>/);
   assert.match(pending, /aria-label="Not scored yet"/);
   assert.match(pending, /Composing a prompt from your Creative Direction and expectations/);
   const revising = expectationDialogMarkup(check("composing", [attempt(1, "not_met"), attempt(2, "composing")]));
   assert.match(revising, /Revising the prompt from attempt 1&#039;s feedback/);
+  assert.match(revising, /<h3 class="expectation-section-title" id="expectation-scoreboard-title">Checking attempt 2<\/h3>/);
 });
 
 test("passed, not met, failed, and stopped dialogs offer the right actions", () => {
