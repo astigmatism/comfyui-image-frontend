@@ -77,7 +77,9 @@ recursive-delete, and move-dialog markup; and collection-specific empty states.
 
 ## Integration coverage
 
-Integration tests run the real FastAPI lifespan against temporary SQLite/data directories and deterministic fake ComfyUI/Ollama HTTP/WebSocket services. Relevant scenarios include:
+Integration tests run the real FastAPI lifespan against temporary SQLite/data directories and deterministic fake ComfyUI/LLM Router HTTP/WebSocket services. The fake router (`backend/tests/fake_services.py`, documents from `backend/tests/router_fixtures.py`) serves `/v1/router/capabilities` with an ETag, a `/v1/router/events` Server-Sent Events stream with keepalives, switchable `paired`/`solo` configurations, draining and maintenance, unhealthy services, a refusing non-NSFW service, and the router's `/api/chat` error codes (`SERVICE_OFFLINE`, `BACKEND_UNAVAILABLE`, `MODEL_NOT_FOUND`, `BACKEND_DRAINING`, `MAINTENANCE_MODE`, `INVALID_THINK_VALUE`, `MALFORMED_STRUCTURED_OUTPUT`, `TOO_MANY_SUBSCRIBERS`). Relevant scenarios include:
+
+- the [LLM Router client contract](llm-router-contract.md): selection by capability (paired → `nighttime`, solo → `daytime`, unhealthy NSFW model → `daytime`, two NSFW models → the higher score, a vision check where only a non-NSFW model has `image` → that model), `CIF_OLLAMA_NSFW=require`/`avoid`/`any`, named selection with and without fallback, waiting without switching while draining, returning to the NSFW model as soon as it is back, every error code and its action, `SERVICE_OFFLINE` costing no retry, at least ten minutes of 2 → 30 second drain backoff, incomplete answers never accepted, plain non-retried declines from a non-NSFW fallback, the reasoning-effort check, `X-Client-Name` on every router request, per-service slot admission, the subscriber's startup read, event stream, `If-None-Match` polling, 3 → 30 second reconnect backoff and 60 second idle limit, and an unreachable router at startup (`backend/tests/unit/test_llm_router.py`, `backend/tests/unit/test_ollama_router.py`, `backend/tests/integration/test_llm_router_contract.py`);
 
 - startup/administrator discovery through publication bundles and precise diagnostics, including both current sources surviving editable-only drift as `ready_with_warnings` across refresh;
 - preferred and fallback userdata route compatibility plus nested retrieval;
@@ -104,7 +106,7 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
   cursor pagination, generation filing/moves, preview preference migration/defaults, terminal and
   active recursive deletion, content-free audits, file cleanup, and bounded scoped/list queries;
 - progressive browser bootstrap with optional-service delay/failure, named safe-method deadlines, and mutation single-send behavior;
-- cached Prompt Assistant status with no request-time Ollama probe, stale-success rejection, response-only and thinking-only structured output, unchanged-refinement redraw and bounded exhaustion with escalating temperature and an appended correction, chained-refinement repeat rejection, restart from the starting prompt before blocking, the visible blocked/retrying reason and Creative Direction placeholder warning, transient generate recovery, thinking-enabled `done_reason: length` budget escalation for Create and Refine, the single no-thinking fallback after thinking overflow and its distinctness rejection advancing to the next candidate, stable seed/temperature/schema semantics across escalation, distinctness-attempt separation, bounded privacy-safe exhaustion after every candidate is exhausted, precise terminal failure diagnostics, authoritative final ComfyUI prompt replacement, and the server-side minor-safety boundary;
+- cached Prompt Assistant status with no request-time router probe and its `router` service/fallback/configuration fields, stale-success rejection, response-only and thinking-only structured output, unchanged-refinement redraw and bounded exhaustion with escalating temperature and an appended correction, chained-refinement repeat rejection, restart from the starting prompt before blocking, the visible blocked/retrying reason and Creative Direction placeholder warning, transient generate recovery, thinking-enabled `done_reason: length` budget escalation for Create and Refine, the single no-thinking fallback after thinking overflow and its distinctness rejection advancing to the next candidate, stable seed/temperature/schema semantics across escalation, distinctness-attempt separation, bounded privacy-safe exhaustion after every candidate is exhausted, precise terminal failure diagnostics, authoritative final ComfyUI prompt replacement, and the server-side minor-safety boundary;
 - constant-query gallery pages, forbidden detail-JSON SQL assertions, summary parity, artifact precedence, and owner isolation;
 - event-loop responsiveness while artifact/upload filesystem or metadata operations are deliberately blocked;
 - more live SSE subscriptions than the former pool capacity with zero retained pool checkouts;
@@ -228,15 +230,13 @@ PY
 
 Expect HTTP 200, 2,659 node types from each target, and device names identifying the RTX 3090 and RTX 3080. Report the exact command and result. A real generation requires separate explicit approval; do not use `/prompt` or any other generation, mutation, queue, history, or output endpoint as part of this verification.
 
-## Optional live Ollama verification
+## Optional live LLM Router verification
 
-The opt-in live suite exercises create and refine with thinking both enabled and disabled, plus repeated-create behavior through the production `OllamaAdapter`. Successful cases require a schema-constrained final object in chat `message.content` or `message.thinking` (normalized into response/thinking diagnostics); create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. The same adapter uses the production `2048 → 4096 → 8192` output-budget policy, so a schema-incomplete length response may make bounded follow-up calls. It is excluded from ordinary deterministic validation. Run it only against the configured Ollama-compatible router:
+The opt-in live suite exercises create and refine with thinking both enabled and disabled, plus repeated-create behavior through the production `OllamaAdapter`, choosing the model from the live capabilities document exactly as production does. Two read-only cases check that the chosen services equal the reference rule `pick_service(doc, nsfw=True, fallback_any=True)` on the router's current document and that the event stream delivers that document. The suite never switches AI Runtime configurations; never switch them to test. Successful cases require a schema-constrained final object in chat `message.content` or `message.thinking` (normalized into response/thinking diagnostics); create cases verify the requested concept without requiring the model to copy the Creative Direction verbatim. The same adapter uses the production `2048 → 4096 → 8192` output-budget policy, so a schema-incomplete length response may make bounded follow-up calls. It is excluded from ordinary deterministic validation. Run it only against the LLM Router:
 
 ```sh
 CIF_RUN_LIVE_OLLAMA_TESTS=1 \
-CIF_OLLAMA_BASE_URL=http://router-host:11434 \
-CIF_OLLAMA_MODEL=nighttime \
-CIF_OLLAMA_API_KEY=local-only \
+CIF_OLLAMA_BASE_URL=http://192.168.1.4:11434 \
 PYTHONPATH=backend pytest -q backend/tests/live/test_ollama_integration.py
 ```
 

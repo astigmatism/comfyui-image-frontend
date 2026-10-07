@@ -80,6 +80,7 @@ RETRYABLE_CODES = frozenset(
         "ollama_generate_unavailable",
         "ollama_generate_timeout",
         "ollama_generate_transport_error",
+        "ollama_generate_incomplete",
         "comfyui_instance_unavailable",
     }
 )

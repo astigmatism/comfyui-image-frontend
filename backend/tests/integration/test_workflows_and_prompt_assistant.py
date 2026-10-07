@@ -24,6 +24,7 @@ from tests.publication_fixtures import (
     build_publication_bundle,
     generation_source_timeline_fixture,
 )
+from tests.router_fixtures import NIGHTTIME_ID
 
 
 def _cache_ollama_health(
@@ -1165,6 +1166,14 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
         "thinking_length": 0,
         "done_reason": None,
         "validation_stage": "http_status",
+        "router": {
+            "service": "nighttime",
+            "nsfw": True,
+            "fallback": False,
+            "reason": "most_capable_nsfw",
+            "configuration_id": "fake-paired",
+            "thinking_effort": False,
+        },
     }
     assert len(fake_state.ollama_calls) == 1
 
@@ -1207,6 +1216,8 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
         "retryable": False,
         "upstream_status": 400,
         "exception_class": "HTTPStatusError",
+        "router_service": "nighttime",
+        "router_action": "fail",
     }
     assert "a portrait" not in json.dumps(failure)
 
@@ -1248,6 +1259,14 @@ def test_prompt_assistant_reports_exhausted_transient_generate_failures(
         "thinking_length": 0,
         "done_reason": None,
         "validation_stage": "http_status",
+        "router": {
+            "service": "nighttime",
+            "nsfw": True,
+            "fallback": False,
+            "reason": "most_capable_nsfw",
+            "configuration_id": "fake-paired",
+            "thinking_effort": "xhigh",
+        },
     }
     assert len(fake_state.ollama_calls) == 3
 
@@ -1275,7 +1294,8 @@ def test_refine_rejects_unchanged_output_and_persists_safe_diagnostics(
     assert error["code"] == "prompt_refinement_unchanged"
     assert "after retrying" in error["message"]
     assert error["details"]["validation_stage"] == "refinement_distinctness"
-    assert error["details"]["model"] == "nighttime"
+    # The router reports the canonical model it used; it is recorded as information only.
+    assert error["details"]["model"] == NIGHTTIME_ID
     assert error["details"]["status"] == 200
     assert len(error["details"]["attempt_diagnostics"]) == 3
     assert [call["options"]["seed"] for call in fake_state.ollama_calls] == [700, 701, 702]
@@ -1399,7 +1419,7 @@ def test_empty_router_model_listing_only_disables_assistant(
     app_client: TestClient, fake_state
 ) -> None:
     provision_user(app_client, username="empty.router")
-    fake_state.models = []
+    fake_state.router_models = []
     _cache_ollama_health(
         app_client,
         available=False,
@@ -1433,11 +1453,11 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
     provision_user(app_client, username="cached.assistant.status")
     _cache_ollama_health(app_client, available=True)
 
-    async def unexpected_live_probe() -> list[str]:
-        raise AssertionError("status endpoint contacted Ollama")
+    async def unexpected_live_probe() -> None:
+        raise AssertionError("status endpoint contacted the LLM Router")
 
     monkeypatch.setattr(
-        app_client.app.state.container.ollama, "available_models", unexpected_live_probe
+        app_client.app.state.container.ollama.router, "fetch", unexpected_live_probe
     )
     response = app_client.get("/api/prompt-assistant/status")
     assert response.status_code == 200
@@ -1446,6 +1466,7 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
         "message": None,
         "vision_available": False,
         "default_instructions": DEFAULT_PROMPT_INSTRUCTIONS,
+        "router": None,
     }
 
     _cache_ollama_health(

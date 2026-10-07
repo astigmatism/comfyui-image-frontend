@@ -20,6 +20,7 @@ from ..schemas import (
     ExpectationCheckCreate,
     ExpectationCheckLatest,
     ExpectationCheckPublic,
+    PromptAssistantRouterStatus,
     PromptAssistantStatus,
     PromptComposeRequest,
     PromptComposeResponse,
@@ -64,6 +65,7 @@ def status(
             message="Prompt Assistant health information is stale; availability is being checked.",
         )
 
+    capabilities = health.capabilities_json or {}
     return PromptAssistantStatus(
         available=health.available,
         message=(
@@ -72,10 +74,23 @@ def status(
             else health.message
             or "Prompt Assistant is temporarily unavailable; manual prompting still works."
         ),
-        vision_available=bool(
-            health.available and (health.capabilities_json or {}).get("vision") is True
-        ),
+        vision_available=bool(health.available and capabilities.get("vision") is True),
+        router=_router_status(capabilities.get("router")),
     )
+
+
+def _router_status(value: object) -> PromptAssistantRouterStatus | None:
+    """The health monitor's record of the chosen router service, if it is well formed."""
+
+    if not isinstance(value, dict):
+        return None
+    fields = PromptAssistantRouterStatus.model_fields
+    try:
+        return PromptAssistantRouterStatus.model_validate(
+            {key: item for key, item in value.items() if key in fields}
+        )
+    except ValueError:
+        return None
 
 
 @router.post("/compose", response_model=PromptComposeResponse)

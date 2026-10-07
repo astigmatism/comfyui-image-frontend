@@ -24,10 +24,19 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageDraw
 
 from tests.publication_fixtures import build_publication_files, object_info_fixture
+from tests.router_fixtures import (
+    NIGHTTIME_OFFLINE,
+    paired_models,
+    router_document,
+    solo_models,
+    sse_event,
+)
+
+ROUTER_PATHS = frozenset({"/api/chat", "/api/tags", "/v1/router/capabilities", "/v1/router/events"})
 
 
 def build_workflow_files() -> dict[str, bytes]:
@@ -119,6 +128,22 @@ class FakeServiceState:
     ollama_vision_scores: list[list[int]] = field(default_factory=list)
     ollama_vision_calls: list[dict[str, Any]] = field(default_factory=list)
     ollama_vision_seen: dict[str, int] = field(default_factory=dict)
+    # LLM Router (docs/llm-router-contract.md): switchable configurations, the capabilities
+    # document and its event stream, and the router's error codes.
+    router_configuration: str = "paired"
+    router_models: list[dict[str, Any]] | None = None
+    router_offline_services: list[dict[str, Any]] | None = None
+    router_unavailable: set[str] = field(default_factory=set)
+    router_draining: bool = False
+    router_maintenance: bool = False
+    router_capabilities_status: int | None = None
+    router_events_status: int | None = None
+    router_events_generation: int = 0
+    router_event_connections: int = 0
+    router_keepalive_seconds: float = 0.5
+    router_chat_errors: list[tuple[int, Any]] = field(default_factory=list)
+    router_declining_services: set[str] = field(default_factory=set)
+    router_requests: list[dict[str, Any]] = field(default_factory=list)
     histories: dict[str, dict[str, Any]] = field(default_factory=dict)
     history_calls: dict[str, int] = field(default_factory=dict)
     prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -182,6 +207,19 @@ class FakeServiceState:
         self.ollama_vision_scores.clear()
         self.ollama_vision_calls.clear()
         self.ollama_vision_seen.clear()
+        self.router_configuration = "paired"
+        self.router_models = None
+        self.router_offline_services = None
+        self.router_unavailable.clear()
+        self.router_draining = False
+        self.router_maintenance = False
+        self.router_capabilities_status = None
+        self.router_events_status = None
+        self.router_events_generation += 1
+        self.router_keepalive_seconds = 0.5
+        self.router_chat_errors.clear()
+        self.router_declining_services.clear()
+        self.router_requests.clear()
         self.histories.clear()
         self.history_calls.clear()
         self.prompts.clear()
@@ -202,6 +240,32 @@ class FakeServiceState:
         self.comfy_user_headers.clear()
         self.userdata_raw_paths.clear()
         self.background_tasks.clear()
+
+    def router_document(self) -> dict[str, Any]:
+        """The capabilities document for the current fake configuration."""
+
+        solo = self.router_configuration == "solo"
+        vision = "vision" in self.ollama_capabilities
+        if self.router_models is not None:
+            models = copy.deepcopy(self.router_models)
+        else:
+            models = solo_models(vision=vision) if solo else paired_models(vision=vision)
+        for model in models:
+            if model["service"] in self.router_unavailable:
+                model["available"] = False
+        offline = (
+            self.router_offline_services
+            if self.router_offline_services is not None
+            else ([NIGHTTIME_OFFLINE] if solo else [])
+        )
+        return router_document(
+            models,
+            configuration_id="fake-solo" if solo else f"fake-{self.router_configuration}",
+            exclusive=solo,
+            draining=self.router_draining,
+            maintenance=self.router_maintenance,
+            offline_services=offline,
+        )
 
     async def emit(self, client_id: str, event: dict[str, Any]) -> None:
         self.event_log.setdefault(client_id, []).append(copy.deepcopy(event))
@@ -600,6 +664,15 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
     @app.middleware("http")
     async def preserve_userdata_route_segment(request: Request, call_next):  # type: ignore[no-untyped-def]
         state.http_request_paths.append(request.url.path)
+        if request.url.path in ROUTER_PATHS:
+            state.router_requests.append(
+                {
+                    "path": request.url.path,
+                    "client_name": request.headers.get("x-client-name"),
+                    "if_none_match": request.headers.get("if-none-match"),
+                    "authorization": request.headers.get("authorization"),
+                }
+            )
         raw_path = request.scope.get("raw_path", b"")
         if isinstance(raw_path, bytes) and raw_path.startswith(b"/userdata/"):
             state.userdata_raw_paths.append(raw_path.split(b"?", 1)[0])
@@ -867,28 +940,116 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             ]
         }
 
+    @app.get("/v1/router/capabilities")
+    async def router_capabilities(request: Request) -> Response:
+        if not state.ollama_available:
+            return Response(status_code=503)
+        if state.router_capabilities_status is not None:
+            return JSONResponse(
+                {"error": {"code": "FAKE_UNAVAILABLE", "message": "fake failure"}},
+                status_code=state.router_capabilities_status,
+            )
+        document = state.router_document()
+        etag = f'"{document["revision"]}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return JSONResponse(document, headers=headers)
+
+    @app.get("/v1/router/events")
+    async def router_events(request: Request) -> Response:
+        if not state.ollama_available:
+            return Response(status_code=503)
+        if state.router_events_status is not None:
+            return JSONResponse(
+                {"error": {"code": "TOO_MANY_SUBSCRIBERS", "message": "fake subscriber limit"}},
+                status_code=state.router_events_status,
+            )
+        generation = state.router_events_generation
+
+        async def stream():  # type: ignore[no-untyped-def]
+            state.router_event_connections += 1
+            try:
+                document = state.router_document()
+                revision = document["revision"]
+                yield "retry: 3000\n\n"
+                yield sse_event("capabilities", document, identity=revision)
+                yield sse_event("load", {"revision": revision, "load": {}})
+                last_keepalive = time.monotonic()
+                while state.router_events_generation == generation and state.ollama_available:
+                    if await request.is_disconnected():
+                        break
+                    await asyncio.sleep(0.02)
+                    document = state.router_document()
+                    if document["revision"] != revision:
+                        revision = document["revision"]
+                        yield sse_event("capabilities", document, identity=revision)
+                    if time.monotonic() - last_keepalive >= state.router_keepalive_seconds:
+                        last_keepalive = time.monotonic()
+                        yield ": keepalive\n\n"
+            finally:
+                state.router_event_connections -= 1
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    def router_error(code: str, status: int, message: str) -> JSONResponse:
+        return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
+
     @app.post("/api/chat")
-    async def ollama_generate(request: Request) -> dict[str, Any]:
+    async def ollama_generate(request: Request) -> Any:
         if not state.ollama_available:
             raise HTTPException(status_code=503)
         payload = await request.json()
         state.ollama_calls.append(copy.deepcopy(payload))
         if state.ollama_delay_seconds:
             await asyncio.sleep(state.ollama_delay_seconds)
+        if state.router_chat_errors:
+            status, body = state.router_chat_errors.pop(0)
+            return JSONResponse(body, status_code=status)
         if state.ollama_generate_failures_remaining > 0:
             state.ollama_generate_failures_remaining -= 1
+            # A legacy string error: clients must tolerate it (contract section 10).
             return JSONResponse(
                 {"error": "configured Ollama generation failure"},
                 status_code=state.ollama_generate_failure_status or 503,
             )
+        # Router semantics: draining, then service resolution. Nothing is ever substituted.
+        document = state.router_document()
+        if state.router_maintenance:
+            return router_error("MAINTENANCE_MODE", 503, "fake maintenance")
+        if state.router_draining:
+            return router_error("BACKEND_DRAINING", 503, "fake configuration switch")
+        requested = payload.get("model") or "daytime"
+        canonical = document["ids"].get(requested)
+        if canonical is None:
+            if any(
+                requested in entry.get("aliases", []) or requested == entry.get("model")
+                for entry in document["offline_services"]
+            ):
+                return router_error("SERVICE_OFFLINE", 503, f"{requested} is offline")
+            return router_error("MODEL_NOT_FOUND", 404, f"Model {requested!r} was not found")
+        served = next(model for model in document["models"] if model["id"] == canonical)
+        if not served["available"]:
+            return router_error("BACKEND_UNAVAILABLE", 503, f"{requested} backend is unhealthy")
+        think = payload.get("think")
+        if isinstance(think, str):
+            efforts = set(served["metadata"]["reasoning"].get("efforts") or {})
+            aliases = {"none": "off", "minimal": "low", "high": "xhigh", "max": "xhigh"}
+            if aliases.get(think, think) not in efforts:
+                return router_error("INVALID_THINK_VALUE", 400, f"{think} is not supported")
         if state.ollama_generate_responses:
             return copy.deepcopy(state.ollama_generate_responses.pop(0))
         images = (payload.get("messages") or [{}])[0].get("images")
+        declining = served["service"] in state.router_declining_services
         if images:
             # Mirrors the router: image input requires an advertised vision profile.
-            if "vision" not in state.ollama_capabilities:
+            if "image" not in served["input_modalities"]:
                 return JSONResponse(
                     {"error": {"code": "UNSUPPORTED_PROFILE_CAPABILITY"}}, status_code=400
+                )
+            if declining:
+                return router_error(
+                    "MALFORMED_STRUCTURED_OUTPUT", 502, "output does not match the schema"
                 )
             state.ollama_vision_calls.append(copy.deepcopy(payload))
             count = int(payload["format"]["properties"]["results"]["minItems"])
@@ -921,9 +1082,9 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 }
                 for index in range(count)
             ]
-            effective_model = state.ollama_effective_model or payload.get("model")
+            effective_model = state.ollama_effective_model or canonical
             return {
-                "model": str(effective_model or (state.models[0] if state.models else "")),
+                "model": str(effective_model),
                 "message": {
                     "role": "assistant",
                     "content": json.dumps({"results": results, "summary": "Fake vision review."}),
@@ -934,9 +1095,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         if state.ollama_thinking_overflows and payload.get("think") is not False:
             # Thinking responses outgrow every token allowance; the
             # no-thinking pass still completes within the base allowance.
-            effective_model = state.ollama_effective_model or payload.get("model")
-            if not effective_model and state.models:
-                effective_model = state.models[0]
+            effective_model = state.ollama_effective_model or canonical
             return {
                 "model": str(effective_model or ""),
                 "message": {
@@ -946,6 +1105,8 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 },
                 "done": True,
                 "done_reason": "length",
+                # As the router reports a reached output limit: not a completed answer.
+                "x_router": {"status": "incomplete", "stop_reason": "max_output_tokens"},
             }
         instruction = str(payload["messages"][0]["content"])
         current = ""
@@ -958,7 +1119,9 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             direction = instruction.split("Creative direction:\n", 1)[-1].strip()
         else:
             direction = instruction.rsplit("\n\n", 1)[-1].strip()
-        if state.ollama_response_prompts:
+        if declining:
+            composed = "I'm sorry, but I can't help with that request."
+        elif state.ollama_response_prompts:
             composed = state.ollama_response_prompts.pop(0)
         elif state.ollama_response_prompt is not None:
             composed = state.ollama_response_prompt
@@ -975,9 +1138,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
             )
         else:
             composed = "composed image prompt"
-        effective_model = state.ollama_effective_model or payload.get("model")
-        if not effective_model and state.models:
-            effective_model = state.models[0]
+        effective_model = state.ollama_effective_model or canonical
         response_text = json.dumps({"prompt": composed})
         thinking_text = ""
         if state.ollama_include_thinking and payload.get("think") is not False:

@@ -142,6 +142,7 @@ import {
   passwordChangeMarkup,
   photoViewerMarkup,
   PROMPT_INSTRUCTIONS_HINTS,
+  promptAssistantModelNotice,
   promptEditorMarkup,
   recentResolutionsMarkup,
   renderCollectionBar,
@@ -225,6 +226,8 @@ const state = {
     defaultInstructions: {},
     instructionOverrides: {},
     visionAvailable: undefined,
+    // The LLM Router model the assistant would use now (service, fallback, notice).
+    router: null,
   },
   // Creative Direction expectations (panel settings) and the latest server check.
   expectations: normalizeExpectationSettings(null),
@@ -3542,14 +3545,25 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
     });
     if (signal?.aborted) return;
     const previous = state.promptAssistant;
+    const router = assistant.router && typeof assistant.router === "object" ? assistant.router : null;
+    const available = Boolean(assistant.available);
+    const visionAvailable = Boolean(assistant.vision_available);
+    if (quiet && previous.available === available && previous.visionAvailable === visionAvailable) {
+      // A routine background refresh: keep the panel and its state object, update the notice.
+      previous.message = assistant.message;
+      previous.router = router;
+      syncPromptAssistantModelNotice();
+      return;
+    }
     state.promptAssistant = {
       ...state.promptAssistant,
-      available: Boolean(assistant.available),
+      available,
       message: assistant.message,
       defaultInstructions: assistant.default_instructions || {},
-      visionAvailable: Boolean(assistant.vision_available),
+      visionAvailable,
+      router,
     };
-    if (quiet && previous.available === state.promptAssistant.available && previous.visionAvailable === state.promptAssistant.visionAvailable) return;
+    syncPromptAssistantModelNotice();
   } catch (error) {
     if (requestWasAborted(error, signal)) return;
     if (quiet) return;
@@ -3558,6 +3572,7 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
       available: false,
       message: error.message || "Prompt Assistant is temporarily unavailable.",
       visionAvailable: false,
+      router: null,
     };
   }
   // A background refresh must not replace a field the user is editing.
@@ -3567,6 +3582,15 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
     return;
   }
   renderPanel();
+}
+
+// Update the router fallback notice in place, in the panel and an open focused editor.
+function syncPromptAssistantModelNotice() {
+  const notice = promptAssistantModelNotice(state.promptAssistant);
+  document.querySelectorAll("[data-prompt-assistant-model]").forEach((element) => {
+    if (element.textContent !== notice) element.textContent = notice;
+    element.hidden = !notice;
+  });
 }
 
 async function loadStartupSpeechToText(signal = applicationStartupController?.signal) {
@@ -5190,7 +5214,7 @@ async function composePrompt(
     setPromptDirectionSignal("applied", result.prompt);
     syncParameterValidation(promptInput.id);
     prompt?.focus();
-    toast("Creative direction applied to the editable Prompt field.", "success");
+    toast(compositionAppliedMessage(result), "success");
     return true;
   } catch (error) {
     if (requestSession !== applicationStartupController) return false;
@@ -5209,6 +5233,13 @@ async function composePrompt(
     renderGenerationActivity();
     syncServerControls();
   }
+}
+
+function compositionAppliedMessage(result) {
+  const applied = "Creative direction applied to the editable Prompt field.";
+  if (!result?.fallback || !result.service) return applied;
+  const name = String(result.service).charAt(0).toUpperCase() + String(result.service).slice(1);
+  return `${applied} It was written by ${name}, the fallback model.`;
 }
 
 function expectationCheckBlockedReason() {
@@ -7381,8 +7412,9 @@ function scheduleServicePoll(controller) {
         refreshGenerationActivity(),
         refreshServices(controller.signal),
         loadComfyuiInstances({ signal: controller.signal, showLoading: false }),
-        // Vision support is discovered by the server's health loop; recheck until it is known.
-        ...(state.promptAssistant.available && state.promptAssistant.visionAvailable ? [] : [loadStartupPromptAssistant(controller.signal, { quiet: true })]),
+        // The server's health monitor follows the LLM Router; the cached status shows whether the
+        // assistant is available, can inspect images, or runs on a non-NSFW fallback.
+        loadStartupPromptAssistant(controller.signal, { quiet: true }),
       ]);
     } finally {
       scheduleServicePoll(controller);

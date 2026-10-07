@@ -9,6 +9,7 @@ import pytest
 from app.config import Settings
 from app.main import create_app
 from app.models import PromptAssistantRun
+from app.services.llm_router import RouterWatch, model_for, pick_service, thinking_value
 from app.services.ollama import ComposeResult, OllamaAdapter
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
@@ -147,9 +148,14 @@ def test_live_composition_api_persists_and_compiles_the_router_output(
         assert response.status_code == 200, response.text
         composed = response.json()
         assert outgoing
+        document = adapter.router.doc
         for request in outgoing:
-            assert request["model"] == settings.ollama_model
-            assert request["think"] == ("xhigh" if think else False)
+            # The service chosen by capability, sent as a service ID with a supported effort.
+            assert request["model"] == composed["service"]
+            assert request["model"] in {"daytime", "nighttime"}
+            assert request["think"] == thinking_value(
+                model_for(document, request["model"]), "xhigh" if think else False
+            )
             assert body["creative_direction"] in request["messages"][0]["content"]
             assert (body["prompt"] in request["messages"][0]["content"]) is (mode == "refine")
         final = composed["prompt"].casefold()
@@ -198,6 +204,49 @@ async def test_live_router_advertises_vision_for_the_configured_model() -> None:
     finally:
         await adapter.close()
     assert capabilities["vision"] is True, capabilities
+
+
+async def test_live_selection_matches_the_reference_rule_on_the_current_document() -> None:
+    """Read-only: the chosen services equal pick_service(doc, nsfw=True, fallback_any=True)."""
+
+    adapter = _adapter()
+    try:
+        capabilities = await adapter.capabilities()
+        document = adapter.router.doc if adapter.router else None
+    finally:
+        await adapter.close()
+    assert document is not None, "the router's capabilities document could not be read"
+    status = capabilities["router"]
+    assert status["service"] == pick_service(document, nsfw=True, fallback_any=True)
+    assert status["vision_service"] == pick_service(
+        document, nsfw=True, require=["vision"], fallback_any=True
+    )
+    chosen = model_for(document, status["service"]) or {}
+    assert status["fallback"] is (chosen.get("nsfw") is not True)
+    assert status["configuration_id"] == (document.get("configuration") or {}).get("id")
+
+
+async def test_live_event_stream_delivers_the_current_document() -> None:
+    """Read-only: one subscription delivers the complete document first."""
+
+    import asyncio
+
+    import httpx
+
+    stop = asyncio.Event()
+    async with httpx.AsyncClient(
+        base_url=_BASE_URL.removesuffix("/v1") if _BASE_URL else "",
+        headers={"X-Client-Name": "comfyui-image-frontend-live-test"},
+    ) as client:
+        watch = RouterWatch(client)
+        watch.add_listener(lambda _doc: stop.set())
+        task = asyncio.create_task(watch._follow())
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=30)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert watch.doc is not None and watch.doc.get("schema_version") == 1
 
 
 @pytest.mark.parametrize("think", [False, True])

@@ -34,6 +34,8 @@ import {
   shellMarkup,
   passwordChangeMarkup,
   photoViewerMarkup,
+  promptAssistantModelNotice,
+  promptAssistantModelNoticeMarkup,
   promptEditorMarkup,
   promptPipelineMarkup,
   moveDialogMarkup,
@@ -716,6 +718,49 @@ test("creative direction renders as its own collapsible section beneath the prom
   );
   assert.doesNotMatch(section, /<details class="prompt-preprocessor">(?:(?!<\/details>)[^])*id="prompt-assistant-thinking-mode"/);
   assert.ok(section.indexOf('name="assistant-mode" value="create"') < section.indexOf('id="prompt-assistant-thinking-mode"'));
+});
+
+test("Creative Direction says when the LLM Router serves it from a non-NSFW fallback", () => {
+  const fallback = {
+    available: true,
+    router: {
+      state: "ready",
+      service: "daytime",
+      nsfw: false,
+      fallback: true,
+      configuration_id: "flash-next-solo-128k",
+      notice: "No NSFW model is available, so Prompt Assistant is using Daytime, which may decline some requests.",
+    },
+  };
+  assert.equal(promptAssistantModelNotice(fallback), fallback.router.notice);
+  assert.match(
+    promptAssistantModelNoticeMarkup(fallback),
+    /<p class="prompt-assistant-model-notice" data-prompt-assistant-model role="status" >No NSFW model is available, so Prompt Assistant is using Daytime/,
+  );
+  const preferred = { available: true, router: { ...fallback.router, service: "nighttime", nsfw: true, fallback: false, notice: null } };
+  assert.equal(promptAssistantModelNotice(preferred), "");
+  assert.match(promptAssistantModelNoticeMarkup(preferred), /role="status" hidden><\/p>/);
+  const waiting = { available: false, router: { state: "waiting", fallback: false, notice: "The LLM Router is switching configuration; Prompt Assistant resumes when it finishes." } };
+  assert.match(promptAssistantModelNotice(waiting), /switching configuration/);
+  assert.equal(promptAssistantModelNotice({}), "");
+  assert.equal(promptAssistantModelNotice({ router: { fallback: true, notice: "<b>x</b>" } }), "<b>x</b>");
+  assert.doesNotMatch(promptAssistantModelNoticeMarkup({ router: { fallback: true, notice: "<b>x</b>" } }), /<b>/);
+
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    workflows: [{ profile_id: "p1", display_name: "Portrait" }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello", "sampling.steps": 8 },
+    fieldErrors: {},
+    formError: null,
+    selectedPreset: null,
+    promptAssistant: fallback,
+  };
+  const html = generationPanelMarkup(state, state.workflows[0], contract);
+  const section = html.slice(html.indexOf('id="prompt-assistant"'));
+  assert.ok(section.indexOf("data-prompt-assistant-model") < section.indexOf('data-action="compose-prompt"'));
+  assert.match(promptEditorMarkup("prompt.text", "Prompt", "", fallback), /data-prompt-assistant-model role="status" >No NSFW model/);
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {

@@ -55,8 +55,11 @@ _RETRYABLE = {
     "ollama_generate_transport_error",
     "ollama_generate_timeout",
     "ollama_generate_invalid_json",
+    "ollama_generate_incomplete",
     "ollama_unavailable",
 }
+# A non-NSFW fallback that declined (ollama_model_declined) is deliberately absent: retrying
+# the same refusal in a loop is forbidden by docs/llm-router-contract.md section 5.
 
 
 def _same_text(first: str, second: str) -> bool:

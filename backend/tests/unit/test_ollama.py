@@ -23,6 +23,7 @@ from app.services.ollama import (
     _instruction,
     _is_direction_echo,
 )
+from tests.router_fixtures import CAPABILITIES_PATH, capabilities_response
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -151,8 +152,8 @@ def test_response_only_structured_output_is_accepted_with_a_capability_warning(
     tmp_path: Path,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
@@ -198,16 +199,27 @@ def test_response_only_structured_output_is_accepted_with_a_capability_warning(
             "selected_output_budget": OUTPUT_TOKEN_BUDGETS[0],
             "temperature": 0.1,
             "candidate_sha256": hashlib.sha256(b"a portrait in warm window light").hexdigest(),
+            # The service the router served it on: a service ID, never a canonical model ID.
+            "router": {
+                "service": "nighttime",
+                "nsfw": True,
+                "fallback": False,
+                "reason": "most_capable_nsfw",
+                "configuration_id": "fake-paired",
+                "thinking_effort": "xhigh",
+            },
         }
         assert "warm window light" not in json.dumps(result.raw_response)
+        assert result.service == "nighttime"
+        assert result.fallback is False
 
     asyncio.run(scenario())
 
 
 def test_thinking_only_structured_output_remains_supported(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
@@ -251,8 +263,8 @@ def test_thinking_create_retries_length_with_only_a_larger_output_budget(
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if len(payloads) == 1:
@@ -354,8 +366,8 @@ def test_output_budget_retry_does_not_consume_create_distinctness_attempt(
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(200, json=responses.pop(0))
@@ -393,8 +405,8 @@ def test_refine_retries_length_with_deterministic_sampling(tmp_path: Path) -> No
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if len(payloads) == 1:
@@ -449,8 +461,8 @@ def test_complete_structured_prompt_is_accepted_even_when_done_reason_is_length(
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal generate_calls
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             generate_calls += 1
             return httpx.Response(
@@ -489,8 +501,8 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
     private_reasoning = "private direction and prompt fragments must not be retained"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if payloads[-1]["think"] is False:
@@ -594,8 +606,8 @@ def test_thinking_overflow_falls_back_to_no_thinking_on_first_candidate(
     fallback_prompt = "a fox beneath moonlit pines, snow drifting in cold blue night"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if payloads[-1]["think"] is False:
@@ -673,8 +685,8 @@ def test_budget_exhaustion_advances_candidates_before_raising(
     private_reasoning = "private reasoning must not be retained"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -766,8 +778,8 @@ def test_no_thinking_fallback_prompt_still_passes_distinctness_validation(
     expansion = "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if payloads[-1]["think"] is False:
@@ -837,8 +849,8 @@ def test_no_thinking_fallback_unchanged_refine_advances_to_next_candidate(
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             if payloads[-1]["think"] is False:
@@ -909,8 +921,8 @@ def test_disabled_thinking_exhaustion_advances_candidates_without_fallback(
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -973,8 +985,8 @@ def test_malformed_or_empty_structured_output_is_rejected_with_safe_diagnostics(
     expected_message: str,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
@@ -1027,8 +1039,8 @@ def test_refine_redraws_an_unchanged_candidate_and_returns_the_changed_prompt(
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             candidate = "A PORTRAIT" if len(payloads) == 1 else "a portrait in warm window light"
@@ -1078,8 +1090,8 @@ def test_refine_rejects_unchanged_output_only_after_bounded_redraws(
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -1136,8 +1148,8 @@ def test_chained_refine_rejects_a_recent_chain_prompt_and_redraws(tmp_path: Path
     candidates = iter(["  A portrait at   DUSK ", "a portrait at dawn"])
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -1221,8 +1233,8 @@ def test_create_retries_a_direction_echo_and_returns_the_expansion(
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             # Attempt 1 returns a case/whitespace variant of the direction verbatim,
@@ -1304,8 +1316,8 @@ def test_create_direction_echo_on_every_attempt_raises_prompt_creation_unchanged
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -1362,8 +1374,8 @@ def test_create_rejects_a_truncated_direction_and_returns_the_expansion(tmp_path
     expansion = "a red fox beneath moonlit pines, standing on a snowy ledge at dawn"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             candidate = truncated if len(payloads) == 1 else expansion
@@ -1407,8 +1419,8 @@ def test_create_accepts_an_expansion_that_starts_with_the_direction(tmp_path: Pa
     expansion = "a red fox stalking through snowy pines, low viewpoint, pale winter sunrise"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -1453,8 +1465,8 @@ def test_create_exhaustion_with_non_echo_duplicates_keeps_the_generic_error(tmp_
     candidates = [direction, "  A   RED FOX  ", current]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
             return httpx.Response(
@@ -1504,8 +1516,8 @@ def test_read_timeout_is_classified_without_retrying_or_retaining_prompt_text(
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal generate_calls
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             generate_calls += 1
             raise httpx.ReadTimeout("private prompt must not be retained", request=request)
@@ -1539,8 +1551,8 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal generate_calls
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "active-model"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         if request.url.path == "/api/chat":
             generate_calls += 1
             return httpx.Response(
@@ -1582,6 +1594,14 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
                 "thinking_length": 0,
                 "done_reason": None,
                 "validation_stage": "invalid_json",
+                "router": {
+                    "service": "nighttime",
+                    "nsfw": True,
+                    "fallback": False,
+                    "reason": "most_capable_nsfw",
+                    "configuration_id": "fake-paired",
+                    "thinking_effort": False,
+                },
             }
         finally:
             await adapter.close()

@@ -1379,11 +1379,26 @@ function promptAssistantMarkup(state = {}, values = {}, contract = null) {
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
       ${thinkingModeMarkup("prompt-assistant-thinking-mode", state.promptAssistant)}
       ${expectationsMarkup(state)}
+      ${promptAssistantModelNoticeMarkup(state.promptAssistant)}
       <button type="button" class="button secondary" data-action="compose-prompt" ${composeDisabled ? "disabled" : ""}>${escapeHtml(expectations.composeLabel)}</button>
       ${expectationStatusMarkup(check, { dismissed: Boolean(check?.id) && state.expectationStatusDismissedId === check.id, currentPrompt: promptInput ? values?.[promptInput.id] ?? null : null })}
       <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
   </section>`;
+}
+
+// The LLM Router chooses the model per request. When no NSFW model is available the assistant
+// runs on a non-NSFW fallback that may decline some directions; say so where the user composes.
+export function promptAssistantModelNotice(assistant = {}) {
+  const router = assistant?.router;
+  if (!router || typeof router !== "object") return "";
+  if (router.state === "waiting" || router.fallback || router.vision_fallback) return String(router.notice || "");
+  return "";
+}
+
+export function promptAssistantModelNoticeMarkup(assistant = {}) {
+  const notice = promptAssistantModelNotice(assistant);
+  return `<p class="prompt-assistant-model-notice" data-prompt-assistant-model role="status" ${notice ? "" : "hidden"}>${escapeHtml(notice)}</p>`;
 }
 
 function thinkingModeMarkup(id, assistant = {}) {
@@ -1421,6 +1436,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
           ${thinkingModeMarkup("prompt-editor-thinking-mode", promptAssistant)}
+          ${promptAssistantModelNoticeMarkup(promptAssistant)}
           <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable && !promptAssistant.composeDisabled ? "" : "disabled"}>${escapeHtml(promptAssistant.composeLabel || "Apply Creative Direction")}</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
         </div>

@@ -237,7 +237,21 @@ class Settings(BaseSettings):
     reconciliation_grace_seconds: float = 5.0
 
     ollama_base_url: str | None = None
+    # LLM Router model selection (docs/llm-router-contract.md section 5). "capability" chooses,
+    # for each request, the most capable available model with the features the request needs,
+    # filtered by ollama_nsfw. "named" sends ollama_model, then ollama_fallback_models.
+    ollama_selection: Literal["capability", "named"] = "capability"
+    # prefer: most capable NSFW model, else the most capable model; require: NSFW models only;
+    # avoid: non-NSFW models only; any: ignore the flag.
+    ollama_nsfw: Literal["prefer", "require", "avoid", "any"] = "prefer"
+    # Used only when ollama_selection is "named". Service IDs only, never canonical model IDs.
     ollama_model: str | None = "nighttime"
+    ollama_fallback_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["daytime"]
+    )
+    # How long a request keeps waiting while the router drains or is in maintenance before it
+    # reports the assistant unavailable. The contract requires at least ten minutes.
+    ollama_router_wait_seconds: float = Field(default=600.0, ge=600.0)
     ollama_api_key: SecretStr | None = None
     prompt_template_version: str = "v5"
 
@@ -287,6 +301,36 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_ollama_model(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+    @field_validator("ollama_selection", "ollama_nsfw", mode="before")
+    @classmethod
+    def normalize_ollama_choice(cls, value: object) -> object:
+        return value.strip().casefold() if isinstance(value, str) else value
+
+    @field_validator("ollama_fallback_models", mode="before")
+    @classmethod
+    def normalize_ollama_fallback_models(cls, value: object) -> object:
+        return _string_list(value)
+
+    @field_validator("ollama_fallback_models")
+    @classmethod
+    def deduplicate_ollama_fallback_models(cls, value: list[str]) -> list[str]:
+        ordered: list[str] = []
+        for item in value:
+            name = item.strip()
+            if name and name not in ordered:
+                ordered.append(name)
+        return ordered
+
+    @property
+    def ollama_named_models(self) -> tuple[str, ...]:
+        """The named-selection order: the preferred service, then its fallbacks."""
+
+        ordered: list[str] = []
+        for name in (self.ollama_model, *self.ollama_fallback_models):
+            if name and name not in ordered:
+                ordered.append(name)
+        return tuple(ordered)
 
     @field_validator("speech_to_text_model")
     @classmethod
@@ -476,6 +520,15 @@ class Settings(BaseSettings):
             raise ValueError("CIF_SESSION_SECRET must contain at least 32 random characters")
         if self.cookie_samesite == "none" and not self.cookie_secure:
             raise ValueError("cookie_samesite=none requires cookie_secure=true")
+        if (
+            self.ollama_base_url
+            and self.ollama_selection == "named"
+            and not self.ollama_named_models
+        ):
+            raise ValueError(
+                "CIF_OLLAMA_SELECTION=named requires CIF_OLLAMA_MODEL or "
+                "CIF_OLLAMA_FALLBACK_MODELS to name a router service"
+            )
         return self
 
     @property

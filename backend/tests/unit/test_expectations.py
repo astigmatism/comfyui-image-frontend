@@ -25,6 +25,13 @@ from app.services.expectation_checks import encode_for_vision
 from app.services.ollama import OllamaAdapter
 from PIL import Image
 from pydantic import ValidationError
+from tests.router_fixtures import (
+    CAPABILITIES_PATH,
+    capabilities_response,
+    paired_document,
+    router_document,
+    router_model,
+)
 
 EXPECTATIONS = ["The keeper wears a red raincoat", "A lit lighthouse beam is visible"]
 
@@ -193,8 +200,8 @@ async def test_evaluate_image_sends_inline_image_schema_and_never_the_prompt(thi
     calls: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "nighttime"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         payload = json.loads(request.content)
         calls.append(payload)
         return httpx.Response(
@@ -244,8 +251,8 @@ async def test_evaluate_image_escalates_budget_redraws_invalid_sheets_and_reads_
     calls: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "nighttime"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         calls.append(json.loads(request.content))
         return httpx.Response(200, json=responses[len(calls) - 1])
 
@@ -267,8 +274,8 @@ async def test_evaluate_image_escalates_budget_redraws_invalid_sheets_and_reads_
 
 async def test_evaluate_image_reports_invalid_responses_and_router_rejections() -> None:
     def malformed(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "nighttime"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         return httpx.Response(
             200, json={"model": "m", "message": {"content": "no json"}, "done_reason": "stop"}
         )
@@ -283,8 +290,8 @@ async def test_evaluate_image_reports_invalid_responses_and_router_rejections() 
     assert len(invalid.value.details["attempt_diagnostics"]) == 3
 
     def rejected(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "nighttime"}]})
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
         return httpx.Response(400, json={"error": {"code": "UNSUPPORTED_PROFILE_CAPABILITY"}})
 
     adapter = _adapter(rejected)
@@ -296,46 +303,130 @@ async def test_evaluate_image_reports_invalid_responses_and_router_rejections() 
     assert unavailable.value.code == "vision_unavailable"
 
 
-async def test_capabilities_read_router_tags_then_show() -> None:
-    def tags_handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/tags"
-        return httpx.Response(
-            200,
-            json={
-                "models": [
-                    {"name": "daytime", "capabilities": ["completion"]},
-                    {
-                        "name": "nighttime",
-                        "x_ollama_router": {"capabilities": ["completion", "vision"]},
-                    },
-                ]
-            },
-        )
+async def test_capabilities_come_from_the_router_document_never_from_names() -> None:
+    def paired(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == CAPABILITIES_PATH, "no /api/tags or /api/show probe"
+        return capabilities_response(request)
 
-    adapter = _adapter(tags_handler)
-    assert await adapter.capabilities() == {
-        "vision": True,
-        "capabilities": ["completion", "vision"],
-    }
+    adapter = _adapter(paired)
+    capabilities = await adapter.capabilities()
     await adapter.close()
+    assert capabilities["vision"] is True
+    assert capabilities["capabilities"] == ["completion", "thinking", "tools", "vision"]
+    assert capabilities["router"]["service"] == "nighttime"
+    assert capabilities["router"]["vision_service"] == "nighttime"
+    assert capabilities["router"]["vision_fallback"] is False
 
-    def show_handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/tags":
-            return httpx.Response(200, json={"models": [{"name": "nighttime"}]})
-        assert request.url.path == "/api/show"
-        assert json.loads(request.content) == {"model": "nighttime"}
-        return httpx.Response(200, json={"capabilities": ["completion", "thinking"]})
+    # Only the non-NSFW model accepts images: vision checks use it, text stays on Nighttime.
+    split = router_document(
+        [
+            router_model("daytime", nsfw=False, score=68.3, vision=True),
+            router_model("nighttime", nsfw=True, score=64.9, vision=False),
+        ]
+    )
 
-    adapter = _adapter(show_handler)
-    assert await adapter.capabilities() == {
-        "vision": False,
-        "capabilities": ["completion", "thinking"],
-    }
+    def split_handler(request: httpx.Request) -> httpx.Response:
+        return capabilities_response(request, split)
+
+    adapter = _adapter(split_handler)
+    capabilities = await adapter.capabilities()
     await adapter.close()
+    assert capabilities["vision"] is True
+    assert capabilities["router"]["service"] == "nighttime"
+    assert capabilities["router"]["vision_service"] == "daytime"
+    assert capabilities["router"]["vision_fallback"] is True
+    assert "inspect images" in capabilities["router"]["notice"]
+
+    blind = paired_document(vision=False)
+
+    def blind_handler(request: httpx.Request) -> httpx.Response:
+        return capabilities_response(request, blind)
+
+    adapter = _adapter(blind_handler)
+    capabilities = await adapter.capabilities()
+    await adapter.close()
+    assert capabilities["vision"] is False
+    assert capabilities["router"]["vision_service"] is None
 
     def offline(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("offline", request=request)
 
     adapter = _adapter(offline)
-    assert (await adapter.capabilities())["vision"] is False
+    capabilities = await adapter.capabilities()
     await adapter.close()
+    assert capabilities["vision"] is False
+    assert capabilities["router"]["state"] == "unavailable"
+    assert capabilities["router"]["reason"] == "router_unreachable"
+
+
+async def test_vision_check_uses_the_only_model_that_accepts_images() -> None:
+    document = router_document(
+        [
+            router_model("daytime", nsfw=False, score=60.0, vision=True),
+            router_model("nighttime", nsfw=True, score=70.0, vision=False),
+        ]
+    )
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request, document)
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"model": "x", "message": {"content": _scores(90, 95)}, "done_reason": "stop"},
+        )
+
+    adapter = _adapter(handler)
+    try:
+        result = await adapter.evaluate_image(
+            image_data_url="data:image/jpeg;base64,AAAA", expectations=EXPECTATIONS, threshold=80
+        )
+    finally:
+        await adapter.close()
+    assert [call["model"] for call in calls] == ["daytime"]
+    assert result.service == "daytime"
+    assert result.fallback is True
+    assert result.diagnostics["router"]["reason"] == "no_nsfw_model_with_vision"
+
+
+async def test_vision_check_without_any_image_model_is_unavailable_without_sending() -> None:
+    document = paired_document(vision=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == CAPABILITIES_PATH, "no model can take the image"
+        return capabilities_response(request, document)
+
+    adapter = _adapter(handler)
+    with pytest.raises(AppError) as unavailable:
+        await adapter.evaluate_image(
+            image_data_url="data:image/jpeg;base64,AAAA", expectations=EXPECTATIONS, threshold=80
+        )
+    await adapter.close()
+    assert unavailable.value.code == "vision_unavailable"
+    assert unavailable.value.status_code == 503
+
+
+async def test_a_declining_non_nsfw_reviewer_is_reported_without_redraws() -> None:
+    from tests.router_fixtures import solo_document
+
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request, solo_document())
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            502,
+            json={"error": {"code": "MALFORMED_STRUCTURED_OUTPUT", "message": "not the schema"}},
+        )
+
+    adapter = _adapter(handler)
+    with pytest.raises(AppError) as declined:
+        await adapter.evaluate_image(
+            image_data_url="data:image/jpeg;base64,AAAA", expectations=EXPECTATIONS, threshold=80
+        )
+    await adapter.close()
+    assert declined.value.code == "ollama_model_declined"
+    assert declined.value.message.startswith("No NSFW model is available; Daytime declined")
+    assert len(calls) == 1

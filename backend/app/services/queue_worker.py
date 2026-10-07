@@ -60,8 +60,6 @@ from .user_state import lock_user_state
 from .worker_pool import IMAGE_POOL_SCHEDULER_SCOPE, ImageWorkerPool, scheduler_state_key
 
 logger = logging.getLogger(__name__)
-# Router capabilities are catalog facts; re-probe them at most this often.
-CAPABILITY_PROBE_SECONDS = 30.0
 
 DispatcherState = Literal[
     "not_started",
@@ -128,6 +126,7 @@ class QueueWorker:
         self._main_task: asyncio.Task[None] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
+        self._router_task: asyncio.Task[None] | None = None
         self._maintenance_task: asyncio.Task[None] | None = None
         self._active: dict[str, asyncio.Task[None]] = {}
         self._active_instance_ids: dict[str, str] = {}
@@ -152,6 +151,12 @@ class QueueWorker:
         self._dispatcher_state = "recovering"
         self._dispatcher_done = False
         self._health_task = asyncio.create_task(self._health_loop(), name="external-health-monitor")
+        if getattr(self.ollama, "watch_router", None) is not None:
+            # One LLM Router subscription for the process lifetime: it reads the capabilities
+            # document at startup and follows /v1/router/events (docs/llm-router-contract.md).
+            self._router_task = asyncio.create_task(
+                self._router_watch_loop(), name="llm-router-subscriber"
+            )
         self._main_task = asyncio.create_task(
             self._supervise_dispatcher(),
             name="generation-queue-supervisor",
@@ -172,6 +177,7 @@ class QueueWorker:
                 self._main_task,
                 self._dispatcher_task,
                 self._health_task,
+                getattr(self, "_router_task", None),
                 self._maintenance_task,
             )
             if task
@@ -188,6 +194,7 @@ class QueueWorker:
         self._main_task = None
         self._dispatcher_task = None
         self._health_task = None
+        self._router_task = None
         self._maintenance_task = None
         self._dispatcher_state = "stopped"
         logger.info("generation_dispatcher_stopped")
@@ -3431,17 +3438,7 @@ class QueueWorker:
                 # without __init__. Production always follows the per-instance path below.
                 comfy_available, comfy_message = await self.comfyui.health()
                 ollama_available, ollama_message = await self.ollama.status()
-                await _run_blocking(
-                    self._persist_service_health,
-                    "ollama",
-                    ollama_available,
-                    ollama_message,
-                )
-                ollama_capabilities = await self._ollama_capabilities(ollama_available)
-                if ollama_capabilities is not None:
-                    await _run_blocking(
-                        self._persist_service_capabilities, "ollama", ollama_capabilities
-                    )
+                await self._record_ollama_status(ollama_available, ollama_message)
                 catalog_loading, should_refresh_catalog = await _run_blocking(
                     self._comfy_recovery_state,
                     comfy_available,
@@ -3480,17 +3477,7 @@ class QueueWorker:
                 *(self._adapter_for_instance(config.id).health() for config in instances.configs),
             )
             ollama_available, ollama_message = health_results[0]
-            await _run_blocking(
-                self._persist_service_health,
-                "ollama",
-                ollama_available,
-                ollama_message,
-            )
-            ollama_capabilities = await self._ollama_capabilities(ollama_available)
-            if ollama_capabilities is not None:
-                await _run_blocking(
-                    self._persist_service_capabilities, "ollama", ollama_capabilities
-                )
+            await self._record_ollama_status(ollama_available, ollama_message)
             comfy_health = {
                 config.id: health_results[index]
                 for index, config in enumerate(instances.configs, start=1)
@@ -3547,34 +3534,69 @@ class QueueWorker:
             )
             return catalog_loading, should_refresh_catalog
 
-    async def _ollama_capabilities(self, available: bool) -> dict[str, Any] | None:
-        """Advertised model capabilities (currently vision) for the Prompt Assistant row.
+    async def _router_watch_loop(self) -> None:
+        """Follow the LLM Router for the process lifetime; never fail application startup."""
 
-        Capabilities change only when the router's catalog does, so a successful probe is
-        reused for ``CAPABILITY_PROBE_SECONDS`` instead of on every health pass.
+        try:
+            await self.ollama.watch_router(self._stop, on_change=self._on_router_change)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("llm_router_subscriber_failed")
+
+    async def _on_router_change(self, _doc: dict[str, Any]) -> None:
+        """Persist the Prompt Assistant row as soon as the router's document changes."""
+
+        await self._persist_ollama_status()
+
+    async def _persist_ollama_status(self) -> None:
+        try:
+            available, message = await self.ollama.status()
+            await self._record_ollama_status(available, message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("ollama_status_persist_failed", exc_info=True)
+
+    def _ollama_status_lock(self) -> asyncio.Lock:
+        # Created per event loop: the worker may outlive one test client's loop.
+        loop = asyncio.get_running_loop()
+        lock: asyncio.Lock | None = getattr(self, "_ollama_lock", None)
+        if lock is None or getattr(self, "_ollama_lock_loop", None) is not loop:
+            lock = asyncio.Lock()
+            self._ollama_lock = lock
+            self._ollama_lock_loop = loop
+        return lock
+
+    async def _record_ollama_status(self, available: bool, message: str | None) -> None:
+        """Persist the Prompt Assistant row; the health loop and router changes take turns."""
+
+        async with self._ollama_status_lock():
+            await _run_blocking(self._persist_service_health, "ollama", available, message)
+            capabilities = await self._ollama_capabilities(available)
+            if capabilities is not None:
+                await _run_blocking(self._persist_service_capabilities, "ollama", capabilities)
+
+    async def _ollama_capabilities(self, available: bool) -> dict[str, Any] | None:
+        """The chosen models and their capabilities (vision, fallback) for the assistant row.
+
+        They come from the router's current capabilities document, which the subscriber keeps
+        current, so each health pass reads it without a per-pass ``/api/tags`` probe.
         """
 
         probe = getattr(self.ollama, "capabilities", None)
         if probe is None:
             return None
-        if not available:
-            self._capability_cache = None
-            return {"vision": False, "capabilities": []}
-        cached: tuple[float, dict[str, Any]] | None = getattr(self, "_capability_cache", None)
-        now = time.monotonic()
-        if cached is not None and now - cached[0] < CAPABILITY_PROBE_SECONDS:
-            return cached[1]
         try:
             result = await probe()
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("ollama_capability_probe_failed", exc_info=True)
-            return {"vision": False, "capabilities": []}
+            return {"vision": False, "capabilities": [], "router": None}
         if not isinstance(result, dict):
-            return {"vision": False, "capabilities": []}
-        self._capability_cache = (now, result)
-        return result
+            return {"vision": False, "capabilities": [], "router": None}
+        return result if available else {**result, "vision": False}
 
     def _persist_service_health(
         self,

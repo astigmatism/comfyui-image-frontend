@@ -86,8 +86,10 @@ score; otherwise it stops after the last attempt and reports the best attempt.
   under the button restore after reload; **Stop** ends it and keeps images already queued.
 - Expectations are not applied during Auto-generate, Prompt Re-run, or Generate while Prompt
   Generation is on; the section says so. Starting a check needs Auto-generate off and is limited to
-  one active check per account. The option is disabled when the router does not advertise vision
-  for the configured model.
+  one active check per account. The option is disabled when no available model on the LLM Router
+  accepts image input. The reviewer is the most capable NSFW model with `image` input, otherwise
+  the most capable model with it (shown as a fallback in the panel); a non-NSFW reviewer that
+  declines the image ends the check with `ollama_model_declined` instead of retrying.
 
 Recall restores the expectations recorded with an image. Each attempt costs one image plus one or
 two model calls; with thinking enabled a review typically takes 10–20 seconds on Nighttime.

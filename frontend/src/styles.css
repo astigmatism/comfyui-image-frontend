@@ -2806,6 +2806,18 @@ code {
   display: none;
 }
 
+/* The LLM Router is serving Creative Direction from a non-NSFW fallback, or is switching. */
+.prompt-assistant-model-notice {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--warning);
+}
+
+.prompt-assistant-model-notice[hidden] {
+  display: none;
+}
+
 .empty-copy,
 .empty-gallery,
 .gallery-status {

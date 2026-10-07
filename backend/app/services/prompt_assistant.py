@@ -129,6 +129,8 @@ async def compose_prompt(
         prompt=result.prompt,
         model=result.model,
         template_version=run.template_version,
+        service=result.service,
+        fallback=result.fallback,
     )
 
 

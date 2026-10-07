@@ -1049,8 +1049,12 @@ class PromptComposeRequest(APIModel):
 class PromptComposeResponse(APIModel):
     composition_id: str
     prompt: str
+    # The model the router reports for the response, recorded as information only.
     model: str
     template_version: str
+    # The LLM Router service the request was sent to, and whether it was a fallback.
+    service: str | None = None
+    fallback: bool = False
 
 
 EXPECTATION_CHECK_MAX_ITEMS = 256
@@ -1150,15 +1154,36 @@ class ExpectationCheckLatest(APIModel):
     check: ExpectationCheckPublic | None = None
 
 
+class PromptAssistantRouterStatus(APIModel):
+    """The LLM Router model the assistant would use now; service IDs only."""
+
+    selection: Literal["capability", "named"]
+    nsfw_preference: Literal["prefer", "require", "avoid", "any"]
+    # ready, waiting (the router is switching configuration), or unavailable.
+    state: Literal["ready", "waiting", "unavailable"]
+    service: str | None = None
+    nsfw: bool | None = None
+    # True while the assistant runs on a non-NSFW fallback (or a later named service).
+    fallback: bool = False
+    reason: str | None = None
+    configuration_id: str | None = None
+    vision_service: str | None = None
+    vision_nsfw: bool | None = None
+    vision_fallback: bool = False
+    # A short user-facing explanation when on a fallback or waiting, otherwise null.
+    notice: str | None = None
+
+
 class PromptAssistantStatus(APIModel):
     available: bool
     message: str | None = None
-    # Whether the configured model advertises image input, so Creative Direction
+    # Whether an available model accepts image input, so Creative Direction
     # expectations can be verified with vision.
     vision_available: bool = False
     default_instructions: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_PROMPT_INSTRUCTIONS)
     )
+    router: PromptAssistantRouterStatus | None = None
 
 
 class SpeechToTextStatus(APIModel):

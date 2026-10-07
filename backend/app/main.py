@@ -101,6 +101,31 @@ class JsonFormatter(logging.Formatter):
             "done_reason",
             "used_no_thinking_fallback",
             "fallback_thinking_enabled",
+            # LLM Router discovery and model selection (docs/llm-router-contract.md).
+            "router_selection",
+            "router_nsfw_preference",
+            "router_named_models",
+            "router_wait_seconds",
+            "router_ignored_setting",
+            "router_purpose",
+            "router_outcome",
+            "router_service",
+            "router_previous_service",
+            "router_selection_reason",
+            "router_fallback",
+            "router_nsfw",
+            "router_configuration_id",
+            "router_exclusive",
+            "router_accepting_requests",
+            "router_services",
+            "router_offline_services",
+            "router_revision",
+            "router_subscribed",
+            "router_code",
+            "router_action",
+            "router_schema",
+            "router_schema_version",
+            "router_supported_schema_version",
         ):
             value = getattr(record, key, None)
             if value is not None:
@@ -255,6 +280,7 @@ def create_app(
                 container.auth.ensure_bootstrap_admin(session)
 
         await run_blocking(bootstrap)
+        container.ollama.log_configuration()
         # A client that disconnects mid-download leaves its staged archive behind on the
         # data volume, where nothing else reclaims it.
         await asyncio.to_thread(sweep_download_staging, settings)
