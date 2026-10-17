@@ -5883,6 +5883,11 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .prompt-generation-body { display: grid; gap: 12px; }
 .prompt-generation-body .field { margin: 0; }
 .prompt-generation-inputs > .control-block:last-child { border-bottom: 0; padding-bottom: 0; margin-bottom: 0; }
+/* Controls inside Optional stack the way Prompt Generation stacks its own: one
+   list, no hairline between a switch and the refinement that hangs off it. The
+   --space-3 gap is the 12px .prompt-generation-body already separates with, and
+   .control-section-content > .control-block:last-child still ends the list. */
+.control-section-optional .control-block { border-bottom: 0; padding-bottom: 0; margin-bottom: var(--space-3); }
 .prompt-pipeline-flow { margin: 0; color: var(--text-soft); font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
 /* Idle image-worker readout beneath Generate. Empty on a one-worker deployment,
    where :empty removes its box entirely. */

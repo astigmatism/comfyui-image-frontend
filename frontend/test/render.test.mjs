@@ -2231,6 +2231,9 @@ test("Optional section carries the extras the active workflow declares, in decla
 
   const section = sectionMarkup(html, "optional");
   assert.match(section, />Optional</);
+  // The stylesheet clears the inherited control-row hairline through this class, so a
+  // rename must not leave Optional with a divider its sibling sections never show.
+  assert.match(html, /class="control-section control-section-optional[^"]*" data-control-section="optional"/);
   for (const id of ["enable_upscale", "upscale_denoise"]) {
     assert.match(section, new RegExp(`data-control-block="${id}"`));
   }
