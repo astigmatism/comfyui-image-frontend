@@ -624,7 +624,16 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
     }
     const descriptor = controlSectionDescriptor(input);
     const previous = sections.at(-1);
-    if (previous && previous.key === descriptor.key && !previous.resolutionPair) {
+    // The Optional section is one section per panel: every optional control the
+    // workflow declares joins it, in declaration order, wherever it sits in the
+    // panel — a refinement never lands in a second section of its own.
+    const optional =
+      descriptor.key === OPTIONAL_SECTION.key
+        ? sections.find((section) => section.key === OPTIONAL_SECTION.key)
+        : null;
+    if (optional) {
+      optional.controls.push(input);
+    } else if (previous && previous.key === descriptor.key && !previous.resolutionPair) {
       previous.controls.push(input);
     } else {
       sections.push({ ...descriptor, controls: [input] });
@@ -718,6 +727,16 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
     .join("");
 }
 
+// Section for the extras a workflow declares on top of its core controls — the
+// upscale switch and the refinements that hang off it. Membership comes from the
+// controls the active workflow declares: a workflow that declares no such control
+// renders no Optional section, so nothing occupies that space in the panel.
+const OPTIONAL_SECTION = { key: "optional", kind: "optional", title: "Optional" };
+
+function isOptionalControl(input, label) {
+  return /upscal/i.test(`${input.id} ${label} ${input.semantic_role || ""}`);
+}
+
 function controlSectionDescriptor(input) {
   const label = input.id === "prompt.text" && !input.semantic_role ? "Prompt" : input.label || input.id;
   if (input.type === "lora_stack") return { key: `lora-${sectionSlug(input.id)}`, kind: "lora", title: input.label || "LoRAs" };
@@ -730,8 +749,8 @@ function controlSectionDescriptor(input) {
   if (input.type === "resolution") {
     return { key: "resolution", kind: "resolution", title: "Resolution" };
   }
-  if (/upscal/i.test(`${input.id} ${label} ${input.semantic_role || ""}`)) {
-    return { key: "upscaling", kind: "upscaling", title: "Upscaling" };
+  if (isOptionalControl(input, label)) {
+    return { key: OPTIONAL_SECTION.key, kind: OPTIONAL_SECTION.kind, title: OPTIONAL_SECTION.title };
   }
   const group = String(input.group || "").trim();
   const title = group && group.toLowerCase() !== "basic" ? group : label;

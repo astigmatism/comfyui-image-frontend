@@ -273,3 +273,48 @@ test("recall reconciles against the recalled source's LoRA catalog", async ({ pa
     strength: row.querySelector('[data-lora-toggle]').getAttribute('aria-pressed') === 'true' ? Number(row.querySelector('input[type="number"]').value) : 0,
   })))).toEqual(submittedStack);
 });
+
+test("a control one workflow declares is absent from the others and keeps its value", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+
+  const sectionTrigger = page.locator('[data-control-section="optional"] .control-section-trigger');
+  const expandOptional = async () => {
+    await expect(sectionTrigger).toHaveCount(1);
+    if ((await sectionTrigger.getAttribute("aria-expanded")) !== "true") await sectionTrigger.click();
+  };
+  const expectNoOptionalSection = async () => {
+    await expect(sectionTrigger).toHaveCount(0);
+    await expect(page.locator("#panel-scroll")).not.toContainText("Upscaling");
+  };
+  const upscale = page.getByLabel("Enable SeedVR2 upscale", { exact: true });
+
+  // The Optional section belongs to the workflow that declares the control.
+  await selectPublishedSource(page, "Generic Landscape");
+  await expectNoOptionalSection();
+
+  // Only "Krea 2 NSFW V4" declares it, so only its panel has the section. Move it
+  // away from the published default; earlier journeys may have left either value.
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await expect(sectionTrigger).toContainText("Optional");
+  await expandOptional();
+  const value = !(await upscale.isChecked());
+  await upscale.setChecked(value);
+
+  // Switching to a workflow that declares neither hides the control without
+  // discarding it, and switching back restores it rather than the default.
+  await selectPublishedSource(page, "Generic Landscape");
+  await expectNoOptionalSection();
+  await selectPublishedSource(page, "Krea 2 NSFW V4");
+  await expandOptional();
+  expect(await upscale.isChecked()).toBe(value);
+
+  // A reload does not reset it either.
+  await page.reload();
+  await expect(page.locator("#workflow-source")).toContainText("Krea 2 NSFW V4");
+  await expandOptional();
+  expect(await upscale.isChecked()).toBe(value);
+});

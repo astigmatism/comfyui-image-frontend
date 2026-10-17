@@ -175,6 +175,8 @@ One ComfyUI prompt still receives exactly one scalar public choice. If a user ch
 
 For image publications, exactly one input must have semantic role `positive_prompt`. The frontend orders non-advanced inputs before advanced inputs, then uses `order`, `group`, and `id` as deterministic fallbacks. The backend remains authoritative for all types, ranges, steps, defaults, and required fields.
 
+Sectioning the panel is an application decision the bundle cannot override with a `group` string: an input whose own declaration names the upscale stage is collected into one collapsible **Optional** section, in `order` sequence, wherever else its `group` would have placed it. That section is built from what the selected workflow declares, so a workflow that declares no such input renders neither the control nor the section. A value belongs to the workflow that declares its control, not to the moment it was typed: switching to a workflow that declares the input no longer shows the control, and selecting the declaring workflow again — or reloading — brings back the value that was held, never the published default.
+
 Seed integers are serialized to the browser as canonical decimal strings where precision matters. Omitted, `null`, empty, or explicit random seed input resolves to one concrete request-local value when `default_mode` is `random`; a fixed decimal string is validated and preserved exactly. The effective seed is persisted and returned for recall.
 
 ### Outputs

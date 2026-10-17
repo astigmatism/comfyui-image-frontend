@@ -2430,8 +2430,8 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
     ).toHaveAttribute("aria-expanded", "true");
   }
   await expect(
-    page.locator('[data-control-section="upscaling"]').getByRole("button", {
-      name: "Upscaling",
+    page.locator('[data-control-section="optional"]').getByRole("button", {
+      name: "Optional",
       exact: true,
     }),
   ).toHaveAttribute("aria-expanded", "false");
@@ -2579,7 +2579,7 @@ test("published Krea source exposes choice controls, strict outputs, and the aut
 
   const upscale = page.getByLabel("Enable SeedVR2 upscale", { exact: true });
   await expect(upscale).not.toBeChecked();
-  await ensureControlSectionExpanded(page, "Upscaling");
+  await ensureControlSectionExpanded(page, "Optional");
   await upscale.check();
   await expect(upscale).toBeChecked();
   await expect(upscale.locator("xpath=..")).toContainText("On");

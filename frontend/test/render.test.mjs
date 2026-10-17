@@ -2072,7 +2072,7 @@ test("published source pairs scalar dimensions in the resolution picker and rend
       ),
     );
   }
-  for (const section of ["creative-direction", "upscaling", "seed"]) {
+  for (const section of ["creative-direction", "optional", "seed"]) {
     assert.match(
       html,
       new RegExp(
@@ -2144,13 +2144,13 @@ test("minimal sections open by default; stored open state and validation errors 
   assert.equal(sectionState(defaults, "seed"), "false");
   assert.equal(sectionState(defaults, "resolution"), "true");
   assert.equal(sectionState(defaults, "creative-direction"), "false");
-  assert.equal(sectionState(defaults, "upscaling"), "false");
+  assert.equal(sectionState(defaults, "optional"), "false");
   assert.equal(sectionState(defaults, "advanced"), "false");
 
   const stored = generationPanelMarkup(
     {
       ...base,
-      controlSectionOpen: { prompt: false, "creative-direction": true, upscaling: true },
+      controlSectionOpen: { prompt: false, "creative-direction": true, optional: true },
     },
     publishedSource,
     publishedInterface,
@@ -2158,7 +2158,7 @@ test("minimal sections open by default; stored open state and validation errors 
   assert.equal(sectionState(stored, "prompt"), "false");
   assert.equal(sectionState(stored, "seed"), "false");
   assert.equal(sectionState(stored, "creative-direction"), "true");
-  assert.equal(sectionState(stored, "upscaling"), "true");
+  assert.equal(sectionState(stored, "optional"), "true");
   assert.equal(sectionState(stored, "advanced"), "false");
 
   const errored = generationPanelMarkup(
@@ -2166,8 +2166,113 @@ test("minimal sections open by default; stored open state and validation errors 
     publishedSource,
     publishedInterface,
   );
-  assert.equal(sectionState(errored, "upscaling"), "true");
+  assert.equal(sectionState(errored, "optional"), "true");
   assert.equal(sectionState(errored, "advanced"), "false");
+});
+
+// A workflow's own extras: the switch and the refinement that belongs to it. The
+// section is derived from what the active workflow declares, so a workflow that
+// declares neither renders no section in that slot at all.
+const optionalExtrasContract = {
+  inputs: [
+    { id: "prompt", label: "Prompt", type: "string", default: "a tree", semantic_role: "positive_prompt", group: "Prompt", order: 10 },
+    { id: "seed", label: "Seed", type: "seed", default: null, default_mode: "random", semantic_role: "seed", group: "Sampling", order: 40 },
+    { id: "enable_upscale", label: "Enable Upscale", type: "boolean", default: true, semantic_role: "upscale", group: "Basic", order: 50, required: false, advanced: false },
+    {
+      id: "upscale_denoise",
+      label: "Upscale denoise",
+      description: "Denoise strength used by the upscale stage.",
+      type: "number",
+      default: 0.18,
+      minimum: 0,
+      maximum: 0.5,
+      step: 0.01,
+      semantic_role: "denoise",
+      group: "Advanced",
+      order: 55,
+      required: false,
+      advanced: false,
+    },
+  ],
+};
+
+const panelState = (parameters) => ({
+  submitting: false,
+  services: [{ service: "comfyui", available: true }],
+  sources: [publishedSource],
+  activeSourceKey: publishedSource.source_key,
+  sourceCatalogStatus: "ready",
+  sourceDetailLoading: false,
+  fieldErrors: {},
+  formError: null,
+  parameters,
+});
+
+const sectionMarkup = (html, key) => {
+  const start = html.indexOf(`data-control-section="${key}"`);
+  if (start === -1) return "";
+  const next = html.indexOf('data-control-section="', start + 1);
+  return html.slice(start, next === -1 ? html.length : next);
+};
+
+test("Optional section carries the extras the active workflow declares, in declared order", () => {
+  const html = generationPanelMarkup(
+    panelState({
+      prompt: "a tree",
+      seed: { mode: "random", value: "0" },
+      enable_upscale: false,
+      upscale_denoise: 0.05,
+    }),
+    publishedSource,
+    optionalExtrasContract,
+  );
+  assert.equal((html.match(/data-control-section="optional"/g) || []).length, 1);
+  assert.doesNotMatch(html, /Upscaling/);
+
+  const section = sectionMarkup(html, "optional");
+  assert.match(section, />Optional</);
+  for (const id of ["enable_upscale", "upscale_denoise"]) {
+    assert.match(section, new RegExp(`data-control-block="${id}"`));
+  }
+  // The refinement sits directly under the switch it refines.
+  assert.ok(section.indexOf('data-control-block="enable_upscale"') < section.indexOf('data-control-block="upscale_denoise"'));
+  // Same slot the section has always held: after the seed, before the prompt.
+  assert.ok(html.indexOf('data-control-section="seed"') < html.indexOf('data-control-section="optional"'));
+  assert.ok(html.indexOf('data-control-section="optional"') < html.indexOf('data-control-section="prompt"'));
+});
+
+test("workflow that declares no extras renders no Optional section in that slot", () => {
+  const minimal = { inputs: [structuredClone(optionalExtrasContract.inputs[0])] };
+  const html = generationPanelMarkup(panelState({ prompt: "a tree" }), publishedSource, minimal);
+  assert.doesNotMatch(html, /data-control-section="optional"/);
+  assert.doesNotMatch(html, />Optional</);
+  assert.doesNotMatch(html, /Upscaling/);
+});
+
+test("one Optional section collects extras separated by other groups, keeping their order", () => {
+  const inputs = structuredClone(optionalExtrasContract.inputs);
+  inputs.splice(3, 0, {
+    id: "face_strength",
+    label: "Face strength",
+    type: "number",
+    default: 1,
+    minimum: 0,
+    maximum: 2,
+    step: 0.05,
+    group: "Face",
+    order: 52,
+  });
+  const html = generationPanelMarkup(
+    panelState({ prompt: "a tree", seed: { mode: "random", value: "0" } }),
+    publishedSource,
+    { inputs },
+  );
+  assert.equal((html.match(/data-control-section="optional"/g) || []).length, 1);
+  const section = sectionMarkup(html, "optional");
+  assert.match(section, /data-control-block="enable_upscale"/);
+  assert.match(section, /data-control-block="upscale_denoise"/);
+  assert.doesNotMatch(section, /data-control-block="face_strength"/);
+  assert.match(html, /data-control-section="group-face"/);
 });
 
 test("choice inputs render one finite single-select with public values and labels", () => {

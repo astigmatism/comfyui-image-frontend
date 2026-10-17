@@ -1511,7 +1511,7 @@ export function normalizeStoredCreativeDirectionDraft(raw) {
 
 // Sections the control panel opens without any stored preference: the
 // minimal set a generation needs. Everything else (creative direction,
-// upscaling, LoRAs and other groups, advanced) stays collapsed until the
+// optional extras, LoRAs and other groups, advanced) stays collapsed until the
 // user expands it, and that choice is persisted.
 export const DEFAULT_OPEN_CONTROL_SECTION_KINDS = new Set(["prompt", "seed", "resolution"]);
 

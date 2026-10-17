@@ -1358,6 +1358,45 @@ test("republished sources retain values only when public id and type still match
   assert.deepEqual(reconciled.seed, { mode: "random", value: "0" });
 });
 
+test("values of controls the active workflow does not declare survive being hidden", () => {
+  const advanced = {
+    inputs: [
+      { id: "prompt", label: "Prompt", type: "string", default: "a tree", semantic_role: "positive_prompt" },
+      { id: "enable_upscale", label: "Enable Upscale", type: "boolean", default: true, semantic_role: "upscale" },
+      { id: "upscale_denoise", label: "Upscale denoise", type: "number", default: 0.18, minimum: 0, maximum: 0.5, step: 0.01, semantic_role: "denoise" },
+    ],
+  };
+  const minimal = { inputs: [structuredClone(advanced.inputs[0])] };
+  // Edited values for the two controls only the advanced workflow declares.
+  const held = { ...defaultsForInterface(advanced), enable_upscale: false, upscale_denoise: 0.05 };
+
+  // Switching to the workflow that declares neither: it takes what it understands
+  // and nothing else, and it never sends the hidden values of its own accord.
+  const switched = migrateInterfaceState(
+    minimal,
+    advanced,
+    held,
+    ["enable_upscale", "upscale_denoise"],
+    defaultsForInterface(minimal),
+    [],
+    { rejectInvalid: true },
+  );
+  assert.deepEqual(switched.values, { prompt: "a tree" });
+  assert.deepEqual(switched.explicitInputIds, []);
+  assert.deepEqual(parametersForRequest(minimal, held), { prompt: "a tree" });
+
+  // Switching back — and every reload of either workflow — restores the held
+  // values rather than the published defaults.
+  const restored = reconcileInterfaceValues(
+    advanced,
+    held,
+    advanced,
+    ["enable_upscale", "upscale_denoise"],
+  );
+  assert.equal(restored.enable_upscale, false);
+  assert.equal(restored.upscale_denoise, 0.05);
+});
+
 test("source changes migrate compatible prompt, resolution, seed, and shared controls", () => {
   const source = structuredClone(publishedInterface);
   source.inputs = source.inputs
