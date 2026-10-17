@@ -1,12 +1,20 @@
 # Prompt for the next update
 
-Two changes are queued for Samus, and the panel is only complete with both: the
-application renames the control-panel section that holds a workflow's optional
-extras to **Optional**, and the *Moody Krea2 Advanced v1* bundle gains the
-`upscale_denoise` control that section is meant to hold. The application side is
-on `main` (`3576f14`); the bundle side has never left the experiment folder.
+> This file lives in the repository, not on Samus: the production host keeps no
+> permanent checkout, so hand these instructions over as text, whole. Relative
+> paths below point at this repository.
 
-## 1. Deploy the application
+The control panel now holds a workflow's optional extras in a section titled
+**Optional**; the *Moody Krea2 Advanced v1* bundle still has to gain the
+`upscale_denoise` control that section is meant to hold. The application side is
+deployed; the bundle side has never left the experiment folder it was written in.
+
+## 1. Deploy the application — done 2026-10-17
+
+Deployed through the Samus service portal's **Update and restart**; the panel
+section that said **Upscaling** now reads **Optional**, and *Moody Krea2 Minimal
+v1* shows neither control nor section. Kept here as the standing instruction for
+the next application update:
 
 > Run `/host/home/astigmatism/deployments/comfyui-image-frontend/update_production --wait`
 > to deploy the latest `main` (omit `/host` on the native host). Follow
@@ -18,9 +26,7 @@ on `main` (`3576f14`); the bundle side has never left the experiment folder.
 > permanent checkout. The command owns source fetch, backup, build, cutover,
 > rollback, and verification.
 
-Expect the deployed SHA to be at least `3576f14`. Afterwards the section that
-said **Upscaling** reads **Optional**; *Moody Krea2 Minimal v1* shows neither
-control nor section.
+Only step 2 remains.
 
 ## 2. Put `upscale_denoise` in the Moody Krea2 Advanced v1 bundle
 
