@@ -6395,13 +6395,16 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 }
 
 .lm-subject-preview {
+  display: -webkit-box;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: var(--muted);
   font-size: 0.74rem;
   text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .lm-footer-buttons {

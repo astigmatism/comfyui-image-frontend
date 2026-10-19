@@ -1,14 +1,14 @@
 import { expect, test } from "@playwright/test";
 
-async function mount(page) {
+async function mount(page, { triggerWord = "AlphaCharacter", description = "Use AlphaCharacter in the prompt." } = {}) {
   await page.route("**/app.mjs", (route) => route.fulfill({ contentType: "text/javascript", body: "export {};" }));
   await page.goto("/");
-  await page.evaluate(async () => {
+  await page.evaluate(async ({ triggerWord, description }) => {
     const base = document.querySelector('script[type="module"]').src;
     const { loraStackMarkup, installLoraStackControls } = await import(new URL("./lora-stack.mjs", base));
     const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
     const control = { id: "loras", type: "lora_stack", label: "LoRAs", items: [
-      { id: "a", label: "Alpha", trigger_word: "AlphaCharacter", description: "Use AlphaCharacter in the prompt.", lora_identity: `lr1_${"a".repeat(64)}` },
+      { id: "a", label: "Alpha", trigger_word: triggerWord, description, lora_identity: `lr1_${"a".repeat(64)}` },
       { id: "b", label: "Beta" }, { id: "c", label: "Gamma" },
     ], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }], minimum: 0, maximum: 2, step: 0.05 };
     window.stack = structuredClone(control.default);
@@ -58,15 +58,60 @@ async function mount(page) {
         window.renderLoras();
       },
     });
-  });
+  }, { triggerWord, description });
 }
 
 const dialog = (page) => page.locator("#lora-manager-dialog");
+
+// A character LoRA publishes its whole look as the trigger; the field allows 1000 characters.
+const TRIGGER_PHRASE =
+  "1oandve, short, straight black hair with bangs, pale skin, green eyes, " +
+  "accentuated with black winged eyeliner, light pink lipstick";
 
 async function open(page) {
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await expect(dialog(page)).toBeVisible();
 }
+
+const LONG_DESCRIPTION =
+  "Use for editorial portrait work: keep the face structure, hair line and eye colour exactly as trained, " +
+  "paint no extra background detail, and keep the skin matte so later retouching stays reversible. " +
+  "Works best beside a neutral character LoRA when the subject is framed from the chest up at 3:4.";
+
+test("a cap-length trigger phrase wraps in the footer instead of scrolling the dialog sideways", async ({ page }) => {
+  const phrase = TRIGGER_PHRASE.repeat(8).slice(0, 1000);
+  await mount(page, { triggerWord: phrase, description: LONG_DESCRIPTION });
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  const preview = dialog(page).locator("[data-lora-subject-preview]");
+  await expect(preview).toContainText("1oandve");
+  const geometry = await dialog(page).evaluate((el) => {
+    const subject = el.querySelector("[data-lora-subject-preview]");
+    const style = getComputedStyle(subject);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+    return {
+      dialogScrollWidth: el.scrollWidth,
+      dialogClientWidth: el.clientWidth,
+      previewLines: Math.round(subject.getBoundingClientRect().height / lineHeight),
+      previewRight: subject.getBoundingClientRect().right,
+      dialogRight: el.getBoundingClientRect().right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(geometry.previewLines).toBeGreaterThan(2);
+  expect(geometry.previewRight).toBeLessThanOrEqual(geometry.dialogRight);
+  expect(geometry.dialogScrollWidth).toBe(geometry.dialogClientWidth);
+  expect(geometry.dialogClientWidth).toBeLessThanOrEqual(geometry.viewportWidth - 48);
+  const apply = await dialog(page).getByRole("button", { name: "Apply" }).boundingBox();
+  const frame = await dialog(page).boundingBox();
+  expect(apply.x + apply.width).toBeLessThanOrEqual(frame.x + frame.width - 1);
+  // Clamping may hide the tail of the phrase, never the phrase itself.
+  await expect(preview).toHaveAttribute("title", `Subject on Apply: ${phrase}`);
+
+  await page.setViewportSize({ width: 420, height: 780 });
+  const narrow = await dialog(page).evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+  expect(narrow.scroll).toBe(narrow.client);
+});
 
 test("manager drafts enable, strength, order and Subject until Apply", async ({ page }) => {
   await mount(page);

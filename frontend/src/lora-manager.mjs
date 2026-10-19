@@ -3,6 +3,15 @@ import { loraDefaultPositiveStrength, loraStackError, moveLora, strongestLoraTri
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const encoded = (value) => encodeURIComponent(value);
 
+// The footer shows three lines of the Subject line; when a trigger phrase is
+// longer than that, the tooltip is the only way to reach the rest of it.
+function syncSubjectPreview(scope) {
+  const preview = scope?.querySelector("[data-lora-subject-preview]");
+  if (!preview) return;
+  if (preview.scrollHeight > preview.clientHeight) preview.title = preview.textContent ?? "";
+  else preview.removeAttribute("title");
+}
+
 export function loraImagePath(sourceKey, controlId) {
   return `/api/workflows/${encoded(sourceKey)}/lora-images/${encoded(controlId)}`;
 }
@@ -167,6 +176,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       frame.replaceWith(template.content.querySelector(".lm-dialog-frame"));
     } else target.innerHTML = markup;
     target.querySelector(".lm-dialog-content").scrollTop = scrollTop;
+    syncSubjectPreview(target);
     if (focus) {
       const element = target.querySelector(focus);
       if (inputValue !== null && element) element.value = inputValue;
@@ -200,6 +210,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (strength > 0) draft.memory[id] = strength;
     const preview = dialog()?.querySelector("[data-lora-subject-preview]");
     if (preview) preview.textContent = subjectPreview(draft.control, draft.values, draft.subjectAvailable);
+    syncSubjectPreview(dialog());
   }
   function toggle(id) {
     if (!draft) return;
