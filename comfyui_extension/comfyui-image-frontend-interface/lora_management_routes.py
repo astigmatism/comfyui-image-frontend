@@ -12,7 +12,13 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
-from .lora_management import DEFAULT_MAX_UPLOAD, MAX_JSON, LoraManagement, ManagementError
+from .lora_management import (
+    DEFAULT_MAX_UPLOAD,
+    MAX_JSON,
+    MAX_TRIGGER_WORD,
+    LoraManagement,
+    ManagementError,
+)
 
 ROUTE = "/cif/lora-management"
 PUBLISHER_ROUTE = "/cif/publisher/lock"
@@ -153,10 +159,13 @@ async def capabilities(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "enabled": True,
-                "version": 2,
+                # Version 3 publishes trigger phrases and names its own limits; the app
+                # treats a companion that omits max_trigger_word as a 120-character one.
+                "version": 3,
                 "multi_source": True,
                 "actions": ["install", "edit", "remove", "set_catalog"],
                 "max_upload_bytes": service.max_upload,
+                "max_trigger_word": MAX_TRIGGER_WORD,
                 "model_writer": service.model_writer,
                 "model_root_id": service.model_root_id,
             }

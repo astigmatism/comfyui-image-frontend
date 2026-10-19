@@ -89,6 +89,10 @@ class FakeServiceState:
     reject_prompts: bool = False
     fail_retrieval: bool = False
     fail_artifact_cleanup: bool = False
+    # The LoRA management companion installed in ComfyUI.  A companion that predates the
+    # trigger-word limit reports no max_trigger_word, which the app reads as 120 characters.
+    companion_version: int = 3
+    companion_max_trigger_word: int | None = 1000
     retrieval_failure_substrings: set[str] = field(default_factory=set)
     retrieval_failures_remaining: int = 0
     # A source the frontend already archived and deleted answers 404, unlike the 500 of
@@ -928,6 +932,21 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 deleted += 1
         state.artifact_cleanup_requests.append(normalized)
         return {"deleted": deleted, "missing": missing}
+
+    @app.get("/cif/lora-management/capabilities")
+    async def lora_management_capabilities() -> dict[str, Any]:
+        capabilities: dict[str, Any] = {
+            "enabled": True,
+            "version": state.companion_version,
+            "multi_source": True,
+            "actions": ["install", "edit", "remove", "set_catalog"],
+            "max_upload_bytes": 1024 * 1024 * 1024,
+            "model_writer": True,
+            "model_root_id": "test-lora-root",
+        }
+        if state.companion_max_trigger_word is not None:
+            capabilities["max_trigger_word"] = state.companion_max_trigger_word
+        return capabilities
 
     @app.get("/api/tags")
     async def ollama_tags() -> dict[str, Any]:

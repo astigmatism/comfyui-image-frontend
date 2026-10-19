@@ -38,6 +38,7 @@ MAX_BUNDLE = 32 * 1024 * 1024
 MAX_HEADER = 16 * 1024 * 1024
 MAX_TARGETS = 50
 MAX_CATALOG = 100
+MAX_LABEL = 120
 MAX_TRIGGER_WORD = 1000
 DEFAULT_MAX_UPLOAD = 8 * 1024 * 1024 * 1024
 ACTIONS = ("install", "remove", "edit", "set_catalog")
@@ -77,6 +78,8 @@ class ManagementError(ValueError):
             "LoRA file differs between workflows": "library_file_mismatch",
             "LoRA catalog is already current": "catalog_unchanged",
             "LoRA catalog change would drop an existing LoRA": "catalog_would_drop",
+            "LoRA trigger word is too long": "trigger_word_too_long",
+            "LoRA title is too long": "lora_title_too_long",
         }.get(str(self), "lora_management_error")
 
 
@@ -469,11 +472,13 @@ def _requested_targets(payload: dict) -> tuple[list[dict], bool]:
     return sorted(targets, key=lambda target: target["source_path"]), multi
 
 
-def _text(value: Any, *, limit: int, required: bool) -> str | None:
+def _text(value: Any, *, limit: int, required: bool, too_long: str | None = None) -> str | None:
     if value is None and not required:
         return None
-    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+    if not isinstance(value, str) or not value.strip():
         raise ManagementError("Invalid LoRA catalog text", 400)
+    if len(value) > limit:
+        raise ManagementError(too_long or "Invalid LoRA catalog text", 400)
     return value.strip()
 
 
@@ -764,10 +769,17 @@ class LoraManagement:
             _file_under(self.root, filename)
             entry = {
                 "id": lora_id,
-                "label": _text(item["label"], limit=120, required=True),
+                "label": _text(
+                    item["label"], limit=MAX_LABEL, required=True, too_long="LoRA title is too long"
+                ),
                 "filename": filename,
             }
-            trigger = _text(item.get("trigger_word"), limit=MAX_TRIGGER_WORD, required=False)
+            trigger = _text(
+                item.get("trigger_word"),
+                limit=MAX_TRIGGER_WORD,
+                required=False,
+                too_long="LoRA trigger word is too long",
+            )
             if trigger:
                 entry["trigger_word"] = trigger
             description = _text(item.get("description"), limit=1000, required=False)
@@ -817,12 +829,14 @@ class LoraManagement:
         if (
             not isinstance(label, str)
             or not label.strip()
-            or len(label) > 120
             or not isinstance(trigger, str)
             or not trigger.strip()
-            or len(trigger) > MAX_TRIGGER_WORD
         ):
             raise ManagementError("LoRA title and trigger word are required", 400)
+        if len(label) > MAX_LABEL:
+            raise ManagementError("LoRA title is too long", 400)
+        if len(trigger) > MAX_TRIGGER_WORD:
+            raise ManagementError("LoRA trigger word is too long", 400)
         if (
             filename != f"cif-managed/{operation_id}.safetensors"
             or not isinstance(expected_hash, str)
@@ -881,14 +895,12 @@ class LoraManagement:
             )
             if not isinstance(lora_id, str) or not PUBLIC_ID.fullmatch(lora_id):
                 raise ManagementError("Invalid LoRA ID", 400)
-            if (
-                not isinstance(label, str)
-                or not label.strip()
-                or len(label) > 120
-                or not isinstance(trigger, str)
-                or len(trigger) > MAX_TRIGGER_WORD
-            ):
+            if not isinstance(label, str) or not label.strip() or not isinstance(trigger, str):
                 raise ManagementError("Invalid LoRA title or trigger word", 400)
+            if len(label) > MAX_LABEL:
+                raise ManagementError("LoRA title is too long", 400)
+            if len(trigger) > MAX_TRIGGER_WORD:
+                raise ManagementError("LoRA trigger word is too long", 400)
             found = [item for item in catalog if item.get("id") == lora_id]
             if len(found) != 1:
                 raise ManagementError("LoRA is not uniquely present in this publication", 404)

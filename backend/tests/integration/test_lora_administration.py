@@ -415,6 +415,48 @@ def test_a_trigger_phrase_reaches_every_member_verbatim(fake_state, settings_fac
         assert finished["status"] == "succeeded"
 
 
+def test_a_legacy_companion_reports_its_own_trigger_limit(fake_state, settings_factory):
+    """ComfyUI is updated apart from the app, so its companion must name its own ceiling."""
+
+    fake_state.companion_max_trigger_word = None  # a companion older than the limit it advertises
+    with _client(fake_state, settings_factory, lora_management_secret=SECRET) as client:
+        ready_admin(client)
+        _sources(client)
+        service = client.app.state.container.lora_operations
+        _mock_preflight(service)
+        service._schedule = lambda _operation_id: None
+        library = _library(client)
+        headers = {"X-CSRF-Token": csrf(client)}
+
+        def edit(trigger_word: str):
+            return client.post(
+                "/api/admin/lora-operations",
+                json=_request_payload(
+                    library, "edit", lora_id="a", display_name="Alpha", trigger_word=trigger_word
+                ),
+                headers=headers,
+            )
+
+        refused = edit(TRIGGER_PHRASE)
+        assert refused.status_code == 409, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "trigger_word_too_long"
+        assert "120 characters" in error["message"]
+        assert "companion" in error["message"]
+        assert error["details"] == {"companion_max_trigger_word": 120}
+        # The refusal happens before ComfyUI is asked to change any publication.
+        assert client.get("/api/admin/lora-library").json()["active_operation"] is None
+
+        fake_state.companion_max_trigger_word = 160
+        middle = edit("x" * 200)
+        assert middle.status_code == 409, middle.text
+        assert "160 characters" in middle.json()["error"]["message"]
+
+        # Whatever ceiling the companion states, that far still reaches every member.
+        fake_state.companion_max_trigger_word = MAX_TRIGGER_WORD
+        assert edit(TRIGGER_PHRASE).status_code == 201
+
+
 def test_library_files_must_agree_before_a_removal(fake_state, settings_factory):
     with _client(fake_state, settings_factory, lora_management_secret=SECRET) as client:
         ready_admin(client)

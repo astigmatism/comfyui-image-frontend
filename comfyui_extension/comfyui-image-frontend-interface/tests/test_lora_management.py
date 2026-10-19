@@ -349,7 +349,7 @@ class ManagementTests(unittest.TestCase):
             ({"id": "../bad", "label": "Updated", "trigger_word": "word"}, "Invalid LoRA ID"),
             ({"id": "missing", "label": "Updated", "trigger_word": "word"}, "not uniquely present"),
             ({"id": "existing", "label": " ", "trigger_word": "word"}, "Invalid LoRA title"),
-            ({"id": "existing", "label": "x" * 121, "trigger_word": "word"}, "Invalid LoRA title"),
+            ({"id": "existing", "label": "x" * 121, "trigger_word": "word"}, "title is too long"),
             ({"id": "existing", "label": "Updated", "trigger_word": None}, "Invalid LoRA title"),
             (
                 {
@@ -357,7 +357,7 @@ class ManagementTests(unittest.TestCase):
                     "label": "Updated",
                     "trigger_word": "x" * (management.MAX_TRIGGER_WORD + 1),
                 },
-                "Invalid LoRA title",
+                "trigger word is too long",
             ),
             ({"id": "existing", "label": " Existing ", "trigger_word": " "}, "unchanged"),
         ]

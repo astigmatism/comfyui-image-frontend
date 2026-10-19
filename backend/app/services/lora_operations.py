@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from ..blocking import run_blocking
 from ..domain.lora_identity import lora_identity_v1
+from ..domain.lora_stack import MAX_TRIGGER_WORD
 from ..domain.publication import (
     publication_kind,
     source_key_for,
@@ -61,12 +62,25 @@ logger = logging.getLogger(__name__)
 _NONTERMINAL = ("awaiting_upload", "running", "repair_required")
 _RESPONSE_LIMIT = 1024 * 1024
 _COMPANION_VERSION = 2
+# A companion that predates the version that advertises its own limit rejects a trigger
+# word longer than this.  Assuming it lets the app name the real ceiling up front
+# instead of letting ComfyUI refuse the whole publication change.
+_LEGACY_COMPANION_TRIGGER_LIMIT = 120
 _MESSAGES = {
     "install": "LoRA installed in every library workflow.",
     "remove": "LoRA removed from every library workflow.",
     "edit": "LoRA details updated in every library workflow.",
     "sync": "Library workflows now share the same LoRAs.",
 }
+
+
+def _companion_trigger_limit(capabilities: Mapping[str, Any]) -> int:
+    """How long a trigger word one companion accepts, never more than the app publishes."""
+
+    limit = capabilities.get("max_trigger_word")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        return _LEGACY_COMPANION_TRIGGER_LIMIT
+    return min(limit, MAX_TRIGGER_WORD)
 
 
 @dataclass
@@ -231,6 +245,11 @@ class LoraOperationService:
                 "library_file_mismatch": "Library workflows name different files for this LoRA.",
                 "catalog_would_drop": "Sync would drop a LoRA from a workflow.",
                 "catalog_unchanged": "This workflow already has the library LoRAs.",
+                "trigger_word_too_long": (
+                    "The ComfyUI LoRA companion allows a shorter trigger word than this app. "
+                    "Update and restart the companion, or shorten the phrase."
+                ),
+                "lora_title_too_long": "The ComfyUI LoRA companion rejects a title this long.",
             }
             raise AppError(
                 code,
@@ -342,6 +361,43 @@ class LoraOperationService:
                 status_code=409,
             )
         return writer_ids[0]
+
+    async def _trigger_word_limit(self) -> int | None:
+        """The longest trigger word every companion accepts; None when none will say."""
+
+        limits: list[int] = []
+        for instance_id in self.container.image_pool.member_ids:
+            try:
+                capabilities = await self._request(
+                    self.container.comfyui_instances.get(instance_id), "GET", "/capabilities"
+                )
+            except AppError:
+                # Preflight asks every companion the same question and reports the answer.
+                continue
+            limits.append(_companion_trigger_limit(capabilities))
+        return min(limits) if limits else None
+
+    async def _require_trigger_word_fit(
+        self, payload: LoraOperationCreate, catalog: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Refuse a phrase a companion would reject, before it changes any publication."""
+
+        phrases = [payload.trigger_word.strip()] if payload.trigger_word else []
+        if payload.kind == "sync":
+            phrases.extend(str(item.get("trigger_word") or "") for item in catalog)
+        longest = max((len(phrase) for phrase in phrases), default=0)
+        if longest <= _LEGACY_COMPANION_TRIGGER_LIMIT:
+            return
+        limit = await self._trigger_word_limit()
+        if limit is None or longest <= limit:
+            return
+        raise AppError(
+            "trigger_word_too_long",
+            f"The ComfyUI LoRA companion allows at most {limit} characters in a trigger word. "
+            "Update and restart the companion to publish longer phrases, or shorten this one.",
+            status_code=409,
+            details={"companion_max_trigger_word": limit},
+        )
 
     async def _preflight(
         self, targets: list[_Target], *, check_expected: bool = True
@@ -749,6 +805,7 @@ class LoraOperationService:
             )
         if payload.kind == "install" and len(library.canonical) >= 100:
             raise AppError("lora_catalog_full", "The LoRA library is full.", status_code=409)
+        await self._require_trigger_word_fit(payload, library.canonical)
         targets = self._member_targets(library, only_out_of_sync=payload.kind == "sync")
         await self._preflight(targets)
         await self._expire_uploads()

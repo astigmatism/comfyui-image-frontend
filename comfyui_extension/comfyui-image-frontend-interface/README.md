@@ -156,6 +156,13 @@ When `CIF_LORA_MANAGEMENT_SECRET` is configured, the package also serves the
 server-to-server `/cif/lora-management` routes that the frontend uses for
 administrator LoRA installs, edits, removals, and library syncs. Capability
 `version` 2 (`multi_source: true`) accepts one operation that changes several
+publications of a shared LoRA library. `version` 3 additionally answers
+`max_trigger_word` — the longest trigger word this package publishes — and labels a
+too-long title or trigger with `lora_title_too_long` / `trigger_word_too_long`
+instead of a generic refusal. A companion that predates version 3 answers no
+`max_trigger_word` and rejects a trigger longer than 120 characters, so the frontend
+reads the field before changing any publication and reports that ceiling as the
+companion's own.
 publications of a shared LoRA library: `POST /operations/{id}/prepare` takes
 `{"targets": [{"source_path", "expected_revision", "publication_id"}], "change",
 "published_at"}` with `change.action` one of `install`, `edit`, `remove`, or

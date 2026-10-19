@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -20,6 +21,7 @@ sys.modules[PACKAGE.__name__] = PACKAGE
 class Routes:
     def __init__(self):
         self.paths = []
+        self.handlers = {}
 
     def post(self, path):
         self.paths.append(("POST", path))
@@ -27,7 +29,12 @@ class Routes:
 
     def get(self, path):
         self.paths.append(("GET", path))
-        return lambda handler: handler
+
+        def register(handler):
+            self.handlers[path] = handler
+            return handler
+
+        return register
 
     def put(self, path):
         self.paths.append(("PUT", path))
@@ -148,6 +155,29 @@ class RouteBoundaryTests(unittest.TestCase):
         self.assertIsNotNone(routes._service(request({**token, "Comfy-User": ""})))
         with self.assertRaisesRegex(routes.ManagementError, "namespace differs"):
             routes._service(request({**token, "Comfy-User": "someone"}))
+
+    def test_capabilities_announce_the_trigger_word_limit(self):
+        """The app reads this route to learn how long a phrase this companion takes."""
+
+        handler = REGISTERED.handlers["/cif/lora-management/capabilities"]
+        token = {"X-CIF-Management-Token": "s" * 32}
+        with patch.object(routes.web, "json_response", lambda payload: payload, create=True):
+            capabilities = asyncio.run(handler(request(token)))
+        self.assertGreaterEqual(capabilities["version"], 3)
+        self.assertGreaterEqual(capabilities["max_trigger_word"], 1000)
+        self.assertEqual(capabilities["max_trigger_word"], routes.MAX_TRIGGER_WORD)
+
+    def test_a_rejected_trigger_length_names_its_own_code(self):
+        """The app can only explain a refusal the companion labels."""
+
+        self.assertEqual(
+            routes.ManagementError("LoRA trigger word is too long", 400).code,
+            "trigger_word_too_long",
+        )
+        self.assertEqual(
+            routes.ManagementError("LoRA title is too long", 400).code,
+            "lora_title_too_long",
+        )
 
 
 if __name__ == "__main__":
