@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 import pytest
+from app.domain.lora_stack import MAX_TRIGGER_WORD
 from app.errors import AppError
 from app.main import create_app
 from app.models import LoraOperation, LoraOperationTarget
@@ -20,6 +21,11 @@ from tests.publication_fixtures import moody_lora_library_files
 
 SECRET = "test-lora-management-secret-0123456789"
 NAMES = ("Moody Krea 2 Mix V4", "Moody Krea 2 Mix V4 Minimal")
+# A character LoRA publishes its whole look as the trigger, not a single word.
+TRIGGER_PHRASE = (
+    "1oandve, short, straight black hair with bangs, pale skin, green eyes, "
+    "accentuated with black winged eyeliner, light pink lipstick"
+)
 
 
 def _sources(client: TestClient) -> list[dict[str, Any]]:
@@ -354,6 +360,59 @@ def test_edit_republishes_every_member_in_one_companion_operation(fake_state, se
             for target in _targets(client, operation_id)
         }
         assert recorded == candidates
+
+
+def test_a_trigger_phrase_reaches_every_member_verbatim(fake_state, settings_factory):
+    """The trigger is a phrase describing the character, so the cap must fit it."""
+
+    assert len(TRIGGER_PHRASE) == 130
+    with _client(fake_state, settings_factory, lora_management_secret=SECRET) as client:
+        ready_admin(client)
+        _sources(client)
+        service = client.app.state.container.lora_operations
+        _mock_preflight(service)
+        service._schedule = lambda _operation_id: None
+        library = _library(client)
+        headers = {"X-CSRF-Token": csrf(client)}
+
+        def edit(trigger_word: str):
+            return client.post(
+                "/api/admin/lora-operations",
+                json=_request_payload(
+                    library, "edit", lora_id="a", display_name="Alpha", trigger_word=trigger_word
+                ),
+                headers=headers,
+            )
+
+        over_cap = edit("x" * (MAX_TRIGGER_WORD + 1))
+        assert over_cap.status_code == 422, over_cap.text
+        assert "trigger_word" in over_cap.json()["error"]["fields"]
+
+        created = edit(f"  {TRIGGER_PHRASE}  ")
+        assert created.status_code == 201, created.text
+        operation_id = created.json()["id"]
+        with client.app.state.container.db.session_factory() as session:
+            row = session.get(LoraOperation, operation_id)
+            assert row.request_json["trigger_word"] == TRIGGER_PHRASE
+        _candidates, calls = _fake_run(service, client, operation_id)
+
+        async def fake_inventory(filename, *, present):
+            return None
+
+        service._verify_model_inventory = fake_inventory
+        service._check_active_generations = lambda _filename: pytest.fail(
+            "Metadata edits should not block on active generations."
+        )
+        service._reconcile_after_success = lambda *_args: None
+        asyncio.run(service._run_guarded(operation_id))
+        assert calls[0][2]["change"] == {
+            "action": "edit",
+            "id": "a",
+            "label": "Alpha",
+            "trigger_word": TRIGGER_PHRASE,
+        }
+        finished = client.get(f"/api/admin/lora-operations/{operation_id}").json()
+        assert finished["status"] == "succeeded"
 
 
 def test_library_files_must_agree_before_a_removal(fake_state, settings_factory):

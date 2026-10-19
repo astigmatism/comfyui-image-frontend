@@ -160,6 +160,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SEMVER_PATTERN =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const MAX_TRIGGER_WORD = 1000;
 
 const PARAMETER_CLASSES = new Map([
   ["CIFTextParameter", "string"],
@@ -584,7 +585,7 @@ function validateTypedParameter(
             typeof item.label !== "string" || !item.label.trim() || item.label.length > 120 ||
             typeof item.filename !== "string" || !item.filename || item.filename.length > 1000 ||
             (Object.hasOwn(item, "description") && (typeof item.description !== "string" || !item.description.trim() || item.description.length > 1000)) ||
-            (Object.hasOwn(item, "trigger_word") && (typeof item.trigger_word !== "string" || !item.trigger_word.trim() || item.trigger_word.length > 120))) {
+            (Object.hasOwn(item, "trigger_word") && (typeof item.trigger_word !== "string" || !item.trigger_word.trim() || item.trigger_word.length > MAX_TRIGGER_WORD))) {
           throw new Error("Invalid private LoRA catalog");
         }
         ids.add(item.id);

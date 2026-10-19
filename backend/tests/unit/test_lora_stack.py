@@ -13,12 +13,18 @@ from types import SimpleNamespace
 import pytest
 from app.api.workflows import _public_interface
 from app.domain.compiler import WorkflowCompiler
+from app.domain.lora_stack import MAX_TRIGGER_WORD
 from app.domain.publication import validate_publication
 from app.errors import AppError, ContractError
 from tests.publication_fixtures import add_lora_stack, build_publication_bundle, object_info_fixture
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "comfyui_extension/comfyui-image-frontend-interface"
+# A character LoRA publishes its whole look as the trigger, not a single word.
+TRIGGER_PHRASE = (
+    "1oandve, short, straight black hair with bangs, pale skin, green eyes, "
+    "accentuated with black winged eyeliner, light pink lipstick"
+)
 
 
 def source(mutate=None):
@@ -196,7 +202,7 @@ def test_invalid_usage_description_is_rejected(description):
         source(update)
 
 
-@pytest.mark.parametrize("trigger_word", [None, "", " ", 1, {}, "x" * 121])
+@pytest.mark.parametrize("trigger_word", [None, "", " ", 1, {}, "x" * (MAX_TRIGGER_WORD + 1)])
 def test_invalid_trigger_word_is_rejected(trigger_word):
     def update(public, private):
         public["items"][0]["trigger_word"] = trigger_word
@@ -206,6 +212,24 @@ def test_invalid_trigger_word_is_rejected(trigger_word):
 
     with pytest.raises(ContractError):
         source(update)
+
+
+@pytest.mark.parametrize("trigger_word", [TRIGGER_PHRASE, "x" * MAX_TRIGGER_WORD])
+def test_trigger_phrase_is_published_verbatim(trigger_word):
+    def update(public, private):
+        public["items"][0]["trigger_word"] = trigger_word
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["trigger_word"] = trigger_word
+        private["catalog_json"] = json.dumps(catalog)
+
+    selected = source(update)
+    for interface in (selected.public_interface, _public_interface(selected.private_contract)):
+        assert interface["inputs"][-1]["items"][0]["trigger_word"] == trigger_word
+    compiled = compile_stack(selected)
+    assert compiled.effective_controls["loras"] == [
+        {"id": "a", "strength": 0},
+        {"id": "b", "strength": 0},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -320,6 +344,28 @@ def test_native_loader_order_zero_and_request_isolation(node_module, value, expe
             assert result is model
         assert model == []
     assert len(creations) == (2 if expected else 0)
+
+
+def test_a_full_library_of_trigger_phrases_still_loads(node_module):
+    """100 maximum-length trigger phrases serialize past the old 100 KB catalog budget."""
+
+    module, _fake = node_module
+    catalog = [
+        {
+            "id": f"lora_{index:02d}",
+            "label": f"LoRA {index}",
+            "filename": f"private/lora_{index:02d}.safetensors",
+            "trigger_word": "x" * MAX_TRIGGER_WORD,
+        }
+        for index in range(100)
+    ]
+    inputs = copy.deepcopy(source().api_document["99"]["inputs"])
+    inputs.pop("model")
+    inputs["catalog_json"] = json.dumps(catalog)
+    inputs["value"] = json.dumps([{"id": item["id"], "strength": 0} for item in catalog])
+    assert len(inputs["catalog_json"]) > 100_000
+    model = []
+    assert module.CIFLoraStack().apply_stack(model, **inputs)[0] is model
 
 
 def test_selected_runtime_requires_node_and_every_catalog_file():

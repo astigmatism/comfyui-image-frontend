@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { adminLoraMarkup, createAdminLoraController, newLoraOperationKey, reconcileLoraStrengthMemory, uploadLoraFile, validateLoraEdit, validateLoraInstall } from "../src/admin-loras.mjs";
+import { adminLoraMarkup, createAdminLoraController, MAX_TRIGGER_WORD, newLoraOperationKey, reconcileLoraStrengthMemory, uploadLoraFile, validateLoraEdit, validateLoraInstall } from "../src/admin-loras.mjs";
 
 const revision = { publication_id: "publication-1", workflow_sha256: "a", api_sha256: "b", manifest_sha256: "c" };
+const triggerPhrase = "1oandve, short, straight black hair with bangs, pale skin, green eyes, accentuated with black winged eyeliner, light pink lipstick";
 const expectedLibrary = [
   { source_key: "a".repeat(64), revision },
   { source_key: "b".repeat(64), revision: { ...revision, publication_id: "publication-2" } },
@@ -32,6 +33,9 @@ test("LoRA administration presents public catalog data without exposing server f
   assert.match(markup, /data-admin-lora-edit="portrait"/);
   assert.match(markup, /name="display_name"/);
   assert.match(markup, /name="trigger_word"/);
+  // A trigger phrase needs a multi-line box that accepts the whole cap.
+  assert.match(markup, new RegExp(`<textarea name="trigger_word" rows="3" maxlength="${MAX_TRIGGER_WORD}"[^>]*></textarea>`));
+  assert.match(markup, /class="field admin-lora-trigger"/);
   assert.doesNotMatch(markup, /private\/portrait\.safetensors/);
   const blocked = adminLoraMarkup({ library: library([], { eligible: false, reason: "Replica is offline" }) });
   assert.match(blocked, /Replica is offline/);
@@ -51,7 +55,7 @@ test("editing preloads public title and trigger without exposing private filenam
   });
   assert.match(markup, /data-admin-lora-edit-form="portrait"/);
   assert.match(markup, /value="&lt;Portrait &amp; &quot;style&quot;&gt;"/);
-  assert.match(markup, /value="portrait subject"/);
+  assert.match(markup, new RegExp(`<textarea name="trigger_word" rows="3" maxlength="${MAX_TRIGGER_WORD}"[^>]*>portrait subject</textarea>`));
   assert.match(markup, /Trigger word \(optional\)/);
   assert.match(markup, /data-admin-lora-edit-cancel="portrait"/);
   assert.doesNotMatch(markup, /private\/portrait\.safetensors/);
@@ -65,7 +69,19 @@ test("edit validation accepts clearing a trigger and rejects unchanged or oversi
   assert.match(validateLoraEdit({ item, displayName: "Portrait", triggerWord: "person" }), /Change the title or trigger word/);
   assert.match(validateLoraEdit({ item, displayName: " ", triggerWord: "person" }), /display title/);
   assert.match(validateLoraEdit({ item, displayName: "x".repeat(121), triggerWord: "" }), /120 characters/);
-  assert.match(validateLoraEdit({ item, displayName: "Portrait", triggerWord: "x".repeat(121) }), /120 characters/);
+  assert.match(validateLoraEdit({ item, displayName: "Portrait", triggerWord: "x".repeat(MAX_TRIGGER_WORD + 1) }), new RegExp(`${MAX_TRIGGER_WORD} characters`));
+});
+
+test("a whole character description works as the trigger phrase", () => {
+  assert.equal(triggerPhrase.length, 130);
+  const item = { id: "portrait", label: "Portrait", trigger_word: "person" };
+  const file = { name: "test.safetensors", size: 24 };
+  assert.equal(validateLoraInstall({ file, displayName: "Style", triggerWord: triggerPhrase }), null);
+  assert.equal(validateLoraEdit({ item, displayName: "Portrait", triggerWord: triggerPhrase }), null);
+  assert.equal(validateLoraEdit({ item, displayName: "Portrait", triggerWord: "x".repeat(MAX_TRIGGER_WORD) }), null);
+  assert.match(validateLoraInstall({ file, displayName: "Style", triggerWord: "x".repeat(MAX_TRIGGER_WORD + 1) }), new RegExp(`${MAX_TRIGGER_WORD} characters`));
+  const markup = adminLoraMarkup({ library: library([{ id: "portrait", label: "Portrait", trigger_word: triggerPhrase }]), editingLoraId: "portrait" });
+  assert.ok(markup.includes(`>${triggerPhrase}</textarea>`));
 });
 
 test("install validation requires one weight file, title, and trigger", () => {

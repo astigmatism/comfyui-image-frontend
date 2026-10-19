@@ -50,6 +50,9 @@ SEMANTIC_ROLES = [
 OUTPUT_ROLES = ["final", "preview", "comparison", "auxiliary"]
 MAX_CHOICE_OPTIONS = 100
 MAX_CHOICE_OPTIONS_JSON = 50000
+# 100 entries whose trigger phrase, description, and filename each reach their cap
+# serialize past 100 KB, so the private catalog gets room for the documented maxima.
+MAX_LORA_CATALOG_JSON = 400000
 ACCEPTED_IMAGE_FORMATS = {"PNG", "JPEG", "WEBP"}
 
 
@@ -910,7 +913,7 @@ class CIFLoraStack:
 
     def apply_stack(self, model, catalog_json, value, minimum, maximum, step, **kwargs):
         _validate_parameter_kwargs(kwargs)
-        if not isinstance(catalog_json, str) or len(catalog_json) > 100000:
+        if not isinstance(catalog_json, str) or len(catalog_json) > MAX_LORA_CATALOG_JSON:
             raise ValueError("Invalid LoRA catalog.")
         if not isinstance(value, str) or len(value) > 20000:
             raise ValueError("Invalid ordered LoRA configuration.")

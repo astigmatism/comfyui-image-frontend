@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+MAX_TRIGGER_WORD = 1000
+
 
 def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Validate a complete ordered permutation without coercion or mutation."""
@@ -41,9 +43,11 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
         if "trigger_word" in item and (
             not isinstance(item["trigger_word"], str)
             or not item["trigger_word"].strip()
-            or len(item["trigger_word"]) > 120
+            or len(item["trigger_word"]) > MAX_TRIGGER_WORD
         ):
-            raise ValueError("LoRA trigger words must be nonempty text up to 120 characters.")
+            raise ValueError(
+                f"LoRA trigger words must be nonempty text up to {MAX_TRIGGER_WORD} characters."
+            )
         ids.add(public_id)
     if not isinstance(value, list) or len(value) != len(items):
         raise ValueError("Include every published LoRA exactly once.")

@@ -16,6 +16,7 @@ from pydantic import (
 
 from .config import COMFYUI_INSTANCE_ID_PATTERN
 from .domain import expectations as expectation_rules
+from .domain.lora_stack import MAX_TRIGGER_WORD
 from .domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
 
@@ -287,7 +288,7 @@ class LoraOperationCreate(APIModel):
     idempotency_key: str = Field(pattern=r"^[a-f0-9-]{36}$")
     filename: str | None = Field(default=None, max_length=255)
     display_name: str | None = Field(default=None, max_length=120)
-    trigger_word: str | None = Field(default=None, max_length=120)
+    trigger_word: str | None = Field(default=None, max_length=MAX_TRIGGER_WORD)
     lora_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
 
     @model_validator(mode="after")

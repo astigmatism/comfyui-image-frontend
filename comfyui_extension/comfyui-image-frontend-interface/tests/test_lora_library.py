@@ -216,13 +216,18 @@ class LibraryOperationTests(unittest.TestCase):
         (self.models / "extra.safetensors").write_bytes(safetensors())
         extra = {"id": "extra", "label": "Extra", "filename": "extra.safetensors"}
         self._publish(MINIMAL, [], node_id=906)
-        library = [self.shared, {**extra, "trigger_word": "extra word"}]
+        phrase = (
+            "1oandve, short, straight black hair with bangs, pale skin, green eyes, "
+            "accentuated with black winged eyeliner, light pink lipstick"
+        )
+        library = [self.shared, {**extra, "trigger_word": phrase}]
         operation_id = str(uuid.uuid4())
         self._run(operation_id, self._request({"action": "set_catalog", "items": library}))
         for source in (ADVANCED, MINIMAL):
             self.assertEqual(
                 [item["id"] for item in self.mirror.bundle(source)["loras"]], ["shared", "extra"]
             )
+            self.assertEqual(self.mirror.bundle(source)["loras"][1]["trigger_word"], phrase)
         dropping = self._request({"action": "set_catalog", "items": [extra]})
         with self.assertRaisesRegex(management.ManagementError, "would drop"):
             self.primary.prepare(str(uuid.uuid4()), dropping)

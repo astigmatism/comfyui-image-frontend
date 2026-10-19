@@ -164,7 +164,7 @@ test("publisher rejects duplicate IDs, nonzero defaults, missing files and inval
       catalog[0].description = description;
       api[2].inputs.catalog_json = JSON.stringify(catalog);
     }),
-    ...[null, "", " ", 1, {}, "x".repeat(121)].map((trigger_word) => (api) => {
+    ...[null, "", " ", 1, {}, "x".repeat(1001)].map((trigger_word) => (api) => {
       const catalog = JSON.parse(api[2].inputs.catalog_json);
       catalog[0].trigger_word = trigger_word;
       api[2].inputs.catalog_json = JSON.stringify(catalog);

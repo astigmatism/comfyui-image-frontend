@@ -1,6 +1,9 @@
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const terminalStatuses = new Set(["succeeded", "failed", "blocked", "repair_required"]);
 
+// A published trigger word is a trigger phrase: it may describe the whole character.
+export const MAX_TRIGGER_WORD = 1000;
+
 export function newLoraOperationKey() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -20,7 +23,7 @@ export function validateLoraInstall({ file, displayName, triggerWord }) {
   if (!String(displayName || "").trim()) return "Enter the display title.";
   if (String(displayName).trim().length > 120) return "Keep the display title to 120 characters or fewer.";
   if (!String(triggerWord || "").trim()) return "Enter the trigger word.";
-  if (String(triggerWord).trim().length > 120) return "Keep the trigger word to 120 characters or fewer.";
+  if (String(triggerWord).trim().length > MAX_TRIGGER_WORD) return `Keep the trigger word to ${MAX_TRIGGER_WORD} characters or fewer.`;
   return null;
 }
 
@@ -29,7 +32,7 @@ export function validateLoraEdit({ item, displayName, triggerWord }) {
   const trigger = String(triggerWord ?? "").trim();
   if (!title) return "Enter the display title.";
   if (title.length > 120) return "Keep the display title to 120 characters or fewer.";
-  if (trigger.length > 120) return "Keep the trigger word to 120 characters or fewer.";
+  if (trigger.length > MAX_TRIGGER_WORD) return `Keep the trigger word to ${MAX_TRIGGER_WORD} characters or fewer.`;
   if (title === String(item?.label ?? "").trim() && trigger === String(item?.trigger_word ?? "").trim()) return "Change the title or trigger word before saving.";
   return null;
 }
@@ -65,7 +68,7 @@ export function adminLoraMarkup({ libraries = [], selectedLibraryKey = null, lib
     if (editingLoraId === item.id) {
       const title = editDraft?.displayName ?? item.label ?? "";
       const trigger = editDraft?.triggerWord ?? item.trigger_word ?? "";
-      return `<li class="admin-lora-row is-editing"><form class="admin-lora-edit" data-admin-lora-edit-form="${escape(item.id)}" aria-label="Edit ${escape(item.label || item.id)} LoRA"><div class="admin-lora-edit-fields"><label class="field"><span>Display title</span><input name="display_name" maxlength="120" required value="${escape(title)}" ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Trigger word (optional)</span><input name="trigger_word" maxlength="120" value="${escape(trigger)}" ${busy || !available ? "disabled" : ""} /></label></div><div class="admin-lora-actions"><button type="submit" class="button primary" ${busy || !available ? "disabled" : ""}>Save</button><button type="button" class="button low" data-admin-lora-edit-cancel="${escape(item.id)}" ${busy ? "disabled" : ""}>Cancel</button></div></form></li>`;
+      return `<li class="admin-lora-row is-editing"><form class="admin-lora-edit" data-admin-lora-edit-form="${escape(item.id)}" aria-label="Edit ${escape(item.label || item.id)} LoRA"><div class="admin-lora-edit-fields"><label class="field"><span>Display title</span><input name="display_name" maxlength="120" required value="${escape(title)}" ${busy || !available ? "disabled" : ""} /></label><label class="field admin-lora-trigger"><span>Trigger word (optional)</span><textarea name="trigger_word" rows="3" maxlength="${MAX_TRIGGER_WORD}" placeholder="One word, or a full phrase describing the character" ${busy || !available ? "disabled" : ""}>${escape(trigger)}</textarea></label></div><div class="admin-lora-actions"><button type="submit" class="button primary" ${busy || !available ? "disabled" : ""}>Save</button><button type="button" class="button low" data-admin-lora-edit-cancel="${escape(item.id)}" ${busy ? "disabled" : ""}>Cancel</button></div></form></li>`;
     }
     return `<li class="admin-lora-row"><div class="admin-lora-summary"><strong>${escape(item.label || item.id)}</strong><span>${escape(item.trigger_word || "No published trigger word")}</span></div><div class="admin-lora-actions"><button type="button" class="button low" data-admin-lora-edit="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Edit ${escape(item.label || item.id)}">Edit</button><button type="button" class="button destructive low" data-admin-lora-remove="${escape(item.id)}" ${busy || !available ? "disabled" : ""} aria-label="Remove ${escape(item.label || item.id)}">Remove</button></div></li>`;
   }).join("");
@@ -81,7 +84,7 @@ export function adminLoraMarkup({ libraries = [], selectedLibraryKey = null, lib
     ${conflicts}${sync}
     <p class="admin-lora-message" role="status">${escape(message)}</p>
     ${selected?.eligible && !loading ? `<ul class="admin-lora-list" aria-label="Library LoRAs">${rows || '<li class="muted">No LoRAs in the library yet.</li>'}</ul>
-    <form id="admin-lora-install-form" class="admin-lora-install"><h4>Install a LoRA</h4><div class="admin-lora-fields"><label class="field"><span>Weight file</span><input type="file" name="file" accept=".safetensors" required ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Display title</span><input name="display_name" maxlength="120" required ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Trigger word</span><input name="trigger_word" maxlength="120" required ${busy || !available ? "disabled" : ""} /></label></div><button class="button primary" type="submit" ${busy || !available ? "disabled" : ""}>Install LoRA</button></form>` : ""}
+    <form id="admin-lora-install-form" class="admin-lora-install"><h4>Install a LoRA</h4><div class="admin-lora-fields"><label class="field"><span>Weight file</span><input type="file" name="file" accept=".safetensors" required ${busy || !available ? "disabled" : ""} /></label><label class="field"><span>Display title</span><input name="display_name" maxlength="120" required ${busy || !available ? "disabled" : ""} /></label><label class="field admin-lora-trigger"><span>Trigger word</span><textarea name="trigger_word" rows="3" maxlength="${MAX_TRIGGER_WORD}" placeholder="One word, or a full phrase describing the character" required ${busy || !available ? "disabled" : ""}></textarea></label></div><button class="button primary" type="submit" ${busy || !available ? "disabled" : ""}>Install LoRA</button></form>` : ""}
     ${canRetryUpload && operation?.status === "awaiting_upload" && !busy ? '<button type="button" class="button secondary" data-admin-lora-retry-upload>Retry upload</button>' : ""}
     ${operation?.status === "awaiting_upload" && !busy ? '<button type="button" class="button low" data-admin-lora-cancel-upload>Cancel pending upload</button>' : ""}
     ${progress}<p class="admin-lora-status" role="status" aria-live="polite">${escape(status)}</p>${error ? `<p class="form-error" role="alert">${escape(error)}</p>` : ""}`;

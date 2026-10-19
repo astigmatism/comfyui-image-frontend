@@ -313,6 +313,34 @@ class ManagementTests(unittest.TestCase):
             service.finalize(rename_id)
         self.assertEqual((model.stat().st_ino, model.read_bytes()), before_model)
 
+    def test_a_trigger_phrase_is_published_verbatim(self):
+        phrase = (
+            "1oandve, short, straight black hair with bangs, pale skin, green eyes, "
+            "accentuated with black winged eyeliner, light pink lipstick"
+        )
+        self.assertGreater(len(phrase), 120)
+        original = {
+            "id": "existing",
+            "label": "Existing",
+            "trigger_word": "old trigger",
+            "filename": "existing.safetensors",
+        }
+        self._publish_catalog([original])
+        (self.models / original["filename"]).write_bytes(safetensors())
+
+        operation_id = str(uuid.uuid4())
+        change = {"action": "edit", "id": "existing", "label": "Existing", "trigger_word": phrase}
+        request = self._request(self.primary, change, operation_id)
+        self.primary.prepare(operation_id, request)
+        self.mirror.prepare(operation_id, request)
+        for service in (self.primary, self.mirror):
+            self.assertEqual(service.commit(operation_id)["state"], "committed")
+            self.assertEqual(service.bundle(SOURCE)["loras"][0]["trigger_word"], phrase)
+            workflow = json.loads(service._bundle(SOURCE)["workflow"])
+            catalog = json.loads(workflow["nodes"][0]["widgets_values"][0])
+            self.assertEqual(catalog[0]["trigger_word"], phrase)
+            service.finalize(operation_id)
+
     def test_edit_rejects_invalid_values_duplicate_ids_and_noop(self):
         original = {"id": "existing", "label": "Existing", "filename": "existing.safetensors"}
         self._publish_catalog([original])
@@ -324,7 +352,11 @@ class ManagementTests(unittest.TestCase):
             ({"id": "existing", "label": "x" * 121, "trigger_word": "word"}, "Invalid LoRA title"),
             ({"id": "existing", "label": "Updated", "trigger_word": None}, "Invalid LoRA title"),
             (
-                {"id": "existing", "label": "Updated", "trigger_word": "x" * 121},
+                {
+                    "id": "existing",
+                    "label": "Updated",
+                    "trigger_word": "x" * (management.MAX_TRIGGER_WORD + 1),
+                },
                 "Invalid LoRA title",
             ),
             ({"id": "existing", "label": " Existing ", "trigger_word": " "}, "unchanged"),

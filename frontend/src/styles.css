@@ -4822,6 +4822,11 @@ dialog::backdrop {
   gap: var(--space-3);
 }
 
+/* A trigger word is often a long phrase, so it gets the whole row. */
+.admin-lora-trigger {
+  grid-column: 1 / -1;
+}
+
 .admin-lora-install .button {
   justify-self: start;
 }

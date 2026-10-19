@@ -38,6 +38,7 @@ MAX_BUNDLE = 32 * 1024 * 1024
 MAX_HEADER = 16 * 1024 * 1024
 MAX_TARGETS = 50
 MAX_CATALOG = 100
+MAX_TRIGGER_WORD = 1000
 DEFAULT_MAX_UPLOAD = 8 * 1024 * 1024 * 1024
 ACTIONS = ("install", "remove", "edit", "set_catalog")
 WIDGETS = (
@@ -766,7 +767,7 @@ class LoraManagement:
                 "label": _text(item["label"], limit=120, required=True),
                 "filename": filename,
             }
-            trigger = _text(item.get("trigger_word"), limit=120, required=False)
+            trigger = _text(item.get("trigger_word"), limit=MAX_TRIGGER_WORD, required=False)
             if trigger:
                 entry["trigger_word"] = trigger
             description = _text(item.get("description"), limit=1000, required=False)
@@ -819,7 +820,7 @@ class LoraManagement:
             or len(label) > 120
             or not isinstance(trigger, str)
             or not trigger.strip()
-            or len(trigger) > 120
+            or len(trigger) > MAX_TRIGGER_WORD
         ):
             raise ManagementError("LoRA title and trigger word are required", 400)
         if (
@@ -885,7 +886,7 @@ class LoraManagement:
                 or not label.strip()
                 or len(label) > 120
                 or not isinstance(trigger, str)
-                or len(trigger) > 120
+                or len(trigger) > MAX_TRIGGER_WORD
             ):
                 raise ManagementError("Invalid LoRA title or trigger word", 400)
             found = [item for item in catalog if item.get("id") == lora_id]
