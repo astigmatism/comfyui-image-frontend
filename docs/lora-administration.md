@@ -19,7 +19,7 @@ LoRA administration manages a **library**, not one workflow. Every current image
 
 Only one LoRA operation runs at a time. Library operations need the version 2 companion (`multi_source: true` in `/cif/lora-management/capabilities`).
 
-Groups are shared within each model-family library and stored in the application database. A LoRA has one membership; no explicit membership means permanent **Uncategorized**. Deleting a group removes its memberships only. Group changes require administrator authentication, CSRF, and a matching grouping revision, but do not require a ComfyUI writer or republish a workflow. See [Shared groups](lora-controls.md#shared-groups).
+Groups and their display order are shared within each model-family library and stored in the application database. A LoRA has one membership; no explicit membership means permanent **Uncategorized**. Administrators can move any group up or down, including Uncategorized. Deleting a custom group removes its memberships only. Group changes require administrator authentication, CSRF, and a matching grouping revision, but do not require a ComfyUI writer or republish a workflow. See [Shared groups](lora-controls.md#shared-groups).
 
 ## Operation sequence
 

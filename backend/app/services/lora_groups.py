@@ -26,11 +26,23 @@ def grouping(session: Session, library_key: str, identities: Iterable[str]) -> d
         )
     }
     version = session.get(LoraGroupingRevision, library_key)
+    definitions = {
+        group.id: {"id": group.id, "name": group.name, "system": False} for group in groups
+    }
+    definitions[UNCATEGORIZED] = {"id": UNCATEGORIZED, "name": "Uncategorized", "system": True}
+    order = list(
+        dict.fromkeys(
+            key for key in (version.group_order_json if version else []) if key in definitions
+        )
+    )
+    # New groups appear before the fallback without disturbing the existing order.
+    for key in definitions:
+        if key not in order:
+            order.insert(order.index(UNCATEGORIZED) if UNCATEGORIZED in order else len(order), key)
     return {
         "library_key": library_key,
         "revision": version.revision if version else 0,
-        "groups": [{"id": group.id, "name": group.name, "system": False} for group in groups]
-        + [{"id": UNCATEGORIZED, "name": "Uncategorized", "system": True}],
+        "groups": [definitions[key] for key in order],
         "assignments": {
             identity: memberships.get(identity, UNCATEGORIZED) for identity in identities
         },
@@ -57,6 +69,22 @@ def named_group(session: Session, library_key: str, group_id: str) -> LoraGroup:
     if group is None or group.library_key != library_key:
         raise AppError("lora_group_not_found", "Group was not found.", status_code=404)
     return group
+
+
+def save_order(session: Session, library_key: str, group_ids: list[str]) -> None:
+    expected = set(
+        session.scalars(select(LoraGroup.id).where(LoraGroup.library_key == library_key))
+    )
+    expected.add(UNCATEGORIZED)
+    if len(group_ids) != len(expected) or set(group_ids) != expected:
+        raise AppError(
+            "lora_group_order_invalid",
+            "Include every group in this library exactly once, including Uncategorized.",
+            status_code=422,
+        )
+    row = session.get(LoraGroupingRevision, library_key)
+    assert row is not None  # check_revision establishes the row in this transaction.
+    row.group_order_json = list(group_ids)
 
 
 def save_name(session: Session, library_key: str, name: str, group_id: str | None) -> None:

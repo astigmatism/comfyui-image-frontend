@@ -274,6 +274,7 @@ class LoraGroupingRevision(Base):
 
     library_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    group_order_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
 
 class LoraGroup(Base):

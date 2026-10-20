@@ -37,10 +37,11 @@ async function mount(page) {
         return operation;
       }
       if (path.startsWith("/api/admin/lora-operations/")) return window.operations[path.split("/").pop()];
-      if (options && (path.includes("/groups") || path.includes("group-memberships"))) {
+      if (options && (path.includes("/groups") || path.includes("group-memberships") || path.endsWith("/group-order"))) {
         if (body.revision !== window.grouping.revision) throw Object.assign(new Error("Groups changed elsewhere. Review the latest groups and try again."), { code: "lora_group_conflict" });
         const last = path.split("/").pop();
-        if (path.includes("group-memberships")) window.grouping.assignments[last] = body.group_id;
+        if (last === "group-order") window.grouping.groups = body.group_ids.map((id) => window.grouping.groups.find((group) => group.id === id));
+        else if (path.includes("group-memberships")) window.grouping.assignments[last] = body.group_id;
         else if (options.method === "POST") window.grouping.groups.unshift({ id: `group-${window.grouping.revision}`, name: body.name, system: false });
         else if (options.method === "PATCH") window.grouping.groups = window.grouping.groups.map((group) => group.id === last ? { ...group, name: body.name } : group);
         else {
@@ -49,7 +50,7 @@ async function mount(page) {
         }
         window.grouping.revision += 1;
       }
-      if (path.includes("groups") || path.includes("group-memberships")) return structuredClone(window.grouping);
+      if (path.includes("groups") || path.includes("group-memberships") || path.endsWith("/group-order")) return structuredClone(window.grouping);
       throw new Error(`Unexpected request ${path}`);
     };
     const root = document.querySelector("#app");
@@ -149,7 +150,8 @@ test("management mode switches families without selection controls and blocks st
   await page.getByRole("button", { name: "Open library" }).click();
   await expect(manager(page).getByRole("heading", { name: "LoRA library", exact: true })).toBeVisible();
   await expect(manager(page).getByRole("button", { name: "Apply", exact: true })).toHaveCount(0);
-  await expect(manager(page).locator(".lm-order-bar, [data-lora-toggle], input[type=range]")).toHaveCount(0);
+  await expect(manager(page).locator(".lm-order-bar, [data-lora-toggle]")).toHaveCount(0);
+  await expect(manager(page).getByRole("slider", { name: "LoRA thumbnail size" })).toBeVisible();
   await manager(page).getByRole("combobox", { name: "Model family" }).selectOption("other");
   await expect(manager(page).locator(".lm-card")).toHaveCount(0);
   await manager(page).getByRole("button", { name: "Done", exact: true }).click();
@@ -161,4 +163,40 @@ test("management mode switches families without selection controls and blocks st
   await manager(page).getByRole("button", { name: "Save details", exact: true }).click();
   await expect(manager(page).getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
   await expect(manager(page)).toContainText("Refresh failed");
+});
+
+test("group move controls save shared order, support the fallback, and require explicit conflict retry", async ({ page }) => {
+  await mount(page);
+  await page.getByRole("button", { name: "Open selector" }).click();
+  await newGroup(page, "Portraits");
+  await newGroup(page, "Styles");
+  const names = () => manager(page).locator(".lm-group-heading h3").allTextContents();
+  await expect.poll(names).toEqual(["Styles", "Portraits", "Uncategorized"]);
+  await expect(manager(page).getByRole("button", { name: "Move Styles up", exact: true })).toBeDisabled();
+  await manager(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await page.evaluate(() => { window.grouping.revision += 1; });
+  await manager(page).getByRole("button", { name: "Move Styles down", exact: true }).click();
+  await expect(manager(page).getByRole("alert")).toContainText("changed elsewhere");
+  expect(await names()).toEqual(["Styles", "Portraits", "Uncategorized"]);
+  await manager(page).getByRole("button", { name: "Move Styles down", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(names).toEqual(["Portraits", "Styles", "Uncategorized"]);
+  await expect(manager(page).getByRole("button", { name: "Move Styles down", exact: true })).toBeFocused();
+  await manager(page).getByRole("button", { name: "Move Uncategorized up", exact: true }).click();
+  await expect.poll(names).toEqual(["Portraits", "Uncategorized", "Styles"]);
+  await expect(manager(page).getByRole("button", { name: "Move Styles down", exact: true })).toBeDisabled();
+  await expect(manager(page).getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
+  await manager(page).getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Open library" }).click();
+  await expect.poll(names).toEqual(["Portraits", "Uncategorized", "Styles"]);
+  expect(await page.evaluate(() => window.stack[1].strength)).toBe(0);
+  const touch = await page.context().newCDPSession(page);
+  await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const moveUp = manager(page).getByRole("button", { name: "Move Styles up", exact: true });
+  await moveUp.scrollIntoViewIfNeeded();
+  const box = await moveUp.boundingBox();
+  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(await manager(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 });

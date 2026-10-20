@@ -171,6 +171,84 @@ def test_concurrent_group_edits_require_review(fake_state, settings_factory):
         assert len(client.get(READ).json()["groups"]) == 2
 
 
+def test_shared_group_order_is_complete_conditional_and_survives_other_edits(
+    fake_state, settings_factory
+):
+    fake_state.workflow_files = moody_lora_library_files()
+    order_path = "/api/admin/lora-library/krea2/group-order"
+    with TestClient(create_app(settings_factory())) as client:
+        _, user_cookie = provision_user(client, username="group.order")
+        assert (
+            client.put(
+                order_path,
+                json={"revision": 0, "group_ids": ["uncategorized"]},
+                headers={"X-CSRF-Token": csrf(client)},
+            ).status_code
+            == 403
+        )
+        login_ready_admin(client)
+        assert (
+            client.put(order_path, json={"revision": 0, "group_ids": ["uncategorized"]}).status_code
+            == 403
+        )
+        headers = {"X-CSRF-Token": csrf(client)}
+        beta = client.post(PATH, json={"revision": 0, "name": "Beta"}, headers=headers).json()[
+            "groups"
+        ][0]["id"]
+        created = client.post(PATH, json={"revision": 1, "name": "Alpha"}, headers=headers).json()
+        alpha = created["groups"][0]["id"]
+        assert [group["name"] for group in created["groups"]] == ["Alpha", "Beta", "Uncategorized"]
+        with client.app.state.container.db.session_factory() as session:
+            other = LoraGroup(library_key="other", name="Other", name_normalized="other")
+            session.add(other)
+            session.commit()
+            other_id = other.id
+        for invalid in [
+            [alpha, beta],
+            [alpha, alpha, "uncategorized"],
+            [other_id, beta, "uncategorized"],
+        ]:
+            response = client.put(
+                order_path, json={"revision": 2, "group_ids": invalid}, headers=headers
+            )
+            assert response.status_code == 422, response.text
+            assert client.get(READ).json()["revision"] == 2
+        wanted = ["uncategorized", beta, alpha]
+        ordered = client.put(order_path, json={"revision": 2, "group_ids": wanted}, headers=headers)
+        assert ordered.status_code == 200, ordered.text
+        assert [group["id"] for group in ordered.json()["groups"]] == wanted
+        assert ordered.json()["assignments"] == created["assignments"]
+        assert (
+            client.put(
+                order_path, json={"revision": 2, "group_ids": wanted[::-1]}, headers=headers
+            ).status_code
+            == 409
+        )
+        renamed = client.patch(
+            f"{PATH}/{beta}", json={"revision": 3, "name": "Zeta"}, headers=headers
+        )
+        assert [group["id"] for group in renamed.json()["groups"]] == wanted
+        added = client.post(PATH, json={"revision": 4, "name": "New group"}, headers=headers).json()
+        new_id = next(group["id"] for group in added["groups"] if group["name"] == "New group")
+        assert [group["id"] for group in added["groups"]] == [new_id, *wanted]
+        removed = client.request("DELETE", f"{PATH}/{beta}", json={"revision": 5}, headers=headers)
+        assert [group["id"] for group in removed.json()["groups"]] == [
+            new_id,
+            "uncategorized",
+            alpha,
+        ]
+        restore_cookie(client, user_cookie)
+        assert client.get(READ).json() == removed.json()
+        for source in client.get("/api/workflows").json():
+            detail = client.get(f"/api/workflows/{source['source_key']}").json()
+            for control in detail["interface"]["inputs"]:
+                if control["type"] == "lora_stack":
+                    view = client.get(
+                        f"/api/workflows/{source['source_key']}/lora-groups/{control['id']}"
+                    ).json()
+                    assert view["groups"] == removed.json()["groups"]
+
+
 def test_completed_lora_removal_prunes_group_membership(fake_state, settings_factory):
     from app.domain.lora_identity import lora_identity_v1
 

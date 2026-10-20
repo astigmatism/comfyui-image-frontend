@@ -74,6 +74,38 @@ async function open(page) {
   await expect(dialog(page)).toBeVisible();
 }
 
+test("smaller desktop dialog and thumbnail slider reflow cards without changing selection", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await mount(page);
+  await open(page);
+  const box = await dialog(page).boundingBox();
+  expect(box.width).toBeCloseTo((1440 - 48) * .75, -1);
+  expect(box.height).toBeCloseTo((1000 - 32) * .75, -1);
+  const slider = dialog(page).getByRole("slider", { name: "LoRA thumbnail size" });
+  const thumbnail = dialog(page).getByRole("button", { name: "Toggle Alpha" });
+  await thumbnail.click();
+  const defaultWidth = (await thumbnail.boundingBox()).width;
+  await slider.fill("50");
+  expect((await thumbnail.boundingBox()).width).toBeLessThan(defaultWidth);
+  await slider.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(slider).toHaveValue("55");
+  await expect(slider).toHaveAttribute("aria-valuetext", "55%");
+  await expect(thumbnail).toHaveAttribute("aria-pressed", "true");
+  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+  await mount(page);
+  await open(page);
+  await expect(slider).toHaveValue("55");
+  await expect(thumbnail).toHaveAttribute("aria-pressed", "false");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await slider.fill("50");
+  const smallMobile = (await thumbnail.boundingBox()).width;
+  await slider.fill("150");
+  expect((await thumbnail.boundingBox()).width).toBeGreaterThan(smallMobile);
+  expect(await dialog(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await expect(dialog(page).getByRole("button", { name: "Apply", exact: true })).toBeInViewport();
+});
+
 const LONG_DESCRIPTION =
   "Use for editorial portrait work: keep the face structure, hair line and eye colour exactly as trained, " +
   "paint no extra background detail, and keep the skin matte so later retouching stays reversible. " +
@@ -148,7 +180,7 @@ test("gallery drafts selection and order while strengths remain in the sidebar",
 
 test("thumbnail selection preserves scrolling and the card menu does not toggle selection", async ({ page }) => {
   await mount(page);
-  await page.addStyleTag({ content: "#lora-manager-dialog { height: 330px; }" });
+  await page.addStyleTag({ content: "#lora-manager-dialog { height: 330px; min-height: 0; }" });
   await open(page);
   const manager = dialog(page);
   const content = manager.locator(".lm-dialog-content");

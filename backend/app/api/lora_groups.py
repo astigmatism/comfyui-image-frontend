@@ -15,6 +15,7 @@ from ..dependencies import (
     require_ready_user,
 )
 from ..errors import AppError
+from ..models import LoraGroupingRevision
 from ..schemas import APIModel
 from ..services import lora_groups as groups
 from ..services.lora_images import control_identities
@@ -34,6 +35,10 @@ class GroupName(GroupRevision):
 
 class GroupAssignment(GroupRevision):
     group_id: str = Field(min_length=1, max_length=36)
+
+
+class GroupOrder(GroupRevision):
+    group_ids: list[str] = Field(min_length=1)
 
 
 def _library(request: Request, session: Session, key: str) -> Library:
@@ -82,6 +87,9 @@ def _begin(request: Request, session: Session, key: str, revision: int) -> Libra
 def _finish(session: Session, library: Library) -> dict[str, Any]:
     session.flush()
     result = groups.grouping(session, library.key, catalog_identities(library.canonical).values())
+    version = session.get(LoraGroupingRevision, library.key)
+    if version is not None and version.group_order_json:
+        version.group_order_json = [group["id"] for group in result["groups"]]
     session.commit()
     return result
 
@@ -97,6 +105,20 @@ def create_group(
 ) -> dict[str, Any]:
     library = _begin(request, session, key, payload.revision)
     groups.save_name(session, key, payload.name, None)
+    return _finish(session, library)
+
+
+@router.put("/admin/lora-library/{key}/group-order")
+@database_handler
+def reorder_groups(
+    key: str,
+    payload: GroupOrder,
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    _: Annotated[AuthContext, Depends(_admin_csrf)],
+) -> dict[str, Any]:
+    library = _begin(request, session, key, payload.revision)
+    groups.save_order(session, key, payload.group_ids)
     return _finish(session, library)
 
 

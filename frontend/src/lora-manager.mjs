@@ -1,5 +1,5 @@
 import { loraDefaultPositiveStrength, loraStackError } from "./lora-stack.mjs";
-import { loraManagerMarkup, moveEnabledLora, reconcileLoraDraft, subjectPreview } from "./lora-gallery.mjs";
+import { loraManagerMarkup, moveEnabledLora, normalizeLoraThumbnailScale, reconcileLoraDraft, subjectPreview } from "./lora-gallery.mjs";
 export { loraManagerMarkup } from "./lora-gallery.mjs";
 
 const encoded = (value) => encodeURIComponent(value);
@@ -30,6 +30,9 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   let touchDrag = null;
   let refreshingLibrary = false;
   let managementToken = 0;
+  let thumbnailScale = 100;
+  const scaleStorageKey = "cif.lora-thumbnail-scale.v1";
+  try { thumbnailScale = normalizeLoraThumbnailScale(localStorage.getItem(scaleStorageKey)); } catch { /* The slider still works when browser storage is unavailable. */ }
   const dialog = () => root.querySelector("#lora-manager-dialog");
   // Image work outlives the selection draft, including Cancel and owner closure.
   const imageStores = new Map();
@@ -136,7 +139,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     const editor = target.querySelector(".lm-editor");
     const editorKey = editor?.dataset.editorKey;
     const nextEditorKey = JSON.stringify(draft.panel);
-    const markup = loraManagerMarkup({ ...draft, admin: isAdmin(), adminController, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError });
+    const markup = loraManagerMarkup({ ...draft, thumbnailScale, admin: isAdmin(), adminController, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError });
     const frame = target.querySelector(".lm-dialog-frame");
     if (frame) {
       // Keep the file input alive if another thumbnail finishes saving while
@@ -156,7 +159,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     syncSubjectPreview(target);
     if (focus) {
       const element = target.querySelector(focus);
-      if (element?.disabled) element.closest("[data-lora-id]")?.querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
+      if (element?.disabled) (element.closest("[data-lora-id]")?.querySelector("[data-lora-toggle]") || element.closest("[data-lora-group]")?.querySelector(".lm-group-actions button:not(:disabled)"))?.focus({ preventScroll: true });
       else element?.focus({ preventScroll: true });
     }
     positionMenu();
@@ -308,7 +311,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     render();
     dialog()?.querySelector(".lm-editor input,.lm-editor select,.lm-editor button")?.focus();
   }
-  async function mutateGroups(path, method, fields) {
+  async function mutateGroups(path, method, fields, focus = null) {
     const session = draft;
     if (!isAdmin() || !session?.grouping || session.groupsBusy) return;
     session.groupsBusy = true;
@@ -325,12 +328,21 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       if (session === draft) session.error = error.message || "The group change could not be saved.";
     } finally {
       session.groupsBusy = false;
-      if (session === draft) render();
+      if (session === draft) render(focus);
     }
   }
   async function deleteGroup(id) {
     if (!window.confirm("Delete this group? Its LoRAs will move to Uncategorized. No LoRA files will be deleted.")) return;
     await mutateGroups(`groups/${encoded(id)}`, "DELETE", {});
+  }
+  async function moveGroup(id, direction) {
+    if (!draft?.grouping || draft.groupsBusy) return;
+    const groupIds = draft.grouping.groups.map((group) => group.id);
+    const from = groupIds.indexOf(id), to = from + direction;
+    if (from < 0 || to < 0 || to >= groupIds.length) return;
+    groupIds.splice(to, 0, groupIds.splice(from, 1)[0]);
+    await mutateGroups("group-order", "PUT", { group_ids: groupIds }, `[data-lora-group-${direction < 0 ? "up" : "down"}="${CSS.escape(id)}"]`);
+    dialog()?.querySelector(`[data-lora-group="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" });
   }
   adminController?.subscribe(() => {
     if (!draft || !isAdmin()) return;
@@ -343,6 +355,8 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (opener) { void open(opener); return; }
     if (!draft || !event.target.closest("#lora-manager-dialog")) return;
     if (event.target.closest("button:disabled")) return;
+    const groupUp = event.target.closest("[data-lora-group-up]"), groupDown = event.target.closest("[data-lora-group-down]");
+    if (groupUp || groupDown) { void moveGroup((groupUp || groupDown).dataset[groupUp ? "loraGroupUp" : "loraGroupDown"], groupUp ? -1 : 1); return; }
     const menu = event.target.closest("[data-lora-menu]");
     if (menu) { draft.menuId = draft.menuId === menu.dataset.loraMenu ? null : menu.dataset.loraMenu; render(); dialog()?.querySelector("[data-lora-popover] button")?.focus(); return; }
     const actions = [
@@ -433,6 +447,17 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   });
   root.addEventListener("input", (event) => {
     if (!draft) return;
+    if (event.target.matches("[data-lora-thumbnail-scale]")) {
+      thumbnailScale = normalizeLoraThumbnailScale(event.target.value);
+      event.target.setAttribute("aria-valuetext", `${thumbnailScale}%`);
+      const frame = dialog().querySelector(".lm-dialog-frame");
+      frame.style.setProperty("--lm-card-size", `${260 * thumbnailScale / 100}px`);
+      frame.style.setProperty("--lm-mobile-card-size", `${160 * thumbnailScale / 100}px`);
+      dialog().querySelector("[data-lora-thumbnail-scale-value]").value = `${thumbnailScale}%`;
+      try { localStorage.setItem(scaleStorageKey, String(thumbnailScale)); } catch { /* Keep the in-memory preference. */ }
+      positionMenu();
+      return;
+    }
     if (draft.panel?.kind === "edit" && adminController?.state.editDraft && ["display_name", "trigger_word"].includes(event.target.name)) {
       adminController.state.editDraft[event.target.name === "display_name" ? "displayName" : "triggerWord"] = event.target.value;
     }

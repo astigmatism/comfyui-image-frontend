@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "e8c6a4b2d901"
+HEAD_REVISION = "f3b7d9a1c602"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -43,6 +43,42 @@ def _config(database_path: Path) -> Config:
     config.set_main_option("script_location", str(root / "backend" / "alembic"))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
     return config
+
+
+def test_lora_group_order_upgrade_preserves_groups_memberships_and_revision(tmp_path):
+    from app.models import LoraGroupingRevision, LoraGroupMembership
+    from app.services.lora_groups import grouping
+
+    path = tmp_path / "lora-group-order.db"
+    config = _config(path)
+    command.upgrade(config, "e8c6a4b2d901")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO lora_grouping_revisions (library_key, revision) VALUES ('family', 7)")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO lora_groups (id, library_key, name, name_normalized) "
+                "VALUES ('z', 'family', 'Zeta', 'zeta'), ('a', 'family', 'Alpha', 'alpha')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO lora_group_memberships (library_key, lora_identity, group_id) "
+                "VALUES ('family', 'identity', 'z')"
+            )
+        )
+    command.upgrade(config, "head")
+    with Session(engine) as session:
+        version = session.get(LoraGroupingRevision, "family")
+        assert version.revision == 7
+        assert version.group_order_json == []
+        snapshot = grouping(session, "family", ["identity", "new"])
+        assert [group["name"] for group in snapshot["groups"]] == ["Alpha", "Zeta", "Uncategorized"]
+        assert snapshot["assignments"] == {"identity": "z", "new": "uncategorized"}
+        assert session.get(LoraGroupMembership, ("family", "identity")).group_id == "z"
+    engine.dispose()
 
 
 def test_checkpoint_ranks_reset_once_and_historical_identity_is_backfilled(tmp_path):
