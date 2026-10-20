@@ -9,6 +9,8 @@ import {
   clientValidate,
   escapeHtml,
   interfaceInputs,
+  migrateInterfaceState,
+  migrateLoraStrengthMemory,
   normalizeSourceModelSelections,
   parametersForRequest,
   positivePromptInput,
@@ -19,7 +21,7 @@ import {
   sourceModelSelectors,
 } from "./lib.mjs";
 import { controlMarkup, controlSectionMarkup, pairedResolutionMarkup, sourcePickerMarkup } from "./render.mjs";
-import { loraStackError, loraStackMarkup } from "./lora-stack.mjs";
+import { installLoraStackControls, loraStackError, loraStackMarkup } from "./lora-stack.mjs";
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -236,7 +238,7 @@ export function promptRerunMarkup(draft, preview, { parentName = "Home", loading
   const loras = inputs.loras.map((control) => section(
     `lora-${control.id}`, control.label || "LoRAs",
     `${(draft.values[control.id] || []).filter((entry) => entry.strength > 0).length} active`,
-    loraStackMarkup(control, draft.values[control.id], draft.loraImages?.[control.id]) + fieldError(errors, control.id),
+    loraStackMarkup(control, draft.values[control.id], draft.loraImages?.[control.id], { editable: true, disabled: loading }) + fieldError(errors, control.id),
     `<div class="control-section-actions"><button type="button" class="icon-button prompt-editor-launch" data-lora-open data-control-context="rerun" data-lora-control-id="${escapeHtml(control.id)}" aria-label="Open LoRA manager" title="Open LoRA manager" aria-haspopup="dialog" aria-controls="lora-manager-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`,
     Boolean(errors[control.id]),
   )).join("");
@@ -480,7 +482,7 @@ export function createPromptRerun(dialog, deps) {
   dialog.addEventListener("input", (event) => { if (["text", "number", "textarea"].includes(event.target.type)) handle(event); });
   dialog.addEventListener("change", handle);
   dialog.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && event.target.matches('input[type="text"], input[type="number"]')) {
+    if (event.key === "Enter" && event.target.matches('input[type="text"], input[type="number"]') && !event.target.matches("[data-lora-strength]")) {
       event.preventDefault();
       void submit();
     }
@@ -492,8 +494,38 @@ export function createPromptRerun(dialog, deps) {
     if (draft && !loading) draft.recentResolutions = recordRecentResolution(draft.recentResolutions, value);
   }
 
+  installLoraStackControls(dialog, {
+    context: (id) => {
+      if (!draft || loading) return null;
+      const control = rerunInputs(draft.source?.interface || draft.source?.contract).loras.find((item) => item.id === id);
+      return control ? { control, values: draft.values[id], memory: draft.loraMemory[id] || {}, sourceKey: draft.sourceKey } : null;
+    },
+    apply: (id, values, memory) => {
+      draft.values[id] = structuredClone(values);
+      draft.loraMemory[id] = structuredClone(memory);
+      refreshDerived();
+    },
+  });
+
   return {
     open, isOpen: () => dialog.open,
+    refreshLoraSource: async () => {
+      if (!draft || !dialog.open) return;
+      const session = sessionToken;
+      const source = await deps.loadSource(draft.sourceKey);
+      if (!draft || session !== sessionToken) return;
+      const oldContract = draft.source.interface || draft.source.contract;
+      const nextContract = source.interface || source.contract;
+      const migrated = migrateInterfaceState(nextContract, oldContract, draft.values, [], draft.values).values;
+      const memory = migrateLoraStrengthMemory(nextContract, oldContract, draft.values, draft.loraMemory);
+      for (const control of rerunInputs(nextContract).loras) {
+        draft.values[control.id] = migrated[control.id];
+        draft.loraMemory[control.id] = memory[control.id] || {};
+      }
+      draft.source = source;
+      draft.loraImages = {};
+      render();
+    },
     close: () => { if (!loading && dialog.open) dialog.close(); },
     toggleSection: (trigger) => setSectionOpen(trigger.closest("[data-control-section]").dataset.controlSection, trigger.getAttribute("aria-expanded") !== "true"),
     sourcePickerContext: () => {

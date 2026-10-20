@@ -113,7 +113,7 @@ export function shellMarkup(state) {
             <summary aria-label="Account menu">${escapeHtml(state.session.user.username)}</summary>
             <div class="menu-popover" role="menu">
               <button role="menuitem" data-action="change-password">Change password</button>
-              ${admin ? '<button role="menuitem" data-action="open-admin">Administration</button>' : ""}
+              ${admin ? '<button role="menuitem" data-action="open-lora-library">LoRA library</button><button role="menuitem" data-action="open-admin">Administration</button>' : ""}
               <button role="menuitem" data-action="logout">Sign out</button>
             </div>
           </details>

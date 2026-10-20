@@ -11,6 +11,7 @@ import {
   formatLoraStrength,
 } from "../src/lora-stack.mjs";
 import { loraManagerMarkup, loraPublicationRevisionMatches } from "../src/lora-manager.mjs";
+import { groupedLoras, moveEnabledLora, reconcileLoraDraft } from "../src/lora-gallery.mjs";
 import { parametersForRequest, overwriteWithRecall, clientValidate } from "../src/lib.mjs";
 
 const control = { id: "loras", type: "lora_stack", label: "LoRAs", semantic_role: "lora", required: false, advanced: false, group: "LoRAs", order: 150, items: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }], minimum: 0, maximum: 2, step: 0.05, default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }] };
@@ -76,28 +77,57 @@ test("sidebar coarse steps preserve fine offsets and stay within the published g
   assert.doesNotMatch(markup, /Disable Beta/);
 });
 
-test("manager lists all LoRAs with enable, strength, image and reorder controls", () => {
+test("gallery sorts thumbnails independently of application order and keeps captions minimal", () => {
   const withUsage = structuredClone(control);
   withUsage.items[0].description = 'Use: <character> & "style". <script>alert(1)</script>';
   const rows = [{ id: "b", strength: 0 }, { id: "a", strength: 1.25 }];
-  const markup = loraManagerMarkup({ control: withUsage, values: rows, memory: { b: 0.65 }, sourceName: "Example workflow" });
-  assert.ok(markup.indexOf('data-lora-id="b"') < markup.indexOf('data-lora-id="a"'));
+  const markup = loraManagerMarkup({ control: withUsage, values: rows, memory: { b: 0.65 }, sourceName: "Example workflow", menuId: "a", panel: { kind: "details", id: "a" } });
   for (const id of ["a", "b"]) {
-    assert.match(markup, new RegExp(`data-lora-toggle="${id}"`));
-    assert.match(markup, new RegExp(`data-lora-range="${id}"`));
-    assert.match(markup, new RegExp(`data-lora-number="${id}"`));
-    assert.match(markup, new RegExp(`data-lora-image-change="${id}"`));
-    assert.match(markup, /data-lora-handle/);
+    assert.doesNotMatch(markup, new RegExp(`data-lora-range="${id}"|data-lora-number="${id}"`));
   }
-  assert.match(markup, /data-lora-image-remove="a"/);
-  assert.doesNotMatch(markup, /type="checkbox"/);
-  assert.match(markup, /0\.65/);
+  assert.match(markup, /data-lora-image-change="a"/);
+  assert.match(markup, /data-lora-handle/);
   assert.match(markup, /Example workflow/);
-  assert.match(markup, /✓ Enabled/);
-  assert.match(markup, /Thumbnail changes save automatically/);
+  assert.match(markup, /changes save immediately/);
   assert.match(markup, /Use: &lt;character&gt; &amp; &quot;style&quot;/);
   assert.doesNotMatch(markup, /<script>/);
   assert.doesNotMatch(markup, /Quick pick|Mix &amp; adjust|data-lora-solo/);
+  const gallery = loraManagerMarkup({ control, values: rows });
+  assert.ok(gallery.indexOf('data-lora-id="a"') < gallery.indexOf('data-lora-id="b"'));
+  assert.match(gallery, /data-lora-toggle="a"[^>]*aria-pressed="true"/);
+  assert.match(gallery, /data-lora-toggle="b"[^>]*aria-pressed="false"/);
+  assert.doesNotMatch(gallery, /data-lora-edit=|data-lora-delete=|data-lora-group-add/);
+});
+
+test("grouped gallery includes empty groups and defaults missing memberships to Uncategorized", () => {
+  const items = [{ id: "z", label: "Zeta", lora_identity: "one" }, { id: "a", label: "Alpha", lora_identity: "two" }];
+  const grouping = { groups: [{ id: "empty", name: "Empty" }, { id: "named", name: "Named" }, { id: "uncategorized", name: "Uncategorized", system: true }], assignments: { one: "named" } };
+  assert.deepEqual(groupedLoras(items, grouping).map((group) => [group.id, group.items.map((item) => item.id)]), [["empty", []], ["named", ["z"]], ["uncategorized", ["a"]]]);
+});
+
+test("weight-edit controls require the displayed family and exact shared identity", () => {
+  const items = [{ id: "a", label: "Alpha", lora_identity: "one" }];
+  const galleryControl = { ...control, items, default: [{ id: "a", strength: 0 }] };
+  const adminController = { currentOperation: () => null, state: { library: { key: "family", eligible: true, items, members: [] }, libraries: [], pendingUploads: new Map(), uploadPercent: null } };
+  const options = { control: galleryControl, admin: true, adminController, menuId: "a", libraryKey: "family" };
+  assert.match(loraManagerMarkup(options), /data-lora-delete="a" >Delete/);
+  assert.match(loraManagerMarkup({ ...options, libraryKey: "other" }), /data-lora-delete="a" disabled/);
+  const different = { ...galleryControl, items: [{ ...items[0], lora_identity: "different" }] };
+  assert.match(loraManagerMarkup({ ...options, control: different }), /data-lora-delete="a" disabled/);
+});
+
+test("active strip reorders enabled entries once while preserving disabled entries and strengths", () => {
+  const values = [{ id: "a", strength: .65 }, { id: "b", strength: 0 }, { id: "c", strength: 1.2 }];
+  assert.deepEqual(moveEnabledLora(values, "c", 0), [{ id: "c", strength: 1.2 }, { id: "b", strength: 0 }, { id: "a", strength: .65 }]);
+  assert.deepEqual(values.map((entry) => entry.id), ["a", "b", "c"]);
+});
+
+test("library refresh preserves draft picks by identity, removes deleted items, and adds disabled items", () => {
+  const oldControl = { ...control, items: [{ id: "a", label: "A", lora_identity: "same" }, { id: "b", label: "B", lora_identity: "removed" }] };
+  const next = { ...control, items: [{ id: "renamed", label: "Renamed", lora_identity: "same" }, { id: "new", label: "New", lora_identity: "added" }], default: [{ id: "renamed", strength: 0 }, { id: "new", strength: 0 }] };
+  const reconciled = reconcileLoraDraft({ control: oldControl, values: [{ id: "b", strength: 1 }, { id: "a", strength: .65 }], memory: { a: .65, b: 1 } }, { control: next });
+  assert.deepEqual(reconciled.values, [{ id: "renamed", strength: .65 }, { id: "new", strength: 0 }]);
+  assert.deepEqual(reconciled.memory, { renamed: .65 });
 });
 
 test("strongest enabled LoRA uses its verified trigger or published title", () => {

@@ -1,6 +1,7 @@
-import { loraDefaultPositiveStrength, loraStackError, moveLora, strongestLoraTrigger } from "./lora-stack.mjs";
+import { loraDefaultPositiveStrength, loraStackError } from "./lora-stack.mjs";
+import { loraManagerMarkup, moveEnabledLora, reconcileLoraDraft, subjectPreview } from "./lora-gallery.mjs";
+export { loraManagerMarkup } from "./lora-gallery.mjs";
 
-const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const encoded = (value) => encodeURIComponent(value);
 
 // The footer shows three lines of the Subject line; when a trigger phrase is
@@ -21,50 +22,14 @@ export function loraPublicationRevisionMatches(first, second) {
   return ["publication_id", "workflow_sha256", "api_sha256", "manifest_sha256"].every((key) => first[key] === second[key]);
 }
 
-function subjectPreview(control, values, subjectAvailable = true) {
-  if (subjectAvailable === null) return "Selected prompts stay unchanged";
-  const strongest = strongestLoraTrigger(control, values);
-  if (!strongest.entry) return "Subject unchanged · no LoRA enabled";
-  if (!subjectAvailable) return "Subject unchanged · Prompt Generation subject is unavailable";
-  if (!strongest.triggerWord) return "Subject unchanged · LoRA has no published title";
-  return `Subject on Apply: ${strongest.triggerWord}${strongest.triggerSource === "title" ? " (LoRA title)" : ""}`;
-}
-
-export function loraManagerMarkup({ control, values, memory = {}, images = {}, sourceName = "Workflow", subjectAvailable = true, error = "", busy = false, imageStates = {}, imagesLoading = false, imageError = "" }) {
-  const rows = Array.isArray(values) ? values : control.default;
-  const items = new Map(control.items.map((item) => [item.id, item]));
-  const enabledCount = rows.filter((entry) => entry.strength > 0).length;
-  const subject = subjectPreview(control, rows, subjectAvailable);
-  const minimum = loraDefaultPositiveStrength(control);
-  const list = rows.map((entry) => {
-    const item = items.get(entry.id) || { label: entry.id };
-    const imageState = imageStates[entry.id] || {};
-    const image = imageState.saving ? imageState.preview : images[entry.id]?.image_url || null;
-    const imageDisabled = imagesLoading || imageState.saving;
-    const remembered = Number(memory[entry.id]);
-    const strength = entry.strength > 0 ? entry.strength : remembered > 0 && remembered <= control.maximum ? remembered : minimum || 0;
-    const label = escape(item.label);
-    const id = escape(entry.id);
-    const disabled = entry.strength <= 0;
-    return `<li class="lm-row ${disabled ? "" : "is-enabled"}" data-lora-id="${id}">
-      <button type="button" class="lm-row-select" data-lora-toggle="${id}" aria-label="Toggle ${label}" aria-pressed="${!disabled}" title="${disabled ? "Enable" : "Disable"} ${label}" ${minimum === null ? "disabled" : ""}></button>
-      <div class="lm-image-cell"><button type="button" class="lm-image-button" data-lora-image-change="${id}" aria-label="${image ? "Change" : "Add"} image for ${label}" ${imageDisabled ? "disabled" : ""}>${image ? `<img src="${escape(image)}" alt="" />` : '<span class="lm-add-image" aria-hidden="true"><b>＋</b><span>Add image</span></span>'}</button><button type="button" class="lm-image-action" data-lora-image-remove="${id}" aria-label="Remove image for ${label}" title="Remove image for ${label}" ${image ? "" : "hidden"} ${imageDisabled ? "disabled" : ""}>×</button><span class="lm-image-status${imageState.error ? " is-error" : ""}" role="${imageState.error ? "alert" : "status"}">${escape(imageState.saving ? "Saving…" : imageState.message || "")}</span></div>
-      <button type="button" class="icon-button lm-drag-handle" data-lora-handle draggable="true" aria-label="Reorder ${label}" aria-description="Drag to reorder, or use the Up and Down arrow keys.">⠿</button>
-      <div class="lm-row-info"><span class="lm-row-heading"><span class="lm-row-name" title="${escape(item.description || "No verified trigger word is published; Subject name uses this LoRA title.")}">${label}</span><span class="lm-row-state">${disabled ? "Off" : "✓ Enabled"}</span></span><span class="lm-row-description">${escape(item.description || "Usage guidance not published")}</span></div>
-    <div class="lm-strength"><span class="lm-strength-label">${disabled ? "Strength when enabled" : "Strength"}</span><input type="range" data-lora-range="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${strength}" aria-label="${label} strength slider" ${disabled ? "disabled" : ""} /><input type="number" data-lora-number="${id}" min="${Math.max(Number(control.step), Number(control.minimum))}" max="${control.maximum}" step="${control.step}" value="${Number(strength).toFixed(2)}" aria-label="${label} strength" ${disabled ? "disabled" : ""} /></div>
-    </li>`;
-  }).join("");
-  return `<form method="dialog" class="dialog-frame lm-dialog-frame"><header class="dialog-header lm-dialog-header"><div><h2 id="lora-manager-title">Manage LoRAs</h2><p>${escape(sourceName)} · Shared LoRA library</p></div><button type="button" class="icon-button lm-close-button" data-lora-cancel aria-label="Cancel and close LoRA manager">×</button></header>
-    <div class="lm-dialog-content"><div class="lm-dialog-intro"><div><strong>${enabledCount} of ${rows.length} enabled</strong><span>Applied in list order, top to bottom</span></div><p>Thumbnail changes save automatically and are shared with everyone. Cancel does not undo them.</p></div>${imageError ? `<p class="form-error lm-image-load-error" role="alert">${escape(imageError)} <button type="button" class="button low" data-lora-images-reload>Reload images</button></p>` : ""}<ol class="lm-list" aria-label="Available LoRAs">${list}</ol><p class="visually-hidden" data-lora-reorder-status role="status" aria-live="polite"></p></div>
-    <footer class="dialog-actions lm-dialog-footer"><button type="button" class="button low" data-lora-all-off ${enabledCount ? "" : "disabled"}>All off</button><span class="lm-subject-preview" data-lora-subject-preview>${escape(subject)}</span><div class="lm-footer-buttons"><button type="button" class="button secondary" data-lora-cancel>Cancel</button><button type="button" class="button primary" data-lora-apply ${busy ? "disabled" : ""}>${busy ? "Applying…" : "Apply"}</button></div>${error ? `<p class="form-error lm-error" role="alert">${escape(error)}</p>` : ""}</footer></form><input class="visually-hidden" type="file" data-lora-file accept="image/png,image/jpeg,image/webp" tabindex="-1" aria-hidden="true" />`;
-}
-
-export function installLoraManager(root, { api, context, apply, onImages, notify = () => {} }) {
+export function installLoraManager(root, { api, context, apply, onImages, notify = () => {}, isAdmin = () => false, adminController = null }) {
   let draft = null;
   let returnFocus = null;
   let fileTarget = null;
   let dragId = null;
   let touchDrag = null;
+  let refreshingLibrary = false;
+  let managementToken = 0;
   const dialog = () => root.querySelector("#lora-manager-dialog");
   // Image work outlives the selection draft, including Cancel and owner closure.
   const imageStores = new Map();
@@ -74,7 +39,8 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   const refreshImages = (store) => { if (draft?.imageStore === store) render(); };
   const publishImages = (store) => {
     for (const owner of ["panel", "rerun"]) {
-      if (matches(store, context(store.controlId, owner))) onImages(store.sourceKey, store.controlId, structuredClone(store.images), owner);
+      const ctx = context(store.controlId, owner);
+      if (matches(store, ctx) && JSON.stringify(ctx.images || {}) !== JSON.stringify(store.images)) onImages(store.sourceKey, store.controlId, structuredClone(store.images), owner);
     }
   };
   // Thumbnails are shared by every workflow that lists the LoRA, so a saved change
@@ -92,9 +58,10 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     store.loadError = "";
     store.loading = (async () => {
       try {
-        const payload = await api(loraImagePath(store.sourceKey, store.controlId));
+        const paths = store.imageSources ? [...new Set(Object.values(store.imageSources).map((source) => loraImagePath(source.sourceKey, source.controlId)))] : [loraImagePath(store.sourceKey, store.controlId)];
+        const payloads = await Promise.all(paths.map((path) => api(path)));
         if (!store.active) return;
-        store.images = Object.fromEntries((payload.items || []).map((item) => [item.id, item]));
+        store.images = Object.fromEntries(payloads.flatMap((payload) => (payload.items || []).map((item) => [item.id, item])));
         store.loaded = true;
         publishImages(store);
       } catch (error) {
@@ -112,7 +79,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     const session = draft;
     const store = session?.imageStore;
     if (!store?.loaded || store.loading || store.states[id]?.saving) return;
-    if (!matches(store, context(session.control.id, session.owner))) {
+    if (!session.management && !matches(store, context(session.control.id, session.owner))) {
       store.loadError = "The workflow changed. Reopen the LoRA manager.";
       refreshImages(store);
       return;
@@ -130,9 +97,10 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
         const form = new FormData();
         if (file) { change.file_key = "image_0"; form.append("image_0", file); }
         form.append("changes", JSON.stringify([change]));
-        const result = await api(loraImagePath(store.sourceKey, store.controlId), { method: "POST", body: form });
+        const source = store.imageSources?.[id] || { sourceKey: store.sourceKey, controlId: store.controlId };
+        const result = await api(loraImagePath(source.sourceKey, source.controlId), { method: "POST", body: form });
         if (!store.active) return;
-        store.images = Object.fromEntries((result.items || []).map((item) => [item.id, item]));
+        store.images = { ...store.images, ...Object.fromEntries((result.items || []).map((item) => [item.id, item])) };
         store.states[id] = { message: "Saved" };
         publishImages(store);
         forgetOtherStores(store);
@@ -156,17 +124,19 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (!draft) return;
     const target = dialog();
     const active = target.contains(document.activeElement) ? document.activeElement : null;
-    let inputValue = null;
     if (!focus && active) {
       const attribute = [...active.attributes].find((item) => item.name.startsWith("data-lora-"));
       if (attribute) {
         focus = `[${attribute.name}="${CSS.escape(attribute.value)}"]`;
         if (active.closest("[data-lora-id]")) focus = `[data-lora-id="${CSS.escape(active.closest("[data-lora-id]").dataset.loraId)}"] ${focus}`;
-        if (active.matches("[data-lora-number]")) inputValue = active.value;
       }
     }
     const scrollTop = target.querySelector(".lm-dialog-content")?.scrollTop || 0;
-    const markup = loraManagerMarkup({ control: draft.control, values: draft.values, memory: draft.memory, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError, sourceName: draft.sourceName, subjectAvailable: draft.subjectAvailable, error: draft.error, busy: draft.busy });
+    const toolsOpen = target.querySelector(".lm-library-tools")?.open;
+    const editor = target.querySelector(".lm-editor");
+    const editorKey = editor?.dataset.editorKey;
+    const nextEditorKey = JSON.stringify(draft.panel);
+    const markup = loraManagerMarkup({ ...draft, admin: isAdmin(), adminController, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError });
     const frame = target.querySelector(".lm-dialog-frame");
     if (frame) {
       // Keep the file input alive if another thumbnail finishes saving while
@@ -175,34 +145,110 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       template.innerHTML = markup;
       frame.replaceWith(template.content.querySelector(".lm-dialog-frame"));
     } else target.innerHTML = markup;
+    const newEditor = target.querySelector(".lm-editor");
+    if (editor && newEditor && editorKey === nextEditorKey) {
+      newEditor.replaceWith(editor);
+      for (const input of editor.querySelectorAll("input,textarea,select,button")) input.disabled = Boolean(draft.busy || draft.groupsBusy || adminController?.state.busy || ["install", "edit"].includes(draft.panel?.kind) && (!adminController?.state.library?.eligible || ["awaiting_upload", "running", "repair_required"].includes(adminController?.currentOperation()?.status)) && !input.matches("[data-lora-panel-close]"));
+      if (editor.contains(active)) active.focus({ preventScroll: true });
+    } else if (newEditor) newEditor.dataset.editorKey = nextEditorKey;
+    if (toolsOpen && target.querySelector(".lm-library-tools")) target.querySelector(".lm-library-tools").open = true;
     target.querySelector(".lm-dialog-content").scrollTop = scrollTop;
     syncSubjectPreview(target);
     if (focus) {
       const element = target.querySelector(focus);
-      if (inputValue !== null && element) element.value = inputValue;
       if (element?.disabled) element.closest("[data-lora-id]")?.querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
       else element?.focus({ preventScroll: true });
     }
+    positionMenu();
   };
+  function positionMenu() {
+    const menu = dialog()?.querySelector("[data-lora-popover]");
+    const button = dialog()?.querySelector(`[data-lora-menu="${CSS.escape(draft?.menuId || "")}"]`);
+    if (!menu || !button) return;
+    const box = dialog().getBoundingClientRect(), anchor = button.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(box.width - menu.offsetWidth - 8, anchor.right - box.left - menu.offsetWidth))}px`;
+    menu.style.top = `${Math.max(8, Math.min(box.height - menu.offsetHeight - 8, anchor.bottom - box.top))}px`;
+  }
+  function createImageStore(ctx) {
+    const key = storeKey(ctx);
+    let store = imageStores.get(key);
+    if (!store) {
+      store = { key, sourceKey: ctx.sourceKey, controlId: ctx.control.id, imageSources: ctx.imageSources, active: true,
+        images: structuredClone(ctx.images || {}), states: {}, loaded: false, loading: null, loadError: "", queue: Promise.resolve() };
+      imageStores.set(key, store);
+    }
+    return store;
+  }
+  async function loadGroups(session = draft) {
+    if (!session) return;
+    session.groupingLoading = true;
+    session.groupingError = "";
+    render();
+    try {
+      const path = session.management ? `/api/lora-library/${encoded(session.libraryKey)}/groups` : `/api/workflows/${encoded(session.sourceKey)}/lora-groups/${encoded(session.control.id)}`;
+      const grouping = await api(path);
+      if (!Array.isArray(grouping.groups) || !grouping.assignments) throw new Error("Group data is unavailable.");
+      session.grouping = grouping;
+      session.libraryKey = grouping.library_key;
+    } catch (error) {
+      session.groupingError = `Groups could not be loaded: ${error.message}`;
+      session.grouping = null;
+    } finally {
+      session.groupingLoading = false;
+      if (draft === session) render();
+    }
+  }
   const close = () => dialog()?.close("cancel");
   async function open(button) {
     const owner = button.dataset.controlContext || "panel";
     const ctx = context(button.dataset.loraControlId, owner);
     if (!ctx || dialog()?.open) return;
     returnFocus = button;
-    const key = storeKey(ctx);
-    let imageStore = imageStores.get(key);
-    if (!imageStore) {
-      imageStore = { key, sourceKey: ctx.sourceKey, controlId: ctx.control.id, active: true,
-        images: structuredClone(ctx.images || {}), states: {}, loaded: false, loading: null, loadError: "", queue: Promise.resolve() };
-      imageStores.set(key, imageStore);
-    }
-    draft = { ...ctx, owner, publicationRevision: structuredClone(ctx.publicationRevision || null), values: structuredClone(ctx.values), memory: { ...ctx.memory }, imageStore, error: "", busy: false };
+    const imageStore = createImageStore(ctx);
+    draft = { ...ctx, owner, publicationRevision: structuredClone(ctx.publicationRevision || null), values: structuredClone(ctx.values), memory: { ...ctx.memory }, imageStore, error: "", busy: false, panel: null, menuId: null };
     render();
-    dialog().oncancel = (event) => { if (draft?.busy) event.preventDefault(); };
+    configureCancel();
     dialog().showModal();
     dialog().querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
-    if (!Object.values(imageStore.states).some((state) => state.saving)) await loadImages(imageStore);
+    const session = draft;
+    await Promise.all([loadGroups(session), !Object.values(imageStore.states).some((state) => state.saving) ? loadImages(imageStore) : Promise.resolve()]);
+    if (draft === session && isAdmin() && adminController) await adminController.initialize(session.libraryKey);
+  }
+  function configureCancel() {
+    dialog().oncancel = (event) => {
+      if (draft?.menuId) { event.preventDefault(); const id = draft.menuId; draft.menuId = null; render(`[data-lora-menu="${CSS.escape(id)}"]`); }
+      else if (draft?.busy || draft?.groupsBusy || adminController?.state.busy) event.preventDefault();
+    };
+  }
+  async function managementContext() {
+    const library = adminController.state.library;
+    if (!library) return { control: { id: "loras", items: [], default: [] }, sourceKey: "library-empty", sourceName: "No published LoRA libraries", values: [], memory: {}, management: true };
+    const details = await Promise.all(library.members.map((member) => api(`/api/workflows/${encoded(member.source_key)}`)));
+    const imageSources = {};
+    for (let index = 0; index < details.length; index += 1) {
+      const control = (details[index].interface?.inputs || []).find((item) => item.type === "lora_stack");
+      for (const item of control?.items || []) imageSources[item.id] = { sourceKey: library.members[index].source_key, controlId: control.id };
+    }
+    return { control: { id: "library", items: library.items, default: library.items.map((item) => ({ id: item.id, strength: 0 })) }, sourceKey: `library-${library.key}`, sourceName: library.label, libraryKey: library.key, values: [], memory: {}, management: true, imageSources };
+  }
+  async function openLibrary(button = null) {
+    if (!isAdmin() || !adminController || dialog()?.open) return;
+    returnFocus = button || document.activeElement;
+    try {
+      await adminController.initialize();
+      await showManagement();
+      configureCancel();
+      dialog().showModal();
+      dialog().querySelector("[data-lora-cancel]")?.focus();
+    } catch (error) { notify(`The LoRA library could not be opened: ${error.message}`, "error"); }
+  }
+  async function showManagement() {
+    const token = ++managementToken;
+    const ctx = await managementContext();
+    if (token !== managementToken) return;
+    draft = { ...ctx, imageStore: createImageStore(ctx), panel: null, menuId: null, error: "", busy: false };
+    render();
+    if (ctx.libraryKey) await Promise.all([loadGroups(draft), loadImages(draft.imageStore)]);
   }
   function updateStrength(id, strength) {
     if (!draft) return;
@@ -216,18 +262,20 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (!draft) return;
     const previous = draft.values.find((entry) => entry.id === id)?.strength || 0;
     if (previous > 0) draft.memory[id] = previous;
-    updateStrength(id, previous > 0 ? 0 : draft.memory[id] || loraDefaultPositiveStrength(draft.control));
+    let strength = previous > 0 ? 0 : draft.memory[id] || loraDefaultPositiveStrength(draft.control);
+    if (previous <= 0 && loraStackError(draft.control, draft.values.map((entry) => entry.id === id ? { id, strength } : entry))) strength = loraDefaultPositiveStrength(draft.control);
+    updateStrength(id, strength);
     render(`[data-lora-toggle="${CSS.escape(id)}"]`);
   }
   function move(id, to) {
-    if (!draft || to < 0 || to >= draft.values.length) return;
-    draft.values = moveLora(draft.values, id, to);
-    render(`[data-lora-id="${CSS.escape(id)}"] [data-lora-handle]`);
+    if (!draft || to < 0 || to >= draft.values.filter((entry) => entry.strength > 0).length) return;
+    draft.values = moveEnabledLora(draft.values, id, to);
+    render(`[data-lora-order-id="${CSS.escape(id)}"] [data-lora-handle]`);
     const label = draft.control.items.find((item) => item.id === id)?.label || id;
-    dialog()?.querySelector("[data-lora-reorder-status]")?.replaceChildren(document.createTextNode(`${label} moved to position ${to + 1} of ${draft.values.length}.`));
+    dialog()?.querySelector("[data-lora-reorder-status]")?.replaceChildren(document.createTextNode(`${label} moved to position ${to + 1} of ${draft.values.filter((entry) => entry.strength > 0).length}.`));
   }
   async function save() {
-    if (!draft || draft.busy) return;
+    if (!draft || draft.busy || draft.reconcileError || adminController?.state.busy || draft.management) return;
     const session = draft;
     const current = context(draft.control.id, draft.owner);
     if (current?.sourceKey !== draft.sourceKey || !loraPublicationRevisionMatches(current?.publicationRevision, draft.publicationRevision)) {
@@ -251,13 +299,78 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       render();
     }
   }
+  function openPanel(kind, id = null) {
+    if (!draft || draft.busy || draft.groupsBusy || adminController?.state.busy) return;
+    draft.panel = { kind, id, operationId: adminController?.currentOperation()?.id };
+    draft.menuId = null;
+    draft.error = "";
+    if (kind === "edit") adminController.beginEdit(id);
+    render();
+    dialog()?.querySelector(".lm-editor input,.lm-editor select,.lm-editor button")?.focus();
+  }
+  async function mutateGroups(path, method, fields) {
+    const session = draft;
+    if (!isAdmin() || !session?.grouping || session.groupsBusy) return;
+    session.groupsBusy = true;
+    session.error = "";
+    render();
+    try {
+      const result = await api(`/api/admin/lora-library/${encoded(session.libraryKey)}/${path}`, { method, body: JSON.stringify({ revision: session.grouping.revision, ...fields }) });
+      if (session !== draft) return;
+      session.grouping = result;
+      session.panel = null;
+    } catch (error) {
+      // A lost response can also have committed: always reload before another edit.
+      await loadGroups(session);
+      if (session === draft) session.error = error.message || "The group change could not be saved.";
+    } finally {
+      session.groupsBusy = false;
+      if (session === draft) render();
+    }
+  }
+  async function deleteGroup(id) {
+    if (!window.confirm("Delete this group? Its LoRAs will move to Uncategorized. No LoRA files will be deleted.")) return;
+    await mutateGroups(`groups/${encoded(id)}`, "DELETE", {});
+  }
+  adminController?.subscribe(() => {
+    if (!draft || !isAdmin()) return;
+    const operation = adminController.currentOperation();
+    if (["install", "edit"].includes(draft.panel?.kind) && operation?.status === "succeeded" && operation.id !== draft.panel.operationId) draft.panel = null;
+    render();
+  });
   root.addEventListener("click", (event) => {
     const opener = event.target.closest("[data-lora-open]");
     if (opener) { void open(opener); return; }
     if (!draft || !event.target.closest("#lora-manager-dialog")) return;
+    if (event.target.closest("button:disabled")) return;
+    const menu = event.target.closest("[data-lora-menu]");
+    if (menu) { draft.menuId = draft.menuId === menu.dataset.loraMenu ? null : menu.dataset.loraMenu; render(); dialog()?.querySelector("[data-lora-popover] button")?.focus(); return; }
+    const actions = [
+      ["[data-lora-details]", "details", "loraDetails"], ["[data-lora-move]", "move", "loraMove"],
+      ["[data-lora-edit]", "edit", "loraEdit"], ["[data-lora-group-rename]", "rename", "loraGroupRename"],
+    ];
+    for (const [selector, kind, key] of actions) {
+      const button = event.target.closest(selector);
+      if (button) { openPanel(kind, button.dataset[key]); return; }
+    }
+    if (event.target.closest("[data-lora-panel-close]")) {
+      if (!adminController?.state.busy && !draft.groupsBusy) { if (draft.panel?.kind === "edit") adminController.cancelEdit(draft.panel.id); draft.panel = null; render(); }
+      return;
+    }
+    if (event.target.closest("[data-lora-add]")) { openPanel("install"); return; }
+    if (event.target.closest("[data-lora-group-add]")) { openPanel("create"); return; }
+    const deletion = event.target.closest("[data-lora-delete]");
+    if (deletion && isAdmin()) { draft.menuId = null; void adminController.remove(deletion.dataset.loraDelete); render(); return; }
+    const groupDeletion = event.target.closest("[data-lora-group-delete]");
+    if (groupDeletion) { void deleteGroup(groupDeletion.dataset.loraGroupDelete); return; }
+    if (event.target.closest("[data-lora-groups-reload]")) { void loadGroups(); return; }
+    if (event.target.closest("[data-lora-library-sync]")) { void adminController.sync(); return; }
+    if (event.target.closest("[data-lora-library-retry]")) { void adminController.retryUpload(); return; }
+    if (event.target.closest("[data-lora-library-cancel-upload]")) { void adminController.cancelPendingUpload(); return; }
+    if (event.target.closest("[data-lora-library-reload]")) { void adminController.initialize(draft.libraryKey).then(() => draft?.management ? showManagement() : loadGroups()); return; }
     const selection = event.target.closest("[data-lora-toggle]");
     if (selection && !selection.disabled) { toggle(selection.dataset.loraToggle); return; }
-    if (event.target.closest("[data-lora-cancel]")) { if (!draft.busy) close(); return; }
+    if (event.target.closest("[data-lora-cancel]")) { if (!draft.busy && !draft.groupsBusy && !adminController?.state.busy) close(); return; }
     if (event.target.closest("[data-lora-apply]")) { void save(); return; }
     if (event.target.closest("[data-lora-all-off]")) {
       for (const entry of draft.values) if (entry.strength > 0) draft.memory[entry.id] = entry.strength;
@@ -271,14 +384,38 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     const image = event.target.closest("[data-lora-image-change]");
     if (image && !image.disabled) {
       fileTarget = { id: image.dataset.loraImageChange, session: draft };
+      draft.menuId = null;
       dialog().querySelector("[data-lora-file]")?.click();
       return;
     }
     const remove = event.target.closest("[data-lora-image-remove]");
-    if (remove && !remove.disabled) saveImage(remove.dataset.loraImageRemove, "remove");
+    if (remove && !remove.disabled) { draft.menuId = null; saveImage(remove.dataset.loraImageRemove, "remove"); return; }
+    if (draft.menuId && !event.target.closest("[data-lora-popover]")) { draft.menuId = null; render(); }
+  });
+  root.addEventListener("submit", (event) => {
+    if (!draft || !event.target.closest("#lora-manager-dialog")) return;
+    event.preventDefault();
+    const form = event.target;
+    const libraryAction = form.dataset.loraLibraryForm;
+    if (libraryAction && isAdmin()) { if (libraryAction === "install") void adminController.install(form); else void adminController.edit(libraryAction, form); return; }
+    const action = form.dataset.loraGroupForm;
+    if (!action) return;
+    const data = new FormData(form);
+    if (action === "move") {
+      const item = draft.control.items.find((entry) => entry.id === draft.panel.id);
+      void mutateGroups(`group-memberships/${encoded(item.lora_identity)}`, "PUT", { group_id: data.get("group_id") });
+    } else {
+      const path = action === "create" ? "groups" : `groups/${encoded(draft.panel.id)}`;
+      void mutateGroups(path, action === "create" ? "POST" : "PATCH", { name: data.get("name") });
+    }
   });
   root.addEventListener("change", (event) => {
     if (!draft) return;
+    if (event.target.matches("[data-lora-library-family]") && !adminController?.state.busy) {
+      adminController.selectLibrary(event.target.value);
+      void showManagement().catch((error) => { if (draft) { draft.error = error.message; render(); } });
+      return;
+    }
     const fileInput = event.target.closest("[data-lora-file]");
     if (fileInput) {
       const file = fileInput.files?.[0];
@@ -293,58 +430,47 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       saveImage(id, "set", file);
       return;
     }
-    const number = event.target.closest("[data-lora-number]");
-    if (number) {
-      const value = Number(number.value);
-      const id = number.dataset.loraNumber;
-      if (!number.checkValidity() || !(value > 0)) { number.reportValidity(); return; }
-      updateStrength(id, value);
-      render(`[data-lora-number="${CSS.escape(id)}"]`);
-    }
   });
   root.addEventListener("input", (event) => {
     if (!draft) return;
-    const range = event.target.closest("[data-lora-range]");
-    if (range) {
-      const id = range.dataset.loraRange;
-      updateStrength(id, Number(range.value));
-      const number = range.closest(".lm-strength")?.querySelector("[data-lora-number]");
-      if (number) number.value = Number(range.value).toFixed(2);
-    }
-    const number = event.target.closest("[data-lora-number]");
-    if (number && number.checkValidity() && Number(number.value) > 0) {
-      const id = number.dataset.loraNumber;
-      updateStrength(id, Number(number.value));
-      const range = number.closest(".lm-strength")?.querySelector("[data-lora-range]");
-      if (range) range.value = number.value;
+    if (draft.panel?.kind === "edit" && adminController?.state.editDraft && ["display_name", "trigger_word"].includes(event.target.name)) {
+      adminController.state.editDraft[event.target.name === "display_name" ? "displayName" : "triggerWord"] = event.target.value;
     }
   });
   root.addEventListener("keydown", (event) => {
+    if (draft?.menuId && event.target.closest("[data-lora-popover]") && ["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const buttons = [...dialog().querySelectorAll("[data-lora-popover] button:not(:disabled)")];
+      const index = buttons.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+      return;
+    }
     const handle = event.target.closest("#lora-manager-dialog [data-lora-handle]");
-    if (!draft || !handle || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+    if (!draft || !handle || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     event.preventDefault();
-    const id = handle.closest("[data-lora-id]").dataset.loraId;
-    move(id, draft.values.findIndex((entry) => entry.id === id) + (event.key === "ArrowUp" ? -1 : 1));
+    const id = handle.closest("[data-lora-order-id]").dataset.loraOrderId;
+    move(id, draft.values.filter((entry) => entry.strength > 0).findIndex((entry) => entry.id === id) + (["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1));
   });
   root.addEventListener("dragstart", (event) => {
     const handle = event.target.closest("#lora-manager-dialog [data-lora-handle]");
     if (!draft || !handle) return;
-    dragId = handle.closest("[data-lora-id]").dataset.loraId;
+    dragId = handle.closest("[data-lora-order-id]").dataset.loraOrderId;
     event.dataTransfer.setData("text/plain", dragId);
     event.dataTransfer.effectAllowed = "move";
   });
   root.addEventListener("dragover", (event) => {
     if (!dragId) return;
-    const row = event.target.closest("#lora-manager-dialog [data-lora-id]");
+    const row = event.target.closest("#lora-manager-dialog [data-lora-order-id]");
     if (row) { event.preventDefault(); row.classList.add("is-drop-target"); }
   });
-  root.addEventListener("dragleave", (event) => event.target.closest("#lora-manager-dialog [data-lora-id]")?.classList.remove("is-drop-target"));
+  root.addEventListener("dragleave", (event) => event.target.closest("#lora-manager-dialog [data-lora-order-id]")?.classList.remove("is-drop-target"));
   root.addEventListener("drop", (event) => {
     if (!draft || !dragId) return;
-    const row = event.target.closest("#lora-manager-dialog [data-lora-id]");
+    const row = event.target.closest("#lora-manager-dialog [data-lora-order-id]");
     if (!row) return;
     event.preventDefault();
-    const index = draft.values.findIndex((entry) => entry.id === row.dataset.loraId);
+    const index = draft.values.filter((entry) => entry.strength > 0).findIndex((entry) => entry.id === row.dataset.loraOrderId);
     move(dragId, index);
     dragId = null;
   });
@@ -352,12 +478,12 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   root.addEventListener("pointerdown", (event) => {
     const handle = event.target.closest("#lora-manager-dialog [data-lora-handle]");
     if (!draft || !handle || event.pointerType === "mouse") return;
-    touchDrag = handle.closest("[data-lora-id]").dataset.loraId;
+    touchDrag = handle.closest("[data-lora-order-id]").dataset.loraOrderId;
     handle.setPointerCapture(event.pointerId);
   });
   root.addEventListener("pointermove", (event) => {
     if (!draft || !touchDrag) return;
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("#lora-manager-dialog [data-lora-id]");
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("#lora-manager-dialog [data-lora-order-id]");
     dialog()?.querySelectorAll(".is-drop-target").forEach((row) => row.classList.remove("is-drop-target"));
     target?.classList.add("is-drop-target");
   });
@@ -365,22 +491,27 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (!draft || !touchDrag) return;
     const id = touchDrag;
     touchDrag = null;
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("#lora-manager-dialog [data-lora-id]");
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("#lora-manager-dialog [data-lora-order-id]");
     dialog()?.querySelectorAll(".is-drop-target").forEach((row) => row.classList.remove("is-drop-target"));
-    if (target) move(id, draft.values.findIndex((entry) => entry.id === target.dataset.loraId));
+    if (target) move(id, draft.values.filter((entry) => entry.strength > 0).findIndex((entry) => entry.id === target.dataset.loraOrderId));
   });
   root.addEventListener("pointercancel", () => { touchDrag = null; });
   root.addEventListener("close", (event) => {
-    if (event.target !== dialog()) return;
+    if (event.target !== dialog() || dialog().open) return;
+    // Native close is queued. A user can already be editing the sidebar by the
+    // time it arrives; do not steal that focus and commit an unfinished edit.
+    const restoreFocus = document.activeElement === document.body || event.target.contains(document.activeElement);
     const controlId = draft?.control.id;
     const owner = draft?.owner;
     fileTarget = null;
+    managementToken += 1;
     draft = null;
+    if (!restoreFocus) return;
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     else if (controlId) root.querySelector(`${owner === "rerun" ? "#gallery-rerun-dialog[open]" : "#generation-panel"} [data-lora-open][data-lora-control-id="${CSS.escape(controlId)}"]`)?.focus({ preventScroll: true });
   }, true);
   return {
-    close,
+    close, openLibrary,
     closeForOwner: (owner) => { if (draft?.owner === owner) close(); },
     isOpen: () => Boolean(dialog()?.open),
     // A null key means every workflow changed (a shared LoRA library operation).
@@ -389,7 +520,39 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
         if (sourceKey === null || store.sourceKey === sourceKey) { store.active = false; imageStores.delete(key); }
       }
       if (sourceKey !== null && draft?.sourceKey !== sourceKey) return;
-      if (draft) close();
+      if (draft && !refreshingLibrary) close();
+    },
+    refreshLibrarySources: async (refresh) => {
+      const session = draft;
+      refreshingLibrary = true;
+      if (session) { session.busy = true; session.menuId = null; render(); }
+      try {
+        for (const store of imageStores.values()) store.active = false;
+        imageStores.clear();
+        const result = await refresh();
+        if (!session || draft !== session) return result;
+        if (session.management) {
+          // Discovery has updated the publications; the controller reloads its
+          // library snapshot after this callback, so fetch it before rebuilding.
+          await adminController.loadLibrary();
+          await showManagement();
+        } else {
+          const current = context(session.control.id, session.owner);
+          if (!current || current.sourceKey !== session.sourceKey) throw new Error("The workflow is unavailable. Reopen the LoRA manager after refreshing workflows.");
+          const published = await api(`/api/workflows/${encoded(current.sourceKey)}`);
+          if (!loraPublicationRevisionMatches(published.revision, current.publicationRevision)) throw new Error("The workflow refresh is incomplete. Reopen the LoRA manager after refreshing workflows.");
+          const reconciled = reconcileLoraDraft(session, current);
+          Object.assign(session, reconciled, { imageStore: createImageStore(current), panel: null, reconcileError: false, error: "" });
+          await Promise.all([loadGroups(session), loadImages(session.imageStore)]);
+        }
+        return result;
+      } catch (error) {
+        if (draft === session && session) { session.reconcileError = true; session.error = error.message; }
+        throw error;
+      } finally {
+        refreshingLibrary = false;
+        if (draft) { draft.busy = false; render(); }
+      }
     },
     refresh: () => { if (draft && dialog()?.open) render(); },
   };

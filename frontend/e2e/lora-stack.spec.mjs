@@ -30,6 +30,7 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
     });
     window.manager = installLoraManager(root, {
       api: async (path, options) => {
+        if (path.includes("/lora-groups/")) return { library_key: "krea2", revision: 0, groups: [{ id: "uncategorized", name: "Uncategorized", system: true }], assignments: {} };
         if (!options) {
           if (window.holdLoad) await new Promise((resolve) => { window.finishLoad = resolve; });
           if (window.failLoad) throw new Error("Offline");
@@ -113,15 +114,15 @@ test("a cap-length trigger phrase wraps in the footer instead of scrolling the d
   expect(narrow.scroll).toBe(narrow.client);
 });
 
-test("manager drafts enable, strength, order and Subject until Apply", async ({ page }) => {
+test("gallery drafts selection and order while strengths remain in the sidebar", async ({ page }) => {
   await mount(page);
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   await open(page);
   await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
-  await dialog(page).getByRole("spinbutton", { name: "Beta strength" }).fill("1.25");
-  await dialog(page).getByRole("spinbutton", { name: "Beta strength" }).press("Tab");
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  await expect(dialog(page).getByRole("spinbutton")).toHaveCount(0);
   await dialog(page).getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
-  await expect(dialog(page).locator(".lm-row").first()).toHaveAttribute("data-lora-id", "b");
+  await expect(dialog(page).locator(".lm-order-chip").first()).toHaveAttribute("data-lora-order-id", "b");
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
@@ -141,10 +142,11 @@ test("manager drafts enable, strength, order and Subject until Apply", async ({ 
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   await open(page);
   await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
-  await expect(dialog(page).getByRole("spinbutton", { name: "Alpha strength" })).toHaveValue("1.00");
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Alpha strength", exact: true })).toHaveValue("1.00");
 });
 
-test("row background toggles without jumping the scrolled list or hijacking strength controls", async ({ page }) => {
+test("thumbnail selection preserves scrolling and the card menu does not toggle selection", async ({ page }) => {
   await mount(page);
   await page.addStyleTag({ content: "#lora-manager-dialog { height: 330px; }" });
   await open(page);
@@ -157,7 +159,9 @@ test("row background toggles without jumping the scrolled list or hijacking stre
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   expect(await content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-  await manager.getByRole("spinbutton", { name: "Gamma strength" }).click();
+  await manager.getByRole("button", { name: "Actions for Gamma" }).click();
+  await manager.getByRole("button", { name: "Usage details", exact: true }).click();
+  await manager.getByRole("button", { name: "Back to gallery" }).click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
@@ -165,8 +169,13 @@ test("row background toggles without jumping the scrolled list or hijacking stre
 });
 
 const sample = { name: "sample.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") };
+async function imageMenu(page, label = "Beta") {
+  await dialog(page).getByRole("button", { name: `Actions for ${label}`, exact: true }).click();
+  return dialog(page).locator("[data-lora-popover]");
+}
 async function uploadImage(page, label = "Beta") {
-  await dialog(page).getByRole("button", { name: new RegExp(`(?:Add|Change) image for ${label}`) }).click();
+  const menu = await imageMenu(page, label);
+  await menu.getByRole("button", { name: /(?:Add|Change) thumbnail/ }).click();
   await dialog(page).locator("[data-lora-file]").setInputFiles(sample);
 }
 
@@ -180,17 +189,17 @@ test("thumbnail additions, replacements and removals save independently of Cance
   expect(await page.evaluate(() => window.posts.length)).toBe(1);
   expect(await page.evaluate(() => window.stack.every((entry) => entry.strength === 0))).toBe(true);
   await open(page);
-  await expect(dialog(page).getByRole("button", { name: "Change image for Beta" })).toBeVisible();
+  await expect(dialog(page).locator('[data-lora-id="b"] img')).toBeVisible();
   await uploadImage(page);
   await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
   await page.keyboard.press("Escape");
   await open(page);
-  await dialog(page).getByRole("button", { name: "Change image for Beta" }).hover();
-  await dialog(page).getByRole("button", { name: "Remove image for Beta" }).click();
+  const menu = await imageMenu(page);
+  await menu.getByRole("button", { name: "Remove thumbnail", exact: true }).click();
   await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
   await dialog(page).getByRole("button", { name: "Cancel and close LoRA manager" }).click();
   await open(page);
-  await expect(dialog(page).getByRole("button", { name: "Add image for Beta" })).toBeVisible();
+  await expect(dialog(page).locator('[data-lora-id="b"] img')).toHaveCount(0);
   expect(await page.evaluate(() => window.posts.flat().map((change) => change.action))).toEqual(["set", "set", "remove"]);
   expect(await page.evaluate(() => window.posts[1][0].version)).toBe("1".padStart(64, "0"));
 });
@@ -201,7 +210,9 @@ test("pending thumbnail saves survive closing and reopening without committing s
   await page.evaluate(() => { window.holdSave = true; });
   await uploadImage(page);
   await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saving…");
-  await expect(dialog(page).getByRole("button", { name: "Change image for Beta" })).toBeDisabled();
+  const menu = await imageMenu(page);
+  await expect(menu.getByRole("button", { name: "Add thumbnail…", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
   await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
   await open(page);
@@ -232,7 +243,9 @@ test("loading errors allow selection edits and a retry; rejected saves restore t
   await page.evaluate(() => { window.failLoad = true; });
   await open(page);
   await expect(dialog(page).getByRole("alert")).toContainText("Images could not be loaded");
-  await expect(dialog(page).getByRole("button", { name: "Add image for Beta" })).toBeDisabled();
+  const menu = await imageMenu(page);
+  await expect(menu.getByRole("button", { name: "Add thumbnail…", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
   await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   await expect(page.locator(".lm-summary-item")).toHaveCount(1);
@@ -285,7 +298,8 @@ test("a background save keeps an open file chooser attached to its target", asyn
   await open(page);
   await page.evaluate(() => { window.holdSave = true; });
   await uploadImage(page, "Alpha");
-  await dialog(page).getByRole("button", { name: "Add image for Beta" }).click();
+  const menu = await imageMenu(page);
+  await menu.getByRole("button", { name: "Add thumbnail…", exact: true }).click();
   const fileInput = await dialog(page).locator("[data-lora-file]").elementHandle();
   await page.evaluate(() => { window.holdSave = false; window.finishSave(); });
   await expect(dialog(page).locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
@@ -299,7 +313,7 @@ test("sidebar edits step by 0.5, accept fine values, disable and restore remembe
   await mount(page);
   await open(page);
   await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
-  await expect(dialog(page).locator('[data-lora-id="a"] .lm-row-state')).toHaveText("✓ Enabled");
+  await expect(dialog(page).getByRole("button", { name: "Toggle Alpha" })).toHaveAttribute("aria-pressed", "true");
   await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   const strength = page.getByRole("spinbutton", { name: "Alpha strength", exact: true });
@@ -331,7 +345,8 @@ test("sidebar edits step by 0.5, accept fine values, disable and restore remembe
   await expect(page.getByLabel("Subject name")).toHaveValue("AlphaCharacter");
   await open(page);
   await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
-  await expect(dialog(page).getByRole("spinbutton", { name: "Alpha strength", exact: true })).toHaveValue("0.15");
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Alpha strength", exact: true })).toHaveValue("0.15");
   expect(await page.evaluate(() => window.stack.map((entry) => entry.id))).toEqual(["a", "b", "c"]);
 });
 
@@ -356,7 +371,7 @@ test("manager fits a narrow viewport with all rows and actions reachable", async
   const page = await context.newPage();
   await mount(page);
   await open(page);
-  await expect(dialog(page).locator(".lm-row")).toHaveCount(3);
+  await expect(dialog(page).locator(".lm-card")).toHaveCount(3);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(dialog(page).getByRole("button", { name: "Apply" })).toBeVisible();
   await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
@@ -365,4 +380,36 @@ test("manager fits a narrow viewport with all rows and actions reachable", async
   await expect(page.getByRole("button", { name: "Disable Alpha" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await context.close();
+});
+
+test("enabling ignores remembered strengths that the current workflow rejects", async ({ page }) => {
+  await mount(page);
+  await page.evaluate(() => { window.memory = { a: 99, b: .63 }; });
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await dialog(page).getByRole("button", { name: "Apply", exact: true }).click();
+  expect(await page.evaluate(() => window.stack.filter((entry) => entry.strength > 0))).toEqual([{ id: "a", strength: 1 }, { id: "b", strength: 1 }]);
+});
+
+test("the application strip supports mouse, keyboard, and touch reordering independently of the gallery", async ({ page }) => {
+  await mount(page);
+  await open(page);
+  for (const name of ["Alpha", "Beta", "Gamma"]) await dialog(page).getByRole("button", { name: `Toggle ${name}` }).click();
+  const order = dialog(page).locator(".lm-order-chip");
+  const handle = (name) => dialog(page).getByRole("button", { name: `Reorder ${name}`, exact: true });
+  await handle("Gamma").dragTo(handle("Alpha"));
+  await expect(order.first()).toHaveAttribute("data-lora-order-id", "c");
+  await handle("Gamma").press("ArrowRight");
+  await expect(order.nth(1)).toHaveAttribute("data-lora-order-id", "c");
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+  const from = await handle("Gamma").boundingBox();
+  const to = await handle("Beta").boundingBox();
+  await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x + from.width / 2, y: from.y + from.height / 2 }] });
+  await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: to.x + to.width / 2, y: to.y + to.height / 2 }] });
+  await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await expect(order.nth(2)).toHaveAttribute("data-lora-order-id", "c");
+  expect(await dialog(page).locator(".lm-card").evaluateAll((cards) => cards.map((card) => card.dataset.loraId))).toEqual(["a", "b", "c"]);
+  await session.detach();
 });

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -266,6 +267,41 @@ class WorkflowProfile(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LoraGroupingRevision(Base):
+    __tablename__ = "lora_grouping_revisions"
+
+    library_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class LoraGroup(Base):
+    __tablename__ = "lora_groups"
+    __table_args__ = (
+        UniqueConstraint("library_key", "name_normalized", name="uq_lora_group_name"),
+        UniqueConstraint("library_key", "id", name="uq_lora_group_library_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    library_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    name_normalized: Mapped[str] = mapped_column(String(240), nullable=False)
+
+
+class LoraGroupMembership(Base):
+    __tablename__ = "lora_group_memberships"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["library_key", "group_id"],
+            ["lora_groups.library_key", "lora_groups.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    library_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    lora_identity: Mapped[str] = mapped_column(String(68), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(36), nullable=False)
 
 
 class LoraLibraryImage(Base):

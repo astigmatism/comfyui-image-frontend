@@ -279,3 +279,9 @@ source runner. It verifies non-root, read-only, network-isolated startup, migrat
 worker readiness and served assets. `test_portal_image_contract.py` reproduces the
 installed runner's environment with actual Dockerfile defaults and validates the
 explicit two-stage production assignments; an unknown explicit text ID still fails.
+
+## LoRA gallery and shared groups
+
+`backend/tests/integration/test_lora_groups.py` covers authenticated reads, administrator/CSRF writes, empty groups, normalized names, shared single membership, family isolation, permanent Uncategorized, atomic group deletion, and concurrent revision conflicts. Migration up/down/up coverage includes the grouping tables. Existing LoRA administration and thumbnail suites retain their operation and image-conflict checks.
+
+`frontend/test/lora-stack.test.mjs` verifies independent gallery/application ordering and reconciliation after library edits. `frontend/e2e/lora-gallery-admin.spec.mjs` exercises group CRUD, reassignment, explicit conflict retry, install/edit/delete refresh reconciliation, management mode, and blocked Apply after refresh failure. `frontend/e2e/lora-stack.spec.mjs` retains image save/recovery and sidebar strength journeys for the new gallery. The retained-prompt rerun journey verifies its independent strength controls. These suites use local fakes and do not change household ComfyUI or AI Runtime settings.

@@ -160,10 +160,12 @@ const adminLoraController = createAdminLoraController({
   actorId: () => state.session?.user?.id,
   storage: () => { try { return window.sessionStorage; } catch { return null; } },
   refreshSources: async (sourceKey) => {
-    loraManagerController?.invalidateSource(sourceKey);
-    await api("/api/admin/workflows/refresh", { method: "POST" });
-    await loadSources();
-    return state.sources;
+    return loraManagerController.refreshLibrarySources(async () => {
+      await api("/api/admin/workflows/refresh", { method: "POST" });
+      await loadSources();
+      await promptRerun?.controller.refreshLoraSource();
+      return state.sources;
+    });
   },
 });
 
@@ -480,7 +482,8 @@ function commitPanelLoras(id, values, memory, sourceKey, { updateSubject = false
 
 function bindDelegatedEvents() {
   installLoraStackControls(root, {
-    context: (id) => {
+    context: (id, stack) => {
+      if (stack.closest("#gallery-rerun-dialog")) return null;
       const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
       return control && state.activeSourceKey ? { control, sourceKey: state.activeSourceKey,
         values: state.parameters[id], memory: state.loraStrengthMemory[id] || {} } : null;
@@ -505,6 +508,8 @@ function bindDelegatedEvents() {
   });
   loraManagerController = installLoraManager(root, {
     api,
+    isAdmin: () => state.session?.user?.role === "admin",
+    adminController: adminLoraController,
     context: (id, owner) => {
       if (owner === "rerun") return promptRerun?.controller.loraContext(id);
       const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
@@ -856,6 +861,7 @@ async function handleClick(event) {
     else if (action === "set-gallery-layout") updateGalleryLayout(target.dataset.galleryLayout, true);
     else if (action === "retry-generation-sources") await loadSources();
     else if (action === "open-admin") await openAdmin();
+    else if (action === "open-lora-library") await loraManagerController.openLibrary(event.target.closest("[data-action]"));
     else if (action === "refresh-workflows") await refreshWorkflows();
     else if (action === "reset-user-password") await resetUserPassword(target.dataset.userId);
     else if (action === "delete-user") await deleteUser(target.dataset.userId, target.dataset.username);
@@ -7568,17 +7574,15 @@ async function openAdmin() {
   const dialog = document.querySelector("#admin-dialog");
   dialog.innerHTML = adminMarkup(users, diagnostics);
   if (!dialog.open) dialog.showModal();
-  adminLoraController.mount(dialog.querySelector("#admin-lora-host"), state.sources, state.activeSourceKey);
 }
 
 function adminMarkup(users, diagnostics) {
   const ordinary = users.filter((item) => item.role === "user");
   return `<div class="dialog-frame admin-frame">
-    <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts, published sources, and LoRAs.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
+    <header class="dialog-header"><div><h2>Administration</h2><p>Manage accounts and published sources.</p></div><button type="button" class="icon-button" data-action="close-admin" aria-label="Close administration">×</button></header>
     <div class="admin-content">
       <section><h3>Users</h3><form id="create-user-form" class="inline-form"><label class="field"><span>Username</span><input name="username" required /></label><label class="field"><span>Temporary password</span><input name="temporary_password" type="password" minlength="8" required /></label><button class="button primary" type="submit">Create user</button></form>
       <div class="table-wrap"><table><thead><tr><th>Username</th><th>State</th><th>Created</th><th>Account actions</th></tr></thead><tbody>${ordinary.map((user) => `<tr><td>${escapeForAdmin(user.username)}</td><td>${user.must_change_password ? "Temporary password" : "Active"}</td><td>${new Date(user.created_at).toLocaleDateString()}</td><td><div class="button-row"><button type="button" class="button low" data-action="reset-user-password" data-user-id="${user.id}">Reset password</button><button type="button" class="button destructive low" data-action="delete-user" data-user-id="${user.id}" data-username="${escapeForAdmin(user.username)}">Delete</button></div></td></tr>`).join("") || '<tr><td colspan="4">No ordinary users.</td></tr>'}</tbody></table></div></section>
-      <section id="admin-lora-host" aria-label="LoRA administration"></section>
       <section><div class="section-heading"><h3>Published-source diagnostics</h3><button type="button" class="button secondary" data-action="refresh-workflows">Refresh discovery</button></div><div class="diagnostic-list">${diagnostics.map((item) => `<article class="diagnostic ${item.accepted ? "accepted" : "rejected"}"><strong>${escapeForAdmin(item.display_name || item.basename || item.source_key || "Published source")}</strong><span>${item.accepted ? "Accepted" : "Rejected"}</span><p>${escapeForAdmin(item.message)}</p><code>${escapeForAdmin(item.code)}</code></article>`).join("") || '<p class="muted">No discovery diagnostics yet.</p>'}</div></section>
     </div>
     <footer class="dialog-actions"><button type="button" class="button primary" data-action="close-admin">Close</button></footer>

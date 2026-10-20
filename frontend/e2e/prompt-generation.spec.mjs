@@ -104,8 +104,11 @@ test("fixed stage assignments ignore saved choices and automation has no runtime
   expect(sent.prompt_generation).not.toHaveProperty("comfyui_instance_id");
   const automatic = await accepted.json();
   expect(automatic.snapshot.prompt_generation.comfyui_instance_id).toBe("promptgen");
-  expect(automatic.snapshot.generation.comfyui_instance_id).toBe("default");
+  expect(automatic.snapshot.generation.comfyui_instance_id).toBeNull();
   await expect(page.locator(".gallery-card.status-succeeded")).toHaveCount(1);
+  const id = await page.locator(".gallery-card.status-succeeded").getAttribute("data-generation-id");
+  const generated = await (await page.request.get(`/api/generations/${id}`)).json();
+  expect(generated.comfyui_instance_id).toBe("default");
   await expect(page.locator("#prompt-generation-runtime, #comfyui-instance")).toHaveCount(0);
 });
 
@@ -434,7 +437,11 @@ test("automatic batch edits stay silent and preserve Generate feedback across re
     await held;
     await route.continue();
   });
-  const before = await source.boundingBox();
+  let before;
+  await expect.poll(async () => {
+    before = await source.boundingBox();
+    return before !== null;
+  }).toBe(true);
   const saving = page.waitForRequest("**/api/auto-generation/apply");
   await page.locator("#generation-quantity").fill("2");
   await page.locator("#generation-quantity").blur();

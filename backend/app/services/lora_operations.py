@@ -50,6 +50,7 @@ from ..schemas import (
     LoraOperationPublic,
     SourceRevision,
 )
+from .lora_groups import prune_memberships
 from .lora_images import prune_library_images
 from .lora_library import Library, catalog_identities, libraries
 from .user_state import lock_user_state
@@ -1420,6 +1421,7 @@ class LoraOperationService:
                 identity = lora_identity_v1(filename)
                 if identity:
                     paths = prune_library_images(session, removed={identity})
+                    prune_memberships(session, {identity})
                 removed_id = str(change["id"])
                 source_keys = {
                     str(row.source_key)

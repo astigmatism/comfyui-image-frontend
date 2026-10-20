@@ -3,6 +3,13 @@ import { expect, test } from "@playwright/test";
 // The project runs one worker. Keep later journeys runnable when one assertion fails.
 test.describe.configure({ mode: "default" });
 
+async function setSidebarLoraStrength(page, label, value) {
+  await ensureControlSectionExpanded(page, "LoRAs");
+  const field = page.locator("#generation-panel").getByRole("spinbutton", { name: `${label} strength`, exact: true });
+  await field.fill(value);
+  await field.press("Tab");
+}
+
 async function signIn(page, username, password) {
   await page.getByLabel("Username").fill(username);
   await page.getByLabel("Password").fill(password);
@@ -885,8 +892,11 @@ test("image generation uses the server assignment without a runtime selector", a
   const response = await generateAndExpectAccepted(page);
   expect(response.request().postDataJSON()).not.toHaveProperty("comfyui_instance_id");
   const accepted = await response.json();
-  expect(accepted.comfyui_instance_id).toBe("default");
-  await expect.poll(async () => (await (await page.request.get(`/api/generations/${accepted.id}`)).json()).status).toBe("succeeded");
+  // Queued images receive their server assignment when a worker claims them.
+  await expect.poll(async () => {
+    const detail = await (await page.request.get(`/api/generations/${accepted.id}`)).json();
+    return { status: detail.status, instance: detail.comfyui_instance_id };
+  }).toEqual({ status: "succeeded", instance: "default" });
 });
 
 test("photo viewer slideshow waits for a generation's final completed image", async ({
@@ -1593,11 +1603,11 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   const loraDialog = page.locator("#lora-manager-dialog");
   await loraDialog.getByRole("button", { name: "Toggle Beta" }).click();
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+
   await loraDialog.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
   await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
-  const submittedStack = [{ id: "b", strength: 1.25 }, { id: "a", strength: 0 }];
+  await setSidebarLoraStrength(page, "Beta", "1.25");
+  const submittedStack = [{ id: "a", strength: 0 }, { id: "b", strength: 1.25 }];
   const trigger = page.locator("#workflow-source");
   await trigger.click();
   const dialog = page.locator("#source-picker-dialog");
@@ -1656,10 +1666,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   ).toEqual(["cutie_x_int8", "tyjr_mxfp8", "v4_bf16", "v4_int8", "v5_bf16"]);
   expect(new Set(generationRequests.map((request) => request.parameters.seed)).size).toBe(1);
   for (const request of generationRequests) expect(request.parameters.loras).toEqual(submittedStack);
-  await page.getByRole("button", { name: "Open LoRA manager" }).click();
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("0.25");
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
-  await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await setSidebarLoraStrength(page, "Beta", "0.25");
   for (const request of generationRequests) expect(request.parameters.loras).toEqual(submittedStack);
   expect(
     generationRequests.every(
@@ -1672,7 +1679,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
 
 test("LoRA manager applies the strongest published trigger and preserves remembered strength", async ({ page }, testInfo) => {
   await page.goto("/");
-  await signInAdminWithCurrentFixturePassword(page);
+  await signInFreshUser(page, "lora.trigger-gallery");
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
   const sourceKey = await page.locator("#workflow-source").getAttribute("data-source-key");
   await page.route(`**/api/workflows/${sourceKey}`, async (route) => {
@@ -1702,8 +1709,9 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
 
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await manager.getByRole("button", { name: "Toggle Beta" }).click();
-  await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await manager.getByRole("button", { name: "Apply", exact: true }).click();
+  await setSidebarLoraStrength(page, "Beta", "1.25");
+  await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject on Apply: Beta (LoRA title)");
   await manager.screenshot({ path: testInfo.outputPath("lora-manager.png"), animations: "disabled" });
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
@@ -1714,7 +1722,8 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await manager.getByRole("button", { name: "Toggle Beta" }).click();
-  await expect(manager.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
+  await manager.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.locator("#generation-panel").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
 });
 
 
@@ -1929,9 +1938,9 @@ test("changing the generation source keeps the control panel", async ({ page }) 
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   const loraDialog = page.locator("#lora-manager-dialog");
   await loraDialog.getByRole("button", { name: "Toggle Beta" }).click();
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+
   await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await setSidebarLoraStrength(page, "Beta", "1.25");
 
   // The other workflow shows the same values, including the recent-resolutions row.
   await selectPublishedSource(page, "Krea 2 NSFW V4");
@@ -1955,8 +1964,8 @@ test("changing the generation source keeps the control panel", async ({ page }) 
   await expect(trigger).toContainText("2 checkpoints selected");
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await expect(loraDialog.getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
-  await expect(loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
   await loraDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("#generation-panel").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
 });
 
 test("changing between twin workflows keeps checkpoints and LoRA picks", async ({ page }) => {
@@ -1968,6 +1977,7 @@ test("changing between twin workflows keeps checkpoints and LoRA picks", async (
   await page.route("**/api/workflows", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     const response = await route.fetch();
+    if (!response.ok()) { await route.fulfill({ response }); return; }
     const sources = await response.json();
     const moody = sources.find((source) => source.display_name === "Moody Krea 2 Mix V4");
     moodyKey = moody.source_key;
@@ -1999,9 +2009,9 @@ test("changing between twin workflows keeps checkpoints and LoRA picks", async (
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   const loraDialog = page.locator("#lora-manager-dialog");
   await loraDialog.getByRole("button", { name: "Toggle Beta" }).click();
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+
   await loraDialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await setSidebarLoraStrength(page, "Beta", "1.25");
 
   // The picker previews the same checkpoints in the twin before anything is applied.
   await trigger.click();
@@ -2018,8 +2028,8 @@ test("changing between twin workflows keeps checkpoints and LoRA picks", async (
   await expect(prompt).toHaveValue("twin workflow lighthouse");
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await expect(loraDialog.getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
-  await expect(loraDialog.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
   await loraDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("#generation-panel").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
 
   // A change made in the twin follows the switch back as well.
   await trigger.click();

@@ -264,3 +264,7 @@ and four background operations. Sessions close before external awaits or respons
 streaming. A separate single-thread read-only health probe cannot queue an unbounded
 executor backlog. Cancellation waits for an already-started transaction to finish;
 generation and automatic-cycle claims reconcile before their coordinator exits.
+
+## Shared LoRA gallery groups
+
+Migration `e8c6a4b2d901_lora_groups.py` adds `lora_grouping_revisions` (one optimistic edit revision per model-family library), `lora_groups` (names unique after trimming and case folding within a family), and `lora_group_memberships`. A membership's composite primary key `(library_key, lora_identity)` enforces one group per LoRA in that family. Its composite foreign key keeps the group in the same family and cascades membership deletion when a group is deleted. Missing membership means the virtual, permanent Uncategorized group, so legacy catalogs need no backfill and discovery remains read-only. A completed LoRA removal prunes its memberships. These tables contain presentation metadata only; executable catalogs and generation settings retain their existing storage and contracts.

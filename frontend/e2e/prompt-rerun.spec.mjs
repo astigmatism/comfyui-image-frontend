@@ -235,16 +235,17 @@ test("Prompt Re-run queues the exact selected prompts into a new folder with new
   await expect(dialog.locator('[data-control-section-status="lora-loras"]')).toHaveText("0 active");
   await loraTrigger.click();
   await manager.getByRole("button", { name: "Toggle Beta" }).click();
-  await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("1.25");
-  await manager.getByRole("spinbutton", { name: "Beta strength", exact: true }).press("Tab");
+  await expect(manager.getByRole("spinbutton")).toHaveCount(0);
   await manager.getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
   await expect(manager.locator("[data-lora-subject-preview]")).toHaveText("Selected prompts stay unchanged");
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(loraTrigger).toBeFocused();
   await dialog.getByRole("button", { name: "LoRAs", exact: true }).click();
   await expect(dialog.locator(".lm-summary-name")).toHaveText("Beta");
-  await expect(dialog.locator(".lm-summary-strength")).toHaveText("1.25");
-  await expect(dialog.locator("[data-lora-editable], [data-lora-disable]")).toHaveCount(0);
+  const rerunStrength = dialog.getByRole("spinbutton", { name: "Beta strength", exact: true });
+  await rerunStrength.fill("1.25");
+  await rerunStrength.press("Enter");
+  await expect(rerunStrength).toHaveValue("1.25");
   await expect(mainPanel.locator(".lora-stack")).toHaveText(mainLoras);
 
   // Resolution uses the panel's editor, without touching panel values or recents.
@@ -321,7 +322,7 @@ test("Prompt Re-run queues the exact selected prompts into a new folder with new
   expect(body).not.toHaveProperty("parameters.prompt");
   expect(body.model_variants).toHaveLength(2);
   expect(body.keep_original_resolution).toBe(true);
-  expect(body.parameters.loras[0]).toEqual({ id: "b", strength: 1.25 });
+  expect(body.parameters.loras.filter((entry) => entry.strength > 0)).toEqual([{ id: "b", strength: 1.25 }]);
   expect(errors).toEqual([]);
   const result = await response.json();
   expect(result.collection.name).toBe("Re-run favorites");
@@ -458,7 +459,8 @@ test("sidebar LoRA shortcuts and thumbnail autosaves persist without changing Su
   }).toEqual([{ id: "a", strength: 1.15 }, { id: "b", strength: 0 }]);
 
   await panel.getByRole("button", { name: "Open LoRA manager" }).click();
-  await manager.getByRole("button", { name: "Add image for Alpha" }).click();
+  await manager.getByRole("button", { name: "Actions for Alpha" }).click();
+  await manager.getByRole("button", { name: "Add thumbnail…", exact: true }).click();
   await manager.locator("[data-lora-file]").setInputFiles({ name: "sample.png", mimeType: "image/png",
     buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64") });
   await expect(manager.locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
@@ -470,9 +472,9 @@ test("sidebar LoRA shortcuts and thumbnail autosaves persist without changing Su
   await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(1);
   await panel.getByRole("button", { name: "Open LoRA manager" }).click();
   await manager.getByRole("button", { name: "Toggle Beta" }).click();
-  await expect(manager.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.00");
-  await manager.getByRole("button", { name: "Change image for Alpha" }).hover();
-  await manager.getByRole("button", { name: "Remove image for Alpha" }).click();
+  await expect(manager.getByRole("spinbutton")).toHaveCount(0);
+  await manager.getByRole("button", { name: "Actions for Alpha" }).click();
+  await manager.getByRole("button", { name: "Remove thumbnail", exact: true }).click();
   await expect(manager.locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
   await page.keyboard.press("Escape");
   await page.reload();

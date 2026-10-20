@@ -68,11 +68,12 @@ test("production build emits one content-addressed frontend module graph", async
     generation_countdown: new Set([first.assets.render]),
     lib: new Set([first.assets.lora_stack]),
     lora_stack: new Set(),
-    lora_manager: new Set([first.assets.lora_stack]),
+    lora_manager: new Set([first.assets.lora_stack, first.assets.lora_gallery]),
+    lora_gallery: new Set([first.assets.lora_stack, first.assets.lib, first.assets.admin_loras]),
     admin_loras: new Set(),
     render: new Set([first.assets.prompt_routing, first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view, first.assets.expectation_check]),
   };
-  for (const name of ["prompt_routing", "image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "prompt_rerun", "prompt_rerun_progress", "expectation_check", "server_clock", "generation_countdown", "lora_stack", "lora_manager", "admin_loras", "user_settings"]) {
+  for (const name of ["prompt_routing", "image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "prompt_rerun", "prompt_rerun_progress", "expectation_check", "server_clock", "generation_countdown", "lora_stack", "lora_manager", "lora_gallery", "admin_loras", "user_settings"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

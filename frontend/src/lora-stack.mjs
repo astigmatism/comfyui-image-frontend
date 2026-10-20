@@ -95,7 +95,7 @@ export function installLoraStackControls(root, { context, apply }) {
     const stack = element.closest("[data-lora-editable]");
     const row = element.closest("[data-lora-summary-id]");
     if (!stack || !row) return null;
-    const ctx = context(stack.dataset.loraControl);
+    const ctx = context(stack.dataset.loraControl, stack);
     return ctx ? { ...ctx, id: row.dataset.loraSummaryId, row, input: row.querySelector("[data-lora-strength]") } : null;
   };
   function updateArrows(ctx, strength) {

@@ -1065,3 +1065,16 @@ The compact toolbar uses `Current ~1:24 | All ~8:12`; the browser title uses
 `1:24 now · 8:12 all · ImageGen`. Unknown estimates use Estimating…, queued-only work uses Waiting,
 and no accepted work hides the badge/title timing immediately. `generation_duration_seconds` uses
 verified execution time for new measured successes, retaining the legacy interval for older rows.
+
+## Shared LoRA groups
+
+Signed-in, password-ready users can read `/api/workflows/{source_key}/lora-groups/{control_id}` or `/api/lora-library/{library_key}/groups`. Responses include `library_key`, integer `revision`, ordered `groups` (`id`, `name`, `system`), and an `assignments` map from shared LoRA identity to group ID. Uncategorized is always present with ID `uncategorized` and `system: true`.
+
+Administrator mutations require CSRF and the last observed `revision` in the JSON body:
+
+- `POST /api/admin/lora-library/{library_key}/groups`: `{revision, name}` creates a group.
+- `PATCH /api/admin/lora-library/{library_key}/groups/{group_id}`: `{revision, name}` renames it.
+- `DELETE /api/admin/lora-library/{library_key}/groups/{group_id}`: `{revision}` deletes the custom group and returns its members to Uncategorized.
+- `PUT /api/admin/lora-library/{library_key}/group-memberships/{lora_identity}`: `{revision, group_id}` assigns the LoRA, including moving it back to `uncategorized`.
+
+Each mutation returns the updated grouping snapshot. Stale revisions return HTTP 409 with `lora_group_conflict`; callers reload and require explicit review/retry. Names are 1–80 trimmed characters, case-insensitively unique within the library; Uncategorized is reserved. An unknown LoRA, library, or custom group returns 404. Group changes do not republish workflows or alter generation payloads. Weight-file installation/edit/deletion continue through the existing administrator operation API, now exposed in the gallery.
