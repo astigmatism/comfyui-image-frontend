@@ -27,7 +27,10 @@ class AuthService:
         self.settings = settings
 
     def ensure_bootstrap_admin(self, session: Session) -> User | None:
-        count = session.scalar(select(func.count()).select_from(User)) or 0
+        count = (
+            session.scalar(select(func.count()).select_from(User).where(User.is_system.is_(False)))
+            or 0
+        )
         if count:
             return None
         username = self.settings.bootstrap_admin_username
@@ -88,6 +91,7 @@ class AuthService:
         user = session.scalar(select(User).where(User.username_normalized == normalized))
         valid = bool(
             user
+            and not user.is_system
             and user.state == UserState.ACTIVE
             and verify_password(user.password_hash, password)
         )
@@ -150,6 +154,7 @@ class AuthService:
         user = session.get(User, stored.user_id)
         if (
             user is None
+            or user.is_system
             or user.state != UserState.ACTIVE
             or stored.session_epoch != user.session_epoch
         ):
@@ -286,7 +291,7 @@ class AuthService:
 
     @staticmethod
     def _require_ordinary_target(user: User) -> None:
-        if user.role != UserRole.USER or user.is_bootstrap:
+        if user.role != UserRole.USER or user.is_bootstrap or user.is_system:
             raise AppError(
                 "forbidden",
                 "The bootstrap administrator cannot be modified here.",

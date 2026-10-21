@@ -42,7 +42,11 @@ def list_users(
     session: Annotated[Session, Depends(get_db, scope="function")],
     _: Annotated[AuthContext, Depends(require_admin)],
 ) -> list[UserPublic]:
-    users = list(session.scalars(select(User).order_by(User.username_normalized)))
+    users = list(
+        session.scalars(
+            select(User).where(User.is_system.is_(False)).order_by(User.username_normalized)
+        )
+    )
     return [
         UserPublic(
             id=user.id,

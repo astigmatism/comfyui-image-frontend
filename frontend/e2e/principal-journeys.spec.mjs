@@ -96,6 +96,9 @@ async function clickGalleryControl(control) {
       requestAnimationFrame(() => requestAnimationFrame(resolve));
     }));
     const box = await control.boundingBox();
+    // A refresh or scroll can clear hover intent without moving the pointer.
+    // Approach the control again so each retry supplies real pointer movement.
+    await control.page().mouse.move(Math.max(0, box.x - 8), box.y + box.height / 2);
     await control.page().mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await expect(card.locator('[role="group"]')).toHaveCSS("opacity", "1", { timeout: 2000 });
     // A final actionability scroll can hide hover controls again on tall cards.
@@ -2964,11 +2967,10 @@ test("recall restores the creative direction section from the generation snapsho
 
   // A missing historical publication uses migration but keeps the same seed presentation.
   await seedRandom.check();
+  const historicalRecall = await (await page.request.get(`/api/generations/${accepted.id}/recall`)).json();
   await page.route(`**/api/generations/${accepted.id}/recall`, async (route) => {
-    const response = await route.fetch();
     await route.fulfill({
-      response,
-      json: { ...(await response.json()), source_available: false },
+      json: { ...historicalRecall, source_available: false },
     });
   });
   await clickGalleryControl(card.getByRole("button", { name: "Recall settings" }));

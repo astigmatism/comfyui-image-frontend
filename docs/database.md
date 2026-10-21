@@ -270,3 +270,27 @@ generation and automatic-cycle claims reconcile before their coordinator exits.
 Migration `f3b7d9a1c602_lora_group_order.py` adds `group_order_json` to the library's grouping revision row. Existing rows start with an empty list, retaining alphabetical custom groups followed by Uncategorized until an administrator reorders them. An explicit order includes every group, including the movable permanent fallback. Creation inserts missing groups before Uncategorized, and deletion prunes obsolete IDs; revisions protect ordering and all other grouping edits together.
 
 Migration `e8c6a4b2d901_lora_groups.py` adds `lora_grouping_revisions` (one optimistic edit revision per model-family library), `lora_groups` (names unique after trimming and case folding within a family), and `lora_group_memberships`. A membership's composite primary key `(library_key, lora_identity)` enforces one group per LoRA in that family. Its composite foreign key keeps the group in the same family and cascades membership deletion when a group is deleted. Missing membership means the virtual, permanent Uncategorized group, so legacy catalogs need no backfill and discovery remains read-only. A completed LoRA removal prunes its memberships. These tables contain presentation metadata only; executable catalogs and generation settings retain their existing storage and contracts.
+
+## Demo Reels
+
+Migration `c43d89e12a70` adds `users.is_system` and the Demo Reel configuration,
+hidden collection mapping, unique per-combination entry, and transfer receipt
+tables. Existing users default to ordinary accounts. The protected internal owner
+is created after normal administrator bootstrap and is excluded from sign-in,
+session resolution, user listings, password resets, and deletion.
+
+Slots, family recipes, and strength overrides are revision-checked JSON in the
+singleton `demo_reel_config`. `last_activity_at` survives restart; startup resets
+the quiet period and discards unfinished attempts before worker recovery.
+`demo_reel_entries` uniquely constrains `(reel_id, slot_id, checkpoint_id)` and its
+current generation; signatures determine invalidation independently of ordering.
+Failure counts and retry timestamps persist. Actor/key transfer receipts make
+cross-owner copy/move replay safe. Copies explicitly replace both generation and
+artifact ownership and retain independent files.
+
+Shared artifacts remain ordinary generation artifacts under the internal owner;
+reel-specific reads validate current eligibility and final-result membership.
+Personal queries do not include system content. Invalidation first revokes shared
+access and marks old generations for cleanup; terminal cleanup uses the existing
+artifact deletion path. Downgrade refuses initialized system ownership and requires
+backup recovery. See [Demo Reels](demo-reel.md).

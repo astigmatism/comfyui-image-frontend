@@ -7,11 +7,14 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+
+if TYPE_CHECKING:
+    from .demo_reels import DemoReelService
 
 from ..blocking import run_blocking
 from ..config import ComfyUIInstanceConfig
@@ -154,6 +157,7 @@ class GenerationService:
         self.comfyui_instances = comfyui_instances
         self.image_pool = image_pool or ImageWorkerPool(comfyui_instances)
         self.broker = broker
+        self.demo_reels: DemoReelService | None = None
 
     def validate(
         self, session: Session, *, user: User, request: GenerationCreate
@@ -197,6 +201,10 @@ class GenerationService:
         request: GenerationCreate,
         frozen_profile: WorkflowProfile | None = None,
     ) -> tuple[Generation, GenerationEvent]:
+        if not user.is_system:
+            from .demo_reel_activity import record_activity
+
+            record_activity(session)
         # Validates the request's runtime assertion and pool readiness. Image
         # execution is not bound here; the dispatcher records the winning worker.
         self._instance_for_request(

@@ -29,6 +29,7 @@ from .api import (
     auto_generation,
     collections,
     comfyui_instances,
+    demo_reels,
     events,
     favorites,
     gallery,
@@ -281,6 +282,7 @@ def create_app(
                 container.auth.ensure_bootstrap_admin(session)
 
         await run_blocking(bootstrap)
+        await container.demo_reels.recover()
         container.ollama.log_configuration()
         # A client that disconnects mid-download leaves its staged archive behind on the
         # data volume, where nothing else reclaims it.
@@ -295,6 +297,7 @@ def create_app(
                 await container.prompt_generation.start()
                 await container.automation.start()
                 await container.expectation_checks.start()
+                await container.demo_reels.start()
             yield
         finally:
             admission.close()
@@ -437,6 +440,7 @@ def create_app(
         )
 
     app.include_router(auto_generation.router)
+    app.include_router(demo_reels.router)
     app.include_router(auth.router)
     app.include_router(comfyui_instances.router)
     app.include_router(workflows.router)

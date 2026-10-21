@@ -920,6 +920,11 @@ class PromptRerunRefinement(APIModel):
         return value.strip() if value is not None else None
 
 
+class DemoReelScope(APIModel):
+    library_key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+    lora_identity: str = Field(pattern=r"^lr1_[a-f0-9]{64}$")
+
+
 class PromptRerunCreate(GallerySelection):
     """Queue retained prompts with new settings and optional per-prompt refinement.
 
@@ -941,6 +946,7 @@ class PromptRerunCreate(GallerySelection):
     seed_mode: Literal["random", "original"] = "random"
     skip_duplicates: bool = True
     refinement: PromptRerunRefinement | None = None
+    demo_reel: DemoReelScope | None = None
 
     @field_validator("folder_name")
     @classmethod

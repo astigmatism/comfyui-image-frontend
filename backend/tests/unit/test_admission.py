@@ -93,6 +93,27 @@ async def test_cancelled_transaction_keeps_background_slot_until_finished():
     assert fifth.is_set()
 
 
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_transaction_failure_preserves_pending_cancellation(cancelled):
+    started = threading.Event()
+    release = threading.Event()
+
+    def transaction():
+        started.set()
+        assert release.wait(2)
+        raise RuntimeError("transaction failed while shutdown waited")
+
+    task = asyncio.create_task(run_blocking(transaction))
+    assert await asyncio.to_thread(started.wait, 1)
+    if cancelled:
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError if cancelled else RuntimeError):
+        await asyncio.wait_for(task, 1)
+
+
 async def test_sustained_overload_is_bounded_and_returns_retryable_responses():
     admission = Admission(active_limit=8, media_limit=4, queue_limit=64, wait_seconds=0.03)
     active = [await admission.acquire(index < 4) for index in range(8)]

@@ -285,3 +285,19 @@ explicit two-stage production assignments; an unknown explicit text ID still fai
 `backend/tests/integration/test_lora_groups.py` covers authenticated reads, administrator/CSRF writes, empty groups, normalized names, shared single membership, family isolation, permanent Uncategorized, atomic group deletion, shared display ordering, invalid order permutations, and concurrent revision conflicts. Migration up/down/up coverage includes the grouping tables; ordering migration coverage preserves existing groups, membership, and revision. Existing LoRA administration and thumbnail suites retain their operation and image-conflict checks.
 
 `frontend/test/lora-stack.test.mjs` verifies independent gallery/application ordering and reconciliation after library edits. `frontend/e2e/lora-gallery-admin.spec.mjs` exercises group CRUD, reassignment, move controls and explicit conflict retry, install/edit/delete refresh reconciliation, management mode, and blocked Apply after refresh failure. `frontend/e2e/lora-stack.spec.mjs` checks the smaller desktop bounds, live thumbnail scale/reflow, browser persistence, mobile layout, image save/recovery, and sidebar strengths. The retained-prompt rerun journey verifies its independent strength controls. These suites use local fakes and do not change household ComfyUI or AI Runtime settings.
+
+## Demo Reel coverage
+
+`backend/tests/integration/test_demo_reels.py` exercises the real application and
+fake image worker: shared eligibility and slot/checkpoint ordering, five-minute
+admission, random seeds, strength/resolution changes, prompt/tier invalidation,
+concurrent admission, restart and queued cancellation, late-output discard,
+persisted failure backoff, pause revision conflicts, cross-owner access, favorites,
+copy/move rollback and file independence, downloads, and personal prompt re-runs.
+
+`frontend/test/demo-reels.test.mjs` covers literal subject substitution, slot
+ordering, permitted image actions, editor controls, and activity coalescing.
+`frontend/e2e/demo-reels.spec.mjs` saves settings through the real API, checks keyboard
+reordering and mobile layout, preserves picker drafts, and feeds retained-image
+fixtures through the real photo viewer to verify ordered navigation without a
+five-minute wall-clock delay. Screenshots cover the mobile editor and desktop reel.

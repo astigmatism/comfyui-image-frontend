@@ -1,3 +1,5 @@
+import { createDemoReels, demoReelRerunApi } from "./demo-reels.mjs";
+import { installActivityReporting } from "./user-activity.mjs";
 import { defaultSourceKey, reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
 import { photoViewerPreloadArtifact, createPhotoViewerPreloader } from "./photo-viewer-preload.mjs";
 import { createPhotoViewerImages, photoKey } from "./photo-viewer-images.mjs";
@@ -155,6 +157,8 @@ const root = document.querySelector("#app");
 const galleryHover = bindGalleryCardHover(root);
 let disposeThumbnails = null;
 let loraManagerController = null;
+let demoReelController = null;
+let userActivityReporter = null;
 const adminLoraController = createAdminLoraController({
   api, getCsrfToken, notify: toast,
   actorId: () => state.session?.user?.id,
@@ -506,8 +510,23 @@ function bindDelegatedEvents() {
     openRerun: (selection) => openPromptRerun(selection),
     rerunBlocked: promptRerunBlockedReason,
   });
+  userActivityReporter = installActivityReporting({ send: () => api("/api/activity", { method: "POST" }), ready: () => Boolean(state.session?.authenticated && !state.session?.user?.must_change_password) });
+  demoReelController = createDemoReels({
+    root, api, isAdmin: () => state.session?.user?.role === "admin", user: () => state.session?.user, notify: toast,
+    onPhoto: openPhotoViewer, onDetails: openDetail,
+    onRerun: (id, scope) => { demoReelController.close(); loraManagerController.close(); openPromptRerun({ body: { generation_ids: [id], collection_ids: [], demo_reel: scope } }); },
+    onRecall: async (id) => { await recall(id); closePhotoViewer(); demoReelController.close(); loraManagerController.close(); },
+    onChanged: () => {
+      if (!state.photoViewerGenerationId || !demoReelController?.isOpen()) return;
+      if (!demoReelController.find(state.photoViewerGenerationId)) closePhotoViewer();
+      else renderPhotoViewer();
+    },
+    onClose: () => { closePhotoViewer(); if (state.session?.authenticated && document.querySelector("#gallery")) { renderGallery(); void loadCollections(); } },
+  });
   loraManagerController = installLoraManager(root, {
     api,
+    onDemoReel: (ctx) => demoReelController.open(ctx),
+    onDemoSettings: (ctx) => demoReelController.openSettings(ctx),
     isAdmin: () => state.session?.user?.role === "admin",
     adminController: adminLoraController,
     context: (id, owner) => {
@@ -593,7 +612,7 @@ function promptRerunController() {
   if (!dialog) return null;
   if (promptRerun?.dialog === dialog) return promptRerun.controller;
   const controller = createPromptRerun(dialog, {
-    api,
+    api: demoReelRerunApi(api),
     sources: () => state.sources,
     collectionName: (id) => (id ? state.collections.find((item) => item.id === id)?.name || "this folder" : "Home"),
     initial: () => ({
@@ -1428,8 +1447,10 @@ async function changePhotoCheckpointRank(button) {
   renderPhotoViewer();
   const saved = await settingsSync?.save();
   if (sessionId !== state.session?.user?.id || checkpointRankChange !== change) return;
-  if (saved) change.status = "saved";
-  else {
+  if (saved) {
+    change.status = "saved";
+    if (demoReelController?.isOpen()) await demoReelController.refresh();
+  } else {
     if (settingsEqual(state.checkpointTiers, next)) state.checkpointTiers = previous;
     checkpointTiersRevision += 1;
     settingsSync?.persistLocal();
@@ -2783,6 +2804,8 @@ async function submitPassword(form) {
 }
 
 async function logout() {
+  demoReelController?.close();
+  userActivityReporter?.dispose();
   await api("/api/auth/logout", { method: "POST" });
   // Keep unresolved account-scoped receipts for recovery on the next sign-in.
   setSubmissionOwner(null);
@@ -2875,6 +2898,7 @@ function renderPasswordChange(forced) {
 }
 
 async function enterApplication() {
+  userActivityReporter?.activity();
   setSubmissionOwner(state.session.user.id);
   state.pendingSubmission = pendingSubmission();
   stopLiveUpdates();
@@ -3306,6 +3330,7 @@ function setGalleryRoute(route) {
 }
 
 function galleryNextCursor() {
+  if (demoReelController?.isOpen()) return null;
   return state.nextCursor;
 }
 
@@ -6365,7 +6390,7 @@ async function refreshGeneration(
 }
 
 async function recall(id) {
-  const recalled = await api(`/api/generations/${id}/recall`);
+  const recalled = await api(demoReelController?.find(id) ? `${demoReelController.path()}/generations/${id}/recall` : `/api/generations/${id}/recall`);
   if (!recalled.available) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
     return;
@@ -6474,6 +6499,7 @@ function favoriteToggleFocus(button) {
 }
 
 async function toggleFavorite(id, button) {
+  if (demoReelController?.isOpen() && demoReelController.find(id)) { await demoReelController.action("favorite", [id]); return; }
   const generation = photoViewerGeneration(id);
   if (!generation) return;
   const wasFavorite = Boolean(generation.is_favorite);
@@ -6582,7 +6608,7 @@ function observeTopbarHeight() {
 }
 
 async function openDetail(id) {
-  const detail = await api(`/api/generations/${id}`);
+  const detail = await api(demoReelController?.find(id) ? `${demoReelController.path()}/generations/${id}` : `/api/generations/${id}`);
   const dialog = document.querySelector("#detail-dialog");
   dialog.dataset.generationId = id;
   dialog.innerHTML = detailMarkup(detail);
@@ -6590,6 +6616,7 @@ async function openDetail(id) {
 }
 
 function photoViewerGeneration(id) {
+  if (demoReelController?.isOpen() && demoReelController.find(id)) return demoReelController.find(id);
   return (
     state.generations.find((item) => item.id === id) ||
     (state.photoViewerDetachedGeneration?.id === id ? state.photoViewerDetachedGeneration : null) ||
@@ -6598,6 +6625,7 @@ function photoViewerGeneration(id) {
 }
 
 function photoViewerGenerations() {
+  if (demoReelController?.isOpen()) return demoReelController.items();
   return visibleGenerations().filter((generation) => generation.display_artifact?.kind === "image");
 }
 
@@ -6605,7 +6633,7 @@ function photoViewerNavigation(id) {
   const generations = photoViewerNavigationItems(id);
   const index = generations.findIndex((generation) => generation.id === id);
   return {
-    hasOlder: index >= 0 && (index < generations.length - 1 || Boolean(galleryNextCursor())),
+    hasOlder: index >= 0 && (index < generations.length - 1 || Boolean(galleryNextCursor()) || Boolean(demoReelController?.isOpen() && demoReelController.hasMore())),
     hasNewer: index > 0,
   };
 }
@@ -6676,7 +6704,7 @@ function syncPhotoViewerPreload() {
   const eligible = document.querySelector("#photo-viewer")?.open && !document.hidden &&
     state.photoViewerPlaybackMode === "hold" && !photoViewerLoading && !photoViewerPaging && !photoViewerLoadError &&
     photoViewerDisplayed?.id === state.photoViewerGenerationId;
-  photoViewerPreloader.update(eligible ? photoViewerPreloadArtifact(visibleGenerations(), photoViewerDisplayed.id, photoViewerDirection) : null);
+  photoViewerPreloader.update(eligible ? photoViewerPreloadArtifact(photoViewerGenerations(), photoViewerDisplayed.id, photoViewerDirection) : null);
 }
 
 function openPhotoViewer(id) {
@@ -6707,6 +6735,15 @@ async function navigatePhotoViewer(direction) {
   photoViewerLoadError = null;
   photoViewerPaging = false;
   try {
+    if (demoReelController?.isOpen() && direction === "older") {
+      let reelItems = demoReelController.items();
+      while (reelItems.at(-1)?.id === origin && demoReelController.hasMore()) {
+        const advanced = await demoReelController.loadMore();
+        if (!current()) return;
+        if (!advanced) break;
+        reelItems = demoReelController.items();
+      }
+    }
     let generations = photoViewerNavigationItems(origin);
     let index = generations.findIndex((generation) => generation.id === origin);
     let target = index < 0 ? null : generations[index + (direction === "older" ? 1 : -1)];
@@ -7069,6 +7106,10 @@ async function cancelGeneration(id, button) {
 }
 
 async function deleteGeneration(id) {
+  if (demoReelController?.isOpen() && demoReelController.find(id)) {
+    if (window.confirm("Remove this Demo Reel image and generate a fresh random replacement when idle?")) { await demoReelController.action("delete", [id]); document.querySelector("#detail-dialog")?.close(); }
+    return;
+  }
   if (
     !window.confirm(
       "Permanently delete this generation record and all of its application-owned artifacts? It will disappear from your history and cannot be undone.",

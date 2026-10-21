@@ -553,13 +553,18 @@ class GalleryService:
         source: Generation,
         collection_id: str | None,
         created_paths: list[str],
+        *,
+        owner_id: str | None = None,
     ) -> str:
+        destination_owner = owner_id or source.owner_id
         values = {
             column.key: copy.deepcopy(getattr(source, column.key))
             for column in Generation.__table__.columns
         }
         values.update(
             id=uuid_str(),
+            owner_id=destination_owner,
+            auto_cycle_id=None,
             collection_id=collection_id,
             correlation_id=uuid_str(),
             comfyui_client_id=uuid_str(),
@@ -599,6 +604,7 @@ class GalleryService:
             }
             artifact_values.update(
                 id=artifact_ids[artifact.id],
+                owner_id=destination_owner,
                 generation_id=clone.id,
                 storage_path=stored.relative_path,
                 thumbnail_path=stored.thumbnail_path,
@@ -636,17 +642,17 @@ class GalleryService:
                 column.key: copy.deepcopy(getattr(run, column.key))
                 for column in PromptAssistantRun.__table__.columns
             }
-            run_values.update(id=uuid_str(), generation_id=clone.id)
+            run_values.update(id=uuid_str(), generation_id=clone.id, owner_id=destination_owner)
             session.add(PromptAssistantRun(**run_values))
         if session.scalar(
             select(Favorite.id).where(
-                Favorite.owner_id == source.owner_id, Favorite.generation_id == source.id
+                Favorite.owner_id == destination_owner, Favorite.generation_id == source.id
             )
         ):
-            session.add(Favorite(owner_id=source.owner_id, generation_id=clone.id))
+            session.add(Favorite(owner_id=destination_owner, generation_id=clone.id))
         session.add(
             AuditLog(
-                actor_user_id=source.owner_id,
+                actor_user_id=destination_owner,
                 target_type="generation",
                 target_id=clone.id,
                 action="generation_copied",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -149,16 +149,29 @@ def require_csrf(
     return context
 
 
-def require_ready_csrf(
+async def require_ready_csrf(
+    request: Request,
     context: Annotated[AuthContext, Depends(require_csrf)],
-) -> AuthContext:
+) -> AsyncIterator[AuthContext]:
     if context.user.must_change_password:
         raise AppError(
             "password_change_required",
             "You must change the temporary password before continuing.",
             status_code=403,
         )
-    return context
+    service = get_container(request).demo_reels
+    # Lookup is a passive POST used by gallery rendering, not user activity.
+    passive = request.url.path == "/api/gallery/prompt-groups/lookup"
+    if not passive:
+        service.foreground_requests += 1
+    try:
+        if not passive:
+            await service.activity()
+        yield context
+    finally:
+        if not passive:
+            service.foreground_requests -= 1
+            service.foreground_finished()
 
 
 def current_session_hash(context: AuthContext, request: Request) -> str:

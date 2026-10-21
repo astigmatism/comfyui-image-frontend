@@ -29,6 +29,7 @@ from ..domain.results import (
 )
 from ..errors import AppError
 from ..models import (
+    ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     Artifact,
     ArtifactState,
@@ -632,6 +633,25 @@ class QueueWorker:
         )
         with self.session_factory() as session:
             lock_user_state(session)
+            from .demo_reel_activity import SYSTEM_OWNER_ID, record_activity
+
+            background_active = session.scalar(
+                select(Generation.id)
+                .where(
+                    Generation.owner_id == SYSTEM_OWNER_ID,
+                    Generation.status.in_(ACTIVE_STATUSES),
+                )
+                .limit(1)
+            )
+            if background_active and session.scalar(
+                select(Generation.id)
+                .where(
+                    Generation.owner_id != SYSTEM_OWNER_ID,
+                    Generation.status.in_(ACTIVE_STATUSES),
+                )
+                .limit(1)
+            ):
+                record_activity(session)
             rows = session.execute(
                 select(Generation.owner_id, func.min(Generation.queue_seq).label("first_seq"))
                 .where(
@@ -2615,6 +2635,7 @@ class QueueWorker:
         """
 
         with self.session_factory() as session:
+            lock_user_state(session)
             generation = session.get(Generation, generation_id)
             if generation is None or generation.status in TERMINAL_STATUSES:
                 return None
@@ -2868,6 +2889,7 @@ class QueueWorker:
         """Delete a reconciled pending generation and its files in one worker thread."""
 
         with self.session_factory() as session:
+            lock_user_state(session)
             generation = session.get(Generation, generation_id)
             if generation is not None:
                 self.generations.delete_terminal(session, generation)
@@ -2958,6 +2980,7 @@ class QueueWorker:
 
             def fail_before_start_transaction_1(generation: Any = generation) -> Any:
                 with self.session_factory() as session:
+                    lock_user_state(session)
                     generation = session.get(Generation, generation_id)
                     if generation:
                         self.generations.delete_terminal(session, generation)

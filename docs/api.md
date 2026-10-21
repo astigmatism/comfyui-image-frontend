@@ -1079,3 +1079,38 @@ Administrator mutations require CSRF and the last observed `revision` in the JSO
 - `PUT /api/admin/lora-library/{library_key}/group-memberships/{lora_identity}`: `{revision, group_id}` assigns the LoRA, including moving it back to `uncategorized`.
 
 Each mutation returns the updated grouping snapshot. Stale revisions return HTTP 409 with `lora_group_conflict`; callers reload and require explicit review/retry. Names are 1–80 trimmed characters, case-insensitively unique within the library; Uncategorized is reserved. An unknown LoRA, library, or custom group returns 404. Before any explicit reorder, custom groups are alphabetical followed by Uncategorized. Saved order survives renaming/deletion; new groups are inserted before Uncategorized. Group changes do not republish workflows or alter generation payloads. Weight-file installation/edit/deletion continue through the existing administrator operation API, now exposed in the gallery.
+
+## LoRA Demo Reels
+
+[Demo Reel behavior and setup](demo-reel.md) describe shared slots, idle execution,
+replacement, and access. Ordinary collection/generation routes remain owner-scoped.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET`, `PUT` | `/api/admin/demo-reels` | Administrator configuration; PUT requires CSRF and `revision` |
+| `POST` | `/api/activity` | Authenticated CSRF-protected user interaction signal; returns 204 |
+| `GET` | `/api/demo-reels/{library}/{identity}` | Shared LoRA gallery, slots, counts, states, and image summaries; `offset` and `limit` (1–60) paginate entries |
+| `GET` | `/api/demo-reels/{library}/{identity}/generations/{id}` | Current shared image details |
+| `GET` | `/api/demo-reels/{library}/{identity}/generations/{id}/recall` | Recall shared image parameters |
+| `GET` | `/api/demo-reels/{library}/{identity}/artifacts/{id}/{content\|thumbnail}` | Revalidate membership and serve a retained image |
+| `POST` | `/api/demo-reels/{library}/{identity}/actions` | Favorite/unfavorite, copy/move, delete/regenerate, retry, pause/resume |
+| `POST` | `/api/demo-reels/{library}/{identity}/download` | ZIP of explicitly selected reel generation IDs |
+| `POST` | `/api/demo-reels/{library}/{identity}/prompt-rerun/preview` | Preview retained prompts before a personal re-run |
+
+Configuration contains ordered `slots` (`id`, optional `title`, `prompt`, optional
+per-family `resolutions`), family-keyed `recipes` (`source_key`, `parameters`,
+`strength`), per-family/per-LoRA `strengths`, `rating_user_id`, and `paused`.
+Replies include the configuration revision, workflow choices, and progress counts.
+Concurrent configuration edits return 409 and require explicit reload/review.
+
+Actions accept `action`, explicit `generation_ids`, and optional destination
+`collection_id`. Copy/move require a UUID `key` for an actor-scoped durable receipt;
+reusing a key with different inputs returns 409. Only administrators can remove or
+regenerate shared images, retry failures, or pause/resume. Pause/resume require the
+current `revision`. Favorites and copies belong to the acting user.
+
+`POST /api/gallery/prompt-rerun` additionally accepts optional `demo_reel` containing
+`library_key` and `lora_identity`. It allows explicit current reel generation IDs
+only, validates shared access again at acceptance, and creates the destination and
+work under the acting user. Its existing submission protocol, receipts, optional
+refinement, and personal destination checks still apply.

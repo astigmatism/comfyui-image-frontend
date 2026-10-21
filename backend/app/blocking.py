@@ -39,6 +39,12 @@ async def run_blocking[T](operation: Callable[..., T], /, *args: Any, **kwargs: 
                 break
         try:
             result = task.result()
+        except BaseException:
+            # A failed transaction must not swallow a shutdown cancellation.
+            # Its thread has finished, so release the permit and let the caller stop.
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
         finally:
             duration = time.monotonic() - admitted
             if duration > 0.25 or admitted - started > 0.25:

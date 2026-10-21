@@ -1983,6 +1983,7 @@ export function cardActionsMarkup(generation) {
 }
 
 export function deleteGenerationButtonMarkup(generation, extraClasses = "") {
+  if (generation.demo_reel && !generation.demo_reel.can_manage) return "";
   const deletePending = Boolean(generation.delete_pending);
   return `<button type="button" class="delete-generation-button${extraClasses ? ` ${extraClasses}` : ""}" data-action="delete-generation" data-generation-id="${escapeHtml(generation.id)}"${deletePending ? " disabled" : ""} aria-label="${deletePending ? "Deletion pending" : "Delete generation"}" title="${deletePending ? "Cancellation and deletion are being reconciled" : "Permanently delete this generation"}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>
@@ -2151,7 +2152,7 @@ export function detailMarkup(detail) {
     </div>
     <footer class="dialog-actions">
       ${detail.cancel_allowed ? `<button type="button" class="button secondary" data-action="cancel-generation" data-generation-id="${escapeHtml(detail.id)}">Cancel generation</button>` : ""}
-      <button type="button" class="button destructive" data-action="delete-generation" data-generation-id="${escapeHtml(detail.id)}" ${detail.delete_pending ? "disabled" : ""}>${detail.delete_pending ? "Deletion pending…" : "Delete permanently"}</button>
+      ${!detail.demo_reel || detail.demo_reel.can_manage ? `<button type="button" class="button destructive" data-action="delete-generation" data-generation-id="${escapeHtml(detail.id)}" ${detail.delete_pending ? "disabled" : ""}>${detail.delete_pending ? "Deletion pending…" : "Delete permanently"}</button>` : ""}
       <button class="button primary" value="close">Close</button>
     </footer>
   </form>`;

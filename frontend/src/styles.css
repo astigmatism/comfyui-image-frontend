@@ -7076,3 +7076,39 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
     flex: 1 1 auto;
   }
 }
+
+/* Shared, system-owned Demo Reels live above the picker without altering its draft. */
+.lm-caption-title { display: flex; flex: 1; flex-direction: column; min-width: 0; align-items: flex-start; gap: .25rem; }
+.lm-demo-reel-link { color: var(--accent, #b2b9ff); background: transparent; border: 0; padding: .15rem 0; font: inherit; font-size: .8rem; text-decoration: underline; cursor: pointer; }
+.lm-demo-reel-link:disabled { opacity: .4; cursor: default; }
+.lm-demo-reel-tools { border: 1px solid var(--border, #363940); border-radius: .6rem; padding: .8rem; margin: .7rem 0; }
+.lm-demo-reel-tools summary { cursor: pointer; }
+.demo-reel-dialog, .demo-reel-settings-dialog { width: min(1450px, 96vw); height: min(1000px, 94dvh); max-width: 96vw; max-height: 94dvh; padding: 0; }
+.demo-reel-settings-dialog { width: min(1050px, 96vw); }
+.demo-reel-frame, .demo-reel-settings-frame { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.demo-reel-content { flex: 1; min-height: 0; overflow: auto; padding: 1.2rem; }
+.demo-reel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+.demo-reel-card { border: 1px solid var(--border, #363940); border-radius: .65rem; overflow: hidden; }
+.demo-reel-image { display: block; width: 100%; aspect-ratio: 1; padding: 0; border: 0; background: #101116; cursor: zoom-in; }
+.demo-reel-image img { width: 100%; height: 100%; object-fit: contain; }
+.demo-reel-caption { padding: .75rem; }
+.demo-reel-actions { display: flex; flex-wrap: wrap; gap: .45rem .6rem; margin-top: .65rem; }
+.demo-reel-actions button, .demo-reel-actions a { font: inherit; font-size: .78rem; background: transparent; color: inherit; border: 1px solid var(--border, #363940); border-radius: .3rem; padding: .3rem .45rem; cursor: pointer; }
+.demo-reel-placeholder { min-height: 160px; display: flex; flex-direction: column; justify-content: center; gap: .5rem; padding: 1rem; }
+.demo-reel-placeholder span { font-size: .85rem; opacity: .75; }
+.demo-reel-prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.demo-reel-slot + .demo-reel-slot { margin-top: 2rem; }
+.demo-reel-slots { list-style: none; padding: 0; }
+.demo-reel-slot-editor, .demo-reel-recipe { border: 1px solid var(--border, #363940); border-radius: .6rem; padding: 1rem; margin: 1rem 0; }
+.demo-reel-slot-editor { display: grid; gap: .65rem; }
+.demo-reel-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .8rem; padding: .6rem 0; }
+.demo-reel-boolean { display: flex; gap: .6rem; align-items: center; margin: .6rem 0; }
+.demo-reel-settings-frame .dialog-actions { flex-wrap: wrap; }
+.demo-reel-settings-frame .dialog-actions > span { flex: 1 1 100%; }
+.demo-reel-transfer-dialog { width: min(520px, 92vw); }
+@media (max-width: 600px) {
+  .demo-reel-dialog, .demo-reel-settings-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
+  .demo-reel-content { padding: .8rem; }
+  .demo-reel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+  .demo-reel-actions { gap: .3rem; }
+}

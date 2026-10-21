@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "f3b7d9a1c602"
+HEAD_REVISION = "c43d89e12a70"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -655,7 +655,12 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         "lora_operations",
         "expectation_checks",
         "expectation_check_attempts",
+        "demo_reel_config",
+        "demo_reels",
+        "demo_reel_entries",
+        "demo_reel_transfers",
     }.issubset(set(inspect(engine).get_table_names()))
+    assert "is_system" in {column["name"] for column in inspect(engine).get_columns("users")}
     assert "source_ratings_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }

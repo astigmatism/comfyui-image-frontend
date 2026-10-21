@@ -17,6 +17,7 @@ from .services.auto_generation import AutoGenerationService
 from .services.collections import CollectionService
 from .services.comfyui import ComfyUIAdapter
 from .services.comfyui_instances import ComfyUIInstances
+from .services.demo_reels import DemoReelService
 from .services.event_broker import EventBroker
 from .services.expectation_checks import ExpectationCheckService
 from .services.generation_eta import GenerationEtaEstimator
@@ -99,6 +100,8 @@ class AppContainer:
         self.worker.prompt_generation = self.prompt_generation
         self.automation = AutoGenerationService(self)
         self.expectation_checks = ExpectationCheckService(self)
+        self.demo_reels = DemoReelService(self)
+        self.generations.demo_reels = self.demo_reels
         self._startup_discovery_task: asyncio.Task[None] | None = None
         self._observed_startup_discovery_tasks: set[asyncio.Future[None]] = set()
 
@@ -177,6 +180,7 @@ class AppContainer:
     async def close(self) -> None:
         started_at = time.monotonic()
         logger.info("application_shutdown_started")
+        await self.demo_reels.stop()
         await self.automation.stop()
         await self.expectation_checks.stop()
         await self.prompt_generation.stop()

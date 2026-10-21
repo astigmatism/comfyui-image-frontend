@@ -22,7 +22,7 @@ export function loraPublicationRevisionMatches(first, second) {
   return ["publication_id", "workflow_sha256", "api_sha256", "manifest_sha256"].every((key) => first[key] === second[key]);
 }
 
-export function installLoraManager(root, { api, context, apply, onImages, notify = () => {}, isAdmin = () => false, adminController = null }) {
+export function installLoraManager(root, { api, context, apply, onImages, notify = () => {}, isAdmin = () => false, adminController = null, onDemoReel = () => {}, onDemoSettings = () => {} }) {
   let draft = null;
   let returnFocus = null;
   let fileTarget = null;
@@ -136,6 +136,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     }
     const scrollTop = target.querySelector(".lm-dialog-content")?.scrollTop || 0;
     const toolsOpen = target.querySelector(".lm-library-tools")?.open;
+    const demoToolsOpen = target.querySelector(".lm-demo-reel-tools")?.open;
     const editor = target.querySelector(".lm-editor");
     const editorKey = editor?.dataset.editorKey;
     const nextEditorKey = JSON.stringify(draft.panel);
@@ -155,6 +156,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       if (editor.contains(active)) active.focus({ preventScroll: true });
     } else if (newEditor) newEditor.dataset.editorKey = nextEditorKey;
     if (toolsOpen && target.querySelector(".lm-library-tools")) target.querySelector(".lm-library-tools").open = true;
+    if (demoToolsOpen && target.querySelector(".lm-demo-reel-tools")) target.querySelector(".lm-demo-reel-tools").open = true;
     target.querySelector(".lm-dialog-content").scrollTop = scrollTop;
     syncSubjectPreview(target);
     if (focus) {
@@ -355,6 +357,13 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (opener) { void open(opener); return; }
     if (!draft || !event.target.closest("#lora-manager-dialog")) return;
     if (event.target.closest("button:disabled")) return;
+    const demoButton = event.target.closest("[data-lora-demo-reel]"), demoSettings = event.target.closest("[data-lora-demo-settings]");
+    if (demoButton || demoSettings) {
+      const item = draft.control.items.find((entry) => entry.id === demoButton?.dataset.loraDemoReel) || draft.control.items[0];
+      const ctx = { libraryKey: draft.libraryKey, identity: item?.lora_identity, label: item?.label, subject: item?.trigger_word || item?.label };
+      void Promise.resolve(demoButton ? onDemoReel(ctx) : onDemoSettings(ctx)).catch((error) => notify(error.message, "error"));
+      return;
+    }
     const groupUp = event.target.closest("[data-lora-group-up]"), groupDown = event.target.closest("[data-lora-group-down]");
     if (groupUp || groupDown) { void moveGroup((groupUp || groupDown).dataset[groupUp ? "loraGroupUp" : "loraGroupDown"], groupUp ? -1 : 1); return; }
     const menu = event.target.closest("[data-lora-menu]");

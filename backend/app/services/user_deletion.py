@@ -60,7 +60,7 @@ class UserDeletionService:
                     )
                 if target is None:
                     raise AppError("not_found", "User was not found.", status_code=404)
-                if target.role != UserRole.USER or target.is_bootstrap:
+                if target.role != UserRole.USER or target.is_bootstrap or target.is_system:
                     raise AppError(
                         "forbidden",
                         "The bootstrap administrator cannot be deleted.",

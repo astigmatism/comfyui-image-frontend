@@ -505,6 +505,8 @@ async def accept(
     original = payload.model_dump(mode="json")
     if payload.refinement is None:
         original.pop("refinement", None)  # Preserve pre-refinement submission receipts.
+    if payload.demo_reel is None:
+        original.pop("demo_reel", None)
     digest = request_digest(ENDPOINT, original)
 
     def transaction() -> tuple[PromptRerunResult, list[dict[str, Any]]]:
@@ -526,11 +528,31 @@ async def accept(
             profile: WorkflowProfile = _profile(service, session, payload)
             if payload.parent_collection_id is not None:
                 collections.get_owned(session, owner_id, payload.parent_collection_id)
+            source_owner_id = owner_id
+            if payload.demo_reel:
+                if (
+                    payload.collection_ids
+                    or payload.scope is not None
+                    or service.demo_reels is None
+                ):
+                    raise AppError(
+                        "selection_invalid", "Select Demo Reel images explicitly.", status_code=422
+                    )
+                from .demo_reel_activity import SYSTEM_OWNER_ID
+
+                for generation_id in payload.generation_ids:
+                    service.demo_reels.readable(
+                        session,
+                        payload.demo_reel.library_key,
+                        payload.demo_reel.lora_identity,
+                        generation_id,
+                    )
+                source_owner_id = SYSTEM_OWNER_ID
             plan = collect_prompts(
                 session,
                 service,
                 collections,
-                owner_id,
+                source_owner_id,
                 payload,
                 skip_duplicates=payload.skip_duplicates,
             )

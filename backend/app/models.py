@@ -122,6 +122,7 @@ class User(Base):
     )
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_bootstrap: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     session_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

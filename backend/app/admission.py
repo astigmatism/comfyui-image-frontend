@@ -107,7 +107,10 @@ class AdmissionMiddleware:
         if scope["type"] != "http" or not path.startswith("/api/") or path == "/api/health":
             await self.app(scope, receive, send)
             return
-        media = path.startswith(("/api/artifacts/", "/api/uploads/")) and scope["method"] in {
+        media = (
+            path.startswith(("/api/artifacts/", "/api/uploads/"))
+            or (path.startswith("/api/demo-reels/") and "/artifacts/" in path)
+        ) and scope["method"] in {
             "GET",
             "HEAD",
         }
