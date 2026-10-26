@@ -236,7 +236,7 @@ The opt-in live suite exercises create and refine with thinking both enabled and
 
 ```sh
 CIF_RUN_LIVE_OLLAMA_TESTS=1 \
-CIF_OLLAMA_BASE_URL=http://192.168.1.4:11434 \
+CIF_OLLAMA_BASE_URL=http://192.168.1.23:11434 \
 PYTHONPATH=backend pytest -q backend/tests/live/test_ollama_integration.py
 ```
 

@@ -23,7 +23,7 @@ These rules apply to every person or AI agent changing this repository.
 ## Validation
 
 - [`docs/testing.md`](docs/testing.md) describes every suite, the fake services, and the opt-in
-  live suites (the live LLM Router suite may be run read-only against `http://192.168.1.4:11434`).
+  live suites (the live LLM Router suite may be run read-only against `http://192.168.1.23:11434`).
 - Run `PYTHONPATH=backend python3 -m pytest -q` for the backend and `make validate` for the full
   release gate (formatting, lint, mypy, traceability, all tests, build, Playwright, container
   smoke). `make validate-available` runs what the environment supports and prints skips.
