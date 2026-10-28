@@ -166,6 +166,19 @@ test("management mode switches families without selection controls and blocks st
   await expect(manager(page)).toContainText("Refresh failed");
 });
 
+test("the management header keeps its title readable and its tools on one screen at laptop width", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await mount(page);
+  await page.getByRole("button", { name: "Open library" }).click();
+  const header = manager(page).locator(".lm-dialog-header");
+  // The subtitle's overflow-wrap: anywhere used to let the title collapse to a
+  // column of single words once the header carried the status toolbar.
+  await expect.poll(() => header.evaluate((el) => Math.round(el.querySelector("div").getBoundingClientRect().width))).toBeGreaterThanOrEqual(192);
+  expect(await header.evaluate((el) => Math.round(el.getBoundingClientRect().height))).toBeLessThan(200);
+  await expect(manager(page).getByRole("button", { name: "Library status: In sync, 1 workflow", exact: true })).toBeVisible();
+  await expect(manager(page).locator(".lm-dialog-content > :first-child")).toHaveClass(/lm-group/);
+});
+
 test("library diagnostics live in the dialog toolbar so the gallery starts at the top", async ({ page }) => {
   await mount(page);
   await page.getByRole("button", { name: "Open library" }).click();
