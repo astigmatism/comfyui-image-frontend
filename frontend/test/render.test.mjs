@@ -826,9 +826,11 @@ test("Creative Direction offers the LLM Router's current catalog as the model to
     promptAssistantModelMarkup("prompt-assistant-model", { ...assistant, models: [] }),
     /id="prompt-assistant-model"[^>]* disabled>/,
   );
+  // It is an ordinary control-panel field: the label above the control, `.field` holding the
+  // select to the width of the column whatever the option text it carries.
   assert.match(
     promptAssistantModelMarkup("prompt-assistant-model", assistant),
-    /<label class="prompt-assistant-model-option">Model<select id="prompt-assistant-model" class="prompt-assistant-model-select" data-prompt-assistant-model-select aria-label="Creative Direction model">/,
+    /^<label class="field"><span>Model<\/span><select id="prompt-assistant-model" data-prompt-assistant-model-select>/,
   );
 
   const state = {

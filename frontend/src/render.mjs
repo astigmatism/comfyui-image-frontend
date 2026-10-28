@@ -1507,7 +1507,9 @@ export function promptAssistantModelMarkup(id, assistant = {}) {
   // No catalog yet means nothing to offer besides Automatic: the router has not told this
   // application what it publishes. The list appears with the first catalog the subscriber sees.
   const published = Array.isArray(assistant.models) && assistant.models.length > 0;
-  return `<label class="prompt-assistant-model-option">Model<select id="${id}" class="prompt-assistant-model-select" data-prompt-assistant-model-select aria-label="Creative Direction model"${
+  // `.field` is how this control panel states a choice: the label above the control and the
+  // control as wide as the column, whatever the option text it carries.
+  return `<label class="field"><span>Model</span><select id="${id}" data-prompt-assistant-model-select${
     published ? "" : " disabled"
   }>${promptAssistantModelOptionsMarkup(assistant)}</select></label>`;
 }
