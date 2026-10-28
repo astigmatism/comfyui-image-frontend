@@ -359,6 +359,9 @@ async def test_a_chosen_model_answers_even_when_a_more_capable_one_is_published(
     # The panel's own view of the same rules, with no router call of its own.
     assert account["service"] == "daytime"
     assert account["pinned_service"] == "daytime" and account["pin_honored"] is True
+    # The model the panel names beside "Automatic" is the application's own choice, which the
+    # account's choice does not move: `service` says what answers, `automatic_service` what would.
+    assert account["automatic_service"] == "nighttime"
     assert account["notice"] is None  # nothing was substituted, so nothing to explain
 
 

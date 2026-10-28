@@ -854,6 +854,10 @@ class OllamaAdapter:
             return None
         pinned = pinned_service.strip() if isinstance(pinned_service, str) else ""
         text = self._automatic_selection(catalog, vision=False, exclude=())
+        # The model the application would consider appropriate for this account, before its own
+        # choice is taken into account: the panel names it next to "Automatic", and that stays the
+        # automatic answer while a chosen service is being served instead.
+        automatic_service = text.service
         text = self._honor_pinned_service(
             text, catalog, vision=False, exclude=(), pinned_service=pinned
         )
@@ -862,6 +866,7 @@ class OllamaAdapter:
             vision, catalog, vision=True, exclude=(), pinned_service=pinned
         )
         block = self._router_status_block(catalog, text, vision)
+        block["automatic_service"] = automatic_service
         if pinned:
             block["pinned_service"] = pinned
             block["pin_honored"] = text.reason == "pinned_service"

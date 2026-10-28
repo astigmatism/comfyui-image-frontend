@@ -769,7 +769,7 @@ test("Creative Direction says when the LLM Router serves it from a non-NSFW fall
 test("Creative Direction offers the LLM Router's current catalog as the model to choose", () => {
   const assistant = {
     available: true,
-    router: { state: "ready", service: "daytime", fallback: false, notice: null },
+    router: { state: "ready", service: "daytime", automatic_service: "daytime", fallback: false, notice: null },
     models: [
       {
         service: "daytime",
@@ -807,6 +807,18 @@ test("Creative Direction offers the LLM Router's current catalog as the model to
   assert.deepEqual(
     [...chosen.matchAll(/<option value="([^"]*)"[^>]*selected[^>]*>/g)].map((match) => match[1]),
     ["daisy"],
+  );
+
+  // "Automatic" goes on naming the model this application would choose by itself, not the one being
+  // served because the account asked for it.
+  const pinnedElsewhere = promptAssistantModelOptionsMarkup({
+    ...assistant,
+    router: { state: "ready", service: "daisy", automatic_service: "daytime" },
+    pinnedModel: "daisy",
+  });
+  assert.match(
+    pinnedElsewhere,
+    /^<option value="" title="The model this application chooses for each request">Automatic — Rosalina: Qwen3\.8 Flash-Next UD-IQ4 \(256K\) \(recommended\)<\/option>/,
   );
 
   // A model the router stopped publishing while the account had chosen it stays listed and says

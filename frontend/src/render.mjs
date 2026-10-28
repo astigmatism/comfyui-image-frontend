@@ -1478,8 +1478,11 @@ export function promptAssistantModelOptionsMarkup(assistant = {}) {
   const stored =
     typeof assistant.pinnedModel === "string" ? assistant.pinnedModel.trim() : "";
   const chosen = assistantModelChoice(assistant);
-  const automatic =
-    assistant.router && typeof assistant.router.service === "string" ? assistant.router.service : "";
+  const router = assistant.router && typeof assistant.router === "object" ? assistant.router : {};
+  const named = (value) => (typeof value === "string" && value ? value : "");
+  // What "Automatic" means is the model this application would choose by itself, which is not the
+  // service being served while the account's own choice is honoured.
+  const automatic = named(router.automatic_service) || named(router.service);
   const automaticEntry = assistantModelEntry(models, automatic);
   const options = [
     assistantModelOptionMarkup(

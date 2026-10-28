@@ -1193,6 +1193,9 @@ class PromptAssistantRouterStatus(APIModel):
     # ``fallback`` is true, while the choice itself stays for the next request.
     pinned_service: str | None = None
     pin_honored: bool | None = None
+    # The service the application would choose for this account with no choice of its own, which
+    # the panel names beside "Automatic". Unlike ``service`` it never moves when a choice is served.
+    automatic_service: str | None = None
     vision_service: str | None = None
     vision_nsfw: bool | None = None
     vision_fallback: bool = False
