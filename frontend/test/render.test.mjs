@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   activeGenerationEta,
+  assistantModelChoice,
   cardActionsMarkup,
   collectionDeleteDialogMarkup,
   controlSectionKeysWithErrors,
@@ -820,6 +821,19 @@ test("Creative Direction offers the LLM Router's current catalog as the model to
     ["", "daytime", "daisy", "retired"],
   );
   assert.match(vanished, /<option value="retired" disabled selected[^>]*>Retired \(not in the current catalog\)<\/option>/);
+
+  // A choice the router answers under an alias it still publishes is that model, and is shown as
+  // chosen: the router carries service IDs across configuration changes, so an account that named
+  // one of those names is being served by that entry, not by a model that went away.
+  const aliased = promptAssistantModelOptionsMarkup({ ...assistant, pinnedModel: "local-active" });
+  assert.deepEqual(
+    [...aliased.matchAll(/<option value="([^"]*)"[^>]*selected[^>]*>/g)].map((match) => match[1]),
+    ["daytime"],
+  );
+  assert.doesNotMatch(aliased, /not in the current catalog/);
+  assert.equal(assistantModelChoice({ ...assistant, pinnedModel: "local-active" }), "daytime");
+  assert.equal(assistantModelChoice({ ...assistant, pinnedModel: "gone" }), "gone");
+  assert.equal(assistantModelChoice({ ...assistant, pinnedModel: "auto" }), "");
 
   // With no catalog published yet there is nothing to offer but Automatic, so the list is shut.
   assert.match(

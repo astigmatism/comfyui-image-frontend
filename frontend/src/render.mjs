@@ -1450,19 +1450,37 @@ function assistantModelOptionMarkup(value, text, selected, hint, disabled = fals
 // The router replaces its catalog when a model appears or goes away, so this list follows it
 // without a reload — and a saved choice the router stopped publishing stays listed and disabled
 // rather than looking like the model changed by itself.
+// A catalog entry answers to its own service ID and to the aliases the router publishes with it:
+// the router carries a service ID across configuration changes, so an account that named one of
+// those names is being served by that entry and the list must say so.
+function assistantModelEntry(models, value) {
+  if (!value) return undefined;
+  return models.find(
+    (entry) =>
+      entry?.service === value || (Array.isArray(entry?.aliases) ? entry.aliases : []).includes(value),
+  );
+}
+
+// The list value a stored choice selects: the service the router publishes for it today, or the
+// stored choice itself while no entry answers to it.
+export function assistantModelChoice(assistant = {}, value = assistant.pinnedModel) {
+  const models = Array.isArray(assistant.models) ? assistant.models : [];
+  const chosen = typeof value === "string" ? value.trim() : "";
+  if (!chosen || chosen === "auto") return "";
+  const entry = assistantModelEntry(models, chosen);
+  return entry && typeof entry.service === "string" ? entry.service : chosen;
+}
+
 export function promptAssistantModelOptionsMarkup(assistant = {}) {
   const models = Array.isArray(assistant.models) ? assistant.models : [];
   const aliases = (entry) => (Array.isArray(entry?.aliases) ? entry.aliases : []);
   const label = (entry) => String(entry?.label || entry?.service || "");
-  const chosen =
-    typeof assistant.pinnedModel === "string" && assistant.pinnedModel
-      ? assistant.pinnedModel
-      : "";
+  const stored =
+    typeof assistant.pinnedModel === "string" ? assistant.pinnedModel.trim() : "";
+  const chosen = assistantModelChoice(assistant);
   const automatic =
     assistant.router && typeof assistant.router.service === "string" ? assistant.router.service : "";
-  const automaticEntry = models.find(
-    (entry) => entry?.service === automatic || aliases(entry).includes(automatic),
-  );
+  const automaticEntry = assistantModelEntry(models, automatic);
   const options = [
     assistantModelOptionMarkup(
       "",
@@ -1489,11 +1507,11 @@ export function promptAssistantModelOptionsMarkup(assistant = {}) {
       ),
     );
   }
-  if (chosen && !published.has(chosen)) {
+  if (stored && !published.has(chosen)) {
     options.push(
       assistantModelOptionMarkup(
-        chosen,
-        `${assistantModelName(chosen)} (not in the current catalog)`,
+        stored,
+        `${assistantModelName(stored)} (not in the current catalog)`,
         true,
         "The LLM Router is not publishing this model right now; it answers again when it returns.",
         true,

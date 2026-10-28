@@ -145,6 +145,7 @@ import {
   photoViewerMarkup,
   PROMPT_INSTRUCTIONS_HINTS,
   promptAssistantModelNotice,
+  assistantModelChoice,
   promptAssistantModelOptionsMarkup,
   promptEditorMarkup,
   recentResolutionsMarkup,
@@ -3663,7 +3664,7 @@ function syncPromptAssistantModelOptions() {
   const assistant = state.promptAssistant;
   const options = promptAssistantModelOptionsMarkup(assistant);
   const published = Array.isArray(assistant.models) && assistant.models.length > 0;
-  const selected = assistant.pinnedModel || "";
+  const selected = assistantModelChoice(assistant);
   document.querySelectorAll("[data-prompt-assistant-model-select]").forEach((element) => {
     // Never rewrite a list the person is choosing from, in either the panel or an open editor.
     if (element === document.activeElement) return;
