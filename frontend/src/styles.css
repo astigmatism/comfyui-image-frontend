@@ -6094,7 +6094,10 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .lm-dialog-frame { position: relative; display: flex; flex-direction: column; height: 100%; min-width: 0; }
 .lm-dialog-header, .lm-dialog-footer, .lm-order-bar { flex: 0 0 auto; }
 .lm-dialog-header { gap: 16px; flex-wrap: wrap; }
-.lm-dialog-header > div { min-width: 0; flex: 1; }
+/* The subtitle's overflow-wrap: anywhere would otherwise let this block shrink
+   to a single character, crushing the title instead of wrapping the header. The
+   floor keeps the title readable and the toolbar on this row down to 1280px. */
+.lm-dialog-header > div { min-width: min(100%, 12rem); flex: 1; }
 .lm-dialog-header h2 { font-size: 1.2rem; }
 .lm-dialog-header p { overflow-wrap: anywhere; }
 .lm-close-button { flex: 0 0 auto; font-size: 1.6rem; color: var(--text-soft); }
@@ -6159,6 +6162,12 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   @keyframes lm-chip-pulse { 50% { opacity: 0.3; } }
 }
 .lm-header-button { min-height: 30px; padding: 0 10px; font-size: 0.76rem; white-space: nowrap; }
+/* "settings" is redundant beside a status chip, and dropping it first is what
+   keeps the header on one row down to a 1280px screen. The aria-label keeps the
+   full name for assistive technology and the narrow layout below. */
+@media (max-width: 1320px) {
+  .lm-header-button-extra { display: none; }
+}
 /* The popover repeats the message without a live role; this is the live region. */
 .lm-header-status { white-space: nowrap; }
 /* Sits in the flex column between the header and the gallery, above the fold. */
@@ -6198,8 +6207,6 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   .lm-dialog { width: 100vw; min-width: 0; height: 100dvh; min-height: 0; max-width: 100vw; max-height: 100dvh; border: 0; border-radius: 0; }
   .lm-dialog-header { padding: 12px; flex-wrap: wrap; }
   .lm-dialog-header > .lm-header-actions { order: 2; gap: 6px; }
-  /* The button keeps its full accessible name through its aria-label. */
-  .lm-header-button-extra { display: none; }
   .lm-family-picker { order: 3; flex-basis: 100%; max-width: none; }
   .lm-order-bar { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
   .lm-order-label { flex-basis: 100%; }
