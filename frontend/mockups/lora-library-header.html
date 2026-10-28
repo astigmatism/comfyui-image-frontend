@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>LoRA library toolbar · design preview</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./lora-library-header.css" />
+  </head>
+  <body class="lhh-preview-host">
+    <header class="lhh-preview-toolbar">
+      <div class="lhh-preview-title">
+        <strong>LoRA library · dialog toolbar</strong>
+        <span>Design preview · Library status and Demo Reel moved out of the gallery, next to the close button</span>
+      </div>
+      <div class="lhh-preview-actions" role="group" aria-label="Preview controls">
+        <button type="button" class="button low is-selected" data-preview-layout="proposed" aria-pressed="true">Proposed</button>
+        <button type="button" class="button low" data-preview-layout="current" aria-pressed="false">Current design</button>
+        <label class="visually-hidden" for="preview-scenario">Library state</label>
+        <select id="preview-scenario" aria-label="Library state"></select>
+        <label class="visually-hidden" for="preview-popover">Status popover</label>
+        <select id="preview-popover" aria-label="Status popover">
+          <option value="closed">Popover closed</option>
+          <option value="open">Popover open</option>
+        </select>
+        <button type="button" class="button low is-selected" data-preview-size="desktop" aria-pressed="true">Desktop</button>
+        <button type="button" class="button low" data-preview-size="mobile" aria-pressed="false">Narrow screen</button>
+        <button type="button" class="button secondary" data-preview-action="open">Open dialog</button>
+      </div>
+    </header>
+    <main class="lhh-preview-stage">
+      <iframe id="lhh-preview-frame" title="LoRA library dialog toolbar mockup" src="./lora-library-header-scene.html"></iframe>
+    </main>
+    <script type="module" src="./lora-library-header-host.mjs"></script>
+  </body>
+</html>

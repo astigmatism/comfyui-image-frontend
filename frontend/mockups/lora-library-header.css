@@ -1,0 +1,145 @@
+@font-face {
+  font-family: "Syncopate";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../src/assets/syncopate-latin.woff2") format("woff2");
+}
+
+/* This preview renders the production dialog markup with src/styles.css, so it
+   carries no design rules of its own — only the preview host and the sample
+   content that stands in for a gallery of LoRAs. */
+
+.lhh-preview-host {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.lhh-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 70px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #0e151f;
+}
+
+.lhh-preview-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lhh-preview-title strong {
+  font-size: 0.92rem;
+}
+
+.lhh-preview-title span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.lhh-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.lhh-preview-actions select {
+  min-height: 32px;
+  max-width: 200px;
+}
+
+.lhh-preview-actions .is-selected {
+  border-color: var(--accent);
+  background: var(--surface-blue);
+  color: var(--text);
+}
+
+.lhh-preview-stage {
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  background: var(--bg);
+}
+
+#lhh-preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.lhh-preview-mobile #lhh-preview-frame {
+  width: 390px;
+  max-width: 100%;
+}
+
+.lhh-scene {
+  overflow: hidden;
+}
+
+.lhh-topbar-context,
+.lhh-topbar-user {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.lhh-topbar-user {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.lhh-stage-note {
+  position: fixed;
+  right: 14px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+/* The retired panels, kept here only so the `Current design` preview stays a
+   faithful before/after. They no longer exist in src/styles.css. */
+
+.lhh-retired {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+}
+
+.lhh-retired summary {
+  cursor: pointer;
+  padding: 4px 0;
+  color: var(--text-soft);
+}
+
+.lhh-retired .admin-lora-members {
+  margin-bottom: 10px;
+}
+
+.lhh-retired .button {
+  min-height: 34px;
+  font-size: 0.8rem;
+}

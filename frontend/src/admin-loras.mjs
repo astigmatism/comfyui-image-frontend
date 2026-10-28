@@ -476,26 +476,86 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
   };
 }
 
-// Compact tools for the gallery; the operation controller also supports its legacy
-// standalone renderer for callers outside the application shell.
-export function loraLibraryToolsMarkup(controller) {
+// Compact toolbar control for the gallery; the operation controller also supports its
+// legacy standalone renderer for callers outside the application shell.
+
+// The popover is opened through the dialog's existing popover machinery, and this
+// sentinel is its anchor id. It is exported so the gallery can render the popover
+// for it without ever colliding with a LoRA item ID.
+export const loraLibraryMenuId = "library-status";
+
+// Every state the toolbar control can be in. An in-flight operation outranks a stale
+// failure so the chip reports what is happening now, and either failure outranks
+// drift, which is what the Sync action below is for.
+export function libraryStatusState({ loading = false, library = null, busy = false, operation = null, uploadPercent = null, error = "" } = {}) {
+  if (loading) return { tone: "is-muted", text: "Checking library…" };
+  if (!library) return { tone: "is-muted", text: "No library" };
+  if (operation?.status === "repair_required") return { tone: "is-alert", text: "Needs repair" };
+  // An operation that only awaits its file upload has stopped working on its own.
+  if (busy || ["awaiting_upload", "running"].includes(operation?.status)) {
+    const text = Number.isFinite(uploadPercent) ? `Uploading ${Math.round(uploadPercent)}%`
+      : !busy && operation?.status === "awaiting_upload" ? "Awaiting file"
+      : "Working…";
+    return { tone: "is-busy", text };
+  }
+  const conflicts = Array.isArray(library.conflicts) ? library.conflicts : [];
+  if (conflicts.length) return { tone: "is-alert", text: "Publishing conflict", meta: `${conflicts.length} to fix` };
+  if (error) return { tone: "is-alert", text: "Needs attention" };
+  const members = Array.isArray(library.members) ? library.members : [];
+  const missing = members.reduce((total, member) => total + (Number(member?.missing_count) || 0), 0);
+  if (library.can_sync || members.some((member) => !member?.in_sync)) return { tone: "is-drifted", text: "Needs sync", meta: missing ? `${missing} missing` : "" };
+  return { tone: "is-synced", text: "In sync", meta: members.length ? `${members.length} workflow${members.length === 1 ? "" : "s"}` : "" };
+}
+
+// The chip sits beside the dialog's close button; the message it reports keeps
+// being announced through the live region beside it.
+export function loraLibraryChipMarkup(controller, { open = false } = {}) {
+  if (!controller) return "";
+  const { state } = controller;
+  const status = libraryStatusState({ loading: state.loading, library: state.library, busy: state.busy, operation: controller.currentOperation(), uploadPercent: state.uploadPercent, error: state.error });
+  return `<button type="button" class="lm-status-chip ${status.tone}" data-lora-menu="${loraLibraryMenuId}" aria-haspopup="dialog" aria-expanded="${open}" aria-label="Library status: ${escape(status.text)}${status.meta ? `, ${escape(status.meta)}` : ""}">
+    <span class="lm-status-dot" aria-hidden="true"></span><span class="lm-status-text">${escape(status.text)}</span>${status.meta ? `<span class="lm-status-meta">· ${escape(status.meta)}</span>` : ""}<svg class="lm-status-caret" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6" /></svg>
+  </button><span class="visually-hidden lm-header-status" role="status" aria-live="polite">${escape(state.status)}</span>`;
+}
+
+// Failures stay visible without reopening anything, the way they did inside
+// the panel this replaces. The popover repeats the text without a live role.
+export function loraLibraryNoticeMarkup(controller) {
+  if (!controller) return "";
+  const { state } = controller;
+  const conflicts = Array.isArray(state.library?.conflicts) ? state.library.conflicts : [];
+  const message = state.error || (conflicts.length ? `${conflicts.length} publishing conflict${conflicts.length === 1 ? "" : "s"} — republish the affected workflows so each LoRA uses one file and one ID.` : "");
+  return message ? `<p class="lm-header-notice form-error" role="alert">${escape(message)}</p>` : "";
+}
+
+export function loraLibraryPopoverMarkup(controller) {
   if (!controller) return "";
   const { state } = controller;
   const library = state.library;
   const operation = controller.currentOperation();
   const unavailable = state.busy || !library?.can_sync || pendingStatuses.includes(operation?.status);
-  return `<details class="lm-library-tools"><summary>Library status${state.busy ? " · Working…" : ""}</summary>
-    <p class="muted">Changes affect every workflow in this model family.</p>
+  const actions = [];
+  if (library?.can_sync) actions.push(`<button type="button" class="button secondary" data-lora-library-sync${unavailable ? " disabled" : ""}>Sync library</button>`);
+  if (operation?.status === "awaiting_upload" && !state.busy) actions.push(
+    `<button type="button" class="button low" data-lora-library-retry${state.pendingUploads.has(state.selectedLibraryKey) ? "" : " disabled"}>Retry upload</button>`,
+    `<button type="button" class="button low" data-lora-library-cancel-upload>Cancel pending upload</button>`,
+  );
+  actions.push(`<button type="button" class="button low" data-lora-library-reload${state.busy ? " disabled" : ""}>Refresh library status</button>`);
+  const body = [];
+  if (library?.members?.length) body.push(`<ul class="admin-lora-members" aria-label="Workflows using this library">${library.members.map(memberMarkup).join("")}</ul>`);
+  if (library?.conflicts?.length) body.push(`<div class="form-error"><p>These workflows disagree about some LoRAs. Republish them so each LoRA uses one file and one ID:</p><ul>${library.conflicts.map((message) => `<li>${escape(message)}</li>`).join("")}</ul></div>`);
+  if (!state.loading && !library) body.push("<p>No published workflow has a LoRA library available here.</p>");
+  if (library?.reason) body.push(`<p class="muted">${escape(library.reason)}</p>`);
+  if (state.uploadPercent !== null && state.uploadPercent !== undefined) body.push(`<progress max="100" value="${Math.max(0, Math.min(100, Number(state.uploadPercent) || 0))}" aria-label="LoRA upload progress"></progress>`);
+  if (state.error) body.push(`<p class="form-error">${escape(state.error)}</p>`);
+  return `<div class="lm-card-popover lm-library-popover" data-lora-popover role="dialog" aria-label="Library status">
+    <p class="lm-popover-title">Library status<small>${escape(library?.label || "No library")}</small></p>
+    <p class="lm-popover-hint">Changes affect every workflow in this model family.</p>
     ${state.loading ? '<p role="status">Checking the LoRA library…</p>' : ""}
-    ${!state.loading && !library ? '<p>No published workflow has a LoRA library available here.</p>' : ""}
-    ${library?.reason ? `<p>${escape(library.reason)}</p>` : ""}
-    ${library?.members?.length ? `<ul class="admin-lora-members">${library.members.map(memberMarkup).join("")}</ul>` : ""}
-    ${(library?.conflicts || []).map((message) => `<p class="form-error">${escape(message)}</p>`).join("")}
-    ${library?.can_sync ? `<button type="button" class="button secondary" data-lora-library-sync ${unavailable ? "disabled" : ""}>Sync library</button>` : ""}
-    ${operation?.status === "awaiting_upload" && !state.busy ? `<button type="button" class="button secondary" data-lora-library-retry ${state.pendingUploads.has(state.selectedLibraryKey) ? "" : "disabled"}>Retry upload</button><button type="button" class="button low" data-lora-library-cancel-upload>Cancel pending upload</button>` : ""}
-    <button type="button" class="button low" data-lora-library-reload ${state.busy ? "disabled" : ""}>Refresh library status</button></details>
-    ${state.uploadPercent !== null ? `<progress max="100" value="${state.uploadPercent}" aria-label="LoRA upload progress"></progress>` : ""}
-    <p class="lm-library-message" role="status">${escape(state.status)}</p>${state.error ? `<p class="form-error" role="alert">${escape(state.error)}</p>` : ""}`;
+    ${body.length ? `<div class="lm-popover-body">${body.join("")}</div>` : ""}
+    ${state.status ? `<p class="lm-library-message">${escape(state.status)}</p>` : ""}
+    <div class="lm-popover-actions">${actions.join("")}</div>
+  </div>`;
 }
 
 export function loraLibraryFormMarkup(controller, panel) {

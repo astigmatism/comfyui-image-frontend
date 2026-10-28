@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>LoRA library toolbar · interactive scene</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./lora-library-header.css" />
+  </head>
+  <body class="lhh-scene">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="icon-button panel-toggle" aria-hidden="true">☰</span>
+          <div class="app-title">ImageGen</div>
+        </div>
+        <div class="topbar-right">
+          <span class="lhh-topbar-context">Gallery</span>
+          <div class="topbar-spacer"></div>
+          <span class="lhh-topbar-user">preview</span>
+        </div>
+      </header>
+      <main class="gallery-viewport lhh-stage">
+        <div class="lhh-stage-note" id="scene-note">LoRA library · management mode</div>
+      </main>
+      <dialog id="lora-manager-dialog" class="lm-dialog" aria-labelledby="lora-manager-title"></dialog>
+    </div>
+    <script type="module" src="./lora-library-header.mjs"></script>
+  </body>
+</html>

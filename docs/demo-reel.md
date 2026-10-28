@@ -6,8 +6,8 @@ the normal photo viewer. Reel collections stay outside normal navigation.
 
 ## Setup
 
-Administrators expand **Demo Reel** in the picker, then choose **Edit prompts and
-generation settings**. The editor is also available inside each reel.
+Administrators choose **Demo Reel settings** in the LoRA picker header, beside its
+close button. The editor is also available inside each reel.
 
 1. Choose whose checkpoint grades qualify models. Initial setup uses the current
    administrator's account. Only that account's A/B grades affect eligibility.

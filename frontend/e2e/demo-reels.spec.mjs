@@ -50,8 +50,7 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   const picker = page.locator("#lora-manager-dialog");
   await expect(picker.getByRole("button", { name: "Toggle Alpha", exact: true })).toBeVisible();
   await picker.getByRole("button", { name: "Toggle Alpha", exact: true }).click();
-  await picker.locator(".lm-demo-reel-tools summary").click();
-  await picker.getByRole("button", { name: "Edit prompts and generation settings" }).click();
+  await picker.getByRole("button", { name: "Demo Reel settings" }).click();
   const editor = page.locator("#demo-reel-settings-dialog");
   await expect(editor).toBeVisible();
   await editor.locator('[data-demo-recipe-enabled="krea2"]').check();

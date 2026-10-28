@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { adminLoraMarkup, createAdminLoraController, MAX_TRIGGER_WORD, newLoraOperationKey, reconcileLoraStrengthMemory, uploadLoraFile, validateLoraEdit, validateLoraInstall } from "../src/admin-loras.mjs";
+import { adminLoraMarkup, createAdminLoraController, libraryStatusState, loraLibraryChipMarkup, loraLibraryMenuId, loraLibraryNoticeMarkup, loraLibraryPopoverMarkup, MAX_TRIGGER_WORD, newLoraOperationKey, reconcileLoraStrengthMemory, uploadLoraFile, validateLoraEdit, validateLoraInstall } from "../src/admin-loras.mjs";
 
 const revision = { publication_id: "publication-1", workflow_sha256: "a", api_sha256: "b", manifest_sha256: "c" };
 const triggerPhrase = "1oandve, short, straight black hair with bangs, pale skin, green eyes, accentuated with black winged eyeliner, light pink lipstick";
@@ -15,6 +15,8 @@ const members = [
 const library = (items, extra = {}) => ({ key: "krea2", label: "Krea 2", members, items, in_sync: true, conflicts: [], eligible: true, reason: null, can_sync: false, expected_library: expectedLibrary, ...extra });
 const view = (items, extra = {}) => ({ libraries: [library(items, extra)], active_operation: null });
 const isLibrary = (path) => path === "/api/admin/lora-library";
+const toolbar = (state = {}, operation) => ({ state: { loading: false, busy: false, uploadPercent: null, status: "", error: "", selectedLibraryKey: "krea2", pendingUploads: new Map(), ...state }, currentOperation: () => operation });
+const outOfSync = [members[0], { ...members[1], in_sync: false, missing_count: 1 }];
 
 test("operation keys have the backend UUID shape when randomUUID is unavailable", () => {
   assert.match(newLoraOperationKey(), /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
@@ -46,6 +48,77 @@ test("LoRA administration presents public catalog data without exposing server f
   const conflicted = adminLoraMarkup({ library: library([], { in_sync: false, eligible: false, conflicts: ["LoRA 'Beta' uses different files in different workflows."] }) });
   assert.match(conflicted, /uses different files/);
   assert.doesNotMatch(conflicted, /data-admin-lora-sync/);
+});
+
+test("the toolbar chip states the library condition in one glance", () => {
+  assert.deepEqual(libraryStatusState({ library: library([]) }), { tone: "is-synced", text: "In sync", meta: "2 workflows" });
+  assert.deepEqual(libraryStatusState({ library: library([], { in_sync: false, can_sync: true, members: outOfSync }) }), { tone: "is-drifted", text: "Needs sync", meta: "1 missing" });
+  assert.deepEqual(libraryStatusState({ library: library([], { conflicts: ["different files"] }) }), { tone: "is-alert", text: "Publishing conflict", meta: "1 to fix" });
+  assert.deepEqual(libraryStatusState({ library: library([]), error: "Upload failed." }), { tone: "is-alert", text: "Needs attention" });
+  assert.deepEqual(libraryStatusState({ library: library([]), busy: true, uploadPercent: 42 }), { tone: "is-busy", text: "Uploading 42%" });
+  assert.deepEqual(libraryStatusState({ library: library([]), operation: { status: "running" } }), { tone: "is-busy", text: "Working…" });
+  // A live operation outranks the stale failure beside it, repair aside.
+  assert.deepEqual(libraryStatusState({ library: library([]), operation: { status: "repair_required" }, busy: true }), { tone: "is-alert", text: "Needs repair" });
+  assert.deepEqual(libraryStatusState({ library: library([]), busy: true, error: "Upload failed." }), { tone: "is-busy", text: "Working…" });
+  assert.deepEqual(libraryStatusState({ loading: true }), { tone: "is-muted", text: "Checking library…" });
+  assert.deepEqual(libraryStatusState({}), { tone: "is-muted", text: "No library" });
+});
+
+test("the toolbar chip is the popover trigger and keeps its message announced", () => {
+  const drifted = toolbar({ library: library([], { in_sync: false, can_sync: true, members: outOfSync }), status: "Syncing library workflows…" });
+  const chip = loraLibraryChipMarkup(drifted, { open: true });
+  assert.match(chip, new RegExp(`data-lora-menu="${loraLibraryMenuId}"`));
+  assert.match(chip, /aria-haspopup="dialog" aria-expanded="true"/);
+  assert.match(chip, /aria-label="Library status: Needs sync, 1 missing"/);
+  assert.match(chip, /class="lm-status-chip is-drifted"/);
+  assert.match(chip, /role="status" aria-live="polite">Syncing library workflows…</);
+  assert.match(loraLibraryChipMarkup(drifted), /aria-expanded="false"/);
+  assert.equal(loraLibraryChipMarkup(null), "");
+});
+
+test("the toolbar popover keeps every diagnostic and action of the retired panel", () => {
+  const drifted = loraLibraryPopoverMarkup(toolbar({ library: library([], { in_sync: false, can_sync: true, members: outOfSync }) }));
+  assert.match(drifted, /Changes affect every workflow in this model family\./);
+  assert.match(drifted, /Moody Krea2 Minimal v1/);
+  assert.match(drifted, /Needs sync · 1 missing/);
+  assert.match(drifted, /data-lora-library-sync(?! disabled)/);
+  assert.match(drifted, /data-lora-library-reload>/);
+  assert.doesNotMatch(drifted, /data-lora-library-retry/);
+  // Only the header announces; the popover repeats the message as plain text.
+  assert.doesNotMatch(drifted, /role="status"|role="alert"/);
+
+  const uploading = toolbar({ library: library([]), busy: true, uploadPercent: 42, status: "Uploading weight file to ComfyUI…" }, { status: "awaiting_upload" });
+  const progress = loraLibraryPopoverMarkup(uploading);
+  assert.match(progress, /<progress max="100" value="42" aria-label="LoRA upload progress">/);
+  assert.match(progress, /Uploading weight file to ComfyUI…/);
+  assert.match(progress, /data-lora-library-reload disabled>/);
+  // Recovery actions return only once the upload itself has stopped.
+  assert.doesNotMatch(progress, /data-lora-library-retry|data-lora-library-cancel-upload/);
+
+  // A half-finished upload offers to resend the same operation while the file
+  // is still held, and conflicts are listed instead of offering a refused sync.
+  const resumable = toolbar({ library: library([]), pendingUploads: new Map([["krea2", { name: "portrait.safetensors" }]]) }, { status: "awaiting_upload" });
+  assert.match(loraLibraryPopoverMarkup(resumable), /data-lora-library-retry>/);
+  assert.match(loraLibraryPopoverMarkup(resumable), /data-lora-library-cancel-upload>/);
+  assert.deepEqual(libraryStatusState({ library: library([]), operation: { status: "awaiting_upload" } }), { tone: "is-busy", text: "Awaiting file" });
+  const stalled = toolbar({ library: library([]), error: "The upload was interrupted.", pendingUploads: new Map() }, { status: "awaiting_upload" });
+  const stalledPopover = loraLibraryPopoverMarkup(stalled);
+  assert.match(stalledPopover, /data-lora-library-retry disabled>/);
+  assert.match(stalledPopover, /The upload was interrupted\./);
+  const conflicted = loraLibraryPopoverMarkup(toolbar({ library: library([], { in_sync: false, eligible: false, conflicts: ["LoRA “Beta” uses <different> files & names."] }) }));
+  assert.match(conflicted, /LoRA “Beta” uses &lt;different&gt; files &amp; names\./);
+  assert.doesNotMatch(conflicted, /data-lora-library-sync/);
+  assert.match(loraLibraryPopoverMarkup(toolbar({})), /No published workflow has a LoRA library available here\./);
+  assert.match(loraLibraryPopoverMarkup(toolbar({ loading: true, library: null })), /Checking the LoRA library…/);
+  assert.equal(loraLibraryPopoverMarkup(null), "");
+});
+
+test("a library failure stays visible beside the gallery without reopening anything", () => {
+  assert.equal(loraLibraryNoticeMarkup(toolbar({ library: library([]), error: "Boom." })), '<p class="lm-header-notice form-error" role="alert">Boom.</p>');
+  assert.match(loraLibraryNoticeMarkup(toolbar({ library: library([], { conflicts: ["one", "two"] }) })), /2 publishing conflicts — republish the affected workflows/);
+  assert.match(loraLibraryNoticeMarkup(toolbar({ library: library([], { conflicts: ["one"] }) })), /1 publishing conflict —/);
+  assert.equal(loraLibraryNoticeMarkup(toolbar({ library: library([]) })), "");
+  assert.equal(loraLibraryNoticeMarkup(null), "");
 });
 
 test("editing preloads public title and trigger without exposing private filename", () => {

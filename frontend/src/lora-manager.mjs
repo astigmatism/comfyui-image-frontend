@@ -135,8 +135,6 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       }
     }
     const scrollTop = target.querySelector(".lm-dialog-content")?.scrollTop || 0;
-    const toolsOpen = target.querySelector(".lm-library-tools")?.open;
-    const demoToolsOpen = target.querySelector(".lm-demo-reel-tools")?.open;
     const editor = target.querySelector(".lm-editor");
     const editorKey = editor?.dataset.editorKey;
     const nextEditorKey = JSON.stringify(draft.panel);
@@ -155,8 +153,6 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       for (const input of editor.querySelectorAll("input,textarea,select,button")) input.disabled = Boolean(draft.busy || draft.groupsBusy || adminController?.state.busy || ["install", "edit"].includes(draft.panel?.kind) && (!adminController?.state.library?.eligible || ["awaiting_upload", "running", "repair_required"].includes(adminController?.currentOperation()?.status)) && !input.matches("[data-lora-panel-close]"));
       if (editor.contains(active)) active.focus({ preventScroll: true });
     } else if (newEditor) newEditor.dataset.editorKey = nextEditorKey;
-    if (toolsOpen && target.querySelector(".lm-library-tools")) target.querySelector(".lm-library-tools").open = true;
-    if (demoToolsOpen && target.querySelector(".lm-demo-reel-tools")) target.querySelector(".lm-demo-reel-tools").open = true;
     target.querySelector(".lm-dialog-content").scrollTop = scrollTop;
     syncSubjectPreview(target);
     if (focus) {

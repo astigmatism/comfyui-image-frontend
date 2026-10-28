@@ -19,8 +19,9 @@ async function mount(page) {
     window.images = {};
     window.requests = [];
     window.notices = [];
+    window.drift = false;
     const control = () => ({ id: "loras", type: "lora_stack", label: "LoRAs", items: structuredClone(window.catalog), minimum: 0, maximum: 2, step: .05, default: window.catalog.map(({ id }) => ({ id, strength: 0 })) });
-    const library = () => ({ key: "krea2", label: "Krea 2", eligible: true, in_sync: true, items: window.catalog, members: [{ source_key: "source", display_name: "Workflow", in_sync: true }], expected_library: [{ source_key: "source", revision: window.revision }] });
+    const library = () => ({ key: "krea2", label: "Krea 2", eligible: true, in_sync: !window.drift, can_sync: window.drift, items: window.catalog, members: [{ source_key: "source", display_name: "Workflow", in_sync: !window.drift, missing_count: window.drift ? 1 : 0 }], expected_library: [{ source_key: "source", revision: window.revision }] });
     const api = async (path, options) => {
       window.requests.push([path, options?.method || "GET"]);
       const body = options?.body && typeof options.body === "string" ? JSON.parse(options.body) : {};
@@ -163,6 +164,34 @@ test("management mode switches families without selection controls and blocks st
   await manager(page).getByRole("button", { name: "Save details", exact: true }).click();
   await expect(manager(page).getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
   await expect(manager(page)).toContainText("Refresh failed");
+});
+
+test("library diagnostics live in the dialog toolbar so the gallery starts at the top", async ({ page }) => {
+  await mount(page);
+  await page.getByRole("button", { name: "Open library" }).click();
+  const dialog = manager(page);
+  await expect(dialog.locator(".lm-dialog-content > :first-child")).toHaveClass(/lm-group/);
+  const chip = dialog.getByRole("button", { name: "Library status: In sync, 1 workflow", exact: true });
+  await expect(chip).toHaveAttribute("aria-expanded", "false");
+  await chip.click();
+  await expect(chip).toHaveAttribute("aria-expanded", "true");
+  const popover = dialog.locator("[data-lora-popover]");
+  await expect(popover.getByText("Changes affect every workflow in this model family.")).toBeVisible();
+  await expect(popover.getByText("Workflow", { exact: true })).toBeVisible();
+  await expect(popover.getByRole("button", { name: "Sync library", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await expect(chip).toBeFocused();
+  // Drift reported by a refresh reads from the toolbar, and its action is one
+  // click away without anything reappearing above the gallery.
+  await page.evaluate(() => { window.drift = true; });
+  await chip.click();
+  await dialog.getByRole("button", { name: "Refresh library status", exact: true }).click();
+  const drifted = dialog.getByRole("button", { name: "Library status: Needs sync, 1 missing", exact: true });
+  await expect(drifted).toBeVisible();
+  await drifted.click();
+  await expect(dialog.getByRole("button", { name: "Sync library", exact: true })).toBeEnabled();
+  await expect(dialog.locator(".lm-dialog-content > :first-child")).toHaveClass(/lm-group/);
 });
 
 test("group move controls save shared order, support the fallback, and require explicit conflict retry", async ({ page }) => {

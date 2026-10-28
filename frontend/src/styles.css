@@ -6141,10 +6141,50 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .lm-card-popover button:hover { background: var(--surface-3); }
 .lm-card-popover button.destructive { color: var(--danger); }
 .lm-card-popover hr { border: 0; border-top: 1px solid var(--border); margin: 4px; }
-.lm-library-tools { margin-bottom: 12px; font-size: 0.8rem; }
-.lm-library-tools summary { cursor: pointer; color: var(--text-soft); padding: 4px 0; }
-.lm-library-message { margin: 0 0 12px; font-size: 0.8rem; color: var(--text-soft); }
-.lm-library-message:empty { display: none; }
+/* Library status lives in the dialog toolbar beside the close button. */
+.lm-dialog-header > .lm-header-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-width: 0; margin-left: auto; }
+.lm-status-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; max-width: 100%; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-1); color: var(--text-soft); font-size: 0.76rem; font-weight: 650; letter-spacing: 0.01em; white-space: nowrap; }
+.lm-status-chip:hover { border-color: var(--border-strong); background: var(--surface-3); }
+.lm-status-chip[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.lm-status-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.lm-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lm-status-meta { color: var(--muted); font-weight: 600; }
+.lm-status-caret { flex: 0 0 auto; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: 0.7; }
+.lm-status-chip.is-synced { border-color: #39785d; background: #13261f; color: #b9f0d4; }
+.lm-status-chip.is-drifted { border-color: #6c5631; background: #241e15; color: #f0dcb6; }
+.lm-status-chip.is-alert { border-color: #783f47; background: #2a171b; color: #ffc9cd; }
+.lm-status-chip.is-busy { border-color: #2f5f9f; background: var(--surface-blue); color: #cfe2ff; }
+.lm-status-chip.is-busy .lm-status-dot { animation: lm-chip-pulse 1.1s ease-in-out infinite; }
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes lm-chip-pulse { 50% { opacity: 0.3; } }
+}
+.lm-header-button { min-height: 30px; padding: 0 10px; font-size: 0.76rem; white-space: nowrap; }
+/* The popover repeats the message without a live role; this is the live region. */
+.lm-header-status { white-space: nowrap; }
+/* Sits in the flex column between the header and the gallery, above the fold. */
+.lm-header-notice { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-width: 0; margin: 0; padding: 7px 16px; border-bottom: 1px solid #683a40; background: #2c171b; font-size: 0.76rem; overflow-wrap: anywhere; }
+/* Extends the card popover, so it must stay after that rule. */
+.lm-library-popover { width: 340px; display: grid; gap: 10px; padding: 12px; font-size: 0.8rem; }
+.lm-library-popover > * { min-width: 0; }
+.lm-popover-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0; font-size: 0.82rem; }
+.lm-popover-title small { color: var(--muted); font-size: 0.7rem; font-weight: 400; }
+.lm-popover-hint { margin: 0; color: var(--muted); font-size: 0.74rem; }
+.lm-library-popover .admin-lora-members { margin: 0; gap: 5px; }
+/* Two lines per workflow: names are longer than a popover row can hold
+   beside a sync state, and neither may truncate. */
+.lm-library-popover .admin-lora-member { display: grid; gap: 2px; min-width: 0; padding: 7px 9px; font-size: 0.78rem; }
+.lm-library-popover .admin-lora-member > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lm-library-popover .admin-lora-member-state { font-size: 0.74rem; white-space: normal; }
+.lm-popover-body { display: grid; gap: 8px; margin: 0; }
+.lm-popover-body p { margin: 0; overflow-wrap: anywhere; }
+.lm-popover-body ul { margin: 4px 0 0; padding-left: 18px; }
+.lm-popover-body progress { width: 100%; }
+.lm-popover-actions { display: grid; gap: 6px; padding-top: 2px; border-top: 1px solid var(--border); }
+.lm-popover-actions .button { width: 100%; min-height: 32px; padding: 4px 10px; border-color: transparent; background: transparent; color: var(--text); font-size: 0.78rem; text-align: left; }
+.lm-popover-actions .button:hover:not(:disabled) { border-color: transparent; background: var(--surface-3); }
+.lm-popover-actions .button:focus-visible { border-color: var(--focus); }
+.lm-popover-actions .button:disabled { color: var(--muted); }
+.lm-library-message { margin: 0; font-size: 0.8rem; color: var(--text-soft); overflow-wrap: anywhere; }
 .lm-editor { max-width: 640px; display: grid; gap: 16px; margin: 16px auto; }
 .lm-editor h3, .lm-editor h4, .lm-editor p { margin: 0; }
 .lm-trigger-word { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -6157,11 +6197,16 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 @media (max-width: 800px) {
   .lm-dialog { width: 100vw; min-width: 0; height: 100dvh; min-height: 0; max-width: 100vw; max-height: 100dvh; border: 0; border-radius: 0; }
   .lm-dialog-header { padding: 12px; flex-wrap: wrap; }
+  .lm-dialog-header > .lm-header-actions { order: 2; gap: 6px; }
+  /* The button keeps its full accessible name through its aria-label. */
+  .lm-header-button-extra { display: none; }
   .lm-family-picker { order: 3; flex-basis: 100%; max-width: none; }
   .lm-order-bar { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
   .lm-order-label { flex-basis: 100%; }
   .lm-order-list { flex-basis: calc(100% - 70px); }
   .lm-dialog-content { padding: 14px 12px; }
+  .lm-library-popover { width: min(340px, calc(100% - 16px)); }
+  .lm-header-notice { padding-inline: 12px; }
   .lm-gallery-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--lm-mobile-card-size, 160px)), 1fr)); gap: 10px; }
   .lm-group-actions { gap: 0; }
   .lm-group-actions .button { padding-inline: 4px; }
@@ -6177,7 +6222,8 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   .lm-menu-button, .lm-order-chip .icon-button { width: 44px; height: 44px; }
   .lm-group-actions [data-lora-group-up], .lm-group-actions [data-lora-group-down] { min-width: 44px; }
   .lm-scale-control input { min-height: 44px; }
-  .lm-group-actions .button, .lm-card-popover button, .lm-footer-admin .button { min-height: 44px; }
+  .lm-group-actions .button, .lm-card-popover button, .lm-footer-admin .button,
+  .lm-status-chip, .lm-header-button, .lm-popover-actions .button { min-height: 44px; }
 }
 
 /* Filters stay together; measured header height also positions mobile overlays. */
@@ -7083,8 +7129,6 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .lm-caption-title { display: flex; flex: 1; flex-direction: column; min-width: 0; align-items: flex-start; gap: .25rem; }
 .lm-demo-reel-link { color: var(--accent, #b2b9ff); background: transparent; border: 0; padding: .15rem 0; font: inherit; font-size: .8rem; text-decoration: underline; cursor: pointer; }
 .lm-demo-reel-link:disabled { opacity: .4; cursor: default; }
-.lm-demo-reel-tools { border: 1px solid var(--border, #363940); border-radius: .6rem; padding: .8rem; margin: .7rem 0; }
-.lm-demo-reel-tools summary { cursor: pointer; }
 .demo-reel-dialog, .demo-reel-settings-dialog { width: min(1450px, 96vw); height: min(1000px, 94dvh); max-width: 96vw; max-height: 94dvh; padding: 0; }
 .demo-reel-settings-dialog { width: min(1050px, 96vw); }
 .demo-reel-frame, .demo-reel-settings-frame { display: flex; flex-direction: column; height: 100%; min-height: 0; }
