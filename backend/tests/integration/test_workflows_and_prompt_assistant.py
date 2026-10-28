@@ -9,6 +9,7 @@ from app.domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from app.domain.publication import EDITABLE_WORKFLOW_DRIFT_WARNING
 from app.main import create_app
 from app.models import ServiceHealth
+from app.services.llm_router import catalog_view
 from app.services.ollama import OUTPUT_TOKEN_BUDGETS
 from fastapi.testclient import TestClient
 from tests.conftest import csrf
@@ -24,7 +25,7 @@ from tests.publication_fixtures import (
     build_publication_bundle,
     generation_source_timeline_fixture,
 )
-from tests.router_fixtures import NIGHTTIME_ID
+from tests.router_fixtures import NIGHTTIME_ID, paired_document, solo_document
 
 
 def _cache_ollama_health(
@@ -33,6 +34,7 @@ def _cache_ollama_health(
     available: bool,
     message: str | None = None,
     checked_at: datetime | None = None,
+    capabilities: dict[str, Any] | None = None,
 ) -> None:
     container = client.app.state.container
     with container.db.session_factory() as session:
@@ -43,7 +45,23 @@ def _cache_ollama_health(
         health.available = available
         health.message = message
         health.checked_at = checked_at or datetime.now(UTC)
+        health.capabilities_json = capabilities
         session.commit()
+
+
+def _publish_catalog(client: TestClient, document: dict[str, Any]) -> None:
+    """The health row as the queue worker leaves it after the router published ``document``."""
+
+    _cache_ollama_health(
+        client,
+        available=True,
+        capabilities={
+            "vision": True,
+            "capabilities": ["completion", "thinking"],
+            "catalog": catalog_view(document),
+            "router": None,
+        },
+    )
 
 
 def _contains_private_graph_key(value: Any) -> bool:
@@ -1467,6 +1485,9 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
         "vision_available": False,
         "default_instructions": DEFAULT_PROMPT_INSTRUCTIONS,
         "router": None,
+        # The cached health row carries no published catalog, so there is nothing to choose from.
+        "models": [],
+        "pinned_model": None,
     }
 
     _cache_ollama_health(
@@ -1479,6 +1500,95 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
     assert stale.json()["available"] is False
     assert stale.json()["vision_available"] is False
     assert "stale" in stale.json()["message"]
+
+
+def _choose_model(client: TestClient, service: str) -> Any:
+    """Save the account's Creative Direction model the way the control panel does."""
+
+    preferences = client.get("/api/preferences").json()
+    settings = preferences["settings"]
+    settings["assistant_model"] = service
+    return client.put(
+        "/api/preferences",
+        headers={"X-CSRF-Token": csrf(client)},
+        json={"expected_revision": preferences["revision"], "settings": settings},
+    )
+
+
+def test_prompt_assistant_lists_the_published_catalog_and_keeps_the_chosen_model(
+    app_client: TestClient, fake_state, monkeypatch
+) -> None:
+    """The panel's choices are the router's current catalog, and the choice is a saved setting."""
+
+    provision_user(app_client, username="assistant.model.choice")
+    _publish_catalog(app_client, paired_document())
+
+    async def unexpected_live_probe() -> None:
+        raise AssertionError("the model list contacted the LLM Router")
+
+    monkeypatch.setattr(
+        app_client.app.state.container.ollama.router, "fetch", unexpected_live_probe
+    )
+
+    status = app_client.get("/api/prompt-assistant/status").json()
+    assert [(model["service"], model["available"]) for model in status["models"]] == [
+        ("daytime", True),
+        ("nighttime", True),
+    ]
+    assert status["models"][0]["label"] == "Fake Daytime"
+    assert status["models"][0]["aliases"] == ["local-active"]
+    assert status["models"][1]["nsfw"] is True
+    assert status["pinned_model"] is None
+    # With no choice saved the account is on the model this application picks by capability.
+    assert status["router"]["service"] == "nighttime"
+    assert status["router"]["pinned_service"] is None
+    assert status["router"]["pin_honored"] is None
+    # Only a request of record goes to the router; the panel's answers above came from the row.
+    monkeypatch.undo()
+
+    assert _choose_model(app_client, "daytime").status_code == 200
+    status = app_client.get("/api/prompt-assistant/status").json()
+    assert status["pinned_model"] == "daytime"
+    assert status["router"]["service"] == "daytime"
+    assert status["router"]["pinned_service"] == "daytime"
+    assert status["router"]["pin_honored"] is True
+    assert status["router"]["notice"] is None
+
+    compose = app_client.post(
+        "/api/prompt-assistant/compose",
+        headers={"X-CSRF-Token": csrf(app_client)},
+        json={
+            "mode": "refine",
+            "prompt": "portrait",
+            "creative_direction": "soft window light",
+        },
+    )
+    assert compose.status_code == 200, compose.text
+    body = compose.json()
+    assert fake_state.ollama_calls[-1]["model"] == "daytime"
+    assert (body["service"], body["pinned_service"]) == ("daytime", "daytime")
+    assert body["selection_reason"] == "pinned_service" and body["fallback"] is False
+
+    # A catalog the router publishes without the chosen model keeps that choice for later and says
+    # what answers now, instead of quietly re-picking one.
+    assert _choose_model(app_client, "nighttime").status_code == 200
+    _publish_catalog(app_client, solo_document())
+    status = app_client.get("/api/prompt-assistant/status").json()
+    assert [model["service"] for model in status["models"]] == ["daytime"]
+    assert status["pinned_model"] == "nighttime"
+    assert status["router"]["service"] == "daytime"
+    assert status["router"]["pin_honored"] is False
+    assert status["router"]["notice"] == (
+        "Nighttime is not in the LLM Router's current catalog, "
+        "so Creative Direction is using Daytime instead."
+    )
+
+    # Letting the application decide again is a setting like any other, and it round-trips.
+    assert _choose_model(app_client, "").status_code == 200
+    status = app_client.get("/api/prompt-assistant/status").json()
+    assert status["pinned_model"] is None
+    assert status["router"]["pinned_service"] is None
+    assert status["router"]["service"] == "daytime"  # the only model this catalog publishes
 
 
 def test_cached_prompt_assistant_success_does_not_mask_runtime_compose_failure(

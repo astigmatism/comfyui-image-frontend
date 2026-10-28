@@ -22,6 +22,7 @@ from app.services.llm_router import CLIENT_NAME
 from app.services.ollama import OllamaAdapter
 from tests.router_fixtures import (
     CAPABILITIES_PATH,
+    DAYTIME_PAIRED_ID,
     capabilities_response,
     paired_document,
     router_document,
@@ -333,6 +334,194 @@ async def test_selection_changes_are_logged_with_their_reason(caplog) -> None:
     ]
     assert changes[1].levelno == logging.WARNING
     assert changes[1].router_previous_service == "nighttime"  # type: ignore[attr-defined]
+
+
+# ---------- a model the account chose ----------
+
+
+async def test_a_chosen_model_answers_even_when_a_more_capable_one_is_published() -> None:
+    """The default is capability selection; a chosen service answers for that account instead."""
+
+    router = Router(paired_document())
+    adapter, _, _ = _adapter(router)
+    try:
+        result = await _compose(adapter, pinned_service="daytime")
+        capabilities = await adapter.capabilities()
+        account = adapter.model_status(capabilities["catalog"], "daytime")
+    finally:
+        await adapter.close()
+    assert router.models == ["daytime"]
+    assert router.chat[0]["model"] == "daytime"  # a service ID, as the contract requires
+    assert result.service == "daytime" and result.nsfw is False and result.fallback is False
+    assert (result.pinned_service, result.selection_reason) == ("daytime", "pinned_service")
+    assert result.raw_response["router"]["pinned_service"] == "daytime"
+    assert DAYTIME_PAIRED_ID not in json.dumps(result.raw_response["router"])
+    # The panel's own view of the same rules, with no router call of its own.
+    assert account["service"] == "daytime"
+    assert account["pinned_service"] == "daytime" and account["pin_honored"] is True
+    assert account["notice"] is None  # nothing was substituted, so nothing to explain
+
+
+async def test_a_chosen_model_the_router_stopped_explains_what_answered_instead() -> None:
+    router = Router(paired_document(unavailable={"nighttime"}))
+    adapter, _, _ = _adapter(router)
+    try:
+        result = await _compose(adapter, pinned_service="nighttime")
+        capabilities = await adapter.capabilities()
+        account = adapter.model_status(capabilities["catalog"], "nighttime")
+    finally:
+        await adapter.close()
+    assert router.models == ["daytime"]
+    assert result.service == "daytime" and result.pinned_service == "nighttime"
+    assert result.selection_reason == "pinned_service_offline" and result.fallback is True
+    assert account["service"] == "daytime"
+    assert account["pinned_service"] == "nighttime" and account["pin_honored"] is False
+    assert account["notice"] == (
+        "Nighttime is not available on the LLM Router right now, "
+        "so Creative Direction is using Daytime instead."
+    )
+
+
+async def test_a_chosen_model_the_router_no_longer_publishes_keeps_its_place() -> None:
+    """A service that left the catalog is not forgotten: the choice stays and says what changed."""
+
+    router = Router(solo_document())  # Nighttime is listed under offline_services, not models
+    adapter, _, _ = _adapter(router)
+    try:
+        result = await _compose(adapter, pinned_service="nighttime")
+        capabilities = await adapter.capabilities()
+        account = adapter.model_status(capabilities["catalog"], "nighttime")
+    finally:
+        await adapter.close()
+    assert router.models == ["daytime"]
+    assert result.selection_reason == "pinned_service_absent"
+    assert account["service"] == "daytime" and account["pin_honored"] is False
+    assert account["notice"] == (
+        "Nighttime is not in the LLM Router's current catalog, "
+        "so Creative Direction is using Daytime instead."
+    )
+    assert [entry["service"] for entry in capabilities["catalog"]["models"]] == ["daytime"]
+
+
+async def test_a_chosen_model_that_cannot_inspect_images_is_not_used_for_an_image_check() -> None:
+    scores = json.dumps(
+        {
+            "results": [{"expectation": 1, "score": 92, "observation": "the coat is red"}],
+            "summary": "the coat is red",
+        }
+    )
+    router = Router(
+        router_document(
+            [
+                router_model("nighttime", nsfw=True, score=80.0, vision=False),
+                router_model("daytime", nsfw=False, score=50.0, vision=True),
+            ]
+        )
+    )
+    router.responses = [_ok(), _ok(content=scores)]
+    adapter, _, _ = _adapter(router)
+    try:
+        composed = await _compose(adapter, pinned_service="nighttime")
+        evaluated = await adapter.evaluate_image(
+            image_data_url="data:image/jpeg;base64,AAAA",
+            expectations=["a red raincoat"],
+            threshold=80,
+            pinned_service="nighttime",
+        )
+        capabilities = await adapter.capabilities()
+        account = adapter.model_status(capabilities["catalog"], "nighttime")
+    finally:
+        await adapter.close()
+    assert router.models == ["nighttime", "daytime"]
+    assert (composed.service, composed.selection_reason) == ("nighttime", "pinned_service")
+    assert (evaluated.service, evaluated.pinned_service) == ("daytime", "nighttime")
+    assert evaluated.selection_reason == "pinned_service_cannot_serve"
+    assert evaluated.evaluation.passed is True
+    assert account["vision_service"] == "daytime"
+    assert account["notice"] == (
+        "Nighttime cannot inspect images right now, so image checks are using Daytime instead."
+    )
+
+
+async def test_a_chosen_model_waits_with_the_request_during_a_configuration_switch() -> None:
+    """Contract §5: a switch is waited out; nothing is moved to another model, chosen or not."""
+
+    router = Router(paired_document(draining=True))
+    waits: list[float] = []
+
+    async def waiter(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 3:
+            router.document = solo_document()
+
+    adapter, _, _ = _adapter(router)
+    adapter.router_waiter = waiter
+    try:
+        result = await _compose(adapter, pinned_service="nighttime")
+    finally:
+        await adapter.close()
+    assert waits == [2.0, 4.0, 8.0]
+    assert router.models == ["daytime"]
+    assert result.service == "daytime"
+    assert result.pinned_service == "nighttime"  # still the account's choice, kept for later
+    assert result.selection_reason == "pinned_service_absent"
+
+
+async def test_a_request_the_chosen_model_cannot_answer_says_who_answered(
+    caplog,
+) -> None:
+    router = Router(paired_document())
+    router.responses = [router_error("SERVICE_OFFLINE", 503), _ok()]
+    adapter, retry_waits, _ = _adapter(router)
+    try:
+        with caplog.at_level(logging.INFO, logger="app.services.ollama"):
+            result = await _compose(adapter, pinned_service="daytime")
+    finally:
+        await adapter.close()
+    # The chosen service failed, so the automatic choice answered; the pin is not retried.
+    assert router.models == ["daytime", "nighttime"]
+    assert retry_waits == []
+    assert result.service == "nighttime" and result.pinned_service == "daytime"
+    assert result.selection_reason == "pinned_service_failed"
+    changes = [
+        record
+        for record in caplog.records
+        if record.message == "llm_router_model_changed" and record.router_purpose == "text"  # type: ignore[attr-defined]
+    ]
+    assert [(item.router_service, item.router_selection_reason) for item in changes] == [  # type: ignore[attr-defined]
+        ("daytime", "pinned_service"),
+        ("nighttime", "pinned_service_failed"),
+    ]
+    assert changes[1].router_pinned_service == "daytime"  # type: ignore[attr-defined]
+    assert changes[1].router_fallback is True  # type: ignore[attr-defined]
+
+
+async def test_the_published_catalog_is_what_the_panel_and_the_next_request_use() -> None:
+    """What the panel offers is what the next request uses, and a new catalog replaces it whole."""
+
+    router = Router(paired_document())
+    adapter, _, _ = _adapter(router)
+    try:
+        catalog = (await adapter.capabilities())["catalog"]
+        assert [entry["service"] for entry in catalog["models"]] == ["daytime", "nighttime"]
+        assert [entry["label"] for entry in catalog["models"]] == ["Fake Daytime", "Fake Nighttime"]
+        assert catalog["configuration_id"] == "fake-paired"
+        assert catalog["truncated"] is False
+        assert DAYTIME_PAIRED_ID not in json.dumps(catalog)
+        automatic = adapter.select_model()
+        assert adapter.model_status(catalog, None)["service"] == automatic.service
+        assert adapter.model_status(catalog, None)["pinned_service"] is None
+
+        # The router publishes a new catalog: a service that is gone stops being offered.
+        router.document = solo_document()
+        catalog = (await adapter.capabilities())["catalog"]
+        assert [entry["service"] for entry in catalog["models"]] == ["daytime"]
+        assert catalog["configuration_id"] == "fake-solo"
+        assert adapter.model_status(catalog, "nighttime")["pinned_service"] == "nighttime"
+        assert adapter.model_status(catalog, "nighttime")["service"] == "daytime"
+        assert adapter.model_status(None, "nighttime") is None
+    finally:
+        await adapter.close()
 
 
 # ---------- errors (contract section 10) ----------

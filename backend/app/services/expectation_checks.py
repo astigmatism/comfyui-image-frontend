@@ -57,6 +57,7 @@ from ..schemas import (
     PromptAssistantSnapshot,
     PromptComposeRequest,
 )
+from .model_choice import pinned_assistant_service
 from .prompt_assistant import compose_prompt
 from .prompt_rerun import target_inputs
 from .submissions import accept_items, request_digest
@@ -804,11 +805,20 @@ class ExpectationCheckService:
         expectations: list[str] = list(request["expectations"])
         threshold = int(request["threshold"])
         image = await asyncio.to_thread(encode_for_vision, self.container.assets, step.storage_path)
+
+        def pinned_model() -> str | None:
+            with self.container.db.session_factory() as session:
+                return pinned_assistant_service(session, step.owner_id)
+
+        # An image check uses the model the account chose when it can inspect images, and the best
+        # vision-capable model otherwise; the diagnostics record which one answered and why.
+        pinned_service = await run_blocking(pinned_model)
         result = await self.container.ollama.evaluate_image(
             image_data_url=image,
             expectations=expectations,
             threshold=threshold,
             think=bool(request["assistant"].get("think", True)),
+            pinned_service=pinned_service,
         )
         service = self.container.generations
 

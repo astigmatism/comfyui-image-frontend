@@ -3392,6 +3392,64 @@ test("Prompt Assistant submits the live create mode and generation preserves con
   });
 });
 
+test("Creative Direction offers the LLM Router's models and remembers the one chosen", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  // Defaults belong to a fresh account; settings survive browser contexts.
+  await signInFreshUser(page, "assistant.model.choice");
+  await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
+
+  const model = page.locator("#prompt-assistant-model");
+  const published = await (await page.request.get("/api/prompt-assistant/status")).json();
+  expect(published.models.map((entry) => entry.service)).toEqual(["daytime", "nighttime"]);
+  expect(published.pinned_model).toBeNull();
+
+  // Automatic is offered first and names the model it would choose; the rest of the list is the
+  // router's own catalog in its own order.
+  const automatic = published.models.find((entry) => entry.service === published.router.service);
+  await expect(model.locator("option")).toHaveText([
+    `Automatic — ${automatic.label} (recommended)`,
+    "Fake Daytime",
+    "Fake Nighttime",
+  ]);
+
+  // Choosing a model is a saved setting like Thinking mode.
+  const savedPreferences = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await model.selectOption("daytime");
+  const saved = await savedPreferences;
+  expect(saved.status()).toBe(200);
+  expect((await saved.json()).settings.assistant_model).toBe("daytime");
+
+  // The choice is an account setting, not page state: a reload offers it selected again, and
+  // Automatic is always the way back to the model this application picks.
+  await page.reload();
+  await ensureControlSectionExpanded(page, "Creative Direction");
+  await expect(model).toHaveValue("daytime");
+  await model.selectOption("");
+  await expect(model).toHaveValue("");
+
+  // A catalog the router published without the chosen model keeps that choice visible and says it
+  // is gone, rather than looking as though the application had switched models by itself.
+  await page.route("**/api/prompt-assistant/status", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.pinned_model = "daisy";
+    body.models = body.models.filter((entry) => entry.service !== "daisy");
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
+  await page.reload();
+  await ensureControlSectionExpanded(page, "Creative Direction");
+  await expect(model).toHaveValue("daisy");
+  await expect(model.locator('option[value="daisy"]')).toHaveAttribute("disabled", "");
+  await expect(model.locator('option[value="daisy"]')).toContainText("not in the current catalog");
+});
+
 test("Creative Direction shows a gold-while-composing and green-when-applied prompt border signal", async ({
   page,
 }) => {

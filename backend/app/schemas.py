@@ -17,6 +17,7 @@ from pydantic import (
 from .config import COMFYUI_INSTANCE_ID_PATTERN
 from .domain import expectations as expectation_rules
 from .domain.lora_stack import MAX_TRIGGER_WORD
+from .domain.model_choice import normalize_assistant_model
 from .domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from .domain.source_metadata import GenerationSourceMetadata, TechnicalInventoryMetadata
 
@@ -118,11 +119,20 @@ class SharedSettings(APIModel):
     assistant_mode: Literal["create", "refine"] = "refine"
     assistant_think: bool = True
     assistant_instructions: dict[str, str] = Field(default_factory=dict)
+    # The Creative Direction model this account chose, as the LLM Router names it. None means let
+    # this application choose, which is what it did before the choice existed. A model the router
+    # no longer publishes is kept: it answers again when the router publishes it again.
+    assistant_model: str | None = None
     use_creative_direction: bool = False
     creative_direction_expectations: ExpectationSettings = Field(
         default_factory=ExpectationSettings
     )
     max_generations: int | None = Field(default=200, ge=1, le=1_000_000)
+
+    @field_validator("assistant_model", mode="before")
+    @classmethod
+    def normalize_assistant_model(cls, value: Any) -> str | None:
+        return normalize_assistant_model(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -1062,6 +1072,10 @@ class PromptComposeResponse(APIModel):
     # The LLM Router service the request was sent to, and whether it was a fallback.
     service: str | None = None
     fallback: bool = False
+    # Why that service answered: the model this account chose, or the automatic choice that
+    # answered instead of it while the chosen one could not.
+    selection_reason: str | None = None
+    pinned_service: str | None = None
 
 
 EXPECTATION_CHECK_MAX_ITEMS = 256
@@ -1174,11 +1188,41 @@ class PromptAssistantRouterStatus(APIModel):
     fallback: bool = False
     reason: str | None = None
     configuration_id: str | None = None
+    # The model this account chose, when it chose one, and whether the router can serve it now.
+    # When it cannot, ``service`` above is the automatic choice that answers instead and
+    # ``fallback`` is true, while the choice itself stays for the next request.
+    pinned_service: str | None = None
+    pin_honored: bool | None = None
     vision_service: str | None = None
     vision_nsfw: bool | None = None
     vision_fallback: bool = False
     # A short user-facing explanation when on a fallback or waiting, otherwise null.
     notice: str | None = None
+
+
+class PromptAssistantModel(APIModel):
+    """One model the LLM Router is publishing right now.
+
+    This is the router's current catalog, not a fixed list: a model appears when the router
+    publishes it and disappears when the router stops publishing it. Only service IDs are published
+    here, never the canonical model ID behind them.
+    """
+
+    service: str
+    # The router's own name for the model, used for the control panel's list.
+    label: str
+    available: bool = True
+    # Other service IDs the same model answers to; a choice may be saved under any of them.
+    aliases: list[str] = Field(default_factory=list)
+    nsfw: bool | None = None
+    vision: bool = False
+    thinking: bool = False
+    tools: bool = False
+    context_window: int | None = None
+    capability_score: float | None = None
+    slots: int | None = None
+    # Why the router is not taking requests for it now, when it published a reason.
+    offline_reason: str | None = None
 
 
 class PromptAssistantStatus(APIModel):
@@ -1191,6 +1235,12 @@ class PromptAssistantStatus(APIModel):
         default_factory=lambda: dict(DEFAULT_PROMPT_INSTRUCTIONS)
     )
     router: PromptAssistantRouterStatus | None = None
+    # The models this account may choose from for Creative Direction, as the LLM Router publishes
+    # them now, in the order the router ranks them.
+    models: list[PromptAssistantModel] = Field(default_factory=list)
+    # The model this account chose, even when the router no longer publishes it: the choice is
+    # kept, and answers again once that model returns to the catalog.
+    pinned_model: str | None = None
 
 
 class SpeechToTextStatus(APIModel):

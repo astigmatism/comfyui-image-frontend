@@ -289,7 +289,7 @@ async def test_invalid_documents_are_rejected_and_unknown_fields_ignored() -> No
 
 
 async def test_unexpected_schema_versions_are_warned_about_once(caplog) -> None:
-    document = router_document([router_model("daytime")], schema_version=2)
+    document = router_document([router_model("daytime")], schema_version=3)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=document)
@@ -307,7 +307,33 @@ async def test_unexpected_schema_versions_are_warned_about_once(caplog) -> None:
         if record.message == "llm_router_schema_version_unexpected"
     ]
     assert len(warnings) == 1
-    assert warnings[0].router_schema_version == 2  # type: ignore[attr-defined]
+    assert warnings[0].router_schema_version == 3  # type: ignore[attr-defined]
+    assert warnings[0].router_supported_schema_version == [1, 2]  # type: ignore[attr-defined]
+
+
+async def test_every_published_schema_version_this_application_understands_is_used_quietly(
+    caplog,
+) -> None:
+    """Version 1 is the contract's; version 2 is what the home router publishes today.
+
+    A version this application understands is not worth a warning on every refresh: the router
+    publishes a new catalog often, and the warning is for a document this application cannot read.
+    """
+
+    for version in (1, 2):
+        document = router_document([router_model("daytime")], schema_version=version)
+
+        def handler(request: httpx.Request, *, payload: dict = document) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        async with httpx.AsyncClient(
+            base_url="http://router.test", transport=httpx.MockTransport(handler)
+        ) as client:
+            watch = RouterWatch(client)
+            with caplog.at_level(logging.WARNING, logger="app.services.llm_router"):
+                refreshed = await watch.refresh()
+        assert refreshed is not None and pick_service(refreshed) == "daytime"
+        assert not [record for record in caplog.records if "schema_version" in record.message]
 
 
 async def test_subscriber_follows_events_replaces_the_document_and_ignores_keepalives() -> None:

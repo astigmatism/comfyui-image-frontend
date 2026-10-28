@@ -1218,23 +1218,30 @@ test("normalizeStoredCreativeDirectionDraft falls back to safe defaults", () => 
     creativeDirection: "",
     mode: "refine",
     think: true,
+    model: "",
   });
   assert.deepEqual(normalizeStoredCreativeDirectionDraft("corrupt"), {
     creativeDirection: "",
     mode: "refine",
     think: true,
+    model: "",
   });
   assert.deepEqual(
     normalizeStoredCreativeDirectionDraft(
       JSON.stringify({ creativeDirection: "a portrait", mode: "create", think: false }),
     ),
-    { creativeDirection: "a portrait", mode: "create", think: false },
+    { creativeDirection: "a portrait", mode: "create", think: false, model: "" },
   );
   assert.deepEqual(
     normalizeStoredCreativeDirectionDraft(
-      JSON.stringify({ creativeDirection: 9, mode: "weird", think: "yes" }),
+      JSON.stringify({ creativeDirection: 9, mode: "weird", think: "yes", model: 4 }),
     ),
-    { creativeDirection: "", mode: "refine", think: true },
+    { creativeDirection: "", mode: "refine", think: true, model: "" },
+  );
+  // A chosen model is part of the same draft, so a reload keeps it until the server answers.
+  assert.deepEqual(
+    normalizeStoredCreativeDirectionDraft(JSON.stringify({ model: "daisy" })),
+    { creativeDirection: "", mode: "refine", think: true, model: "daisy" },
   );
 });
 

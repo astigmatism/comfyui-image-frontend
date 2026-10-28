@@ -20,7 +20,7 @@ IMPLEMENTATION = {
     "DATA": "`backend/app/models.py`, `backend/alembic/versions/19a5fe877349_initial_schema.py`, `backend/app/services/assets.py`, `backend/app/services/generations.py`, `backend/app/services/queue_worker.py`",
     "COMFY": "`backend/app/services/comfyui.py`, `backend/app/services/workflow_registry.py`, `backend/app/services/queue_worker.py`, `backend/app/domain/results.py`",
     "WF": "`backend/app/domain/publication.py`, `backend/app/domain/compiler.py`, `backend/app/domain/results.py`, `backend/app/services/workflow_registry.py`, `backend/app/api/workflows.py`",
-    "OLL": "`backend/app/services/ollama.py`, `backend/app/services/llm_router.py`, `backend/app/api/prompt_assistant.py`, `frontend/src/render.mjs`, `frontend/src/app.mjs`",
+    "OLL": "`backend/app/services/ollama.py`, `backend/app/services/llm_router.py`, `backend/app/domain/model_choice.py`, `backend/app/services/model_choice.py`, `backend/app/api/prompt_assistant.py`, `backend/app/services/prompt_assistant.py`, `backend/app/services/expectation_checks.py`, `frontend/src/render.mjs`, `frontend/src/app.mjs`, `frontend/src/lib.mjs`",
     "CTRL": "`frontend/src/render.mjs`, `frontend/src/lib.mjs`, `frontend/src/app.mjs`, `backend/app/domain/compiler.py`",
     "QUEUE": "`backend/app/models.py`, `backend/app/services/generations.py`, `backend/app/services/queue_worker.py`",
     "EXEC": "`backend/app/domain/compiler.py`, `backend/app/domain/results.py`, `backend/app/services/queue_worker.py`, `backend/app/api/events.py`, `backend/app/services/events.py`",
@@ -47,7 +47,7 @@ TESTS = {
     "DATA": "migration, lifecycle, queue/recovery, gallery/pagination, and deletion integration tests",
     "COMFY": "adapter/registry/result unit tests; lifecycle and queue/recovery integration tests using deterministic fake HTTP/WS",
     "WF": "publication fixtures; registry/compiler/result unit tests; source discovery and lifecycle integration tests",
-    "OLL": "`backend/tests/integration/test_workflows_and_prompt_assistant.py`; `backend/tests/integration/test_llm_router_contract.py`; `backend/tests/unit/test_llm_router.py`; `backend/tests/unit/test_ollama_router.py`; `frontend/test/render.test.mjs`",
+    "OLL": "`backend/tests/integration/test_workflows_and_prompt_assistant.py`; `backend/tests/integration/test_llm_router_contract.py`; `backend/tests/unit/test_llm_router.py`; `backend/tests/unit/test_llm_router_catalog.py`; `backend/tests/unit/test_ollama_router.py`; `backend/tests/unit/test_expectations.py`; `frontend/test/render.test.mjs`; Playwright principal journeys",
     "CTRL": "compiler unit tests; discovery API integration; `frontend/test/lib.test.mjs`; `frontend/test/render.test.mjs`",
     "QUEUE": "`backend/tests/integration/test_queue_and_recovery.py`; rapid-submission lifecycle test",
     "EXEC": "compiler/result unit tests; lifecycle, queue/recovery, event broker/SSE, and artifact persistence integration tests",
@@ -143,7 +143,8 @@ def render() -> str:
             "",
             "## Current LLM Router override",
             "",
-            "Historical OLL-001 and OLL-004 required an exact server-selected model. The "
+            "Historical OLL-001 and OLL-004 required an exact server-selected model, and "
+            "OLL-003 forbade any model selector. The "
             "current deployment configures the LLM Router base URL and upholds the vendored "
             "LLM Router client contract, version 1 (`docs/llm-router-contract.md`, with its "
             "conformance map). The application reads `/v1/router/capabilities` at startup "
@@ -157,7 +158,14 @@ def render() -> str:
             "fallback; while the router drains it waits instead of switching, and it returns "
             "to an NSFW model as soon as one is available. `CIF_OLLAMA_SELECTION=named` sends "
             "`CIF_OLLAMA_MODEL` (default `nighttime`) then `CIF_OLLAMA_FALLBACK_MODELS` "
-            "(default `daytime`). Only service IDs are sent, every router request carries "
+            "(default `daytime`). An account may also name the model its own Creative "
+            "Direction requests ask for, in that section's Model dropdown, which offers "
+            "Automatic (this application's choice, named) followed by the models the router "
+            "is publishing now in the router's own order and words; the choice is a service "
+            "ID in that account's settings, answers before either mode while it can serve the "
+            "request, waits with the request while the router drains, and leaves the automatic "
+            "model answering with a visible notice when it cannot, keeping the choice for the "
+            "next request. Only service IDs are sent, every router request carries "
             "`X-Client-Name: comfyui-image-frontend`, and the application records the "
             "effective model returned in the response as information only. Router errors are "
             "classified by `error.code`: `SERVICE_OFFLINE`, `BACKEND_UNAVAILABLE`, and "
@@ -167,7 +175,8 @@ def render() -> str:
             "errors fail. A refusal or schema failure from a non-NSFW model is reported "
             "plainly (`ollama_model_declined`) and never retried in a loop, and the status "
             "endpoint and Creative Direction panel show when the assistant runs on a "
-            "fallback. Thinking defaults on and requests `think: \"xhigh\"` only when the chosen "
+            "fallback and offer the router's current catalog with the account's choice. "
+            "Thinking defaults on and requests `think: \"xhigh\"` only when the chosen "
             "model lists that effort in `metadata.reasoning.efforts`, otherwise the closest "
             "listed effort or `true`; the checkbox inside either collapsed Prompt "
             "pre-processor section can disable it with `think: false`. Each mode exposes "

@@ -145,6 +145,7 @@ import {
   photoViewerMarkup,
   PROMPT_INSTRUCTIONS_HINTS,
   promptAssistantModelNotice,
+  promptAssistantModelOptionsMarkup,
   promptEditorMarkup,
   recentResolutionsMarkup,
   renderCollectionBar,
@@ -234,6 +235,10 @@ const state = {
     visionAvailable: undefined,
     // The LLM Router model the assistant would use now (service, fallback, notice).
     router: null,
+    // The catalog the router is publishing (the choices offered), and this account's own choice:
+    // "" lets the application choose, otherwise it is a service ID from that catalog.
+    models: [],
+    pinnedModel: "",
   },
   // Creative Direction expectations (panel settings) and the latest server check.
   expectations: normalizeExpectationSettings(null),
@@ -960,6 +965,16 @@ async function handleClick(event) {
     syncServerControls();
     return;
   }
+  if (element.id === "prompt-assistant-model") {
+    // A chosen model is a saved setting like Thinking mode: it answers from the next request on,
+    // and Automatic — the model this application picks — is always the first way back.
+    state.promptAssistant.pinnedModel = typeof element.value === "string" ? element.value : "";
+    setPromptAssistantError(null);
+    persistCreativeDirectionDraft();
+    syncPromptAssistantModelOptions();
+    syncServerControls();
+    return;
+  }
   if (element.id === "expectations-enabled") {
     state.expectations = { ...state.expectations, enabled: element.checked };
     setPromptAssistantError(null);
@@ -1545,7 +1560,7 @@ function handleInput(event) {
   }
   if (
     element.matches(
-      "#prompt-editor-dialog [data-prompt-editor-input], #prompt-editor-creative-direction, [name=prompt-editor-assistant-mode], #prompt-editor-thinking-mode, #prompt-editor-instructions",
+      "#prompt-editor-dialog [data-prompt-editor-input], #prompt-editor-creative-direction, [name=prompt-editor-assistant-mode], #prompt-editor-thinking-mode, #prompt-editor-model, #prompt-editor-instructions",
     )
   ) {
     const dialog = element.closest("#prompt-editor-dialog");
@@ -1699,6 +1714,7 @@ function applyPromptEditor() {
     '[name="prompt-editor-assistant-mode"]:checked',
   );
   const assistantThinking = dialog?.querySelector("#prompt-editor-thinking-mode");
+  const assistantModel = dialog?.querySelector("#prompt-editor-model");
   const controlId = dialog?.dataset.promptControlId;
   const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === controlId);
   if (!dialog?.open || !editor || !controlId || !control) return;
@@ -1712,6 +1728,8 @@ function applyPromptEditor() {
   state.promptAssistant.creativeDirection = creativeDirection?.value || "";
   state.promptAssistant.mode = !state.promptGeneration.enabled && assistantMode?.value === "create" ? "create" : "refine";
   state.promptAssistant.think = assistantThinking?.checked !== false;
+  state.promptAssistant.pinnedModel =
+    typeof assistantModel?.value === "string" ? assistantModel.value : state.promptAssistant.pinnedModel;
   capturePromptInstructions(dialog, promptEditorInstructionOverrides);
   state.promptAssistant.instructionOverrides = structuredClone(promptEditorInstructionOverrides);
   persistPromptInstructions();
@@ -2969,6 +2987,7 @@ async function enterApplication() {
     creativeDirection: creativeDirectionDraft.creativeDirection,
     mode: creativeDirectionDraft.mode,
     think: creativeDirectionDraft.think,
+    pinnedModel: creativeDirectionDraft.model,
     instructionOverrides: loadPromptInstructions(),
     available: false,
     message: "Checking Prompt Assistant availability…",
@@ -3577,13 +3596,23 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
     if (signal?.aborted) return;
     const previous = state.promptAssistant;
     const router = assistant.router && typeof assistant.router === "object" ? assistant.router : null;
+    // The catalog the LLM Router is publishing now, in its own order, and this account's choice.
+    // Both are replaced whole on every read, so a model the router added or dropped appears here.
+    const models = Array.isArray(assistant.models) ? assistant.models : [];
+    const pinnedModel = typeof assistant.pinned_model === "string" ? assistant.pinned_model : "";
     const available = Boolean(assistant.available);
     const visionAvailable = Boolean(assistant.vision_available);
     if (quiet && previous.available === available && previous.visionAvailable === visionAvailable) {
       // A routine background refresh: keep the panel and its state object, update the notice.
       previous.message = assistant.message;
       previous.router = router;
+      previous.models = models;
+      // A choice being made right now outranks the copy the server last confirmed.
+      if (!document.activeElement?.matches?.("[data-prompt-assistant-model-select]")) {
+        previous.pinnedModel = pinnedModel;
+      }
       syncPromptAssistantModelNotice();
+      syncPromptAssistantModelOptions();
       return;
     }
     state.promptAssistant = {
@@ -3593,6 +3622,8 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
       defaultInstructions: assistant.default_instructions || {},
       visionAvailable,
       router,
+      models,
+      pinnedModel,
     };
     syncPromptAssistantModelNotice();
   } catch (error) {
@@ -3621,6 +3652,24 @@ function syncPromptAssistantModelNotice() {
   document.querySelectorAll("[data-prompt-assistant-model]").forEach((element) => {
     if (element.textContent !== notice) element.textContent = notice;
     element.hidden = !notice;
+  });
+}
+
+// Re-offer the models the LLM Router publishes without rebuilding the panel: a catalog the router
+// published while the page was open appears here, and so does the account's own choice when another
+// device saved it. Options are only rewritten when they actually changed, so an open list of them
+// is never replaced under the pointer.
+function syncPromptAssistantModelOptions() {
+  const assistant = state.promptAssistant;
+  const options = promptAssistantModelOptionsMarkup(assistant);
+  const published = Array.isArray(assistant.models) && assistant.models.length > 0;
+  const selected = assistant.pinnedModel || "";
+  document.querySelectorAll("[data-prompt-assistant-model-select]").forEach((element) => {
+    // Never rewrite a list the person is choosing from, in either the panel or an open editor.
+    if (element === document.activeElement) return;
+    if (element.innerHTML !== options) element.innerHTML = options;
+    element.disabled = !published;
+    if (element.value !== selected) element.value = selected;
   });
 }
 
@@ -4484,6 +4533,7 @@ function persistCreativeDirectionDraft() {
       creativeDirection: state.promptAssistant.creativeDirection,
       mode: state.promptAssistant.mode,
       think: state.promptAssistant.think,
+      model: state.promptAssistant.pinnedModel,
     }),
   );
 }
@@ -7756,6 +7806,7 @@ function captureSharedSettings() {
     quantity: state.generationQuantity, control_sections: structuredClone(state.controlSectionOpen),
     recent_resolutions: recent, creative_direction: state.promptAssistant.creativeDirection,
     assistant_mode: state.promptAssistant.mode, assistant_think: state.promptAssistant.think !== false,
+    assistant_model: state.promptAssistant.pinnedModel || null,
     assistant_instructions: structuredClone(state.promptAssistant.instructionOverrides),
     use_creative_direction: state.autoGenerateCreativeDirection, max_generations: state.maxAutoGenerations,
     creative_direction_expectations: expectationSettingsPayload(state.expectations),
@@ -7785,7 +7836,9 @@ async function applySharedSettings(preferences) {
   state.autoGenerateCreativeDirection = saved.use_creative_direction;
   state.maxAutoGenerations = saved.max_generations;
   Object.assign(state.promptAssistant, { creativeDirection: saved.creative_direction,
-    mode: saved.assistant_mode, think: saved.assistant_think, instructionOverrides: saved.assistant_instructions });
+    mode: saved.assistant_mode, think: saved.assistant_think, instructionOverrides: saved.assistant_instructions,
+    // The model this account chose, as the LLM Router names it; null or missing is Automatic.
+    pinnedModel: typeof saved.assistant_model === "string" ? saved.assistant_model : "" });
   state.expectations = normalizeExpectationSettings(saved.creative_direction_expectations);
   const parameters = state.parameterStateBySource[state.activeSourceKey];
   if (parameters) {

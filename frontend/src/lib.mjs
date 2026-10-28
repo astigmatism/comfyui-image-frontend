@@ -1500,12 +1500,14 @@ export function normalizeStoredControlSections(raw) {
 export function normalizeStoredCreativeDirectionDraft(raw) {
   const parsed = parseStoredJson(raw);
   if (!isStoredObject(parsed)) {
-    return { creativeDirection: "", mode: "refine", think: true };
+    return { creativeDirection: "", mode: "refine", think: true, model: "" };
   }
   return {
     creativeDirection: typeof parsed.creativeDirection === "string" ? parsed.creativeDirection : "",
     mode: parsed.mode === "create" ? "create" : "refine",
     think: parsed.think !== false,
+    // "" is the LLM Router deciding for itself, which is what a draft with no model means too.
+    model: typeof parsed.model === "string" ? parsed.model : "",
   };
 }
 

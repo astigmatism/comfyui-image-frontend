@@ -144,6 +144,9 @@ def test_subscriber_keeps_the_status_endpoint_current(settings_factory, fake_sta
             "vision_nsfw": True,
             "vision_fallback": False,
             "notice": None,
+            # No account has chosen a model, so the automatic choice answers with no override.
+            "pinned_service": None,
+            "pin_honored": None,
         }
 
         # A solo configuration arrives as a change event and is persisted at once.

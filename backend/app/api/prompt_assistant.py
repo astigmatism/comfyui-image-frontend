@@ -20,11 +20,13 @@ from ..schemas import (
     ExpectationCheckCreate,
     ExpectationCheckLatest,
     ExpectationCheckPublic,
+    PromptAssistantModel,
     PromptAssistantRouterStatus,
     PromptAssistantStatus,
     PromptComposeRequest,
     PromptComposeResponse,
 )
+from ..services.model_choice import pinned_assistant_service
 from ..services.prompt_assistant import compose_prompt
 from .generations import require_generation_protocol
 
@@ -36,7 +38,7 @@ router = APIRouter(prefix="/api/prompt-assistant", tags=["prompt-assistant"])
 def status(
     request: Request,
     session: Annotated[Session, Depends(get_db, scope="function")],
-    _: Annotated[AuthContext, Depends(require_ready_user)],
+    context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> PromptAssistantStatus:
     container = get_container(request)
     if not container.settings.ollama_base_url:
@@ -66,6 +68,12 @@ def status(
         )
 
     capabilities = health.capabilities_json or {}
+    catalog = capabilities.get("catalog") if isinstance(capabilities.get("catalog"), dict) else None
+    # The models this account may choose are the ones the router publishes now; the account's own
+    # choice is read from its saved settings and answered against that catalog, so the model named
+    # here is the model its next Creative Direction request uses.
+    pinned = pinned_assistant_service(session, context.user.id)
+    account = container.ollama.model_status(catalog, pinned)
     return PromptAssistantStatus(
         available=health.available,
         message=(
@@ -75,8 +83,32 @@ def status(
             or "Prompt Assistant is temporarily unavailable; manual prompting still works."
         ),
         vision_available=bool(health.available and capabilities.get("vision") is True),
-        router=_router_status(capabilities.get("router")),
+        router=_router_status(account if account is not None else capabilities.get("router")),
+        models=_catalog_models(catalog),
+        pinned_model=pinned,
     )
+
+
+def _catalog_models(catalog: dict[str, object] | None) -> list[PromptAssistantModel]:
+    """The published catalog as the control panel's choices: service IDs and what each can do."""
+
+    if not isinstance(catalog, dict):
+        return []
+    fields = PromptAssistantModel.model_fields
+    models: list[PromptAssistantModel] = []
+    published = catalog.get("models")
+    for value in published if isinstance(published, list) else []:
+        if not isinstance(value, dict) or not isinstance(value.get("service"), str):
+            continue
+        try:
+            models.append(
+                PromptAssistantModel.model_validate(
+                    {key: item for key, item in value.items() if key in fields}
+                )
+            )
+        except ValueError:
+            continue
+    return models
 
 
 def _router_status(value: object) -> PromptAssistantRouterStatus | None:

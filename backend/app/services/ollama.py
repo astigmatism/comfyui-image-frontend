@@ -10,7 +10,7 @@ import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any, Literal
 
@@ -32,18 +32,25 @@ from .llm_router import (
     CLIENT_NAME,
     CLIENT_NAME_HEADER,
     FALLBACK,
-    FEATURES,
+    PIN_ABSENT,
+    PIN_OFFLINE,
+    PIN_OK,
+    PIN_UNSUPPORTED,
     RETRY,
     UNAVAILABLE,
     WAIT,
     ChangeListener,
     RouterWatch,
     accepting_requests,
+    catalog_models,
+    catalog_view,
     classify_error,
+    entry_has_features,
     error_code,
     model_for,
-    pick_service,
-    resolve,
+    pick_from_catalog,
+    pin_status,
+    resolve_from_catalog,
     thinking_value,
 )
 
@@ -128,10 +135,12 @@ logger = logging.getLogger(__name__)
 class RouterSelection:
     """The service chosen for one request from the current capabilities document.
 
-    ``fallback`` is true when the assistant is not on its preferred kind of model: a non-NSFW
-    model under ``CIF_OLLAMA_NSFW=prefer``, or a later name under ``CIF_OLLAMA_SELECTION=named``.
-    ``model`` is the document's entry for the service (limits and capabilities); it is never
-    persisted, because it carries the canonical model ID.
+    ``fallback`` is true when the assistant is not on the model its account or instance asked
+    for: a non-NSFW model under ``CIF_OLLAMA_NSFW=prefer``, a later name under
+    ``CIF_OLLAMA_SELECTION=named``, or the automatic service that answered instead of a pinned
+    one. ``model`` is the catalog entry for the service (limits and capabilities); it is never
+    persisted, because it can carry the canonical model ID. ``pinned_service`` is set whenever an
+    account's Creative Direction override took part in the choice, honored or not.
     """
 
     outcome: SelectionMode
@@ -140,16 +149,29 @@ class RouterSelection:
     fallback: bool = False
     reason: str = ""
     configuration_id: str | None = None
+    pinned_service: str | None = None
     model: dict[str, Any] | None = dataclass_field(default=None, repr=False, compare=False)
 
     def public(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "service": self.service,
             "nsfw": self.nsfw,
             "fallback": self.fallback,
             "reason": self.reason,
             "configuration_id": self.configuration_id,
         }
+        if self.pinned_service:
+            payload["pinned_service"] = self.pinned_service
+        return payload
+
+
+# Why an account's chosen model did not serve this request. The choice is kept either way, so the
+# next request uses it again once the router publishes that service.
+PIN_FALLBACK_REASONS = {
+    PIN_ABSENT: "pinned_service_absent",
+    PIN_OFFLINE: "pinned_service_offline",
+    PIN_UNSUPPORTED: "pinned_service_cannot_serve",
+}
 
 
 @dataclass(frozen=True)
@@ -161,6 +183,10 @@ class ComposeResult:
     service: str | None = None
     fallback: bool = False
     nsfw: bool | None = None
+    # Why this service answered: the account's choice, or the automatic choice that answered
+    # instead of it. ``pinned_service`` is set whenever the account had chosen one.
+    selection_reason: str | None = None
+    pinned_service: str | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +197,8 @@ class VisionEvaluationResult:
     duration_ms: int
     service: str | None = None
     fallback: bool = False
+    selection_reason: str | None = None
+    pinned_service: str | None = None
 
 
 @dataclass(frozen=True)
@@ -397,51 +425,81 @@ class OllamaAdapter:
             await router.refresh()
         return router.doc
 
-    def select_model(self, *, vision: bool = False, exclude: Iterable[str] = ()) -> RouterSelection:
-        """Choose the service for one request from the current document (no network)."""
+    def select_model(
+        self,
+        *,
+        vision: bool = False,
+        exclude: Iterable[str] = (),
+        pinned_service: str | None = None,
+    ) -> RouterSelection:
+        """Choose the service for one request from the current document (no network).
+
+        ``pinned_service`` is an account's Creative Direction model. It serves the request
+        whenever the router publishes it, it is available, and it can do what the request needs.
+        Otherwise the automatic choice answers for this request, marked as a fallback so the panel
+        can explain it, and the account's choice stays in place for the next request. While the
+        router drains or is in maintenance the request waits instead, on no model at all.
+        """
 
         doc = self.router.doc if self.router else None
-        require = ("vision",) if vision else ()
         excluded = tuple(exclude)
-        configuration = doc.get("configuration") if doc else None
-        configuration_id = (
-            configuration.get("id")
-            if isinstance(configuration, Mapping) and isinstance(configuration.get("id"), str)
-            else None
+        automatic = self._automatic_selection(doc, vision=vision, exclude=excluded)
+        return self._honor_pinned_service(
+            automatic, doc, vision=vision, exclude=excluded, pinned_service=pinned_service
         )
+
+    def _automatic_selection(
+        self, source: Mapping[str, Any] | None, *, vision: bool, exclude: tuple[str, ...]
+    ) -> RouterSelection:
+        """The instance's own choice, decided over the published catalog.
+
+        ``source`` is either a capabilities document or the catalog this application stored from
+        one: both answer the same way, so the service the control panel offers as automatic is the
+        service the next request uses.
+        """
+
+        require = ("vision",) if vision else ()
+        excluded = exclude
+        configuration_id = _source_configuration_id(source)
         preference = self.settings.ollama_nsfw
         named = self.settings.ollama_selection == "named"
         names = self.settings.ollama_named_models
         if named:
-            service = (
-                resolve(doc, names[0], names[1:], require=require, exclude=excluded)
-                if names
-                else UNAVAILABLE
-            )
+            preferred = names[0] if names else ""
+            if source is None:
+                # No capabilities document read yet: send the preferred name and let the request's
+                # own error answer decide, exactly like the reference client.
+                service = preferred if preferred and preferred not in excluded else UNAVAILABLE
+            else:
+                service = (
+                    resolve_from_catalog(
+                        source, preferred, names[1:], require=require, exclude=excluded
+                    )
+                    if preferred
+                    else UNAVAILABLE
+                )
         else:
             wanted = {"prefer": True, "require": True, "avoid": False, "any": None}[preference]
-            service = pick_service(
-                doc,
+            service = pick_from_catalog(
+                source,
                 nsfw=wanted,
                 require=require,
                 exclude=excluded,
                 fallback_any=preference == "prefer",
             )
         if service == WAIT:
-            router = doc.get("router") if doc else None
-            maintenance = isinstance(router, Mapping) and router.get("maintenance") is True
             return RouterSelection(
                 "wait",
-                reason="router_maintenance" if maintenance else "router_draining",
+                reason="router_maintenance" if _source_maintenance(source) else "router_draining",
                 configuration_id=configuration_id,
             )
         if service == UNAVAILABLE:
             return RouterSelection(
                 "unavailable",
-                reason=self._unavailable_reason(doc, require),
+                reason=self._unavailable_reason(source, require),
                 configuration_id=configuration_id,
             )
-        model = model_for(doc, service)
+        model = model_for(source, service)
         declared = model.get("nsfw") if model else None
         nsfw = declared if isinstance(declared, bool) else None
         if named:
@@ -449,7 +507,9 @@ class OllamaAdapter:
             reason = "named_fallback" if fallback else "preferred"
         elif preference == "prefer":
             fallback = nsfw is not True
-            reason = self._prefer_fallback_reason(doc, require) if fallback else "most_capable_nsfw"
+            reason = (
+                self._prefer_fallback_reason(source, require) if fallback else "most_capable_nsfw"
+            )
         else:
             fallback = False
             reason = {
@@ -467,23 +527,71 @@ class OllamaAdapter:
             model=model,
         )
 
-    def _available_models(self, doc: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
-        models = doc.get("models") if isinstance(doc, Mapping) else None
-        return [
-            model
-            for model in (models if isinstance(models, list) else [])
-            if isinstance(model, Mapping) and model.get("available")
-        ]
+    def _honor_pinned_service(
+        self,
+        automatic: RouterSelection,
+        source: Mapping[str, Any] | None,
+        *,
+        vision: bool,
+        exclude: tuple[str, ...],
+        pinned_service: str | None,
+    ) -> RouterSelection:
+        """Put an account's chosen service in front of the automatic choice when it can serve."""
 
-    def _unavailable_reason(self, doc: Mapping[str, Any] | None, require: Sequence[str]) -> str:
-        if doc is None:
+        pinned = pinned_service.strip() if isinstance(pinned_service, str) else ""
+        if not pinned:
+            return automatic
+        if automatic.outcome == "wait":
+            # Draining or maintenance: the request waits rather than moving to another model,
+            # pinned or otherwise.
+            return replace(automatic, pinned_service=pinned)
+        if source is None:
+            # Nothing has been read from the router yet: send the chosen service and let the
+            # router's own error answer decide, as a configured name does.
+            return RouterSelection(
+                "selected", service=pinned, reason="pinned_service", pinned_service=pinned
+            )
+        excluded = pinned in exclude
+        status = (
+            PIN_ABSENT
+            if excluded
+            else pin_status(source, pinned, require=("vision",) if vision else ())
+        )
+        if status == PIN_OK:
+            model = model_for(source, pinned)
+            declared = model.get("nsfw") if model else None
+            return RouterSelection(
+                "selected",
+                service=pinned,
+                nsfw=declared if isinstance(declared, bool) else None,
+                reason="pinned_service",
+                configuration_id=automatic.configuration_id,
+                pinned_service=pinned,
+                model=model,
+            )
+        if automatic.outcome != "selected":
+            # The automatic choice found nothing usable either; its own reason says what is
+            # missing, and the pinned service is kept for the next request.
+            return replace(automatic, pinned_service=pinned)
+        reason = (
+            "pinned_service_failed"
+            if excluded
+            else PIN_FALLBACK_REASONS.get(status, "pinned_service_cannot_serve")
+        )
+        return replace(automatic, fallback=True, pinned_service=pinned, reason=reason)
+
+    def _available_entries(self, source: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+        """Catalog entries the router currently takes requests for, from either source shape."""
+
+        return [entry for entry in catalog_models(source) if entry.get("available")]
+
+    def _unavailable_reason(self, source: Mapping[str, Any] | None, require: Sequence[str]) -> str:
+        if source is None:
             return "router_unreachable"
-        available = self._available_models(doc)
+        available = self._available_entries(source)
         if not available:
             return "no_available_model"
-        if require and not any(
-            all(FEATURES[feature](model) for feature in require) for model in available
-        ):
+        if require and not any(entry_has_features(entry, require) for entry in available):
             return "no_vision_model"
         if self.settings.ollama_selection == "named":
             return "named_models_unavailable"
@@ -493,20 +601,28 @@ class OllamaAdapter:
             return "no_non_nsfw_model"
         return "no_usable_model"
 
-    def _prefer_fallback_reason(self, doc: Mapping[str, Any] | None, require: Sequence[str]) -> str:
-        nsfw_models = [model for model in self._available_models(doc) if model.get("nsfw") is True]
+    def _prefer_fallback_reason(
+        self, source: Mapping[str, Any] | None, require: Sequence[str]
+    ) -> str:
+        nsfw_models = [
+            entry for entry in self._available_entries(source) if entry.get("nsfw") is True
+        ]
         if not nsfw_models:
             return "no_nsfw_model_available"
-        if require and not any(
-            all(FEATURES[feature](model) for feature in require) for model in nsfw_models
-        ):
+        if require and not any(entry_has_features(entry, require) for entry in nsfw_models):
             return "no_nsfw_model_with_vision"
         return "nsfw_model_failed"
 
     def _note_selection(self, purpose: str, selection: RouterSelection) -> None:
         """Log every change of the chosen model with its reason."""
 
-        key = (selection.outcome, selection.service, selection.fallback, selection.reason)
+        key = (
+            selection.outcome,
+            selection.service,
+            selection.fallback,
+            selection.reason,
+            selection.pinned_service,
+        )
         previous = self._last_selection.get(purpose)
         if previous == key:
             return
@@ -522,6 +638,7 @@ class OllamaAdapter:
                 "router_service": selection.service,
                 "router_previous_service": previous[1] if previous else None,
                 "router_selection_reason": selection.reason,
+                "router_pinned_service": selection.pinned_service,
                 "router_fallback": selection.fallback,
                 "router_nsfw": selection.nsfw,
                 "router_configuration_id": selection.configuration_id,
@@ -554,14 +671,21 @@ class OllamaAdapter:
         budget.delay = min(budget.delay * 2, ROUTER_WAIT_MAX_SECONDS)
 
     async def _choose(
-        self, *, vision: bool, exclude: Iterable[str], budget: _RouterWaitBudget
+        self,
+        *,
+        vision: bool,
+        exclude: Iterable[str],
+        budget: _RouterWaitBudget,
+        pinned_service: str | None = None,
     ) -> RouterSelection:
         """Choose a service, waiting (without switching) while the router drains."""
 
         excluded = tuple(exclude)
         while True:
             await self._ensure_document()
-            selection = self.select_model(vision=vision, exclude=excluded)
+            selection = self.select_model(
+                vision=vision, exclude=excluded, pinned_service=pinned_service
+            )
             self._note_selection("vision" if vision else "text", selection)
             if selection.outcome != "wait" or budget.exhausted:
                 return selection
@@ -620,6 +744,8 @@ class OllamaAdapter:
         if selection.outcome != "selected" or not selection.fallback:
             return None
         name = _service_label(selection.service)
+        if selection.pinned_service:
+            return self._pinned_notice(selection, name, vision=vision)
         if self.settings.ollama_selection == "named":
             preferred = _service_label(self.settings.ollama_named_models[0])
             return f"{preferred} is unavailable, so Prompt Assistant is using {name} instead."
@@ -630,6 +756,27 @@ class OllamaAdapter:
         )
         purpose = "Image checks are" if vision else "Prompt Assistant is"
         return f"{lacking}, so {purpose} using {name}, which may decline some requests."
+
+    def _pinned_notice(self, selection: RouterSelection, name: str, *, vision: bool) -> str:
+        """Why the model an account chose did not answer, and what answered instead."""
+
+        pinned = _service_label(selection.pinned_service)
+        subject = "image checks are" if vision else "Creative Direction is"
+        actor = "image checks" if vision else "Creative Direction"
+        if selection.reason == "pinned_service_failed":
+            return f"{pinned} did not answer this request, so {actor} used {name} instead."
+        if selection.reason == "pinned_service_absent":
+            return (
+                f"{pinned} is not in the LLM Router's current catalog, so {subject} "
+                f"using {name} instead."
+            )
+        if selection.reason == "pinned_service_offline":
+            return (
+                f"{pinned} is not available on the LLM Router right now, so {subject} "
+                f"using {name} instead."
+            )
+        what = "inspect images" if vision else "answer this request"
+        return f"{pinned} cannot {what} right now, so {subject} using {name} instead."
 
     async def status(self) -> tuple[bool, str | None]:
         if not self._client:
@@ -652,7 +799,7 @@ class OllamaAdapter:
         """
 
         if not self._client:
-            return {"vision": False, "capabilities": [], "router": None}
+            return {"vision": False, "capabilities": [], "router": None, "catalog": None}
         doc = await self._ensure_document(for_request=False)
         text = (
             self.select_model()
@@ -673,6 +820,11 @@ class OllamaAdapter:
                 if isinstance(capabilities, list)
                 else set()
             ),
+            # The published catalog, in the small form the control panel's model list is built
+            # from: service IDs, the router's own labels, and what each service can do. It is
+            # replaced whole when the router publishes a new one, so a new model appears here as
+            # soon as the subscriber sees the change.
+            "catalog": catalog_view(doc),
             "router": self.router_status(doc, text, vision),
         }
 
@@ -684,8 +836,45 @@ class OllamaAdapter:
     ) -> dict[str, Any]:
         """Public description of the current choice: service IDs only, no canonical IDs."""
 
-        configuration = doc.get("configuration") if isinstance(doc, Mapping) else None
-        configuration = configuration if isinstance(configuration, Mapping) else {}
+        return self._router_status_block(doc, text, vision)
+
+    def model_status(
+        self, catalog: Mapping[str, Any] | None, pinned_service: str | None
+    ) -> dict[str, Any] | None:
+        """What one account's Creative Direction uses, answered from the stored catalog.
+
+        No router call: the catalog the subscriber persisted already carries every service the
+        router publishes right now, and it changes whenever the router publishes a new one. The
+        selection rules are the request-time rules, so the service named here is the service the
+        next request uses — the account's choice when the router can serve it, and otherwise the
+        automatic service with an explanation the panel can show.
+        """
+
+        if not isinstance(catalog, Mapping):
+            return None
+        pinned = pinned_service.strip() if isinstance(pinned_service, str) else ""
+        text = self._automatic_selection(catalog, vision=False, exclude=())
+        text = self._honor_pinned_service(
+            text, catalog, vision=False, exclude=(), pinned_service=pinned
+        )
+        vision = self._automatic_selection(catalog, vision=True, exclude=())
+        vision = self._honor_pinned_service(
+            vision, catalog, vision=True, exclude=(), pinned_service=pinned
+        )
+        block = self._router_status_block(catalog, text, vision)
+        if pinned:
+            block["pinned_service"] = pinned
+            block["pin_honored"] = text.reason == "pinned_service"
+        return block
+
+    def _router_status_block(
+        self,
+        source: Mapping[str, Any] | None,
+        text: RouterSelection,
+        vision: RouterSelection,
+    ) -> dict[str, Any]:
+        """Shared description of a pair of selections, over a document or a stored catalog."""
+
         state = {"selected": "ready", "wait": "waiting", "unavailable": "unavailable"}[text.outcome]
         return {
             "selection": self.settings.ollama_selection,
@@ -696,10 +885,9 @@ class OllamaAdapter:
             "fallback": text.fallback,
             "reason": text.reason,
             "configuration_id": text.configuration_id,
-            "exclusive": configuration.get("exclusive")
-            if isinstance(configuration.get("exclusive"), bool)
-            else None,
-            "accepting_requests": accepting_requests(doc) if doc is not None else None,
+            "pinned_service": text.pinned_service,
+            "exclusive": _source_exclusive(source),
+            "accepting_requests": accepting_requests(source) if source is not None else None,
             "vision_service": vision.service,
             "vision_nsfw": vision.nsfw,
             "vision_fallback": vision.fallback,
@@ -722,6 +910,7 @@ class OllamaAdapter:
         excluded_prompts: Sequence[str] = (),
         instructions: str | None = None,
         chained: bool = False,
+        pinned_service: str | None = None,
     ) -> ComposeResult:
         """Compose one prompt.
 
@@ -729,6 +918,8 @@ class OllamaAdapter:
         they are past outputs for the same direction; in refine mode they are the recent prompts
         of a chained automatic sequence, which keeps the chain from alternating between two
         prompts. ``chained`` selects the warmer sampling schedule for that sequence.
+        ``pinned_service`` is the account's Creative Direction model, used when the router can
+        serve it and explained in the result when it cannot.
         """
         if not self._client:
             raise AppError(
@@ -777,6 +968,7 @@ class OllamaAdapter:
                 attempt=attempt,
                 seed=candidate_seed + attempt,
                 chained=chained,
+                pinned_service=pinned_service,
             )
             if candidate is None:
                 # The candidate produced no usable structured prompt after its
@@ -950,6 +1142,8 @@ class OllamaAdapter:
                     service=served.service if served else None,
                     fallback=bool(served and served.fallback),
                     nsfw=served.nsfw if served else None,
+                    selection_reason=served.reason if served else None,
+                    pinned_service=served.pinned_service if served else None,
                 )
             self._log_candidate_rejected(
                 mode=mode,
@@ -1026,6 +1220,7 @@ class OllamaAdapter:
         threshold: int,
         think: bool = True,
         instructions: str | None = None,
+        pinned_service: str | None = None,
     ) -> VisionEvaluationResult:
         """Score one image against numbered expectations with the vision model.
 
@@ -1033,7 +1228,8 @@ class OllamaAdapter:
         router forwards that form unchanged to llama.cpp. The evaluator never sees
         the prompt that produced the image. Output-budget escalation and the
         no-thinking fallback mirror composition; a structurally invalid score sheet
-        is redrawn with the next seed.
+        is redrawn with the next seed. ``pinned_service`` is the account's chosen model: an image
+        check uses it when it can inspect images, and the best vision-capable model otherwise.
         """
 
         if not self._client:
@@ -1077,7 +1273,11 @@ class OllamaAdapter:
                 }
                 try:
                     received = await self._generate(
-                        payload, mode="vision", think=request_think, vision=True
+                        payload,
+                        mode="vision",
+                        think=request_think,
+                        vision=True,
+                        pinned_service=pinned_service,
                     )
                 except AppError as exc:
                     if exc.code == "ollama_generate_rejected":
@@ -1159,6 +1359,8 @@ class OllamaAdapter:
                         duration_ms=int((time.monotonic() - started) * 1000),
                         service=served.service if served else None,
                         fallback=bool(served and served.fallback),
+                        selection_reason=served.reason if served else None,
+                        pinned_service=served.pinned_service if served else None,
                     )
                 diagnostics.append(diagnostic)
                 if diagnostic["done_reason"] != "length":
@@ -1201,6 +1403,7 @@ class OllamaAdapter:
         attempt: int,
         seed: int,
         chained: bool = False,
+        pinned_service: str | None = None,
     ) -> tuple[_CandidateCompose | None, dict[str, Any] | None]:
         """Run one candidate's bounded output-budget escalation.
 
@@ -1246,7 +1449,9 @@ class OllamaAdapter:
                 output_budget=output_budget,
                 chained=chained,
             )
-            received = await self._generate(payload, mode=mode, think=request_think)
+            received = await self._generate(
+                payload, mode=mode, think=request_think, pinned_service=pinned_service
+            )
             if not isinstance(received.data, dict):
                 diagnostics = _with_output_budget_diagnostics(
                     _response_diagnostics(
@@ -1370,6 +1575,7 @@ class OllamaAdapter:
         mode: str,
         think: bool,
         vision: bool = False,
+        pinned_service: str | None = None,
     ) -> GenerateResult:
         """Send one ``/api/chat`` request to the service chosen for it, per the contract.
 
@@ -1390,7 +1596,9 @@ class OllamaAdapter:
         exclude: set[str] = set()
         attempt = 1
         while True:
-            selection = await self._choose(vision=vision, exclude=exclude, budget=budget)
+            selection = await self._choose(
+                vision=vision, exclude=exclude, budget=budget, pinned_service=pinned_service
+            )
             if selection.outcome != "selected" or selection.service is None:
                 raise self._unavailable_error(selection, purpose=purpose, waited=budget.waited)
             service = selection.service
@@ -1416,7 +1624,9 @@ class OllamaAdapter:
                 router_code = error_code(response_data)
                 action = classify_error(upstream_status, response_data)
                 if action == FALLBACK:
-                    alternative = self.select_model(vision=vision, exclude={*exclude, service})
+                    alternative = self.select_model(
+                        vision=vision, exclude={*exclude, service}, pinned_service=pinned_service
+                    )
                     if alternative.outcome == "unavailable" and router_code == (
                         "BACKEND_UNAVAILABLE"
                     ):
@@ -1803,6 +2013,47 @@ def _service_label(service: str | None) -> str:
     """A service ID as a display name: ``daytime`` becomes ``Daytime``."""
 
     return service[:1].upper() + service[1:] if service else "The fallback model"
+
+
+def _source_configuration_id(source: Mapping[str, Any] | None) -> str | None:
+    """The configuration a capabilities document or a stored catalog was published from."""
+
+    if not isinstance(source, Mapping):
+        return None
+    published = source.get("configuration_id")
+    if isinstance(published, str) and published:
+        return published
+    configuration = source.get("configuration")
+    if isinstance(configuration, Mapping) and isinstance(configuration.get("id"), str):
+        identity: str = configuration["id"]
+        return identity
+    return None
+
+
+def _source_maintenance(source: Mapping[str, Any] | None) -> bool:
+    """Whether the router says it is in maintenance, in either catalog shape."""
+
+    if not isinstance(source, Mapping):
+        return False
+    if source.get("maintenance") is True:
+        return True
+    router = source.get("router")
+    return bool(isinstance(router, Mapping) and router.get("maintenance") is True)
+
+
+def _source_exclusive(source: Mapping[str, Any] | None) -> bool | None:
+    """Whether the published configuration is exclusive, in either catalog shape."""
+
+    if not isinstance(source, Mapping):
+        return None
+    published = source.get("exclusive")
+    if isinstance(published, bool):
+        return published
+    configuration = source.get("configuration")
+    if isinstance(configuration, Mapping) and isinstance(configuration.get("exclusive"), bool):
+        exclusive: bool = configuration["exclusive"]
+        return exclusive
+    return None
 
 
 def _selection_may_decline(selection: RouterSelection | None) -> bool:

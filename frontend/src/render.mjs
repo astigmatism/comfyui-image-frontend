@@ -1397,6 +1397,7 @@ function promptAssistantMarkup(state = {}, values = {}, contract = null) {
       ${creativeDirectionWarningMarkup("creative-direction", "")}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
       ${thinkingModeMarkup("prompt-assistant-thinking-mode", state.promptAssistant)}
+      ${promptAssistantModelMarkup("prompt-assistant-model", state.promptAssistant)}
       ${expectationsMarkup(state)}
       ${promptAssistantModelNoticeMarkup(state.promptAssistant)}
       <button type="button" class="button secondary" data-action="compose-prompt" ${composeDisabled ? "disabled" : ""}>${escapeHtml(expectations.composeLabel)}</button>
@@ -1418,6 +1419,97 @@ export function promptAssistantModelNotice(assistant = {}) {
 export function promptAssistantModelNoticeMarkup(assistant = {}) {
   const notice = promptAssistantModelNotice(assistant);
   return `<p class="prompt-assistant-model-notice" data-prompt-assistant-model role="status" ${notice ? "" : "hidden"}>${escapeHtml(notice)}</p>`;
+}
+
+function assistantModelName(service) {
+  return String(service)
+    .replace(/[-_]+/gu, " ")
+    .trim()
+    .replace(/\b\p{L}/gu, (character) => character.toUpperCase());
+}
+
+function assistantModelHint(entry) {
+  const hints = [entry?.vision ? "Reads images" : "Text only"];
+  if (entry?.nsfw === true) hints.push("Accepts NSFW directions");
+  else if (entry?.nsfw === false) hints.push("May decline NSFW directions");
+  if (typeof entry?.context_window === "number" && entry.context_window > 0) {
+    hints.push(`${Math.round(entry.context_window / 1024)}K context`);
+  }
+  return hints.join(" · ");
+}
+
+function assistantModelOptionMarkup(value, text, selected, hint, disabled = false) {
+  return `<option value="${escapeHtml(value)}"${disabled ? " disabled" : ""}${
+    selected ? " selected" : ""
+  }${hint ? ` title="${escapeHtml(hint)}"` : ""}>${escapeHtml(text)}</option>`;
+}
+
+// Which model Creative Direction asks the LLM Router to answer with. Automatic is this
+// application's own capability choice and what every account uses until it picks otherwise; the
+// rest of the list is the catalog the router is publishing right now, in the router's own order.
+// The router replaces its catalog when a model appears or goes away, so this list follows it
+// without a reload — and a saved choice the router stopped publishing stays listed and disabled
+// rather than looking like the model changed by itself.
+export function promptAssistantModelOptionsMarkup(assistant = {}) {
+  const models = Array.isArray(assistant.models) ? assistant.models : [];
+  const aliases = (entry) => (Array.isArray(entry?.aliases) ? entry.aliases : []);
+  const label = (entry) => String(entry?.label || entry?.service || "");
+  const chosen =
+    typeof assistant.pinnedModel === "string" && assistant.pinnedModel
+      ? assistant.pinnedModel
+      : "";
+  const automatic =
+    assistant.router && typeof assistant.router.service === "string" ? assistant.router.service : "";
+  const automaticEntry = models.find(
+    (entry) => entry?.service === automatic || aliases(entry).includes(automatic),
+  );
+  const options = [
+    assistantModelOptionMarkup(
+      "",
+      automatic
+        ? `Automatic — ${label(automaticEntry) || assistantModelName(automatic)} (recommended)`
+        : "Automatic (recommended)",
+      !chosen,
+      "The model this application chooses for each request",
+    ),
+  ];
+  const published = new Set();
+  for (const entry of models) {
+    const service = typeof entry?.service === "string" ? entry.service : "";
+    if (!service || published.has(service)) continue;
+    published.add(service);
+    const unavailable = entry?.available === false;
+    options.push(
+      assistantModelOptionMarkup(
+        service,
+        `${label(entry) || assistantModelName(service)}${unavailable ? " (unavailable)" : ""}`,
+        chosen === service,
+        unavailable ? "Not available on the LLM Router right now" : assistantModelHint(entry),
+        unavailable,
+      ),
+    );
+  }
+  if (chosen && !published.has(chosen)) {
+    options.push(
+      assistantModelOptionMarkup(
+        chosen,
+        `${assistantModelName(chosen)} (not in the current catalog)`,
+        true,
+        "The LLM Router is not publishing this model right now; it answers again when it returns.",
+        true,
+      ),
+    );
+  }
+  return options.join("");
+}
+
+export function promptAssistantModelMarkup(id, assistant = {}) {
+  // No catalog yet means nothing to offer besides Automatic: the router has not told this
+  // application what it publishes. The list appears with the first catalog the subscriber sees.
+  const published = Array.isArray(assistant.models) && assistant.models.length > 0;
+  return `<label class="prompt-assistant-model-option">Model<select id="${id}" class="prompt-assistant-model-select" data-prompt-assistant-model-select aria-label="Creative Direction model"${
+    published ? "" : " disabled"
+  }>${promptAssistantModelOptionsMarkup(assistant)}</select></label>`;
 }
 
 function thinkingModeMarkup(id, assistant = {}) {
@@ -1455,6 +1547,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
           ${thinkingModeMarkup("prompt-editor-thinking-mode", promptAssistant)}
+          ${promptAssistantModelMarkup("prompt-editor-model", promptAssistant)}
           ${promptAssistantModelNoticeMarkup(promptAssistant)}
           <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable && !promptAssistant.composeDisabled ? "" : "disabled"}>${escapeHtml(promptAssistant.composeLabel || "Apply Creative Direction")}</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>

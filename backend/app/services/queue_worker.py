@@ -3604,7 +3604,9 @@ class QueueWorker:
         """The chosen models and their capabilities (vision, fallback) for the assistant row.
 
         They come from the router's current capabilities document, which the subscriber keeps
-        current, so each health pass reads it without a per-pass ``/api/tags`` probe.
+        current, so each health pass reads it without a per-pass ``/api/tags`` probe. The published
+        catalog travels with them, which is what the control panel's model list is built from. An
+        empty result clears it too, so a panel never offers a model the failed probe cannot confirm.
         """
 
         probe = getattr(self.ollama, "capabilities", None)
@@ -3616,9 +3618,9 @@ class QueueWorker:
             raise
         except Exception:
             logger.warning("ollama_capability_probe_failed", exc_info=True)
-            return {"vision": False, "capabilities": [], "router": None}
+            return {"vision": False, "capabilities": [], "router": None, "catalog": None}
         if not isinstance(result, dict):
-            return {"vision": False, "capabilities": [], "router": None}
+            return {"vision": False, "capabilities": [], "router": None, "catalog": None}
         return result if available else {**result, "vision": False}
 
     def _persist_service_health(

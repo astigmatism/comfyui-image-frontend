@@ -11,6 +11,7 @@ from ..domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
 from ..errors import AppError
 from ..models import GenerationPreparation, PromptAssistantRun
 from ..schemas import PromptComposeRequest, PromptComposeResponse
+from .model_choice import pinned_assistant_service
 from .ollama import MAX_CREATE_EXCLUSIONS, MAX_REFINE_CHAIN_EXCLUSIONS
 from .user_state import lock_user_state
 
@@ -83,6 +84,12 @@ async def compose_prompt(
             :MAX_REFINE_CHAIN_EXCLUSIONS
         ]
 
+    def load_pinned_model() -> str | None:
+        with container.db.session_factory() as settings_session:
+            return pinned_assistant_service(settings_session, owner_id)
+
+    pinned_service = await _run_blocking(load_pinned_model)
+
     try:
         result = await container.ollama.compose(
             mode=payload.mode,
@@ -91,7 +98,8 @@ async def compose_prompt(
             think=payload.think,
             excluded_prompts=excluded_prompts,
             instructions=payload.instructions,
-            **({"chained": True} if chained else {}),
+            chained=chained,
+            pinned_service=pinned_service,
         )
     except AppError as exc:
         record = PromptAssistantRun(
@@ -131,6 +139,8 @@ async def compose_prompt(
         template_version=run.template_version,
         service=result.service,
         fallback=result.fallback,
+        selection_reason=result.selection_reason,
+        pinned_service=result.pinned_service,
     )
 
 

@@ -36,6 +36,8 @@ import {
   photoViewerMarkup,
   promptAssistantModelNotice,
   promptAssistantModelNoticeMarkup,
+  promptAssistantModelMarkup,
+  promptAssistantModelOptionsMarkup,
   promptEditorMarkup,
   promptPipelineMarkup,
   moveDialogMarkup,
@@ -761,6 +763,91 @@ test("Creative Direction says when the LLM Router serves it from a non-NSFW fall
   const section = html.slice(html.indexOf('id="prompt-assistant"'));
   assert.ok(section.indexOf("data-prompt-assistant-model") < section.indexOf('data-action="compose-prompt"'));
   assert.match(promptEditorMarkup("prompt.text", "Prompt", "", fallback), /data-prompt-assistant-model role="status" >No NSFW model/);
+});
+
+test("Creative Direction offers the LLM Router's current catalog as the model to choose", () => {
+  const assistant = {
+    available: true,
+    router: { state: "ready", service: "daytime", fallback: false, notice: null },
+    models: [
+      {
+        service: "daytime",
+        label: "Rosalina: Qwen3.8 Flash-Next UD-IQ4 (256K)",
+        available: true,
+        aliases: ["local-active"],
+        nsfw: false,
+        vision: true,
+        context_window: 262_144,
+      },
+      { service: "daisy", label: "Daisy: Qwen3.8 Flash-Next IQ3_XXS", available: true, nsfw: false, vision: false, context_window: 131_072 },
+      { service: "retired", label: "Retired: Old Model", available: false, offline_reason: "unavailable" },
+    ],
+    pinnedModel: "",
+  };
+  const options = promptAssistantModelOptionsMarkup(assistant);
+  // Automatic first — naming the model it would choose, in the router's own words — then the
+  // catalog in the router's own order, including a service it is not taking requests for.
+  assert.deepEqual(
+    [...options.matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]),
+    ["", "daytime", "daisy", "retired"],
+  );
+  assert.match(
+    options,
+    /<option value="" selected title="The model this application chooses for each request">Automatic — Rosalina: Qwen3\.8 Flash-Next UD-IQ4 \(256K\) \(recommended\)<\/option>/,
+  );
+  assert.match(
+    options,
+    /<option value="retired" disabled title="Not available on the LLM Router right now">Retired: Old Model \(unavailable\)<\/option>/,
+  );
+  assert.match(options, /<option value="daisy" title="Text only · May decline NSFW directions · 128K context">/);
+
+  // Choosing one marks it, and only it, selected.
+  const chosen = promptAssistantModelOptionsMarkup({ ...assistant, pinnedModel: "daisy" });
+  assert.deepEqual(
+    [...chosen.matchAll(/<option value="([^"]*)"[^>]*selected[^>]*>/g)].map((match) => match[1]),
+    ["daisy"],
+  );
+
+  // A model the router stopped publishing while the account had chosen it stays listed and says
+  // why, instead of the list pretending Automatic had been the choice all along.
+  const vanished = promptAssistantModelOptionsMarkup({
+    ...assistant,
+    models: assistant.models.slice(0, 2),
+    pinnedModel: "retired",
+  });
+  assert.deepEqual(
+    [...vanished.matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]),
+    ["", "daytime", "daisy", "retired"],
+  );
+  assert.match(vanished, /<option value="retired" disabled selected[^>]*>Retired \(not in the current catalog\)<\/option>/);
+
+  // With no catalog published yet there is nothing to offer but Automatic, so the list is shut.
+  assert.match(
+    promptAssistantModelMarkup("prompt-assistant-model", { ...assistant, models: [] }),
+    /id="prompt-assistant-model"[^>]* disabled>/,
+  );
+  assert.match(
+    promptAssistantModelMarkup("prompt-assistant-model", assistant),
+    /<label class="prompt-assistant-model-option">Model<select id="prompt-assistant-model" class="prompt-assistant-model-select" data-prompt-assistant-model-select aria-label="Creative Direction model">/,
+  );
+
+  const state = {
+    submitting: false,
+    services: [{ service: "comfyui", available: true }],
+    workflows: [{ profile_id: "p1", display_name: "Portrait" }],
+    activeProfileId: "p1",
+    controls: { "prompt.text": "hello", "sampling.steps": 8 },
+    fieldErrors: {},
+    formError: null,
+    selectedPreset: null,
+    promptAssistant: assistant,
+  };
+  const html = generationPanelMarkup(state, state.workflows[0], contract);
+  const section = html.slice(html.indexOf('id="prompt-assistant"'));
+  // It belongs with the other assistant options, directly under Thinking mode.
+  assert.ok(section.indexOf('id="prompt-assistant-thinking-mode"') < section.indexOf('id="prompt-assistant-model"'));
+  assert.ok(section.indexOf('id="prompt-assistant-model"') < section.indexOf('data-action="compose-prompt"'));
+  assert.match(promptEditorMarkup("prompt.text", "Prompt", "", assistant), /id="prompt-editor-model"/);
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {
