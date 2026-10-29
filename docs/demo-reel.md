@@ -1,8 +1,15 @@
 # LoRA Demo Reels
 
 Each LoRA card's **Demo Reel** control opens its shared gallery above the picker.
-Returning preserves uncommitted LoRA selections and scroll position. Images use
-the normal photo viewer. Reel collections stay outside normal navigation.
+That gallery is the main viewport's grouped view: one collapsible group per prompt
+slot, and inside it the gallery's own cards, whose controls — details, download,
+favorite, recall, re-run, copy, move, regenerate, and delete — are revealed on
+hover and never written underneath the image. Paging follows the viewport too, so
+a long reel loads as it is scrolled. The reel's own switches sit in its header as
+icons beside the close button: **Edit Demo Reel**, **Retry failed images**, and
+Pause/Resume, shown only to administrators. Returning preserves uncommitted LoRA
+selections and scroll position. Images use the normal photo viewer. Reel
+collections stay outside normal navigation.
 
 ## Setup
 

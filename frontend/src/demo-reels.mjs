@@ -1,6 +1,7 @@
 import { icon } from "./icons.mjs";
 import { isAdvancedInput, sortInterfaceInputs } from "./lib.mjs";
-import { controlMarkup } from "./render.mjs";
+import { controlMarkup, demoReelGalleryCardMarkup, demoReelPlaceholderCardMarkup } from "./render.mjs";
+import { createThumbnailScheduler, installThumbnails } from "./thumbnails.mjs";
 
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const encoded = encodeURIComponent;
@@ -35,17 +36,57 @@ export function moveDemoReelSlot(slots, id, destination) {
   return result;
 }
 
+// The Demo Reel is the main viewport's grouped gallery wearing a dialog: one
+// collapsible group per prompt slot, real image cards in the same responsive
+// grid, and every action revealed on the card instead of written underneath it.
+const slotLabel = (slot, index) => String(slot.title || "").trim() || `Prompt ${index + 1}`;
+const slotEntries = (view, slot) => (view.entries || []).filter((entry) => entry.slot_id === slot.id);
+
+function reelStatusText(view) {
+  return [
+    `${view.completed || 0} of ${view.expected || 0} images`,
+    view.status,
+    view.rating_username ? `A/B grades from ${view.rating_username}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+export function demoReelHeaderMarkup(view) {
+  const button = (kind, label, glyph, pressed) => `<button type="button" class="icon-button lm-header-button" data-demo-action="${kind}" aria-label="${escape(label)}" title="${escape(label)}"${pressed ? ` aria-pressed="${pressed}"` : ""}>${glyph}</button>`;
+  const manage = view.can_manage
+    ? `${button("settings", "Edit Demo Reel", icon("reel"))}${button("retry", "Retry failed images", icon("retry"))}${view.paused
+        ? button("resume", "Resume background generation", icon("play"), "true")
+        : button("pause", "Pause background generation", icon("pause"), "false")}`
+    : "";
+  return `<header class="dialog-header lm-dialog-header demo-reel-header"><div class="demo-reel-header-copy"><h2 id="demo-reel-title">${escape(view.label)} · Demo Reel</h2><p role="status" data-demo-reel-status>${escape(reelStatusText(view))}</p></div><div class="lm-header-actions">${manage}<button type="button" class="icon-button lm-close-button" data-demo-action="close" aria-label="Close Demo Reel" title="Close Demo Reel">×</button></div></header>`;
+}
+
+function slotGroupMarkup(view, slot, index, collapsed) {
+  const entries = slotEntries(view, slot);
+  if (!entries.length) return "";
+  const id = escape(slot.id);
+  const closed = collapsed.has(slot.id);
+  const label = slotLabel(slot, index);
+  const prompt = expandDemoReelPrompt(slot.prompt, view.subject);
+  const cards = entries.map((entry) => (entry.generation
+    ? demoReelGalleryCardMarkup(entry.generation, { checkpointTiers: view.checkpointTiers })
+    : demoReelPlaceholderCardMarkup(entry, { canManage: view.can_manage }))).join("");
+  return `<section class="prompt-group demo-reel-slot-group" data-demo-slot-group="${id}" aria-label="${escape(`${label}, ${entries.length} Demo Reel images`)}"><header class="prompt-group-header"><button type="button" class="prompt-group-collapse" data-demo-action="toggle-slot" data-demo-id="${slot.id}" aria-expanded="${String(!closed)}" aria-controls="demo-reel-slot-${id}" aria-label="${closed ? "Expand" : "Collapse"} ${escape(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button><span class="demo-reel-slot-copy" title="${escape(prompt)}"><strong>${escape(label)}</strong><span>${escape(prompt)}</span></span><span class="prompt-group-rule" aria-hidden="true"></span><span class="prompt-group-count">${entries.length} ${entries.length === 1 ? "image" : "images"}</span></header><div class="prompt-group-grid" id="demo-reel-slot-${id}" ${closed ? "hidden" : ""}>${cards}</div></section>`;
+}
+
+export function demoReelGroupsMarkup(view) {
+  const collapsed = view.collapsed || new Set();
+  const groups = (view.slots || []).map((slot, index) => slotGroupMarkup(view, slot, index, collapsed)).filter(Boolean).join("");
+  const empty = groups ? "" : '<section class="empty-gallery"><h2>No Demo Reel images yet.</h2><p>Images appear after prompts, a generation recipe, and A/B checkpoints are configured, then all users have been idle for five minutes.</p></section>';
+  const hasMore = view.next_offset !== null && view.next_offset !== undefined;
+  return `${groups}${empty}<div class="gallery-sentinel demo-reel-sentinel" data-demo-reel-sentinel${hasMore ? "" : " hidden"}>${hasMore ? '<button type="button" class="button secondary" data-demo-action="more">Load more</button>' : ""}</div>`;
+}
+
+export function demoReelShellMarkup(view) {
+  return `<div class="dialog-frame demo-reel-frame">${demoReelHeaderMarkup(view)}<p class="demo-reel-notice form-error" role="alert" data-demo-reel-notice${view.message ? "" : " hidden"}>${escape(view.message || "")}</p><div class="demo-reel-content" data-demo-reel-content>${demoReelGroupsMarkup(view)}</div></div>`;
+}
+
 export function demoReelGalleryMarkup(view) {
-  const groups = (view.slots || []).map((slot, index) => {
-    const entries = view.entries.filter((entry) => entry.slot_id === slot.id);
-    if (!entries.length) return "";
-    return `<section class="demo-reel-slot"><h3>${escape(slot.title || `Slot ${index + 1}`)}</h3><p class="muted demo-reel-prompt">${escape(expandDemoReelPrompt(slot.prompt, view.subject))}</p><div class="demo-reel-grid">${entries.map((entry) => {
-      const generation = entry.generation;
-      const image = generation?.display_artifact;
-      return `<article class="demo-reel-card" data-demo-generation="${escape(generation?.id || "")}">${image ? `<button type="button" class="demo-reel-image" data-demo-action="photo" data-demo-id="${escape(generation.id)}" aria-label="View ${escape(entry.checkpoint_label)} image"><img src="${escape(image.thumbnail_url || image.content_url)}" alt="${escape(entry.checkpoint_label)}" loading="lazy" /></button>` : `<div class="demo-reel-placeholder"><strong>${escape(entry.state)}</strong>${entry.error ? `<span>${escape(entry.error)}</span>` : ""}</div>`}<div class="demo-reel-caption"><strong>${escape(entry.checkpoint_label)}</strong>${generation ? `<div class="demo-reel-actions"><button type="button" data-demo-action="favorite" data-demo-id="${escape(generation.id)}" aria-pressed="${generation.is_favorite}">${generation.is_favorite ? "★ Favorited" : "☆ Favorite"}</button><a href="${escape(image.content_url)}" download>Download</a><button type="button" data-demo-action="details" data-demo-id="${escape(generation.id)}">Details</button><button type="button" data-demo-action="recall" data-demo-id="${escape(generation.id)}">Recall</button><button type="button" data-demo-action="rerun" data-demo-id="${escape(generation.id)}">Re-run prompt</button><button type="button" data-demo-action="copy" data-demo-id="${escape(generation.id)}">Copy</button>${view.can_manage ? `<button type="button" data-demo-action="move" data-demo-id="${escape(generation.id)}">Move</button><button type="button" data-demo-action="regenerate" data-demo-id="${escape(generation.id)}">Regenerate</button><button type="button" class="destructive" data-demo-action="delete" data-demo-id="${escape(generation.id)}">Delete</button>` : ""}</div>` : ""}</div></article>`;
-    }).join("")}</div></section>`;
-  }).join("");
-  return `<div class="dialog-frame demo-reel-frame"><header class="dialog-header"><div><h2 id="demo-reel-title">${escape(view.label)} · Demo Reel</h2><p role="status">${view.completed} of ${view.expected} images · ${escape(view.status)}${view.rating_username ? ` · A/B grades from ${escape(view.rating_username)}` : ""}</p></div><button type="button" class="button secondary" data-demo-action="close">Back to LoRAs</button></header><div class="demo-reel-content">${view.can_manage ? `<div class="button-row"><button type="button" class="button secondary" data-demo-action="settings">Edit Demo Reel</button><button type="button" class="button low" data-demo-action="retry">Retry failed images</button><button type="button" class="button low" data-demo-action="${view.paused ? "resume" : "pause"}">${view.paused ? "Resume" : "Pause"} background generation</button></div>` : ""}${view.message ? `<p class="form-error" role="alert">${escape(view.message)}</p>` : ""}${groups || '<p class="empty-state">No Demo Reel images yet. Images appear after prompts, a generation recipe, and A/B checkpoints are configured, then all users have been idle for five minutes.</p>'}${view.next_offset !== null ? '<button type="button" class="button secondary" data-demo-action="more">Load more</button>' : ""}</div></div>`;
+  return demoReelShellMarkup(view);
 }
 
 
@@ -165,7 +206,7 @@ function familyMarkup(library, config, details, context) {
   // Opened from a LoRA, this family is where its strength gets replaced, so the
   // override belongs here and is named for the LoRA it applies to.
   const saved = context.identity ? config.strengths?.[context.libraryKey]?.[context.identity] : undefined;
-  const override = context.identity && library.key === context.libraryKey
+  const override = recipe && context.identity && library.key === context.libraryKey
     ? `<div class="demo-reel-override"><label class="field demo-reel-override-field"><span>${escape(context.label)} · strength</span><input type="number" min="0.000001" step="any" id="demo-reel-lora-strength" data-demo-lora-strength value="${escape(saved ?? "")}" placeholder="${escape(recipe.strength)}" /></label><span class="demo-reel-override-hint">Only ${escape(context.label)} uses a strength here; every other LoRA in ${escape(library.label)} uses ${escape(recipe.strength)}.</span><button type="button" class="button low demo-reel-override-reset" data-demo-action="lora-strength-reset"${saved === undefined ? " hidden" : ""}>Use the family strength</button></div>`
     : "";
   return `<section class="demo-reel-family" data-demo-recipe="${escape(library.key)}">
@@ -237,7 +278,7 @@ export function demoReelSettingsMarkup(config, details = {}, context = {}, users
   </form>`;
 }
 
-export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onDetails, onRecall, onRerun = () => {}, onChanged = () => {}, onClose = () => {} }) {
+export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = () => {}, onChanged = () => {}, onClose = () => {}, checkpointTiers = () => ({}), preserveHover = (update) => update() }) {
   const gallery = document.createElement("dialog");
   gallery.id = "demo-reel-dialog";
   gallery.className = "demo-reel-dialog";
@@ -251,11 +292,71 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
   transfer.setAttribute("aria-label", "Choose destination collection");
   root.append(gallery, editor, transfer);
   let view = null, context = {}, settings = null, users = [], timer = null, loading = false, revision = 0, dragId = null, transferDraft = null;
+  let thumbnails = null, paging = null, headerMarkup = "";
+  const collapsed = new Set();
   const details = {};
   const items = () => (view?.entries || []).flatMap((entry) => entry.generation ? [entry.generation] : []);
   const find = (id) => items().find((item) => item.id === id);
   const path = () => demoReelPath(context.libraryKey, context.identity);
-  const render = () => { if (view) gallery.innerHTML = demoReelGalleryMarkup(view); };
+  const contentHost = () => gallery.querySelector("[data-demo-reel-content]");
+  // Collapsed slots and the checkpoint ranks are the dialog's own context: the
+  // markup stays a pure function of the view by carrying them along with it.
+  const marked = () => ({ ...view, collapsed, checkpointTiers: checkpointTiers() });
+  // A cheap fingerprint of everything the grid draws. The five-second poll is
+  // otherwise a re-render every five seconds under a resting cursor.
+  const signature = () => JSON.stringify([
+    view?.completed, view?.expected, view?.status, view?.paused, view?.next_offset, view?.message, view?.can_manage, view?.rating_username,
+    (view?.slots || []).map((slot) => [slot.id, slot.title, slot.prompt]),
+    (view?.entries || []).map((entry) => [entry.id, entry.slot_id, entry.state, entry.error, entry.generation?.id, entry.generation?.status, entry.generation?.is_favorite]),
+  ]);
+  // The gallery's cards load thumbnails through the authenticated scheduler, whose
+  // observers watch the dialog's own scrolling element rather than the page.
+  function mountThumbnails() {
+    thumbnails?.();
+    thumbnails = installThumbnails(contentHost(), { scheduler: createThumbnailScheduler() });
+  }
+  // Paging follows the main viewport: a sentinel near the bottom of the scroll area
+  // loads the next page, and the Load more button stays for a browser without
+  // IntersectionObserver.
+  function observePaging() {
+    paging?.disconnect();
+    paging = null;
+    const sentinel = contentHost()?.querySelector("[data-demo-reel-sentinel]");
+    if (!sentinel || sentinel.hidden || !("IntersectionObserver" in window)) return;
+    paging = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void refresh(true);
+    }, { root: contentHost(), rootMargin: "600px" });
+    paging.observe(sentinel);
+  }
+  function syncHeader() {
+    const notice = gallery.querySelector("[data-demo-reel-notice]");
+    if (notice) { notice.hidden = !view.message; notice.textContent = view.message || ""; }
+    const markup = demoReelHeaderMarkup(marked());
+    const header = gallery.querySelector(".demo-reel-header");
+    if (!header || markup === headerMarkup) { headerMarkup = markup; return; }
+    const focused = header.contains(document.activeElement) ? document.activeElement.dataset.demoAction : null;
+    headerMarkup = markup;
+    header.outerHTML = markup;
+    if (focused) gallery.querySelector(`.demo-reel-header [data-demo-action="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+  }
+  // The dialog keeps its shell, its scroller, and its thumbnail observers: a refresh
+  // replaces the grid only when the fingerprint moved, and hands the hover state and
+  // keyboard position to the gallery's own preservation.
+  function render() {
+    if (!view) return;
+    const content = contentHost();
+    if (!content) {
+      headerMarkup = demoReelHeaderMarkup(marked());
+      gallery.innerHTML = demoReelShellMarkup(marked());
+      mountThumbnails();
+    } else {
+      const scroll = content.scrollTop;
+      preserveHover(() => { content.innerHTML = demoReelGroupsMarkup(marked()); });
+      content.scrollTop = scroll;
+    }
+    syncHeader();
+    observePaging();
+  }
   const caret = (element) => {
     try {
       return [element.selectionStart, element.selectionEnd];
@@ -311,7 +412,7 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
     if (loading || !gallery.open) return;
     loading = true;
     const token = revision;
-    const scroll = gallery.querySelector(".demo-reel-content")?.scrollTop || 0;
+    const before = signature();
     const offset = append ? view?.next_offset : 0;
     if (append && offset == null) { loading = false; return; }
     try {
@@ -330,8 +431,10 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
         }
       }
       view = next;
-      render();
-      gallery.querySelector(".demo-reel-content").scrollTop = scroll;
+      // An unchanged page leaves the grid, the hover state, and the thumbnails
+      // exactly where they are; only the header's status line moves.
+      if (signature() === before) syncHeader();
+      else render();
       onChanged();
       return true;
     } catch (error) {
@@ -344,6 +447,7 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
     if (!gallery.isConnected) root.append(gallery, editor, transfer);
     context = nextContext;
     revision += 1;
+    collapsed.clear();
     view = { ...nextContext, label: nextContext.label, subject: nextContext.subject, entries: [], slots: [], completed: 0, expected: 0, status: "loading", next_offset: null, can_manage: isAdmin() };
     render();
     if (!gallery.open) gallery.showModal();
@@ -352,7 +456,17 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
     timer = setInterval(() => { if (!document.hidden && !editor.open && !transfer.open) void refresh(); }, 5000);
   }
   function close() { gallery.close(); }
-  gallery.addEventListener("close", () => { revision += 1; clearInterval(timer); timer = null; view = null; onClose(); });
+  gallery.addEventListener("close", () => {
+    revision += 1;
+    clearInterval(timer);
+    timer = null;
+    view = null;
+    thumbnails?.();
+    thumbnails = null;
+    paging?.disconnect();
+    paging = null;
+    onClose();
+  });
   async function openSettings(nextContext = context) {
     if (!isAdmin()) return;
     if (!editor.isConnected) root.append(gallery, editor, transfer);
@@ -388,9 +502,15 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
       else if (kind === "cancel-settings") editor.close();
       else if (kind === "cancel-transfer") transfer.close();
       else if (kind === "more") await refresh(true);
-      else if (kind === "photo") onPhoto(id);
-      else if (kind === "details") await onDetails(id);
-      else if (kind === "recall") await onRecall(id);
+      // The image, details, favorite, recall, and delete controls are the gallery's
+      // own (data-action); the reel only owns slot collapsing, its transfers, and the
+      // generation-side actions the gallery has no equivalent for.
+      else if (kind === "toggle-slot") {
+        if (!gallery.open || !view) return;
+        if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+        render();
+        gallery.querySelector(`[data-demo-action="toggle-slot"][data-demo-id="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+      }
       else if (kind === "rerun") onRerun(id, { library_key: context.libraryKey, lora_identity: context.identity });
       else if (["copy", "move"].includes(kind)) await chooseTransfer(kind, id);
       else if (["favorite", "retry", "pause", "resume"].includes(kind)) await action(kind, id ? [id] : []);

@@ -101,13 +101,14 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   const reel = page.locator("#demo-reel-dialog");
   await expect(reel).toBeVisible();
   await expect(reel.getByRole("heading", { name: "Alpha · Demo Reel" })).toBeVisible();
+  // The first paint of the empty reel says so with a gallery empty state, not a table.
   await expect(reel.getByText("No Demo Reel images yet.", { exact: false })).toBeVisible();
   const refreshedWorkflow = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/workflows/${detail.source_key}`);
   await reel.getByRole("button", { name: "Edit Demo Reel", exact: true }).click();
   expect((await refreshedWorkflow).ok()).toBe(true);
   await expect(editor.locator("[data-demo-settings-status]")).toContainText("paused");
   await editor.getByRole("button", { name: "Cancel", exact: true }).click();
-  await reel.getByRole("button", { name: "Back to LoRAs" }).click();
+  await reel.getByRole("button", { name: "Close Demo Reel" }).click();
   await expect(card.getByRole("button", { name: "Toggle Alpha", exact: true })).toHaveAttribute("aria-pressed", "true");
 
   // Supply two retained images to exercise the real application photo viewer without a five-minute wall-clock delay.
@@ -122,22 +123,65 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   const artifact = completed.artifacts.find((artifact) => artifact.canonical) || completed.artifacts[0];
   const config = await (await page.request.get("/api/admin/demo-reels")).json();
   const identity = detail.interface.inputs.find((control) => control.type === "lora_stack").items[0].lora_identity;
-  const firstImage = { ...first, status: "succeeded", display_artifact: artifact, demo_reel: { can_manage: true }, recall_available: true };
-  const secondImage = { ...firstImage, id: crypto.randomUUID(), display_artifact: { ...artifact, id: crypto.randomUUID() } };
+  const firstImage = { ...first, status: "succeeded", cancel_allowed: false, checkpoint_label: "Model one", display_artifact: artifact, demo_reel: { can_manage: true }, recall_available: true };
+  const secondImage = { ...firstImage, id: crypto.randomUUID(), checkpoint_label: "Model two", display_artifact: { ...artifact, id: crypto.randomUUID() } };
   await page.route(`**/api/demo-reels/krea2/${identity}?*`, async (route) => {
     await route.fulfill({ json: { label: "Alpha", subject: "Alpha", entries: [{ id: "one", slot_id: config.slots[0].id, checkpoint_label: "Model one", state: "ready", generation: firstImage }, { id: "two", slot_id: config.slots[1].id, checkpoint_label: "Model two", state: "ready", generation: secondImage }], slots: config.slots, completed: 2, expected: 2, status: "complete", next_offset: null, can_manage: true, paused: true } });
   });
+  // The two images stand in for a reel that has already produced a pair, so the
+  // reel's own action endpoint is served beside them.
+  await page.route(`**/api/demo-reels/krea2/${identity}/actions`, async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    for (const generation of [firstImage, secondImage]) {
+      if ((body.generation_ids || []).includes(generation.id)) generation.is_favorite = body.action === "favorite";
+    }
+    await route.fulfill({ json: { ok: true } });
+  });
   await openDemoReel(picker, card);
-  await expect(reel.getByRole("button", { name: "View Model one image" })).toBeVisible();
+  // The reel is the grouped gallery: one collapsible group per prompt slot, and each
+  // slot holds the gallery's own image cards with no caption underneath.
+  await expect(reel.locator(".demo-reel-slot-group")).toHaveCount(2);
+  const firstCard = reel.locator(`[data-gallery-card="generation"][data-generation-id="${first.id}"]`);
+  const secondCard = reel.locator(`[data-gallery-card="generation"][data-generation-id="${secondImage.id}"]`);
+  await expect(firstCard).toBeVisible();
+  await expect(firstCard.locator(".checkpoint-name")).toHaveText("Model one");
+  await expect(firstCard.locator(".card-media img")).toBeVisible();
+  expect(await firstCard.evaluate((card) => card.getBoundingClientRect().width)).toBeGreaterThanOrEqual(300);
+  // Every action belongs to the card and appears on hover, never as text below it.
+  await expect(firstCard.locator(".demo-reel-card-actions > *")).toHaveCount(9);
+  // The pointer rests outside the dialog: nothing is revealed until it comes back.
+  await page.mouse.move(4, 4);
+  await expect(firstCard.locator(".card-actions")).toHaveCSS("opacity", "0");
+  await firstCard.hover();
+  await expect(firstCard).toHaveClass(/card-controls-visible/);
+  await expect(firstCard.locator(".card-actions")).toHaveCSS("opacity", "1");
+  await expect(firstCard.getByRole("button", { name: "Regenerate this image" })).toBeVisible();
+  // The shared reel's switches live in the title area as icons; here generation is paused.
+  await expect(reel.getByRole("button", { name: "Resume background generation" })).toBeVisible();
   await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-desktop.png"), animations: "disabled" });
-  await reel.getByRole("button", { name: "View Model one image" }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-mobile.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  // Favoriting travels to the reel's own action endpoint, and the card keeps the state.
+  const favorited = page.waitForResponse((response) => response.url().endsWith("/actions") && response.request().method() === "POST");
+  await firstCard.getByRole("button", { name: "Add to Favorites" }).click();
+  expect((await favorited).ok()).toBe(true);
+  await expect(firstCard.getByRole("button", { name: "Remove from Favorites" })).toHaveAttribute("aria-pressed", "true");
+  // The image opens in the application's viewer and walks the reel with it.
+  await firstCard.locator(".card-media").click();
   const viewer = page.locator("#photo-viewer");
   await expect(viewer).toBeVisible();
   await expect(viewer.locator(".photo-viewer-frame")).toHaveAttribute("data-photo-generation-id", first.id);
   await viewer.getByRole("button", { name: "View older generation" }).click();
   await expect(viewer.locator(".photo-viewer-frame")).toHaveAttribute("data-photo-generation-id", secondImage.id);
   await viewer.getByRole("button", { name: "Close image viewer" }).click();
-  await reel.getByRole("button", { name: "Back to LoRAs" }).click();
+  // A slot collapses like a prompt group, hiding its cards but not its header.
+  const firstGroup = reel.locator(".demo-reel-slot-group").first();
+  await firstGroup.getByRole("button", { name: /^Collapse / }).click();
+  await expect(firstCard).toBeHidden();
+  await firstGroup.getByRole("button", { name: /^Expand / }).click();
+  await expect(firstCard).toBeVisible();
+  await reel.getByRole("button", { name: "Close Demo Reel" }).click();
   await picker.getByRole("button", { name: "Cancel", exact: true }).click();
   expect((await (await page.request.get("/api/admin/demo-reels")).json()).slots).toEqual(config.slots);
   expect(errors).toEqual([]);

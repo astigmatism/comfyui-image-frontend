@@ -1,4 +1,5 @@
 import { promptRuntimeError } from "./prompt-routing.mjs";
+import { icon } from "./icons.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
 import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
@@ -1834,7 +1835,7 @@ export function collectionThumbnailsHidden(collections, collectionId) {
   return collections.find((collection) => collection?.id === collectionId)?.previews_enabled === false;
 }
 
-export function galleryCardMarkup(generation, { hideThumbnail = false, checkpointTiers = {} } = {}) {
+export function galleryCardMarkup(generation, { hideThumbnail = false, checkpointTiers = {}, actionsMarkup = cardActionsMarkup } = {}) {
   const artifact = generation.display_artifact;
   const hasImage = artifact?.kind === "image";
   const thumbnailHidden = Boolean(hasImage && hideThumbnail);
@@ -1869,12 +1870,18 @@ export function galleryCardMarkup(generation, { hideThumbnail = false, checkpoin
       ${checkpoint}${count}
       <div class="card-bottom-overlay">
         <div class="generation-progress-slot" data-generation-progress-slot>${progress}</div>
-        ${cardActionsMarkup(generation)}
+        ${actionsMarkup(generation)}
         ${statusOverlay}
       </div>
       ${cancel}
     </div>
   </article>`;
+}
+
+// A Demo Reel image is a gallery card with the reel's action row: the same media
+// frame, rank chip, hover scrim, and hover reveal, and no caption underneath.
+export function demoReelGalleryCardMarkup(generation, { checkpointTiers = {} } = {}) {
+  return galleryCardMarkup(generation, { checkpointTiers, actionsMarkup: demoReelCardActionsMarkup });
 }
 
 export function generationProgressMarkup(generation, { now = Date.now() } = {}) {
@@ -2088,14 +2095,56 @@ export function cardSelectButtonMarkup(item, kind = "generation") {
   return `<button type="button" class="card-select-button" data-action="select-gallery-card" data-${kind}-id="${escapeHtml(item.id)}" role="checkbox" aria-checked="false" aria-label="Select ${kind === "collection" ? `collection ${escapeHtml(item.name)}` : "image card"}" title="Select card"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="3" /><path class="selection-checkmark" d="m7 12 3 3 7-7" /></svg></button>`;
 }
 
-export function cardActionsMarkup(generation) {
+// The four controls every image card carries. Extracted so the Demo Reel's cards
+// cannot drift from the gallery's: one definition, two action rows.
+function galleryCardControlsMarkup(generation) {
   const artifact = generation.display_artifact;
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<div class="card-actions card-hover-reveal" role="group" aria-label="Generation actions"><button type="button" class="card-details-button" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Generation details" title="Open generation details"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<button type="button" class="card-details-button" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Generation details" title="Open generation details"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
-  </button>${cardSelectButtonMarkup(generation)}${deleteGenerationButtonMarkup(generation)}</div>`;
+  </button>`;
+}
+
+export function cardActionsMarkup(generation) {
+  return `<div class="card-actions card-hover-reveal" role="group" aria-label="Generation actions">${galleryCardControlsMarkup(generation)}${cardSelectButtonMarkup(generation)}${deleteGenerationButtonMarkup(generation)}</div>`;
+}
+
+// A Demo Reel image adds the reel's own actions to the gallery card's. They travel
+// as data-demo-action because they act on the reel entry, not on the gallery item:
+// re-run asks the reel scope, copy and move use the reel's transfer receipt, and
+// regenerate replaces this slot's image instead of deleting the generation.
+export function demoReelCardActionsMarkup(generation) {
+  const manage = Boolean(generation.demo_reel?.can_manage);
+  const control = (kind, label, glyph, extra = "") => `<button type="button" class="reel-action-button ${kind}-button" data-demo-action="${kind}" data-demo-id="${escapeHtml(generation.id)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"${extra}>${glyph}</button>`;
+  const move = manage
+    ? `<button type="button" class="move-generation-button" data-demo-action="move" data-demo-id="${escapeHtml(generation.id)}" aria-label="Move to a collection" title="Move to a collection">${icon("folder")}</button>`
+    : "";
+  return `<div class="card-actions card-hover-reveal demo-reel-card-actions" role="group" aria-label="Demo Reel image actions">${galleryCardControlsMarkup(generation)}${control("rerun", "Re-run prompt", icon("rerun"))}${control("copy", manage ? "Copy to a collection" : "Copy to one of your collections", icon("duplicate"))}${move}${manage ? control("regenerate", "Regenerate this image", icon("retry")) : ""}${deleteGenerationButtonMarkup(generation)}</div>`;
+}
+
+// Slot images that do not exist yet - queued, generating, failed, or blocked -
+// still hold their place in the grid, as a card rather than as a foreign box.
+export function demoReelPlaceholderCardMarkup(entry, { canManage = false } = {}) {
+  const labels = {
+    missing: "Waiting for an idle period",
+    running: "Generating",
+    ready: "Waiting for its image",
+    failed: "Generation failed",
+    blocked: "Generation blocked",
+  };
+  const label = labels[entry.state] || statusLabel(entry.state);
+  const retry = canManage
+    ? `<button type="button" class="retry-button" data-demo-action="retry" aria-label="Retry failed Demo Reel images" title="Retry failed Demo Reel images">${icon("retry")}</button>`
+    : "";
+  return `<article class="gallery-card demo-reel-placeholder-card" data-gallery-card="demo-entry" data-demo-entry-id="${escapeHtml(entry.id)}">
+    <div class="card-media-frame">
+      <div class="card-media" aria-label="${escapeHtml(`${entry.checkpoint_label}, ${label}`)}"><div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${entry.error ? `<span class="status-error">${escapeHtml(entry.error)}</span>` : ""}${entry.checkpoint_label ? `<span class="status-runtime">${escapeHtml(entry.checkpoint_label)}</span>` : ""}</div></div>
+      <div class="card-hover-scrim" aria-hidden="true"></div>
+      ${retry ? `<div class="card-bottom-overlay"><div class="card-actions card-hover-reveal demo-reel-card-actions" role="group" aria-label="Demo Reel image actions">${retry}</div></div>` : ""}
+    </div>
+  </article>`;
 }
 
 export function deleteGenerationButtonMarkup(generation, extraClasses = "") {

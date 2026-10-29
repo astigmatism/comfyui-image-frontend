@@ -1462,6 +1462,72 @@ code {
   }
 }
 
+/* A Demo Reel card carries the gallery's controls plus the reel's own - re-run,
+   copy, move, and regenerate - so one row of them has to fit nine. The row is
+   measured by its own controls rather than by a fixed grid, and nothing is pinned
+   into a column, so the same controls simply flow into rows on a narrow card. */
+.card-actions.demo-reel-card-actions {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 30px;
+}
+
+.card-actions.demo-reel-card-actions .delete-generation-button {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+@container gallery-card (max-width: 360px) {
+  .card-media-frame:has(.demo-reel-card-actions) {
+    --card-actions-height: 67px;
+  }
+
+  .card-actions.demo-reel-card-actions {
+    grid-template-columns: repeat(5, 30px);
+    grid-auto-flow: row;
+  }
+}
+
+@container gallery-card (max-width: 250px) {
+  .card-media-frame:has(.demo-reel-card-actions) {
+    --card-actions-height: 104px;
+  }
+
+  .card-actions.demo-reel-card-actions {
+    grid-template-columns: repeat(3, 30px);
+  }
+}
+
+/* Touch keeps the gallery's larger controls: two rows of five, three on a narrow
+   card. These out-rank the gallery's coarse-pointer rules above and below. */
+@media (hover: none), (pointer: coarse) {
+  .card-actions.demo-reel-card-actions {
+    grid-template-columns: none;
+    grid-auto-columns: 44px;
+  }
+
+  @container gallery-card (max-width: 480px) {
+    .card-media-frame:has(.demo-reel-card-actions) {
+      --card-actions-height: 92px;
+    }
+
+    .card-actions.demo-reel-card-actions {
+      grid-template-columns: repeat(5, 44px);
+      grid-auto-flow: row;
+    }
+  }
+
+  @container gallery-card (max-width: 330px) {
+    .card-media-frame:has(.demo-reel-card-actions) {
+      --card-actions-height: 140px;
+    }
+
+    .card-actions.demo-reel-card-actions {
+      grid-template-columns: repeat(3, 44px);
+    }
+  }
+}
+
 @media (hover: none), (pointer: coarse) {
   .card-media-frame {
     --card-actions-height: 44px;
@@ -1518,6 +1584,8 @@ code {
 .recall-button,
 .move-generation-button,
 .delete-generation-button,
+.reel-action-button,
+.retry-button,
 .rename-collection-button,
 .delete-collection-button,
 .collection-previews-button,
@@ -1545,6 +1613,8 @@ code {
 .recall-button svg,
 .move-generation-button svg,
 .delete-generation-button svg,
+.reel-action-button svg,
+.retry-button svg,
 .rename-collection-button svg,
 .delete-collection-button svg,
 .collection-previews-button svg {
@@ -1560,12 +1630,19 @@ code {
 .recall-button path,
 .move-generation-button path,
 .delete-generation-button path,
+.reel-action-button path,
+.retry-button path,
 .rename-collection-button path,
 .delete-collection-button path {
   fill: transparent;
   stroke: currentColor;
   stroke-linejoin: round;
   stroke-width: 1.8;
+}
+
+.reel-action-button path,
+.retry-button path {
+  stroke-linecap: round;
 }
 
 .download-button path {
@@ -1578,6 +1655,14 @@ code {
 }
 
 .card-details-button:hover:not(:disabled) {
+  border-color: #45698f;
+  background: #17263a;
+  color: #d7e9ff;
+}
+
+/* The reel's own controls are gallery controls in every respect, hover included. */
+.reel-action-button:hover:not(:disabled),
+.retry-button:hover:not(:disabled) {
   border-color: #45698f;
   background: #17263a;
   color: #d7e9ff;
@@ -7153,18 +7238,19 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .demo-reel-dialog, .demo-reel-settings-dialog { width: min(1450px, 96vw); height: min(1000px, 94dvh); max-width: 96vw; max-height: 94dvh; padding: 0; }
 .demo-reel-settings-dialog { width: min(940px, 96vw); }
 .demo-reel-frame, .demo-reel-settings-frame { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* The reel's grid is the main viewport's grouped gallery: the same scroller, the
+   same card column width, the same group header and grid gap. Slots borrow the
+   prompt-group classes, so a slot reads as a wall of images rather than a table
+   with a caption underneath every picture. */
 .demo-reel-content { flex: 1; min-height: 0; overflow: auto; padding: 1.2rem; }
-.demo-reel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
-.demo-reel-card { border: 1px solid var(--border, #363940); border-radius: .65rem; overflow: hidden; }
-.demo-reel-image { display: block; width: 100%; aspect-ratio: 1; padding: 0; border: 0; background: #101116; cursor: zoom-in; }
-.demo-reel-image img { width: 100%; height: 100%; object-fit: contain; }
-.demo-reel-caption { padding: .75rem; }
-.demo-reel-actions { display: flex; flex-wrap: wrap; gap: .45rem .6rem; margin-top: .65rem; }
-.demo-reel-actions button, .demo-reel-actions a { font: inherit; font-size: .78rem; background: transparent; color: inherit; border: 1px solid var(--border, #363940); border-radius: .3rem; padding: .3rem .45rem; cursor: pointer; }
-.demo-reel-placeholder { min-height: 160px; display: flex; flex-direction: column; justify-content: center; gap: .5rem; padding: 1rem; }
-.demo-reel-placeholder span { font-size: .85rem; opacity: .75; }
-.demo-reel-prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
-.demo-reel-slot + .demo-reel-slot { margin-top: 2rem; }
+.demo-reel-dialog .demo-reel-content { --gallery-card-min: var(--gallery-scale-card, 420px); padding: var(--space-4); background: radial-gradient(circle at 50% -15%, rgb(43 70 104 / 12%), transparent 34%), var(--bg); scrollbar-color: #3a4d63 transparent; scrollbar-width: thin; }
+.demo-reel-sentinel { margin-top: 18px; }
+/* The slot's prompt is the informative half of the header, so it shares the line
+   with the label and ellipsises instead of wrapping the header into a paragraph. */
+.demo-reel-slot-copy { display: flex; min-width: 0; max-width: min(100%, 96ch); overflow: hidden; gap: 9px; }
+.demo-reel-slot-copy strong { overflow: hidden; color: #e0e8f2; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.demo-reel-slot-copy span { overflow: hidden; color: #8493a6; text-overflow: ellipsis; white-space: nowrap; }
+.status-error { color: #f0a8ae; }
 .demo-reel-slots { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
 /* The settings dialog is a list of prompt slots first and one collapsible section
    per model family second. Slot and family headers borrow the LoRA dialog's group
@@ -7302,6 +7388,6 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 @media (max-width: 600px) {
   .demo-reel-dialog, .demo-reel-settings-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
   .demo-reel-content { padding: .8rem; }
-  .demo-reel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
-  .demo-reel-actions { gap: .3rem; }
+  /* The reel's scroller tightens exactly as the main viewport's does. */
+  .demo-reel-dialog .demo-reel-content { padding: 10px; }
 }

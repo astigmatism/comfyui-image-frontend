@@ -12,14 +12,90 @@ test("slot prompts expand every subject placeholder literally and slots reorder 
   assert.equal(demoReelPath("krea2", "lr1_a"), "/api/demo-reels/krea2/lr1_a");
 });
 
-test("shared gallery preserves slot order, escapes prompts, and grants removal only to admins", () => {
-  const generation = { id: "g", is_favorite: false, display_artifact: { content_url: "/image", thumbnail_url: "/thumb" } };
-  const view = { label: "Alpha", subject: "<subject>", slots: [{ id: "s", title: "Portrait", prompt: "{subject}" }], entries: [{ id: "e", slot_id: "s", checkpoint_label: "A model", state: "ready", generation }], completed: 1, expected: 1, status: "complete", next_offset: null };
-  const user = demoReelGalleryMarkup(view);
-  assert.match(user, /&lt;subject&gt;/);
-  for (const action of ["photo", "details", "recall", "favorite", "copy"]) assert.match(user, new RegExp(`data-demo-action="${action}"`));
-  for (const action of ["delete", "move", "regenerate"]) assert.doesNotMatch(user, new RegExp(`data-demo-action="${action}"`));
-  assert.match(demoReelGalleryMarkup({ ...view, can_manage: true }), /data-demo-action="regenerate"/);
+const reelGeneration = (manage) => ({
+  id: "g",
+  status: "succeeded",
+  workflow_display_name: "Workflow",
+  checkpoint_label: "A model",
+  checkpoint_id: "checkpoint",
+  is_favorite: false,
+  recall_available: true,
+  image_count: 1,
+  artifact_count: 1,
+  final_artifact_count: 1,
+  expected_width: 1024,
+  expected_height: 768,
+  accepted_at: "2026-01-01T00:00:00+00:00",
+  display_artifact: { id: "artifact", kind: "image", content_url: "/image", thumbnail_url: "/thumb" },
+  demo_reel: { can_manage: manage },
+});
+
+const reelView = ({ manage = false, ...overrides } = {}) => ({
+  label: "Alpha",
+  subject: "<subject>",
+  slots: [{ id: "s", title: "Portrait", prompt: "{subject} beside a lake" }],
+  entries: [{ id: "e", slot_id: "s", checkpoint_label: "A model", state: "ready", generation: reelGeneration(manage) }],
+  completed: 1,
+  expected: 1,
+  status: "complete",
+  next_offset: null,
+  can_manage: manage,
+  ...overrides,
+});
+
+test("the reel is the grouped gallery: one group per slot, gallery cards, no captions", () => {
+  const user = demoReelGalleryMarkup(reelView());
+  assert.match(user, /&lt;subject&gt; beside a lake/);
+  assert.match(user, /class="prompt-group demo-reel-slot-group"/);
+  assert.match(user, /class="prompt-group-grid" id="demo-reel-slot-s"/);
+  assert.match(user, /data-gallery-card="generation" data-generation-id="g"/);
+  assert.match(user, /--gallery-media-aspect: 1024 \/ 768/);
+  // The images carry no caption strip: every action is a control on the card.
+  assert.doesNotMatch(user, /demo-reel-caption|demo-reel-actions|demo-reel-grid|demo-reel-image/);
+  for (const action of ["open-photo", "open-detail", "toggle-favorite", "recall"]) {
+    assert.match(user, new RegExp(`data-action="${action}" data-generation-id="g"`));
+  }
+  assert.match(user, /class="download-button" href="\/image" download/);
+  assert.match(user, /data-demo-action="rerun" data-demo-id="g"/);
+  assert.match(user, /data-demo-action="copy" data-demo-id="g"/);
+  for (const action of ["move", "regenerate"]) assert.doesNotMatch(user, new RegExp(`data-demo-action="${action}"`));
+  assert.doesNotMatch(user, /delete-generation-button/);
+  // A manager moves, regenerates, and deletes; the reel's own actions stay.
+  const admin = demoReelGalleryMarkup(reelView({ manage: true }));
+  for (const action of ["move", "regenerate"]) assert.match(admin, new RegExp(`data-demo-action="${action}" data-demo-id="g"`));
+  assert.match(admin, /class="delete-generation-button"/);
+  // An entry without an image yet keeps its place in the grid as a card.
+  const failed = demoReelGalleryMarkup(reelView({
+    manage: true,
+    entries: [{ id: "e", slot_id: "s", checkpoint_label: "A model", state: "failed", error: "Out of video memory", generation: null }],
+  }));
+  assert.match(failed, /data-gallery-card="demo-entry"/);
+  assert.match(failed, /Out of video memory/);
+  assert.match(failed, /data-demo-action="retry"/);
+  assert.doesNotMatch(demoReelGalleryMarkup(reelView({
+    entries: [{ id: "e", slot_id: "s", checkpoint_label: "A model", state: "failed", error: "Out of video memory", generation: null }],
+  })), /data-demo-action="retry"/);
+});
+
+test("the reel's controls live in the title area as icons and paging follows the gallery", () => {
+  const user = demoReelGalleryMarkup(reelView());
+  // A person browsing the reel is never offered the shared reel's switches.
+  for (const action of ["settings", "retry", "pause", "resume"]) assert.doesNotMatch(user, new RegExp(`data-demo-action="${action}"(?!-)`));
+  assert.match(user, /data-demo-action="close"[^>]*aria-label="Close Demo Reel"/);
+  const admin = demoReelGalleryMarkup(reelView({ manage: true }));
+  for (const [action, label] of [["settings", "Edit Demo Reel"], ["retry", "Retry failed images"], ["pause", "Pause background generation"]]) {
+    assert.match(admin, new RegExp(`data-demo-action="${action}"[^>]*aria-label="${label}"`));
+  }
+  assert.match(demoReelGalleryMarkup(reelView({ manage: true, paused: true })), /data-demo-action="resume"[^>]*aria-pressed="true"/);
+  // Paging is a sentinel the dialog watches; the button stays for a browser without
+  // IntersectionObserver.
+  assert.match(user, /data-demo-reel-sentinel hidden/);
+  const paged = demoReelGalleryMarkup(reelView({ next_offset: 2 }));
+  assert.match(paged, /data-demo-reel-sentinel[^>]*><button[^>]*data-demo-action="more"/);
+  // Slots collapse like prompt groups, and nothing but the header moves.
+  const collapsed = demoReelGalleryMarkup({ ...reelView(), collapsed: new Set(["s"]) });
+  assert.match(collapsed, /class="prompt-group-collapse" data-demo-action="toggle-slot" data-demo-id="s" aria-expanded="false"/);
+  assert.match(collapsed, /id="demo-reel-slot-s" hidden/);
 });
 
 test("settings keep random seeds implicit and offer independent prompt save and cancel", () => {
@@ -29,6 +105,20 @@ test("settings keep random seeds implicit and offer independent prompt save and 
   assert.match(markup, /data-demo-slot-handle/);
   assert.match(markup, /data-demo-action="cancel-settings"/);
   assert.match(markup, /data-demo-resolution="width"/);
+});
+
+test("a LoRA's strength override belongs to the family that replaces it, and an unconfigured family still opens", () => {
+  const context = { libraryKey: "krea2", identity: "lr1_a", label: "Alpha", subject: "Alpha" };
+  const details = { source: { interface: { inputs: [] } } };
+  const config = (recipes, strengths = {}) => ({ slots: [], recipes, strengths, libraries: [{ key: "krea2", label: "Krea", sources: [{ source_key: "source", label: "Workflow" }] }] });
+  const enabled = demoReelSettingsMarkup(config({ krea2: { source_key: "source", strength: 0.8, parameters: {} } }, { krea2: { lr1_a: 1.4 } }), details, context);
+  assert.match(enabled, /data-demo-lora-strength[^>]*value="1.4"/);
+  assert.match(enabled, /every other LoRA in Krea uses 0\.8/);
+  // A family nobody has enabled yet has no strength to replace; opening the editor
+  // from a LoRA still has to draw it as off rather than fail.
+  const disabled = demoReelSettingsMarkup(config({}), details, context);
+  assert.match(disabled, /no images are generated for this family/);
+  assert.doesNotMatch(disabled, /data-demo-lora-strength/);
 });
 
 test("recipe settings explain the workflow's own controls and mark what differs from its defaults", () => {

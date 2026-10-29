@@ -13,6 +13,15 @@ export const icons = {
   grip: '<path d="M9.5 6h.01M9.5 12h.01M9.5 18h.01M14.5 6h.01M14.5 12h.01M14.5 18h.01" />',
   plus: '<path d="M12 5v14M5 12h14" />',
   duplicate: '<rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 5.5H7A1.5 1.5 0 0 0 5.5 7v8" />',
+  // Generation and queue glyphs. `retry` and `rerun`, and the folder and transfer
+  // glyphs, are the same paths the selection toolbar and the folder tiles use, so
+  // one action keeps one picture wherever it appears.
+  pause: '<path d="M9 5v14M15 5v14" />',
+  play: '<path d="M7.5 4.8v14.4L20 12Z" />',
+  retry: '<path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" />',
+  rerun: '<path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /><path d="m10 9 5 3-5 3Z" />',
+  transfer: '<path d="M3 7h7l2 2h9v11H3Z" /><path d="M13 17v-5m-3 3 3-3 3 3" />',
+  folder: '<path d="M3 6.5h6l2 2H21v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 9h18" />',
 };
 
 export function icon(name) {

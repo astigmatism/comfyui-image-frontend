@@ -519,9 +519,11 @@ function bindDelegatedEvents() {
   userActivityReporter = installActivityReporting({ send: () => api("/api/activity", { method: "POST" }), ready: () => Boolean(state.session?.authenticated && !state.session?.user?.must_change_password) });
   demoReelController = createDemoReels({
     root, api, isAdmin: () => state.session?.user?.role === "admin", user: () => state.session?.user, notify: toast,
-    onPhoto: openPhotoViewer, onDetails: openDetail,
+    // The reel draws the gallery's own cards, so it draws them with the gallery's
+    // checkpoint ranks and hands redraws to the gallery's hover preservation.
+    checkpointTiers: () => state.checkpointTiers,
+    preserveHover: (update) => galleryHover.preserveDuring(update),
     onRerun: (id, scope) => { demoReelController.close(); loraManagerController.close(); openPromptRerun({ body: { generation_ids: [id], collection_ids: [], demo_reel: scope } }); },
-    onRecall: async (id) => { await recall(id); closePhotoViewer(); demoReelController.close(); loraManagerController.close(); },
     onChanged: () => {
       if (!state.photoViewerGenerationId || !demoReelController?.isOpen()) return;
       if (!demoReelController.find(state.photoViewerGenerationId)) closePhotoViewer();
@@ -855,7 +857,12 @@ async function handleClick(event) {
     else if (action === "settings-retry") void retrySharedSettings();
     else if (action === "increment-generation-quantity") applyGenerationQuantity(state.generationQuantity + 1);
     else if (action === "decrement-generation-quantity") applyGenerationQuantity(state.generationQuantity - 1);
-    else if (action === "recall") await recall(target.dataset.generationId);
+    else if (action === "recall") {
+      const applied = await recall(target.dataset.generationId);
+      // A recalled image belongs to a LoRA rather than to the reel being browsed, so
+      // once its settings are in the panel the Demo Reel and LoRA dialogs step aside.
+      if (applied && demoReelController?.isOpen()) { closePhotoViewer(); demoReelController.close(); loraManagerController?.close(); }
+    }
     else if (action === "toggle-favorite") await toggleFavorite(target.dataset.generationId, target);
     else if (action === "toggle-collection-favorite") await toggleCollectionFavorite(target.dataset.collectionId, target);
     else if (action === "toggle-favorites-filter") toggleFavoritesFilter();
@@ -6455,7 +6462,7 @@ async function recall(id) {
   const recalled = await api(demoReelController?.find(id) ? `${demoReelController.path()}/generations/${id}/recall` : `/api/generations/${id}/recall`);
   if (!recalled.available) {
     toast(recalled.reason || "Exact recall is unavailable.", "error");
-    return;
+    return false;
   }
   const preRecallParameters = structuredClone(state.parameters);
   state.promptEditorDirty = true;
@@ -6489,7 +6496,7 @@ async function recall(id) {
         .join(" "),
       "warning",
     );
-    return;
+    return true;
   }
   const key = recalled.source_key || recalled.profile_id;
   const source = await api(`/api/workflows/${encodeURIComponent(key)}`);
@@ -6530,6 +6537,7 @@ async function recall(id) {
     runtimeWarning || "Exact historical settings loaded. Press Generate when ready.",
     runtimeWarning ? "warning" : "success",
   );
+  return true;
 }
 
 function applyRecalledComfyuiInstance(recalled) {
@@ -7657,9 +7665,12 @@ function updateGalleryScale(value, persist) {
 }
 
 function applyGalleryScale() {
+  const layout = scaleToLayout(state.galleryScale);
+  // A Demo Reel is the same grid in a dialog, so its cards follow the same slider:
+  // the viewport takes the width directly, everything else reads it from here.
+  document.documentElement.style.setProperty("--gallery-scale-card", `${layout.cardWidth}px`);
   const gallery = document.querySelector("#gallery");
   if (!gallery) return;
-  const layout = scaleToLayout(state.galleryScale);
   gallery.style.setProperty("--gallery-card-min", `${layout.cardWidth}px`);
   gallery.classList.toggle("gallery-full", layout.full);
   const input = document.querySelector("#gallery-scale");
