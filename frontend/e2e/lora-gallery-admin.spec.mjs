@@ -89,7 +89,7 @@ test("admin groups save immediately while selection stays a draft", async ({ pag
   await manager(page).getByRole("button", { name: "Save", exact: true }).click();
   const group = manager(page).locator('[data-lora-group="group-0"]');
   await expect(group.getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
-  await group.getByRole("button", { name: "Rename", exact: true }).click();
+  await group.getByRole("button", { name: /^Rename group/ }).click();
   await manager(page).getByRole("textbox", { name: "Group name" }).fill("Characters");
   await manager(page).getByRole("button", { name: "Save", exact: true }).click();
   await expect(group.getByRole("heading", { name: "Characters" })).toBeVisible();
@@ -104,7 +104,7 @@ test("admin groups save immediately while selection stays a draft", async ({ pag
   await page.getByRole("button", { name: "Open selector" }).click();
   await expect(group.getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "false");
   page.once("dialog", (dialog) => dialog.accept());
-  await group.getByRole("button", { name: "Delete group", exact: true }).click();
+  await group.getByRole("button", { name: /^Delete group/ }).click();
   await expect(group).toHaveCount(0);
   await expect(manager(page).locator('[data-lora-group="uncategorized"] .lm-card')).toHaveCount(2);
 });

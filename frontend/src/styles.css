@@ -5836,8 +5836,8 @@ tr:last-child td {
 .prompt-group-collapse[aria-expanded="true"] svg { transform: rotate(90deg); }
 .prompt-group-changes { text-align: left; font-weight: 500; }
 .prompt-group-changes:hover, .prompt-group-changes[aria-expanded="true"] { color: #e0e8f2; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: #64798f; }
-.prompt-group-rule { height: 1px; min-width: 10px; flex: 1; background: #273443; }
-.prompt-group-count { white-space: nowrap; color: #8493a6; font-size: 11px; }
+.prompt-group-rule, .lm-group-rule { height: 1px; min-width: 10px; flex: 1; background: #273443; }
+.prompt-group-count, .lm-group-count { white-space: nowrap; color: #8493a6; font-size: 11px; }
 .prompt-group-select { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .prompt-group-check { display: grid; place-items: center; width: 13px; height: 13px; border: 1px solid #758699; border-radius: 3px; }
 .prompt-group-select[aria-checked="true"] .prompt-group-check::after { content: '✓'; font-size: 12px; }
@@ -6091,7 +6091,7 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 
 /* LoRA selection and shared library gallery. */
 .lm-dialog { width: min(1380px, calc(75vw - 36px)); min-width: min(760px, calc(100vw - 48px)); height: calc(75dvh - 24px); min-height: min(560px, calc(100dvh - 32px)); max-width: calc(100vw - 48px); max-height: calc(100dvh - 32px); padding: 0; overflow: hidden; }
-.lm-dialog-frame { position: relative; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.lm-dialog-frame { --lm-minimal-size: max(220px, calc(var(--lm-card-size, 260px) / 2)); position: relative; display: flex; flex-direction: column; height: 100%; min-width: 0; }
 .lm-dialog-header, .lm-dialog-footer, .lm-order-bar { flex: 0 0 auto; }
 .lm-dialog-header { gap: 16px; flex-wrap: wrap; }
 /* The subtitle's overflow-wrap: anywhere would otherwise let this block shrink
@@ -6117,12 +6117,14 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .lm-order-chip.is-drop-target { outline: 2px solid var(--accent); }
 .lm-dialog-content { flex: 1; min-height: 0; overflow: auto; padding: 20px; background: var(--surface-0); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .lm-group { margin-bottom: 26px; }
-.lm-group-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
-.lm-group-heading h3 { margin: 0; font-size: 0.95rem; }
-.lm-group-heading > span { font-size: 0.76rem; }
-.lm-group-actions { display: flex; flex-wrap: wrap; margin-left: auto; gap: 8px; }
-.lm-group-actions .button { font-size: 0.76rem; min-height: 30px; padding: 4px 8px; }
-.lm-group-actions [data-lora-group-up], .lm-group-actions [data-lora-group-down] { min-width: 30px; }
+/* Group headers repeat the gallery prompt-group header: label, hairline rule,
+   count, then the controls pinned right. */
+.lm-group-heading { display: flex; align-items: center; gap: 12px; min-height: 32px; margin-bottom: 11px; color: #a5b2c1; font-size: 12px; }
+.lm-group-heading h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; font-weight: 600; color: inherit; }
+.lm-group-heading > span { min-width: 0; }
+.lm-group-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.lm-group-actions .icon-button { width: 30px; height: 30px; min-height: 30px; padding: 0; }
+.lm-group-actions .icon-button:disabled { opacity: .4; }
 .lm-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--lm-card-size, 260px)), 1fr)); gap: 16px; padding: 0; margin: 0; list-style: none; align-items: start; }
 .lm-card { position: relative; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); overflow: hidden; }
 .lm-card.is-enabled { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -6131,14 +6133,32 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .lm-thumbnail:focus-visible { outline-offset: -3px; }
 .lm-selection-mark { position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; border: 1px solid var(--text-soft); border-radius: 50%; color: var(--bg); background: rgb(8 12 18 / 55%); display: grid; place-items: center; }
 .lm-card.is-enabled .lm-selection-mark { background: var(--accent); border-color: var(--accent); }
-.lm-no-image { font-size: 0.85rem; }
-.lm-caption { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 46px; }
+.lm-caption { display: flex; align-items: center; gap: 6px; padding: 8px 10px; min-height: 46px; }
 .lm-card-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem; }
-.lm-menu-button { flex: 0 0 auto; width: 30px; height: 30px; font-size: 0.9rem; }
+.lm-caption .icon-button { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; }
+.lm-caption .icon-button:disabled { opacity: .4; }
+.lm-menu-button { font-size: 0.9rem; }
 .lm-image-status { display: block; color: var(--muted); font-size: 0.75rem; padding: 0 12px 8px; overflow-wrap: anywhere; }
 .lm-image-status:empty { display: none; }
 .lm-image-status.is-error { color: var(--danger); }
+/* A LoRA without a thumbnail is an on/off switch, so it is one line in a
+   compact list rather than a card the size of a portrait. */
+.lm-minimal-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--lm-minimal-size, 240px)), 1fr)); gap: 6px 12px; align-items: start; padding: 0; margin: 0; list-style: none; }
+.lm-gallery-grid + .lm-minimal-list { margin-top: 12px; }
+.lm-card-minimal { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 34px; padding: 3px 6px 3px 10px; }
+.lm-minimal-toggle { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font: inherit; font-size: 0.85rem; text-align: left; cursor: pointer; }
+.lm-minimal-toggle:disabled { color: var(--muted); cursor: default; }
+.lm-card-minimal .lm-card-name { flex: 1; }
+.lm-card-minimal .lm-selection-mark { position: static; flex: 0 0 auto; width: 20px; height: 20px; font-size: 0.7rem; }
+.lm-card-minimal .lm-menu-button { width: 28px; height: 28px; font-size: 0.85rem; }
+.lm-card-minimal .lm-image-status { flex: 1 0 100%; padding: 0 0 2px; }
 .lm-group-empty { font-size: 0.8rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: 12px; }
+/* Inline glyph icons, drawn with the same stroke treatment as the rest of the
+   application's icon buttons. */
+.lm-group-actions .icon-button svg, .lm-header-button svg, .lm-menu-button svg, .lm-reel-button svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.lm-group-actions .icon-button svg, .lm-menu-button svg, .lm-reel-button svg { width: 17px; height: 17px; }
+.lm-header-button svg { width: 18px; height: 18px; }
+.lm-menu-button svg { stroke-width: 3; }
 .lm-card-popover { position: absolute; z-index: 10; width: 235px; max-width: calc(100% - 16px); max-height: calc(100% - 16px); overflow: auto; padding: 6px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); box-shadow: var(--shadow-lg); }
 .lm-card-popover button { display: block; width: 100%; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); padding: 10px; text-align: left; cursor: pointer; }
 .lm-card-popover button:hover { background: var(--surface-3); }
@@ -6161,13 +6181,10 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 @media (prefers-reduced-motion: no-preference) {
   @keyframes lm-chip-pulse { 50% { opacity: 0.3; } }
 }
-.lm-header-button { min-height: 30px; padding: 0 10px; font-size: 0.76rem; white-space: nowrap; }
-/* "settings" is redundant beside a status chip, and dropping it first is what
-   keeps the header on one row down to a 1280px screen. The aria-label keeps the
-   full name for assistive technology and the narrow layout below. */
-@media (max-width: 1320px) {
-  .lm-header-button-extra { display: none; }
-}
+.lm-header-button { flex: 0 0 auto; }
+/* Demo Reel settings is an icon button beside the close button, which is what
+   keeps the management header on one row — nothing needs dropping at a
+   breakpoint any more, and the aria-label carries the full name. */
 /* The popover repeats the message without a live role; this is the live region. */
 .lm-header-status { white-space: nowrap; }
 /* Sits in the flex column between the header and the gallery, above the fold. */
@@ -6215,8 +6232,8 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   .lm-library-popover { width: min(340px, calc(100% - 16px)); }
   .lm-header-notice { padding-inline: 12px; }
   .lm-gallery-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--lm-mobile-card-size, 160px)), 1fr)); gap: 10px; }
+  .lm-minimal-list { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc(var(--lm-mobile-card-size, 160px) / 2))), 1fr)); gap: 6px 10px; }
   .lm-group-actions { gap: 0; }
-  .lm-group-actions .button { padding-inline: 4px; }
   .lm-caption { padding: 6px 8px; gap: 2px; }
   .lm-card-name { font-size: 0.78rem; }
   .lm-dialog-footer { display: flex; flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
@@ -6226,11 +6243,11 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   .lm-footer-buttons { margin-left: auto; }
 }
 @media (pointer: coarse) {
-  .lm-menu-button, .lm-order-chip .icon-button { width: 44px; height: 44px; }
-  .lm-group-actions [data-lora-group-up], .lm-group-actions [data-lora-group-down] { min-width: 44px; }
+  .lm-menu-button, .lm-reel-button, .lm-header-button, .lm-order-chip .icon-button { width: 44px; height: 44px; }
+  .lm-group-actions .icon-button { width: 44px; height: 44px; }
   .lm-scale-control input { min-height: 44px; }
-  .lm-group-actions .button, .lm-card-popover button, .lm-footer-admin .button,
-  .lm-status-chip, .lm-header-button, .lm-popover-actions .button { min-height: 44px; }
+  .lm-card-popover button, .lm-footer-admin .button,
+  .lm-status-chip, .lm-popover-actions .button { min-height: 44px; }
 }
 
 /* Filters stay together; measured header height also positions mobile overlays. */
@@ -7133,9 +7150,6 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 }
 
 /* Shared, system-owned Demo Reels live above the picker without altering its draft. */
-.lm-caption-title { display: flex; flex: 1; flex-direction: column; min-width: 0; align-items: flex-start; gap: .25rem; }
-.lm-demo-reel-link { color: var(--accent, #b2b9ff); background: transparent; border: 0; padding: .15rem 0; font: inherit; font-size: .8rem; text-decoration: underline; cursor: pointer; }
-.lm-demo-reel-link:disabled { opacity: .4; cursor: default; }
 .demo-reel-dialog, .demo-reel-settings-dialog { width: min(1450px, 96vw); height: min(1000px, 94dvh); max-width: 96vw; max-height: 94dvh; padding: 0; }
 .demo-reel-settings-dialog { width: min(1050px, 96vw); }
 .demo-reel-frame, .demo-reel-settings-frame { display: flex; flex-direction: column; height: 100%; min-height: 0; }

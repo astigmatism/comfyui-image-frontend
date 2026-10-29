@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-async function mount(page, { triggerWord = "AlphaCharacter", description = "Use AlphaCharacter in the prompt." } = {}) {
+async function mount(page, { triggerWord = "AlphaCharacter", description = "Use AlphaCharacter in the prompt.", thumbnails = [] } = {}) {
   await page.route("**/app.mjs", (route) => route.fulfill({ contentType: "text/javascript", body: "export {};" }));
   await page.goto("/");
-  await page.evaluate(async ({ triggerWord, description }) => {
+  await page.evaluate(async ({ triggerWord, description, thumbnails }) => {
     const base = document.querySelector('script[type="module"]').src;
     const { loraStackMarkup, installLoraStackControls } = await import(new URL("./lora-stack.mjs", base));
     const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
@@ -13,7 +13,8 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
     ], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }], minimum: 0, maximum: 2, step: 0.05 };
     window.stack = structuredClone(control.default);
     window.memory = {};
-    window.images = Object.fromEntries(control.items.map(({ id }) => [id, { id, version: "a".repeat(64), image_url: null }]));
+    const thumb = "data:image/gif;base64,R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
+    window.images = Object.fromEntries(control.items.map(({ id }) => [id, { id, version: "a".repeat(64), image_url: thumbnails.includes(id) ? thumb : null }]));
     window.serverImages = structuredClone(window.images);
     window.posts = [];
     window.notifications = [];
@@ -59,7 +60,7 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
         window.renderLoras();
       },
     });
-  }, { triggerWord, description });
+  }, { triggerWord, description, thumbnails });
 }
 
 const dialog = (page) => page.locator("#lora-manager-dialog");
@@ -76,7 +77,7 @@ async function open(page) {
 
 test("smaller desktop dialog and thumbnail slider reflow cards without changing selection", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await mount(page);
+  await mount(page, { thumbnails: ["a"] });
   await open(page);
   const box = await dialog(page).boundingBox();
   expect(box.width).toBeCloseTo((1440 - 48) * .75, -1);
@@ -93,7 +94,7 @@ test("smaller desktop dialog and thumbnail slider reflow cards without changing 
   await expect(slider).toHaveAttribute("aria-valuetext", "55%");
   await expect(thumbnail).toHaveAttribute("aria-pressed", "true");
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await mount(page);
+  await mount(page, { thumbnails: ["a"] });
   await open(page);
   await expect(slider).toHaveValue("55");
   await expect(thumbnail).toHaveAttribute("aria-pressed", "false");
@@ -179,7 +180,7 @@ test("gallery drafts selection and order while strengths remain in the sidebar",
 });
 
 test("thumbnail selection preserves scrolling and the card menu does not toggle selection", async ({ page }) => {
-  await mount(page);
+  await mount(page, { thumbnails: ["a", "b", "c"] });
   await page.addStyleTag({ content: "#lora-manager-dialog { height: 330px; min-height: 0; }" });
   await open(page);
   const manager = dialog(page);

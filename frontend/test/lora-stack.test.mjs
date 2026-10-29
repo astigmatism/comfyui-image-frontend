@@ -99,6 +99,47 @@ test("gallery sorts thumbnails independently of application order and keeps capt
   assert.doesNotMatch(gallery, /data-lora-edit=|data-lora-delete=|data-lora-group-add/);
 });
 
+test("LoRA group headers reuse the gallery header pattern with icon-only controls", () => {
+  const items = [{ id: "a", label: "Alpha", lora_identity: "one" }];
+  const galleryControl = { ...control, items, default: [{ id: "a", strength: 0 }] };
+  const grouping = { groups: [{ id: "style", name: "Style" }, { id: "uncategorized", name: "Uncategorized", system: true }], assignments: { one: "style" } };
+  const adminController = { currentOperation: () => null, state: { library: { key: "family", eligible: true, items, members: [] }, libraries: [], pendingUploads: new Map(), uploadPercent: null } };
+  const markup = loraManagerMarkup({ control: galleryControl, management: true, admin: true, adminController, libraryKey: "family", grouping });
+  assert.match(markup, /<h3>Style<\/h3><span class="lm-group-rule" aria-hidden="true"><\/span><span class="lm-group-count">1 LoRA<\/span>/);
+  assert.match(markup, /class="icon-button" data-lora-group-rename="style" aria-label="Rename group Style" title="Rename group"/);
+  assert.match(markup, /class="icon-button" data-lora-group-up="style" aria-label="Move Style up" title="Move group up" disabled/);
+  assert.match(markup, /class="icon-button" data-lora-group-down="uncategorized" aria-label="Move Uncategorized down" title="Move group down" disabled/);
+  assert.doesNotMatch(markup, /data-lora-group-rename="uncategorized"|data-lora-group-delete="uncategorized"/);
+  assert.doesNotMatch(markup, /class="button low" data-lora-group-(up|down|rename|delete)=|>Rename<|>Delete group</);
+  assert.match(markup, /data-lora-demo-settings aria-label="Demo Reel settings" title="Demo Reel settings"><svg/);
+});
+
+test("LoRAs without a thumbnail are one line in a list of their own", () => {
+  const items = [{ id: "a", label: "Alpha", lora_identity: "one" }, { id: "b", label: "Beta", lora_identity: "two" }];
+  const galleryControl = { ...control, items, default: items.map((item) => ({ id: item.id, strength: 0 })) };
+  const values = [{ id: "a", strength: 1 }, { id: "b", strength: 0 }];
+  const images = { b: { image_url: "/api/lora-library/family/identities/two/image", version: "1" } };
+  const gallery = loraManagerMarkup({ control: galleryControl, values, images, libraryKey: "family" });
+  const row = /<li class="lm-card lm-card-minimal is-enabled" data-lora-id="a">[\s\S]*?<\/li>/.exec(gallery)?.[0];
+  assert.ok(row, "expected a minimal row for the LoRA without a thumbnail");
+  assert.match(row, /class="lm-minimal-toggle" data-lora-toggle="a" aria-label="Toggle Alpha" aria-pressed="true"/);
+  assert.match(row, /<span class="lm-card-name" title="Alpha">Alpha<\/span>/);
+  assert.doesNotMatch(row, /lm-thumbnail|lm-caption|data-lora-demo-reel|data-lora-details/);
+  assert.match(gallery, /<ul class="lm-minimal-list" aria-label="Uncategorized without thumbnails">/);
+  const card = /<li class="lm-card" data-lora-id="b">[\s\S]*?<\/li>/.exec(gallery)?.[0];
+  assert.match(card, /<div class="lm-caption"><span class="lm-card-name" title="Beta">Beta<\/span><button type="button" class="icon-button lm-reel-button" data-lora-demo-reel="b" aria-label="Open Demo Reel for Beta" title="Open Demo Reel"/);
+});
+
+test("the LoRA menu carries Demo Reel only where the caption has no room for it", () => {
+  const items = [{ id: "a", label: "Alpha", lora_identity: "one" }, { id: "b", label: "Beta", lora_identity: "two" }];
+  const galleryControl = { ...control, items, default: items.map((item) => ({ id: item.id, strength: 0 })) };
+  const values = [{ id: "a", strength: 0 }, { id: "b", strength: 0 }];
+  const withoutImage = loraManagerMarkup({ control: galleryControl, values, libraryKey: "family", menuId: "a" });
+  assert.match(withoutImage, /data-lora-details="a">Usage details<\/button>\s*<button type="button" data-lora-demo-reel="a"\s*>Demo Reel<\/button>\s*<button type="button" data-lora-image-change="a"[^>]*>Add thumbnail/);
+  const withImage = loraManagerMarkup({ control: galleryControl, values, images: { a: { image_url: "/api/x", version: "1" } }, libraryKey: "family", menuId: "a" });
+  assert.doesNotMatch(withImage, /data-lora-demo-reel="a"\s*>Demo Reel/);
+});
+
 test("grouped gallery includes empty groups and defaults missing memberships to Uncategorized", () => {
   const items = [{ id: "z", label: "Zeta", lora_identity: "one" }, { id: "a", label: "Alpha", lora_identity: "two" }];
   const grouping = { groups: [{ id: "empty", name: "Empty" }, { id: "named", name: "Named" }, { id: "uncategorized", name: "Uncategorized", system: true }], assignments: { one: "named" } };

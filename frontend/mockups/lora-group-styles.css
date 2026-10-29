@@ -1,0 +1,233 @@
+@font-face {
+  font-family: "Syncopate";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../src/assets/syncopate-latin.woff2") format("woff2");
+}
+
+/* Preview chrome only. The design rules below are the proposals under review;
+   once a change is approved it moves to src/styles.css and its block here is
+   deleted, exactly as lora-library-header.css was emptied. */
+
+/* The app asks for Inter; where that is missing the generic fallback can be a
+   monospace face, which distorts every measurement in this preview. */
+.lgs-preview-host,
+.lgs-scene {
+  font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+}
+
+.lgs-preview-host {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.lgs-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 70px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #0e151f;
+}
+
+.lgs-preview-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lgs-preview-title strong {
+  font-size: 0.92rem;
+}
+
+.lgs-preview-title span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.lgs-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.lgs-preview-actions select {
+  min-height: 32px;
+  max-width: 200px;
+}
+
+.lgs-preview-actions .is-selected {
+  border-color: var(--accent);
+  background: var(--surface-blue);
+  color: var(--text);
+}
+
+.lgs-preview-stage {
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  background: var(--bg);
+}
+
+#lgs-preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.lgs-preview-mobile #lgs-preview-frame {
+  width: 390px;
+  max-width: 100%;
+}
+
+.lgs-scene {
+  overflow: hidden;
+}
+
+.lgs-topbar-context,
+.lgs-topbar-user {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.lgs-topbar-user {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.lgs-stage-note {
+  position: fixed;
+  right: 14px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+/* ---------------------------------------------------------------------------
+   The retired design, kept here only so the `Current design` preview stays a
+   faithful before/after. These rules no longer exist in src/styles.css.
+   --------------------------------------------------------------------------- */
+
+.lgs-retired .lm-group-heading {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  margin-bottom: 12px;
+  color: var(--text);
+  font-size: inherit;
+}
+
+.lgs-retired .lm-group-heading h3 {
+  overflow: visible;
+  white-space: normal;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.lgs-retired .lm-group-heading > span.muted {
+  font-size: 0.76rem;
+}
+
+.lgs-retired .lm-group-actions {
+  flex-wrap: wrap;
+  margin-left: auto;
+  gap: 8px;
+}
+
+.lgs-retired .lm-group-actions .button {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+}
+
+.lgs-retired .lm-caption {
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.lgs-retired .lm-caption-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.lgs-retired .lm-demo-reel-link {
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  padding: 0.15rem 0;
+  font: inherit;
+  font-size: 0.8rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.lgs-retired .lm-demo-reel-link:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lgs-retired .lm-no-image {
+  font-size: 0.85rem;
+}
+
+.lgs-retired .lm-menu-button {
+  width: 30px;
+  height: 30px;
+  font-size: 0.9rem;
+}
+
+.lgs-retired .lgs-retired-button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+  .lgs-retired .lm-group-actions {
+    gap: 0;
+  }
+
+  .lgs-retired .lm-group-actions .button {
+    padding-inline: 4px;
+  }
+}
+
+@media (pointer: coarse) {
+  .lgs-retired .lm-menu-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .lgs-retired .lm-group-actions .button {
+    min-height: 44px;
+  }
+}

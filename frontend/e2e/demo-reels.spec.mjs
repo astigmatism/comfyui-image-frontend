@@ -30,6 +30,16 @@ async function signIn(page) {
   throw new Error("Could not sign in to the local fake application");
 }
 
+// A LoRA with a thumbnail opens its reel from the caption icon; a thumbnail-free
+// LoRA has no caption, so the same action is its menu's Demo Reel entry.
+async function openDemoReel(picker, card) {
+  const caption = card.getByRole("button", { name: /^Open Demo Reel/ });
+  if (await caption.count()) return caption.click();
+  const menu = card.getByRole("button", { name: /^Actions for / });
+  if (await menu.getAttribute("aria-expanded") !== "true") await menu.click();
+  await picker.getByRole("button", { name: "Demo Reel", exact: true }).click();
+}
+
 test("Demo Reel slots save independently, and caption browsing preserves the LoRA selection draft", async ({ page }, testInfo) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -79,7 +89,7 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await expect(editor).not.toBeVisible();
   await page.setViewportSize({ width: 1440, height: 1000 });
   const card = picker.locator('[data-lora-id="a"]');
-  await card.getByRole("button", { name: "Demo Reel", exact: true }).click();
+  await openDemoReel(picker, card);
   const reel = page.locator("#demo-reel-dialog");
   await expect(reel).toBeVisible();
   await expect(reel.getByRole("heading", { name: "Alpha · Demo Reel" })).toBeVisible();
@@ -109,7 +119,7 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await page.route(`**/api/demo-reels/krea2/${identity}?*`, async (route) => {
     await route.fulfill({ json: { label: "Alpha", subject: "Alpha", entries: [{ id: "one", slot_id: config.slots[0].id, checkpoint_label: "Model one", state: "ready", generation: firstImage }, { id: "two", slot_id: config.slots[1].id, checkpoint_label: "Model two", state: "ready", generation: secondImage }], slots: config.slots, completed: 2, expected: 2, status: "complete", next_offset: null, can_manage: true, paused: true } });
   });
-  await card.getByRole("button", { name: "Demo Reel", exact: true }).click();
+  await openDemoReel(picker, card);
   await expect(reel.getByRole("button", { name: "View Model one image" })).toBeVisible();
   await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-desktop.png"), animations: "disabled" });
   await reel.getByRole("button", { name: "View Model one image" }).click();
