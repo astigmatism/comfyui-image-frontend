@@ -1393,11 +1393,11 @@ function promptAssistantMarkup(state = {}, values = {}, contract = null) {
   return `<section class="prompt-assistant" id="prompt-assistant" aria-label="Creative Direction">
     <div class="assistant-body">
       ${promptInstructionsMarkup("prompt-assistant-instructions")}
+      ${promptAssistantModelMarkup("prompt-assistant-model", state.promptAssistant)}
       ${speechTextareaMarkup("creative-direction", "Creative Direction", "", 3)}
       ${creativeDirectionWarningMarkup("creative-direction", "")}
       <div class="prompt-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="assistant-mode" value="refine" checked /> Refine Current Prompt</label><label><input type="radio" name="assistant-mode" value="create" ${state.promptGeneration?.enabled ? "disabled" : ""} /> New Prompt from Creative Direction</label></div>
       ${thinkingModeMarkup("prompt-assistant-thinking-mode", state.promptAssistant)}
-      ${promptAssistantModelMarkup("prompt-assistant-model", state.promptAssistant)}
       ${expectationsMarkup(state)}
       ${promptAssistantModelNoticeMarkup(state.promptAssistant)}
       <button type="button" class="button secondary" data-action="compose-prompt" ${composeDisabled ? "disabled" : ""}>${escapeHtml(expectations.composeLabel)}</button>
@@ -1564,13 +1564,13 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
       <section class="prompt-editor-assistant" aria-label="Creative Direction">
         <div class="prompt-editor-assistant-controls">
           ${promptInstructionsMarkup("prompt-editor-instructions", promptAssistant)}
+          ${promptAssistantModelMarkup("prompt-editor-model", promptAssistant)}
           ${speechTextareaMarkup("prompt-editor-creative-direction", "Creative Direction", creativeDirection, 3)}
           ${creativeDirectionWarningMarkup("prompt-editor-creative-direction", creativeDirection)}
           <div class="prompt-editor-assistant-action-row">
             <div class="prompt-editor-assistant-options"><div class="prompt-editor-assistant-mode-options" role="radiogroup" aria-label="Creative Direction action"><label><input type="radio" name="prompt-editor-assistant-mode" value="refine" ${assistantMode === "refine" ? "checked" : ""} /> Refine Current Prompt</label><label><input type="radio" name="prompt-editor-assistant-mode" value="create" ${promptAssistant.promptGenerationEnabled ? "disabled " : ""}${assistantMode === "create" ? "checked" : ""} /> New Prompt from Creative Direction</label></div></div>
           </div>
           ${thinkingModeMarkup("prompt-editor-thinking-mode", promptAssistant)}
-          ${promptAssistantModelMarkup("prompt-editor-model", promptAssistant)}
           ${promptAssistantModelNoticeMarkup(promptAssistant)}
           <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable && !promptAssistant.composeDisabled ? "" : "disabled"}>${escapeHtml(promptAssistant.composeLabel || "Apply Creative Direction")}</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>

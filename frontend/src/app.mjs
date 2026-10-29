@@ -966,11 +966,17 @@ async function handleClick(event) {
     syncServerControls();
     return;
   }
-  if (element.id === "prompt-assistant-model") {
+  if (element.id === "prompt-assistant-model" || element.id === "prompt-editor-model") {
     // A chosen model is a saved setting like Thinking mode: it answers from the next request on,
-    // and Automatic — the model this application picks — is always the first way back.
+    // and Automatic — the model this application picks — is always the first way back. It is
+    // committed where it is chosen — the control panel or an open focused editor — because the
+    // list is a saved setting and not part of the prompt draft this editor is reviewing.
+    // Committing here is also what keeps a background LLM Router status refresh, which rewrites
+    // every model list from this state, from moving the choice back to Automatic seconds after
+    // it was made, and saves it like every other control-panel value.
     state.promptAssistant.pinnedModel = typeof element.value === "string" ? element.value : "";
     setPromptAssistantError(null);
+    setPromptEditorAssistantError(element.closest("#prompt-editor-dialog"), null);
     persistCreativeDirectionDraft();
     syncPromptAssistantModelOptions();
     syncServerControls();
@@ -3608,8 +3614,13 @@ async function loadStartupPromptAssistant(signal = applicationStartupController?
       previous.message = assistant.message;
       previous.router = router;
       previous.models = models;
-      // A choice being made right now outranks the copy the server last confirmed.
-      if (!document.activeElement?.matches?.("[data-prompt-assistant-model-select]")) {
+      // A choice being made right now outranks the copy the server last confirmed: this status row
+      // is a snapshot of the moment before the debounced save of the choice reached the account's
+      // settings, and reading it back would move the list — and the save still holding that
+      // choice — back to Automatic.
+      const choosingModel = document.activeElement?.matches?.("[data-prompt-assistant-model-select]") ||
+        state.sharedSettingsStatus === "saving";
+      if (!choosingModel) {
         previous.pinnedModel = pinnedModel;
       }
       syncPromptAssistantModelNotice();

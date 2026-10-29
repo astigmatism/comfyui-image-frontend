@@ -872,10 +872,13 @@ test("Creative Direction offers the LLM Router's current catalog as the model to
   };
   const html = generationPanelMarkup(state, state.workflows[0], contract);
   const section = html.slice(html.indexOf('id="prompt-assistant"'));
-  // It belongs with the other assistant options, directly under Thinking mode.
-  assert.ok(section.indexOf('id="prompt-assistant-thinking-mode"') < section.indexOf('id="prompt-assistant-model"'));
+  // It sits directly above the Creative Direction input it shapes, before a word of the direction
+  // is written — in the control panel and in the focused editor alike.
+  assert.ok(section.indexOf('id="prompt-assistant-model"') < section.indexOf('id="creative-direction"'));
   assert.ok(section.indexOf('id="prompt-assistant-model"') < section.indexOf('data-action="compose-prompt"'));
-  assert.match(promptEditorMarkup("prompt.text", "Prompt", "", assistant), /id="prompt-editor-model"/);
+  const editor = promptEditorMarkup("prompt.text", "Prompt", "", assistant);
+  assert.ok(editor.indexOf('id="prompt-editor-model"') < editor.indexOf('id="prompt-editor-creative-direction"'));
+  assert.match(editor, /id="prompt-editor-model"/);
 });
 
 test("focused prompt editor renders the prompt and mirrored Prompt Assistant draft", () => {

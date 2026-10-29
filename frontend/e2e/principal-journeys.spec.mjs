@@ -3426,6 +3426,15 @@ test("Creative Direction offers the LLM Router's models and remembers the one ch
   expect(saved.status()).toBe(200);
   expect((await saved.json()).settings.assistant_model).toBe("daytime");
 
+  // Moving on from the list does not undo the choice: the panel refreshes the LLM Router status in
+  // the background and rewrites the list from the saved state, which now names this model.
+  await page.locator("#creative-direction").click();
+  await page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/prompt-assistant/status" && response.status() === 200,
+    { timeout: 30_000 },
+  );
+  await expect(model).toHaveValue("daytime");
+
   // The choice is an account setting, not page state: a reload offers it selected again, and
   // Automatic is always the way back to the model this application picks.
   await page.reload();
@@ -3448,6 +3457,94 @@ test("Creative Direction offers the LLM Router's models and remembers the one ch
   await expect(model).toHaveValue("daisy");
   await expect(model.locator('option[value="daisy"]')).toHaveAttribute("disabled", "");
   await expect(model.locator('option[value="daisy"]')).toContainText("not in the current catalog");
+});
+
+test("Creative Direction keeps a model chosen in the focused prompt editor", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  // Defaults belong to a fresh account; settings survive browser contexts.
+  await signInFreshUser(page, "assistant.model.editor");
+  await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
+
+  const panelModel = page.locator("#prompt-assistant-model");
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  const dialog = page.locator("#prompt-editor-dialog");
+  await expect(dialog).toBeVisible();
+  const editorModel = page.locator("#prompt-editor-model");
+
+  // The model is a saved setting rather than part of the prompt draft, so choosing it inside the
+  // focused editor saves it the same instant the control panel would.
+  const savedPreferences = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/preferences" &&
+      response.request().method() === "PUT",
+  );
+  await editorModel.selectOption("nighttime");
+  const saved = await savedPreferences;
+  expect(saved.status()).toBe(200);
+  expect((await saved.json()).settings.assistant_model).toBe("nighttime");
+
+  // Like every other control-panel value, the choice is kept in browser storage as well.
+  expect(await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((name) => name.startsWith("cif.creative-direction."));
+    return key ? JSON.parse(localStorage.getItem(key)).model : null;
+  })).toBe("nighttime");
+
+  // The panel refreshes the LLM Router status in the background and rewrites every model list from
+  // the saved state; that must not move a choice the account just made back to Automatic — in the
+  // open editor, where the choice used to live only in the DOM, or in the control panel.
+  await page.locator("#prompt-editor-creative-direction").fill("longer tail feathers");
+  await page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/prompt-assistant/status" && response.status() === 200,
+    { timeout: 30_000 },
+  );
+  await expect(editorModel).toHaveValue("nighttime");
+  await expect(panelModel).toHaveValue("nighttime");
+
+  // Closing without Apply keeps the model, because it is an account setting and not draft text,
+  // and the control panel and a reopened editor both still say which model is chosen.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(panelModel).toHaveValue("nighttime");
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  await expect(page.locator("#prompt-editor-model")).toHaveValue("nighttime");
+});
+
+test("Creative Direction holds a model chosen while its settings save is in flight", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/");
+  await signInFreshUser(page, "assistant.model.inflight");
+  await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
+
+  // Hold the save that carries the choice, so a background LLM Router status refresh lands while
+  // the server still remembers the older one.
+  await page.route("**/api/preferences", async (route) => {
+    const request = route.request();
+    if (request.method() !== "PUT" || request.postDataJSON()?.settings?.assistant_model !== "nighttime") {
+      return route.continue();
+    }
+    // Hold the request back from the server, so the status refresh really does read the moment
+    // before the choice existed.
+    await new Promise((done) => setTimeout(done, 14_000));
+    const response = await route.fetch();
+    await route.fulfill({ response });
+  });
+
+  const model = page.locator("#prompt-assistant-model");
+  await model.selectOption("nighttime");
+  await page.locator("#creative-direction").click();
+  await page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/prompt-assistant/status" && response.status() === 200,
+    { timeout: 30_000 },
+  );
+  await expect(model).toHaveValue("nighttime");
+
+  // The saved settings say the same thing once the held save lands.
+  await expect
+    .poll(async () => (await (await page.request.get("/api/preferences")).json()).settings.assistant_model, { timeout: 30_000 })
+    .toBe("nighttime");
+  await expect(model).toHaveValue("nighttime");
 });
 
 test("Creative Direction shows a gold-while-composing and green-when-applied prompt border signal", async ({
