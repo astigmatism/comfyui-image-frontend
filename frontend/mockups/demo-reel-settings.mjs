@@ -180,7 +180,7 @@ function render() {
   if (state.open && !dialog.open) dialog.showModal();
   if (!state.open && dialog.open) dialog.close();
   const next = dialog.querySelector(".demo-reel-content");
-  if (next) next.scrollTop = scroll;
+  if (next) next.scrollTop = params.get("scroll") ? Number(params.get("scroll")) : scroll;
 }
 
 dialog.addEventListener("click", (event) => {
