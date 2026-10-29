@@ -5,7 +5,7 @@
 // `layout=current` takes the same fixture and swaps in the retired slot list and
 // recipe grid, kept below as a frozen snapshot for the comparison.
 
-import { demoReelSettingsMarkup } from "../src/demo-reels.mjs";
+import { demoReelSettingsMarkup, expandDemoReelPrompt } from "../src/demo-reels.mjs";
 
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const params = new URLSearchParams(location.search);
