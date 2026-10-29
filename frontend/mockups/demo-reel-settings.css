@@ -1,0 +1,141 @@
+@font-face {
+  font-family: "Syncopate";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../src/assets/syncopate-latin.woff2") format("woff2");
+}
+
+/* Preview chrome + the design proposals under review. Once a change is approved
+   it moves to src/styles.css and its block here is deleted, following
+   lora-library-header.css. */
+
+/* The app asks for Inter; where that is missing the generic fallback can be a
+   monospace face, which distorts every measurement in this preview. */
+.drs-preview-host,
+.drs-scene {
+  font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+}
+
+.drs-preview-host {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.drs-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 70px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #0e151f;
+}
+
+.drs-preview-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drs-preview-title strong {
+  font-size: 0.92rem;
+}
+
+.drs-preview-title span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.drs-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.drs-preview-actions select {
+  min-height: 32px;
+  max-width: 210px;
+}
+
+.drs-preview-actions .is-selected {
+  border-color: var(--accent);
+  background: var(--surface-blue);
+  color: var(--text);
+}
+
+.drs-preview-stage {
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  background: var(--bg);
+}
+
+#drs-preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.drs-preview-mobile #drs-preview-frame {
+  width: 390px;
+  max-width: 100%;
+}
+
+.drs-scene {
+  overflow: hidden;
+}
+
+.drs-topbar-context,
+.drs-topbar-user {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.drs-topbar-user {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.drs-stage-note {
+  position: fixed;
+  right: 14px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Retired design. The snapshot in demo-reel-settings.mjs renders the markup the
+   application shipped before this pass, and needs the rules that were deleted
+   from src/styles.css to still look like it.
+   --------------------------------------------------------------------------- */
+
+body.drs-retired .demo-reel-settings-dialog { width: min(1050px, 96vw); }
+body.drs-retired .demo-reel-slots { list-style: none; padding: 0; }
+body.drs-retired .demo-reel-slot-editor, body.drs-retired .demo-reel-recipe { border: 1px solid var(--border); border-radius: .6rem; padding: 1rem; margin: 1rem 0; }
+body.drs-retired .demo-reel-slot-editor { display: grid; gap: .65rem; }
+body.drs-retired .demo-reel-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .8rem; padding: .6rem 0; }
+body.drs-retired .demo-reel-boolean { display: flex; gap: .6rem; align-items: center; margin: .6rem 0; }
+body.drs-retired .demo-reel-settings-frame .dialog-actions { flex-wrap: wrap; }
+body.drs-retired .demo-reel-settings-frame .dialog-actions > span { flex: 1 1 100%; }

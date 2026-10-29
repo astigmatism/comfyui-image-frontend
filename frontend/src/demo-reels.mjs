@@ -1,3 +1,7 @@
+import { icon } from "./icons.mjs";
+import { isAdvancedInput, sortInterfaceInputs } from "./lib.mjs";
+import { controlMarkup } from "./render.mjs";
+
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const encoded = encodeURIComponent;
 
@@ -44,32 +48,194 @@ export function demoReelGalleryMarkup(view) {
   return `<div class="dialog-frame demo-reel-frame"><header class="dialog-header"><div><h2 id="demo-reel-title">${escape(view.label)} · Demo Reel</h2><p role="status">${view.completed} of ${view.expected} images · ${escape(view.status)}${view.rating_username ? ` · A/B grades from ${escape(view.rating_username)}` : ""}</p></div><button type="button" class="button secondary" data-demo-action="close">Back to LoRAs</button></header><div class="demo-reel-content">${view.can_manage ? `<div class="button-row"><button type="button" class="button secondary" data-demo-action="settings">Edit Demo Reel</button><button type="button" class="button low" data-demo-action="retry">Retry failed images</button><button type="button" class="button low" data-demo-action="${view.paused ? "resume" : "pause"}">${view.paused ? "Resume" : "Pause"} background generation</button></div>` : ""}${view.message ? `<p class="form-error" role="alert">${escape(view.message)}</p>` : ""}${groups || '<p class="empty-state">No Demo Reel images yet. Images appear after prompts, a generation recipe, and A/B checkpoints are configured, then all users have been idle for five minutes.</p>'}${view.next_offset !== null ? '<button type="button" class="button secondary" data-demo-action="more">Load more</button>' : ""}</div></div>`;
 }
 
-function parameterMarkup(control, value, attributes) {
-  const label = escape(control.label || control.id);
-  if (control.type === "boolean") return `<label class="demo-reel-boolean"><input type="checkbox" ${attributes} ${value ? "checked" : ""} /> ${label}</label>`;
-  if (control.type === "choice") return `<label class="field"><span>${label}</span><select ${attributes}>${(control.choices || []).map((choice) => `<option value="${escape(choice.value)}" ${choice.value === value ? "selected" : ""}>${escape(choice.label)}</option>`).join("")}</select></label>`;
-  if (["integer", "float", "decimal", "number"].includes(control.type)) return `<label class="field"><span>${label}</span><input type="number" ${attributes} value="${escape(value)}" ${control.minimum !== undefined ? `min="${escape(control.minimum)}"` : ""} ${control.maximum !== undefined ? `max="${escape(control.maximum)}"` : ""} step="${escape(control.step || "any")}" required /></label>`;
-  return `<label class="field"><span>${label}</span><textarea rows="2" ${attributes}>${escape(value)}</textarea></label>`;
+
+// Controls the Demo Reel never asks the recipe for. The first three are rewritten
+// for every image by the server (slot prompt, fresh seed, the target LoRA) and the
+// checkpoint is chosen by A/B grades, so offering them as editable settings would
+// only produce values that are silently thrown away.
+const reelOwnedTypes = new Set(["image", "image_upload", "mask_upload", "lora_stack", "seed"]);
+const checkpointRoles = new Set(["model", "checkpoint"]);
+
+const isCheckpointControl = (control) => checkpointRoles.has(control.semantic_role) || control.id === "checkpoint";
+const recipeInputs = (detail) => (detail?.interface?.inputs || []).filter((control) => !reelOwnedTypes.has(control.type) && control.semantic_role !== "positive_prompt");
+const recipeControls = (detail) => sortInterfaceInputs(recipeInputs(detail).filter((control) => !isCheckpointControl(control)));
+const dimensionControls = (detail) => recipeInputs(detail).filter((control) => ["width", "height"].includes(control.semantic_role));
+const recipeValues = (controls, recipe) => Object.fromEntries(controls.map((control) => [control.id, recipe?.parameters?.[control.id] ?? control.default]));
+const ownedFacts = [
+  ["Prompt", "each prompt slot, with {subject} replaced by the LoRA trigger phrase"],
+  ["Seed", "a new random seed for every image"],
+  ["LoRAs", "only this image's LoRA, at the strength set above"],
+  ["Checkpoint", "one image for each A and B checkpoint, chosen by A/B grades"],
+];
+
+function statusMarkup(config) {
+  const states = config.progress?.states || {};
+  const paused = config.saved_paused ?? config.paused;
+  const [tone, word] = paused
+    ? ["is-drifted", "paused"]
+    : states.running
+      ? ["is-busy", "generating"]
+      : states.blocked
+        ? ["is-alert", "blocked"]
+        : states.failed
+          ? ["is-alert", "failed"]
+          : config.progress?.expected && config.progress.completed === config.progress.expected
+            ? ["is-synced", "complete"]
+            : ["", "waiting"];
+  const progress = config.progress ? `${config.progress.completed} of ${config.progress.expected} images complete · ${word}` : word;
+  return `<span class="lm-status-chip ${tone}" role="status" data-demo-settings-status>${escape(progress)}</span>`;
 }
 
-const recipeInputs = (detail) => (detail?.interface?.inputs || []).filter((control) => control.type !== "lora_stack" && control.type !== "seed" && !["image", "image_upload", "mask_upload"].includes(control.type) && control.semantic_role !== "positive_prompt");
+// One labelled row per model family that publishes width and height, so a slot can
+// keep the family size or override it, with the inherited value in plain sight.
+function resolutionRowMarkup(slot, config, details) {
+  const families = (config.libraries || [])
+    .map((library) => ({ library, recipe: config.recipes[library.key], dimensions: dimensionControls(details[config.recipes[library.key]?.source_key]) }))
+    .filter((entry) => entry.recipe && entry.dimensions.length);
+  if (!families.length) return "";
+  const rows = families.map(({ library, recipe, dimensions }) => {
+    const value = slot.resolutions?.[library.key] || {};
+    const custom = dimensions.some((control) => value[control.id] !== undefined);
+    const defaults = dimensions.map((control) => recipe.parameters?.[control.id] ?? control.default).join(" × ");
+    const dimension = (control, index) => `${index ? '<span class="demo-reel-size-times" aria-hidden="true">×</span>' : ""}<input class="demo-reel-dim" type="number" id="demo-reel-resolution-${escape(library.key)}-${escape(slot.id)}-${escape(control.id)}" data-demo-resolution="${escape(control.id)}" data-demo-family="${escape(library.key)}" data-demo-id="${escape(slot.id)}" value="${escape(value[control.id] ?? "")}" min="${escape(control.minimum)}" max="${escape(control.maximum)}" step="${escape(control.step || 1)}" placeholder="${escape(recipe.parameters?.[control.id] ?? control.default)}" aria-label="${escape(`${library.label} ${control.label}`)}" />`;
+    const state = custom
+      ? `<span class="demo-reel-size-state is-custom">custom · family default ${escape(defaults)}</span>`
+      : '<span class="demo-reel-size-state">inherited from the family</span>';
+    return `<div class="demo-reel-size-family"><span class="demo-reel-size-name">${escape(library.label)}</span>${dimensions.map(dimension).join("")}${state}<button type="button" class="button low demo-reel-size-reset" data-demo-action="size-reset" data-demo-id="${escape(slot.id)}" data-demo-family="${escape(library.key)}" aria-label="Use the family size for ${escape(library.label)}"${custom ? "" : " hidden"}>Reset</button></div>`;
+  });
+  return `<div class="demo-reel-size-row"><span class="demo-reel-size-label">Image size</span>${rows.join("")}</div>`;
+}
+
+// The slot header reuses the LoRA dialog's group header classes, so its title,
+// hairline, and icon buttons stay identical to it by construction.
+function slotMarkup(slot, index, config, details) {
+  const total = config.slots.length;
+  const move = (kind, label, disabled, extraClass = "") => `<button type="button" class="icon-button${extraClass}" data-demo-action="slot-${kind}" data-demo-id="${escape(slot.id)}" aria-label="${escape(label)}" title="${escape(label)}"${disabled ? " disabled" : ""}>${icon(kind === "slot-up" ? "up" : kind === "slot-down" ? "down" : kind === "slot-duplicate" ? "duplicate" : "delete")}</button>`;
+  return `<li class="demo-reel-slot-editor" data-demo-slot="${escape(slot.id)}">
+    <header class="lm-group-heading demo-reel-slot-heading">
+      <button type="button" class="icon-button demo-reel-slot-handle" draggable="true" tabindex="0" data-demo-slot-handle="${escape(slot.id)}" aria-label="Reorder slot ${index + 1}" title="Drag, or press arrow keys, to reorder">${icon("grip")}</button>
+      <input class="demo-reel-slot-title" id="demo-reel-slot-title-${escape(slot.id)}" data-demo-slot-field="title" data-demo-id="${escape(slot.id)}" maxlength="120" value="${escape(slot.title)}" placeholder="Untitled slot" aria-label="Slot ${index + 1} title (optional)" />
+      <span class="lm-group-rule" aria-hidden="true"></span>
+      <div class="lm-group-actions demo-reel-slot-actions">${move("slot-up", `Move slot ${index + 1} up`, index === 0)}${move("slot-down", `Move slot ${index + 1} down`, index === total - 1)}${move("slot-duplicate", `Duplicate slot ${index + 1}`, false)}${move("slot-delete", `Delete slot ${index + 1}`, false, " is-destructive")}</div>
+    </header>
+    <div class="demo-reel-slot-body">
+      <label class="field demo-reel-prompt-field"><span>Prompt</span><textarea rows="3" maxlength="100000" required id="demo-reel-slot-prompt-${escape(slot.id)}" data-demo-slot-field="prompt" data-demo-id="${escape(slot.id)}" placeholder="Describe the image this slot should produce">${escape(slot.prompt)}</textarea></label>
+      <p class="demo-reel-slot-hint"><code>{subject}</code><span>becomes each LoRA's trigger phrase, so one slot serves every LoRA.</span><button type="button" class="button low" data-demo-action="slot-insert" data-demo-id="${escape(slot.id)}">Insert {subject}</button></p>
+      ${resolutionRowMarkup(slot, config, details)}
+    </div>
+  </li>`;
+}
+
+function controlsMarkup(controls, values, detail, { family = "", idPrefix = "", headings = true } = {}) {
+  let group = null;
+  let markup = "";
+  for (const control of controls) {
+    const current = String(control.group || "");
+    if (current !== group) {
+      if (group !== null) markup += "</div>";
+      const heading = headings && current && current.trim().toLowerCase() !== "basic" ? `<h4 class="control-group-heading">${escape(current)}</h4>` : "";
+      markup += `<div class="demo-reel-group" data-interface-group="${escape(current)}">${heading}`;
+      group = current;
+    }
+    // controlMarkup already carries the label, constraints, and conditional
+    // behaviour; the interface description it ignores is added below the field,
+    // and a value that differs from the published default says so.
+    const changed = values[control.id] !== control.default;
+    markup += `<div class="demo-reel-control${changed ? " is-changed" : ""}">${controlMarkup(control, values, detail, {}, { idPrefix })}${control.description ? `<p class="demo-reel-help">${escape(control.description)}</p>` : ""}${changed ? `<button type="button" class="button low demo-reel-restore" data-demo-action="control-reset" data-demo-family="${escape(family)}" data-demo-control="${escape(control.id)}">Restore workflow default ${escape(control.default)}</button>` : ""}</div>`;
+  }
+  return group !== null ? `${markup}</div>` : markup;
+}
+
+function familyMarkup(library, config, details) {
+  const recipe = config.recipes[library.key];
+  const detail = details[recipe?.source_key];
+  const controls = recipeControls(detail);
+  const values = recipeValues(controls, recipe);
+  const advanced = (control) => isAdvancedInput(control) || String(control.group || "").trim().toLowerCase() === "advanced";
+  const basic = controls.filter((control) => !advanced(control));
+  const extra = controls.filter(advanced);
+  const changed = controls.filter((control) => values[control.id] !== control.default).length;
+  const summary = recipe
+    ? [
+        escape(library.sources.find((source) => source.source_key === recipe.source_key)?.label || "Workflow"),
+        escape(dimensionControls(detail).map((control) => values[control.id]).join("×")),
+        `LoRA strength ${escape(recipe.strength)}`,
+      ].filter(Boolean).join(" · ")
+    : "";
+  return `<section class="demo-reel-family" data-demo-recipe="${escape(library.key)}">
+    <header class="lm-group-heading demo-reel-family-heading">
+      <h3>${escape(library.label)}</h3><span class="lm-group-rule" aria-hidden="true"></span>
+      <span class="demo-reel-family-summary">${summary}</span>
+      <div class="lm-group-actions"><label class="switch demo-reel-family-switch"><input type="checkbox" id="demo-reel-recipe-enabled-${escape(library.key)}" data-demo-recipe-enabled="${escape(library.key)}" ${recipe ? "checked" : ""} aria-label="Generate images for ${escape(library.label)}" /><span aria-hidden="true"></span><em>${recipe ? "On" : "Off"}</em></label></div>
+    </header>
+    ${recipe ? `<div class="demo-reel-family-body">
+      <div class="demo-reel-family-grid">
+        <label class="field"><span>Workflow</span><select id="demo-reel-source-${escape(library.key)}" data-demo-source="${escape(library.key)}">${library.sources.map((source) => `<option value="${escape(source.source_key)}" ${source.source_key === recipe.source_key ? "selected" : ""}>${escape(source.label)}</option>`).join("")}</select></label>
+        <label class="field"><span>LoRA strength</span><input type="number" min="0.000001" step="any" required id="demo-reel-strength-${escape(library.key)}" data-demo-strength="${escape(library.key)}" value="${escape(recipe.strength)}" /></label>
+      </div>
+      <p class="demo-reel-help">Every Demo Reel image in this family is generated with this workflow. It has to publish a seed control and must not require an uploaded image.</p>
+      <ul class="demo-reel-facts">${ownedFacts.map(([term, fact]) => `<li><strong>${escape(term)}</strong><span>${escape(fact)}</span></li>`).join("")}</ul>
+      <div class="demo-reel-controls">${controlsMarkup(basic, values, detail, { family: library.key, idPrefix: `${library.key}-` })}</div>
+      ${extra.length ? `<details class="demo-reel-advanced" data-demo-details="advanced-${escape(library.key)}"><summary><strong>Advanced</strong><span>${extra.length} settings · leave these alone unless a workflow author says otherwise</span></summary><div class="demo-reel-controls">${controlsMarkup(extra, values, detail, { family: library.key, idPrefix: `${library.key}-`, headings: false })}</div></details>` : ""}
+      <p class="demo-reel-family-foot"><button type="button" class="button low" data-demo-action="recipe-reset" data-demo-family="${escape(library.key)}">Reset to workflow defaults</button><span class="muted">${changed ? `${changed} setting${changed === 1 ? "" : "s"} ${changed === 1 ? "differs" : "differ"} from the workflow defaults` : "Everything is at the workflow defaults"}</span></p>
+    </div>` : '<p class="demo-reel-family-off">Off · no images are generated for this family, and its existing images are removed.</p>'}
+  </section>`;
+}
+
+const familySummary = (config, details) => (config.libraries || [])
+  .map((library) => {
+    const recipe = config.recipes[library.key];
+    if (!recipe) return `${library.label} off`;
+    const size = dimensionControls(details[recipe.source_key]).map((control) => recipe.parameters?.[control.id] ?? control.default).join("×");
+    return `${library.label} on (${size ? `${size} · ` : ""}strength ${recipe.strength})`;
+  })
+  .join(" · ");
+
+function generationMarkup(config, details, users) {
+  const idle = Math.max(1, Math.round((config.idle_seconds || 300) / 60));
+  return `<details class="demo-reel-generation" data-demo-details="generation">
+    <summary class="demo-reel-generation-summary"><span class="demo-reel-generation-title">Model families</span><span class="demo-reel-generation-state">${escape(familySummary(config, details))}</span></summary>
+    <p class="demo-reel-how"><strong>How this works.</strong> Prompt slots decide what is drawn. A model family decides how — the workflow, its settings, and how strongly each LoRA is applied. Images appear after everyone has been idle for ${idle} minutes.</p>
+    <div class="demo-reel-families">${(config.libraries || []).map((library) => familyMarkup(library, config, details)).join("") || '<p class="demo-reel-empty">No published LoRA libraries are available.</p>'}</div>
+    <div class="demo-reel-grading">
+      <label class="field demo-reel-grading-user"><span>A/B ratings from</span><select id="demo-reel-rating-user" data-demo-rating-user>${users.map((user) => `<option value="${escape(user.id)}" ${user.id === config.rating_user_id ? "selected" : ""}>${escape(user.username)}</option>`).join("")}</select></label>
+      <label class="switch demo-reel-pause"><input type="checkbox" id="demo-reel-paused" data-demo-paused ${config.paused ? "checked" : ""} /><span aria-hidden="true"></span><em>${config.paused ? "Paused" : "Active"}</em></label>
+      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify. Pausing stops new images until someone resumes it.</p>
+    </div>
+  </details>`;
+}
 
 export function demoReelSettingsMarkup(config, details = {}, context = {}, users = []) {
-  const states = config.progress?.states || {};
-  const status = (config.saved_paused ?? config.paused) ? "paused" : states.running ? "generating" : states.blocked ? "blocked" : states.failed ? "failed" : config.progress?.expected && config.progress.completed === config.progress.expected ? "complete" : "waiting";
-  const progress = config.progress ? `${config.progress.completed} of ${config.progress.expected} images complete · ${status}` : status;
-  const slots = config.slots.map((slot, index) => `<li class="demo-reel-slot-editor" data-demo-slot="${escape(slot.id)}"><div class="button-row"><button type="button" draggable="true" class="icon-button" data-demo-slot-handle="${escape(slot.id)}" aria-label="Reorder slot ${index + 1}" aria-description="Drag or use arrow keys">⠿</button><strong>Slot ${index + 1}</strong><button type="button" data-demo-action="slot-up" data-demo-id="${escape(slot.id)}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" data-demo-action="slot-down" data-demo-id="${escape(slot.id)}" ${index === config.slots.length - 1 ? "disabled" : ""}>↓</button><button type="button" class="destructive" data-demo-action="slot-delete" data-demo-id="${escape(slot.id)}">Remove slot</button></div><label class="field"><span>Title (optional)</span><input maxlength="120" data-demo-slot-field="title" data-demo-id="${escape(slot.id)}" value="${escape(slot.title)}" /></label><label class="field"><span>Prompt · use {subject} for the LoRA trigger phrase</span><textarea rows="3" maxlength="100000" required data-demo-slot-field="prompt" data-demo-id="${escape(slot.id)}">${escape(slot.prompt)}</textarea></label><p class="muted" data-demo-preview="${escape(slot.id)}">Preview: ${escape(expandDemoReelPrompt(slot.prompt, context.subject || "LoRA subject"))}</p><details><summary>Resolution overrides</summary>${(config.libraries || []).map((library) => {
-    const recipe = config.recipes[library.key];
-    const dimensions = recipeInputs(details[recipe?.source_key]).filter((input) => ["width", "height"].includes(input.semantic_role));
-    return dimensions.length ? `<fieldset><legend>${escape(library.label)} · blank inherits recipe</legend><div class="demo-reel-fields">${dimensions.map((control) => `<label class="field"><span>${escape(control.label)}</span><input type="number" min="${escape(control.minimum)}" max="${escape(control.maximum)}" step="${escape(control.step || 1)}" data-demo-resolution="${escape(control.id)}" data-demo-family="${escape(library.key)}" data-demo-id="${escape(slot.id)}" value="${escape(slot.resolutions?.[library.key]?.[control.id] ?? "")}" placeholder="${escape(recipe.parameters?.[control.id] ?? control.default)}" /></label>`).join("")}</div></fieldset>` : "";
-  }).join("")}</details></li>`).join("");
-  const recipes = (config.libraries || []).map((library) => {
-    const recipe = config.recipes[library.key];
-    const detail = details[recipe?.source_key];
-    return `<fieldset class="demo-reel-recipe"><legend>${escape(library.label)}</legend><label class="demo-reel-boolean"><input type="checkbox" data-demo-recipe-enabled="${escape(library.key)}" ${recipe ? "checked" : ""} /> Generate Demo Reel images for this model family</label>${recipe ? `<label class="field"><span>Workflow</span><select data-demo-source="${escape(library.key)}">${library.sources.map((source) => `<option value="${escape(source.source_key)}" ${source.source_key === recipe.source_key ? "selected" : ""}>${escape(source.label)}</option>`).join("")}</select></label><label class="field"><span>Default LoRA strength</span><input type="number" min="0.000001" step="any" required data-demo-strength="${escape(library.key)}" value="${escape(recipe.strength)}" /></label><details><summary>Generation settings</summary><p class="muted">Every image uses a new random seed and only its target selectable LoRA.</p><div class="demo-reel-fields">${recipeInputs(detail).map((control) => parameterMarkup(control, recipe.parameters[control.id] ?? control.default, `data-demo-parameter="${escape(control.id)}" data-demo-family="${escape(library.key)}" data-demo-type="${escape(control.type)}"`)).join("")}</div></details>` : ""}</fieldset>`;
-  }).join("");
-  const override = context.identity && config.recipes[context.libraryKey] ? `<label class="field"><span>${escape(context.label)} · LoRA strength override (optional)</span><input type="number" min="0.000001" step="any" data-demo-lora-strength value="${escape(config.strengths?.[context.libraryKey]?.[context.identity] ?? "")}" placeholder="${escape(config.recipes[context.libraryKey].strength)}" /></label>` : "";
-  return `<form class="dialog-frame demo-reel-settings-frame" data-demo-settings-form><header class="dialog-header"><div><h2 id="demo-reel-settings-title">Demo Reel settings</h2><p>Shared prompts apply to every installed LoRA.</p><p role="status" data-demo-settings-status>${escape(progress)}</p></div><button type="button" class="icon-button" data-demo-action="cancel-settings" aria-label="Close Demo Reel settings">×</button></header><div class="demo-reel-content"><label class="demo-reel-boolean"><input type="checkbox" data-demo-paused ${config.paused ? "checked" : ""} /> Pause background generation</label><label class="field"><span>Use A/B checkpoint grades from</span><select data-demo-rating-user>${users.map((user) => `<option value="${escape(user.id)}" ${user.id === config.rating_user_id ? "selected" : ""}>${escape(user.username)}</option>`).join("")}</select></label><h3>Prompt slots</h3><ol class="demo-reel-slots">${slots}</ol><button type="button" class="button secondary" data-demo-action="slot-add">Add prompt slot</button><h3>Generation recipes</h3>${recipes || '<p class="muted">No published LoRA libraries are available.</p>'}${override}<p class="form-error" role="alert" data-demo-settings-error></p></div><footer class="dialog-actions"><span class="muted">Saving waits for five quiet minutes. Changes to prompts or generation settings replace affected images.</span><button type="button" class="button secondary" data-demo-action="reload-settings">Reload saved settings</button><button type="button" class="button secondary" data-demo-action="cancel-settings">Cancel</button><button type="submit" class="button primary">Save</button></footer></form>`;
+  const idle = Math.max(1, Math.round((config.idle_seconds || 300) / 60));
+  const slots = config.slots.map((slot, index) => slotMarkup(slot, index, config, details)).join("");
+  const familyDefault = config.recipes[context.libraryKey]?.strength;
+  // Opened from a LoRA, its own strength override belongs under the title, next to
+  // the LoRA it applies to - not at the bottom of the recipe it inherits from.
+  const strength = context.identity ? config.strengths?.[context.libraryKey]?.[context.identity] : undefined;
+  const override = context.identity && familyDefault !== undefined
+    ? `<div class="demo-reel-subject"><strong class="demo-reel-subject-name">${escape(context.label)}</strong><label class="field demo-reel-subject-field"><span>LoRA strength</span><input type="number" min="0.000001" step="any" id="demo-reel-lora-strength" data-demo-lora-strength value="${escape(strength ?? "")}" placeholder="${escape(familyDefault)}" /></label><span class="demo-reel-subject-hint">Family default ${escape(familyDefault)} · applies to this LoRA only</span><button type="button" class="button low" data-demo-action="lora-strength-reset"${strength === undefined ? " hidden" : ""}>Reset</button></div>`
+    : "";
+  return `<form class="dialog-frame demo-reel-settings-frame" data-demo-settings-form>
+    <header class="dialog-header demo-reel-settings-header">
+      <div class="demo-reel-header-copy"><h2 id="demo-reel-settings-title">Demo Reel settings</h2><p>Shared prompts · every installed LoRA gets one image per slot</p></div>
+      <div class="demo-reel-header-side">${statusMarkup(config)}<button type="button" class="icon-button" data-demo-action="cancel-settings" aria-label="Close Demo Reel settings">×</button></div>
+    </header>
+    <p class="demo-reel-notice form-error" role="alert" data-demo-settings-error${config.error ? "" : " hidden"}>${escape(config.error || "")}</p>
+    ${override}
+    <div class="demo-reel-content">
+      <section class="demo-reel-section">
+        <header class="demo-reel-section-heading">
+          <h3>Prompt slots</h3><span class="lm-group-rule" aria-hidden="true"></span>
+          <span class="demo-reel-section-count">${config.slots.length} slot${config.slots.length === 1 ? "" : "s"}</span>
+          <div class="lm-group-actions"><button type="button" class="button secondary demo-reel-add" data-demo-action="slot-add">${icon("plus")}Add prompt slot</button></div>
+        </header>
+        <ol class="demo-reel-slots">${slots}</ol>
+        ${slots ? "" : '<p class="demo-reel-empty">No prompt slots yet. Add one to start generating.</p>'}
+      </section>
+      ${generationMarkup(config, details, users)}
+    </div>
+    <footer class="dialog-actions"><span class="muted">Saves after ${idle} quiet minutes across all accounts. Prompt and size changes replace affected images.</span><button type="button" class="button low" data-demo-action="reload-settings">Reload saved settings</button><button type="button" class="button secondary" data-demo-action="cancel-settings">Cancel</button><button type="submit" class="button primary">Save</button></footer>
+  </form>`;
 }
 
 export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onDetails, onRecall, onRerun = () => {}, onChanged = () => {}, onClose = () => {} }) {
@@ -91,7 +257,54 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
   const find = (id) => items().find((item) => item.id === id);
   const path = () => demoReelPath(context.libraryKey, context.identity);
   const render = () => { if (view) gallery.innerHTML = demoReelGalleryMarkup(view); };
-  const renderSettings = () => { if (settings) editor.innerHTML = demoReelSettingsMarkup(settings, details, context, users); };
+  const caret = (element) => {
+    try {
+      return [element.selectionStart, element.selectionEnd];
+    } catch {
+      return [null, null];
+    }
+  };
+  const captureSettings = () => ({
+    scroll: editor.querySelector(".demo-reel-content")?.scrollTop || 0,
+    open: new Map([...editor.querySelectorAll("details[data-demo-details]")].map((node) => [node.dataset.demoDetails, node.open])),
+    focus: editor.contains(document.activeElement) && document.activeElement.id ? document.activeElement.id : null,
+    caret: editor.contains(document.activeElement) ? caret(document.activeElement) : [null, null],
+  });
+  const restoreSettings = (snapshot) => {
+    const content = editor.querySelector(".demo-reel-content");
+    if (content) content.scrollTop = snapshot.scroll;
+    for (const [key, open] of snapshot.open) {
+      const node = editor.querySelector(`details[data-demo-details="${CSS.escape(key)}"]`);
+      if (node) node.open = open;
+    }
+    if (!snapshot.focus) return;
+    const node = document.getElementById(snapshot.focus);
+    if (!node || !editor.contains(node)) return;
+    node.focus();
+    if (node.setSelectionRange && snapshot.caret[0] !== null) node.setSelectionRange(snapshot.caret[0], snapshot.caret[1]);
+  };
+  // Re-rendering the whole editor is the simplest way to keep markup and state in
+  // step, so everything a person was busy with - how far they scrolled, which
+  // disclosures they opened, which field they were typing in - is put back after.
+  const renderSettings = (options = {}) => {
+    if (!settings) return;
+    const snapshot = captureSettings();
+    editor.innerHTML = demoReelSettingsMarkup(settings, details, context, users);
+    restoreSettings(snapshot);
+    if (options.focus) {
+      const node = document.getElementById(options.focus);
+      if (node) {
+        node.focus();
+        if (node.setSelectionRange) node.setSelectionRange(node.value.length, node.value.length);
+      }
+    }
+  };
+  const clearSettingsError = () => {
+    if (!settings?.error) return;
+    settings.error = "";
+    const notice = editor.querySelector("[data-demo-settings-error]");
+    if (notice) { notice.hidden = true; notice.textContent = ""; }
+  };
   async function loadRecipe(sourceKey) {
     details[sourceKey] = await api(`/api/workflows/${encoded(sourceKey)}`);
   }
@@ -185,7 +398,44 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
       else if (["favorite", "retry", "pause", "resume"].includes(kind)) await action(kind, id ? [id] : []);
       else if (["delete", "regenerate"].includes(kind)) {
         if (window.confirm("Remove this Demo Reel image? A fresh random image will replace it during the next idle period. Personal copies are kept.")) await action(kind, [id]);
-      } else if (kind === "slot-add") { settings.slots.push({ id: crypto.randomUUID(), title: "", prompt: "", resolutions: {} }); renderSettings(); }
+      } else if (kind === "slot-add") {
+        const slot = { id: crypto.randomUUID(), title: "", prompt: "", resolutions: {} };
+        settings.slots.push(slot);
+        renderSettings({ focus: `demo-reel-slot-prompt-${slot.id}` });
+      }
+      else if (kind === "slot-duplicate") {
+        const index = settings.slots.findIndex((slot) => slot.id === id);
+        const copy = { ...structuredClone(settings.slots[index]), id: crypto.randomUUID() };
+        copy.title = settings.slots[index].title ? `${settings.slots[index].title} copy` : "";
+        settings.slots.splice(index + 1, 0, copy);
+        renderSettings({ focus: `demo-reel-slot-title-${copy.id}` });
+      }
+      else if (kind === "slot-insert") {
+        const slot = settings.slots.find((slot) => slot.id === id);
+        slot.prompt = `${slot.prompt}${slot.prompt && !/\s$/u.test(slot.prompt) ? " " : ""}{subject}`;
+        renderSettings({ focus: `demo-reel-slot-prompt-${slot.id}` });
+      }
+      else if (kind === "size-reset") {
+        const slot = settings.slots.find((slot) => slot.id === id);
+        delete slot.resolutions?.[button.dataset.demoFamily];
+        renderSettings();
+      }
+      else if (kind === "control-reset") {
+        const family = button.dataset.demoFamily;
+        const control = recipeInputs(details[settings.recipes[family].source_key]).find((input) => input.id === button.dataset.demoControl);
+        settings.recipes[family].parameters[control.id] = structuredClone(control.default);
+        renderSettings();
+      }
+      else if (kind === "recipe-reset") {
+        const family = button.dataset.demoFamily;
+        const recipe = settings.recipes[family];
+        recipe.parameters = Object.fromEntries(recipeInputs(details[recipe.source_key]).map((control) => [control.id, structuredClone(control.default)]));
+        renderSettings();
+      }
+      else if (kind === "lora-strength-reset") {
+        if (settings.strengths[context.libraryKey]) delete settings.strengths[context.libraryKey][context.identity];
+        renderSettings();
+      }
       else if (kind === "slot-delete") { settings.slots = settings.slots.filter((slot) => slot.id !== id); renderSettings(); }
       else if (["slot-up", "slot-down"].includes(kind)) {
         settings.slots = moveDemoReelSlot(settings.slots, id, settings.slots.findIndex((slot) => slot.id === id) + (kind === "slot-up" ? -1 : 1)); renderSettings();
@@ -194,12 +444,14 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
   });
   editor.addEventListener("input", (event) => {
     const input = event.target, data = input.dataset;
+    clearSettingsError();
     if (data.demoSlotField) {
       const slot = settings.slots.find((slot) => slot.id === data.demoId);
       slot[data.demoSlotField] = input.value;
-      editor.querySelector(`[data-demo-preview="${CSS.escape(slot.id)}"]`).textContent = `Preview: ${expandDemoReelPrompt(slot.prompt, context.subject || "LoRA subject")}`;
-    } else if (data.demoParameter) settings.recipes[data.demoFamily].parameters[data.demoParameter] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value;
-    else if (data.demoStrength) settings.recipes[data.demoStrength].strength = Number(input.value);
+    } else if (data.controlId) {
+      const family = input.closest("[data-demo-recipe]")?.dataset.demoRecipe;
+      settings.recipes[family].parameters[data.controlId] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value;
+    } else if (data.demoStrength) settings.recipes[data.demoStrength].strength = Number(input.value);
     else if (input.matches("[data-demo-paused]")) settings.paused = input.checked;
     else if (input.matches("[data-demo-rating-user]")) settings.rating_user_id = input.value;
     else if (input.matches("[data-demo-lora-strength]")) {
@@ -218,6 +470,7 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
     const input = event.target;
     const family = input.dataset.demoRecipeEnabled || input.dataset.demoSource;
     if (!family) return;
+    clearSettingsError();
     try {
       if (input.matches("[data-demo-recipe-enabled]") && !input.checked) delete settings.recipes[family];
       else {
@@ -236,9 +489,9 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
       const payload = Object.fromEntries(["revision", "paused", "rating_user_id", "slots", "recipes", "strengths"].map((key) => [key, settings[key]]));
       await api("/api/admin/demo-reels", { method: "PUT", body: JSON.stringify(payload) });
       editor.close();
-      notify("Demo Reel settings saved. Generation waits for five quiet minutes.", "success");
+      notify(`Demo Reel settings saved. Generation waits for ${Math.max(1, Math.round((settings.idle_seconds || 300) / 60))} quiet minutes.`, "success");
       await refresh();
-    } catch (error) { editor.querySelector("[data-demo-settings-error]").textContent = error.message; }
+    } catch (error) { settings.error = error.message; renderSettings(); }
     finally { button.disabled = false; }
   });
   editor.addEventListener("keydown", (event) => {

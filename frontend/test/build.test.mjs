@@ -46,7 +46,7 @@ test("production build emits one content-addressed frontend module graph", async
 
   const expectedImports = {
     app: new Set([first.assets.demo_reels, first.assets.user_activity, first.assets.prompt_routing, first.assets.photo_viewer_images, first.assets.photo_viewer_preload, first.assets.auto_generation_progress, first.assets.auto_generation_sync, first.assets.generation_submissions, first.assets.thumbnails, first.assets.gallery_dom, first.assets.user_settings, first.assets.lora_stack, first.assets.lora_manager, first.assets.admin_loras, first.assets.api, first.assets.lib, first.assets.render, first.assets.gallery_hover, first.assets.gallery_groups, first.assets.gallery_selection, first.assets.prompt_rerun, first.assets.prompt_rerun_progress, first.assets.expectation_check, first.assets.gallery_view, first.assets.generation_countdown]),
-    demo_reels: new Set(),
+    demo_reels: new Set([first.assets.icons, first.assets.lib, first.assets.render]),
     user_activity: new Set(),
     prompt_routing: new Set(),
     image_cleanup: new Set(),
@@ -71,11 +71,12 @@ test("production build emits one content-addressed frontend module graph", async
     lib: new Set([first.assets.lora_stack]),
     lora_stack: new Set(),
     lora_manager: new Set([first.assets.lora_stack, first.assets.lora_gallery]),
-    lora_gallery: new Set([first.assets.lora_stack, first.assets.lib, first.assets.admin_loras]),
+    lora_gallery: new Set([first.assets.icons, first.assets.lora_stack, first.assets.lib, first.assets.admin_loras]),
+    icons: new Set(),
     admin_loras: new Set(),
     render: new Set([first.assets.prompt_routing, first.assets.lib, first.assets.lora_stack, first.assets.server_clock, first.assets.gallery_groups, first.assets.gallery_view, first.assets.expectation_check]),
   };
-  for (const name of ["demo_reels", "user_activity", "prompt_routing", "image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "prompt_rerun", "prompt_rerun_progress", "expectation_check", "server_clock", "generation_countdown", "lora_stack", "lora_manager", "lora_gallery", "admin_loras", "user_settings"]) {
+  for (const name of ["demo_reels", "user_activity", "prompt_routing", "image_cleanup", "photo_viewer_images", "photo_viewer_preload", "auto_generation_progress", "auto_generation_sync", "gallery_dom", "thumbnails", "generation_submissions", "app", "api", "lib", "render", "gallery_hover", "gallery_groups", "gallery_view", "gallery_selection", "prompt_rerun", "prompt_rerun_progress", "expectation_check", "server_clock", "generation_countdown", "lora_stack", "lora_manager", "lora_gallery", "admin_loras", "user_settings", "icons"]) {
     const source = await readFile(
       join(dist, first.assets[name].replace(/^\//u, "")),
       "utf8",

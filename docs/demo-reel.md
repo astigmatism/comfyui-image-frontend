@@ -7,22 +7,32 @@ the normal photo viewer. Reel collections stay outside normal navigation.
 ## Setup
 
 Administrators choose **Demo Reel settings** in the LoRA picker header, beside its
-close button. The editor is also available inside each reel.
+close button. The editor is also available inside each reel. Opened from a LoRA it
+additionally exposes that LoRA's own strength override in a strip below the title.
 
-1. Choose whose checkpoint grades qualify models. Initial setup uses the current
+1. Add shared prompt slots. A slot's optional title is its heading. Literal
+   `{subject}` expands to each LoRA's published trigger phrase, falling back to its
+   published title.
+2. Reorder slots with the heading's drag handle, arrow keys, or buttons; Duplicate
+   copies a slot in place.
+3. Leave a slot's **Image size** empty to inherit the family size, or give it its
+   own width and height.
+4. Open **Model families** to enable a family and choose its workflow, LoRA
+   strength, and workflow settings. Those settings are the workflow's own controls
+   with their published descriptions and Basic/Advanced split; a value that
+   differs from the workflow default is marked and can be restored on its own or
+   reset for the whole family. Individual LoRAs can override strength.
+5. Choose whose checkpoint grades qualify models. Initial setup uses the current
    administrator's account. Only that account's A/B grades affect eligibility.
-2. Add shared prompt slots. Titles are optional. Literal `{subject}` expands to
-   each LoRA's published trigger phrase, falling back to its published title.
-3. Reorder slots with drag handles, arrow keys, or up/down buttons.
-4. Enable each model family's recipe and choose its workflow, generation settings,
-   and default LoRA strength. Individual LoRAs can override strength; slots can
-   override the recipe's published width/height controls.
-5. Save. These changes are independent of selection Apply/Cancel. Canceling the
+6. Save. These changes are independent of selection Apply/Cancel. Canceling the
    picker does not undo saved Demo Reel settings.
 
 Recipes require a published seed control and cannot require uploaded images.
 Every new attempt randomizes its seed, including workflows whose normal default
-is fixed. Only the target selectable LoRA is enabled. Prompts run directly after
+is fixed. Only the target selectable LoRA is enabled, and each image's checkpoint
+comes from the rating account's A/B grades; the family card lists those three as
+things the Demo Reel decides rather than offering settings that it overwrites.
+Prompts run directly after
 subject substitution, without Prompt Generation or Creative Direction. The
 configured workflow is exclusive; eligible checkpoints exposed by another library
 workflow but missing from that workflow appear as blocked.

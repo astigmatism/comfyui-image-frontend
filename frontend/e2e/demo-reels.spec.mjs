@@ -63,11 +63,18 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await picker.getByRole("button", { name: "Demo Reel settings" }).click();
   const editor = page.locator("#demo-reel-settings-dialog");
   await expect(editor).toBeVisible();
+  // Model families is collapsed by default, so open it before touching a family.
+  await editor.getByText("Model families", { exact: false }).click();
+  await expect(editor.locator(".demo-reel-family").first()).toBeVisible();
   await editor.locator('[data-demo-recipe-enabled="krea2"]').check();
   await expect(editor.locator('[data-demo-source="krea2"]')).toBeVisible();
   await editor.locator('[data-demo-source="krea2"]').selectOption(detail.source_key);
   await editor.locator("[data-demo-paused]").check();
   await editor.getByRole("button", { name: "Add prompt slot" }).click();
+  // Slot headers are the LoRA dialog's group headers, by class and by metrics.
+  const slotActions = editor.locator(".demo-reel-slot-actions").first();
+  await expect(slotActions).toHaveClass(/lm-group-actions/);
+  expect(await slotActions.locator(".icon-button").first().evaluate((node) => [getComputedStyle(node).width, getComputedStyle(node).height])).toEqual(["30px", "30px"]);
   let last = editor.locator("[data-demo-slot]").last();
   await last.locator('[data-demo-slot-field="title"]').fill("Portrait study");
   await last.locator('[data-demo-slot-field="prompt"]').fill("a studio portrait of {subject}");
@@ -79,7 +86,8 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await last.locator("[data-demo-slot-handle]").focus();
   await page.keyboard.press("ArrowUp");
   await expect(editor.locator("[data-demo-slot]").first()).toHaveAttribute("data-demo-slot", secondId);
-  await expect(editor.locator("[data-demo-preview]").first()).toContainText("Alpha beside a lake");
+  await expect(editor.locator("[data-demo-slot]").first().locator('[data-demo-slot-field="prompt"]')).toHaveValue("{subject} beside a lake");
+  await expect(editor.locator("[data-demo-slot]").first().locator(".demo-reel-slot-hint")).toContainText("trigger phrase");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(editor.getByRole("button", { name: "Save", exact: true })).toBeInViewport();
   await editor.screenshot({ path: testInfo.outputPath("demo-reel-settings-mobile.png"), animations: "disabled" });

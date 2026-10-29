@@ -8,7 +8,7 @@ const buildScript = fileURLToPath(import.meta.url);
 const here = dirname(buildScript);
 const root = resolve(here, "..");
 const dist = join(root, "dist");
-const modules = ["demo-reels.mjs", "user-activity.mjs", "prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "lora-manager.mjs", "lora-gallery.mjs", "admin-loras.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "prompt-rerun.mjs", "prompt-rerun-progress.mjs", "expectation-check.mjs", "app.mjs"];
+const modules = ["demo-reels.mjs", "user-activity.mjs", "prompt-routing.mjs", "image-cleanup.mjs", "photo-viewer-preload.mjs", "photo-viewer-images.mjs", "auto-generation-progress.mjs", "auto-generation-sync.mjs", "generation-submissions.mjs", "thumbnails.mjs", "gallery-dom.mjs", "user-settings.mjs", "lora-stack.mjs", "lora-manager.mjs", "lora-gallery.mjs", "admin-loras.mjs", "icons.mjs", "api.mjs", "server-clock.mjs", "generation-countdown.mjs", "lib.mjs", "render.mjs", "gallery-hover.mjs", "gallery-groups.mjs", "gallery-view.mjs", "gallery-selection.mjs", "prompt-rerun.mjs", "prompt-rerun-progress.mjs", "expectation-check.mjs", "app.mjs"];
 const staticAssets = ["syncopate-latin.woff2", "LICENSE-syncopate.txt"];
 const buildInputs = [
   ["scripts/build.mjs", buildScript],
@@ -93,6 +93,7 @@ const assets = {
   api: `${assetPrefix}/api.mjs`,
   server_clock: `${assetPrefix}/server-clock.mjs`,
   generation_countdown: `${assetPrefix}/generation-countdown.mjs`,
+  icons: `${assetPrefix}/icons.mjs`,
   lib: `${assetPrefix}/lib.mjs`,
   render: `${assetPrefix}/render.mjs`,
   gallery_hover: `${assetPrefix}/gallery-hover.mjs`,

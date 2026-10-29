@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Demo Reel settings · design preview</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./demo-reel-settings.css" />
+  </head>
+  <body class="drs-preview-host">
+    <header class="drs-preview-toolbar">
+      <div class="drs-preview-title">
+        <strong>Demo Reel settings · slot-first redesign</strong>
+        <span>Design preview · the proposed side uses the application's own control renderer</span>
+      </div>
+      <div class="drs-preview-actions" role="group" aria-label="Preview controls">
+        <button type="button" class="button low is-selected" data-preview-layout="proposed" aria-pressed="true">Proposed</button>
+        <button type="button" class="button low" data-preview-layout="current" aria-pressed="false">Current design</button>
+        <label class="visually-hidden" for="preview-generation">Model families section</label>
+        <select id="preview-generation" aria-label="Model families section">
+          <option value="open">Model families open</option>
+          <option value="closed">Model families closed</option>
+        </select>
+        <label class="visually-hidden" for="preview-advanced">Advanced workflow settings</label>
+        <select id="preview-advanced" aria-label="Advanced workflow settings">
+          <option value="closed">Advanced closed</option>
+          <option value="open">Advanced open</option>
+        </select>
+        <label class="visually-hidden" for="preview-error">Save error</label>
+        <select id="preview-error" aria-label="Save error">
+          <option value="off">No save error</option>
+          <option value="on">Save error shown</option>
+        </select>
+        <button type="button" class="button low is-selected" data-preview-size="desktop" aria-pressed="true">Desktop</button>
+        <button type="button" class="button low" data-preview-size="mobile" aria-pressed="false">Narrow screen</button>
+        <button type="button" class="button secondary" data-preview-action="open">Open dialog</button>
+      </div>
+    </header>
+    <main class="drs-preview-stage">
+      <iframe id="drs-preview-frame" title="Demo Reel settings design mockup" src="./demo-reel-settings-scene.html"></iframe>
+    </main>
+    <script type="module" src="./demo-reel-settings-host.mjs"></script>
+  </body>
+</html>

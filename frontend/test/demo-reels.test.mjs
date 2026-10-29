@@ -31,6 +31,41 @@ test("settings keep random seeds implicit and offer independent prompt save and 
   assert.match(markup, /data-demo-resolution="width"/);
 });
 
+test("recipe settings explain the workflow's own controls and mark what differs from its defaults", () => {
+  const detail = { interface: { inputs: [
+    { id: "prompt", type: "string", label: "Prompt", semantic_role: "positive_prompt", group: "Basic", order: 1 },
+    { id: "loras", type: "lora_stack", label: "LoRAs", group: "Basic", order: 2, items: [] },
+    { id: "seed", type: "seed", label: "Seed", group: "Basic", order: 3 },
+    { id: "checkpoint", type: "choice", label: "Checkpoint", semantic_role: "model", group: "Basic", order: 4, default: "a", choices: [{ value: "a", label: "A" }] },
+    { id: "steps", type: "integer", label: "Steps", group: "Basic", order: 5, default: 20, minimum: 1, maximum: 50, description: "More steps cost more time." },
+    { id: "clip_skip", type: "integer", label: "CLIP skip", advanced: true, group: "Advanced", order: 6, default: -2 },
+  ] } };
+  const config = {
+    slots: [],
+    strengths: { krea2: { lr1: 1.2 } },
+    recipes: { krea2: { source_key: "source", strength: 0.85, parameters: { steps: 34, clip_skip: -2 } } },
+    libraries: [{ key: "krea2", label: "Krea 2", sources: [{ source_key: "source", label: "Moody" }] }],
+  };
+  const markup = demoReelSettingsMarkup(config, { source: detail }, { libraryKey: "krea2", identity: "lr1", label: "Alpha", subject: "alpha" }, []);
+  // Controls come from the workflow's own renderer, descriptions included.
+  assert.match(markup, /data-control-id="steps"/);
+  assert.match(markup, /More steps cost more time\./);
+  // Checkpoints are chosen by A/B grades, so that control is explained, not offered.
+  assert.doesNotMatch(markup, /data-control-id="checkpoint"/);
+  assert.match(markup, /Checkpoint<\/strong><span>one image for each A and B checkpoint/);
+  assert.match(markup, /data-demo-details="advanced-krea2"/);
+  // Only a value that differs from the published default is flagged, and it can be undone.
+  assert.match(markup, /class="demo-reel-control is-changed"/);
+  assert.match(markup, /Restore workflow default 20/);
+  assert.doesNotMatch(markup, /Restore workflow default -2/);
+  assert.match(markup, /1 setting differs from the workflow defaults/);
+  assert.match(markup, /Krea 2 on \(strength 0\.85\)/);
+  assert.match(markup, /data-demo-lora-strength[^>]*value="1\.2"/);
+  assert.match(markup, /<p class="demo-reel-notice form-error" role="alert" data-demo-settings-error hidden>/);
+  assert.doesNotMatch(markup, /Preview: /);
+  assert.match(demoReelSettingsMarkup({ ...config, error: "Enter a prompt for every slot." }, { source: detail }, {}, []), /data-demo-settings-error>Enter a prompt for every slot\./);
+});
+
 test("settings report shared generation progress and pause state", () => {
   const config = { slots: [], recipes: {}, progress: { completed: 2, expected: 8, states: { running: 1 } } };
   assert.match(demoReelSettingsMarkup(config), /2 of 8 images complete · generating/);

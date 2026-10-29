@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Demo Reel settings · interactive scene</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./demo-reel-settings.css" />
+  </head>
+  <body class="drs-scene">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="icon-button panel-toggle" aria-hidden="true">☰</span>
+          <div class="app-title">ImageGen</div>
+        </div>
+        <div class="topbar-right">
+          <span class="drs-topbar-context">LoRAs</span>
+          <div class="topbar-spacer"></div>
+          <span class="drs-topbar-user">preview</span>
+        </div>
+      </header>
+      <main class="gallery-viewport drs-stage">
+        <div class="drs-stage-note" id="scene-note">Demo Reel settings · design preview</div>
+      </main>
+      <dialog id="demo-reel-settings-dialog" class="demo-reel-settings-dialog" aria-labelledby="demo-reel-settings-title"></dialog>
+    </div>
+    <script type="module" src="./demo-reel-settings.mjs"></script>
+  </body>
+</html>
