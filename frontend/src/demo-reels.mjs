@@ -106,8 +106,9 @@ function resolutionRowMarkup(slot, config, details) {
   return `<div class="demo-reel-size-row"><span class="demo-reel-size-label">Image size</span>${rows.join("")}</div>`;
 }
 
-// The slot header reuses the LoRA dialog's group header classes, so its title,
-// hairline, and icon buttons stay identical to it by construction.
+// The slot header reuses the LoRA dialog's group header classes, so its title
+// and icon buttons stay identical to it by construction. Its hairline is left
+// out: inside a card the tinted band already says where the header ends.
 function slotMarkup(slot, index, config, details) {
   const total = config.slots.length;
   const move = (kind, label, disabled, extraClass = "") => `<button type="button" class="icon-button${extraClass}" data-demo-action="slot-${kind}" data-demo-id="${escape(slot.id)}" aria-label="${escape(label)}" title="${escape(label)}"${disabled ? " disabled" : ""}>${icon(kind === "slot-up" ? "up" : kind === "slot-down" ? "down" : kind === "slot-duplicate" ? "duplicate" : "delete")}</button>`;
@@ -115,12 +116,11 @@ function slotMarkup(slot, index, config, details) {
     <header class="lm-group-heading demo-reel-slot-heading">
       <button type="button" class="icon-button demo-reel-slot-handle" draggable="true" tabindex="0" data-demo-slot-handle="${escape(slot.id)}" aria-label="Reorder slot ${index + 1}" title="Drag, or press arrow keys, to reorder">${icon("grip")}</button>
       <input class="demo-reel-slot-title" id="demo-reel-slot-title-${escape(slot.id)}" data-demo-slot-field="title" data-demo-id="${escape(slot.id)}" maxlength="120" value="${escape(slot.title)}" placeholder="Untitled slot" aria-label="Slot ${index + 1} title (optional)" />
-      <span class="lm-group-rule" aria-hidden="true"></span>
       <div class="lm-group-actions demo-reel-slot-actions">${move("slot-up", `Move slot ${index + 1} up`, index === 0)}${move("slot-down", `Move slot ${index + 1} down`, index === total - 1)}${move("slot-duplicate", `Duplicate slot ${index + 1}`, false)}${move("slot-delete", `Delete slot ${index + 1}`, false, " is-destructive")}</div>
     </header>
     <div class="demo-reel-slot-body">
       <label class="field demo-reel-prompt-field"><span>Prompt</span><textarea rows="3" maxlength="100000" required id="demo-reel-slot-prompt-${escape(slot.id)}" data-demo-slot-field="prompt" data-demo-id="${escape(slot.id)}" placeholder="Describe the image this slot should produce">${escape(slot.prompt)}</textarea></label>
-      <p class="demo-reel-slot-hint"><code>{subject}</code><span>becomes each LoRA's trigger phrase, so one slot serves every LoRA.</span><button type="button" class="button low" data-demo-action="slot-insert" data-demo-id="${escape(slot.id)}">Insert {subject}</button></p>
+      <p class="demo-reel-slot-hint"><code>{subject}</code> becomes each LoRA's trigger phrase, so one slot serves every LoRA.</p>
       ${resolutionRowMarkup(slot, config, details)}
     </div>
   </li>`;
@@ -146,7 +146,7 @@ function controlsMarkup(controls, values, detail, { family = "", idPrefix = "", 
   return group !== null ? `${markup}</div>` : markup;
 }
 
-function familyMarkup(library, config, details) {
+function familyMarkup(library, config, details, context) {
   const recipe = config.recipes[library.key];
   const detail = details[recipe?.source_key];
   const controls = recipeControls(detail);
@@ -162,9 +162,15 @@ function familyMarkup(library, config, details) {
         `LoRA strength ${escape(recipe.strength)}`,
       ].filter(Boolean).join(" · ")
     : "";
+  // Opened from a LoRA, this family is where its strength gets replaced, so the
+  // override belongs here and is named for the LoRA it applies to.
+  const saved = context.identity ? config.strengths?.[context.libraryKey]?.[context.identity] : undefined;
+  const override = context.identity && library.key === context.libraryKey
+    ? `<div class="demo-reel-override"><label class="field demo-reel-override-field"><span>${escape(context.label)} · strength</span><input type="number" min="0.000001" step="any" id="demo-reel-lora-strength" data-demo-lora-strength value="${escape(saved ?? "")}" placeholder="${escape(recipe.strength)}" /></label><span class="demo-reel-override-hint">Only ${escape(context.label)} uses a strength here; every other LoRA in ${escape(library.label)} uses ${escape(recipe.strength)}.</span><button type="button" class="button low demo-reel-override-reset" data-demo-action="lora-strength-reset"${saved === undefined ? " hidden" : ""}>Use the family strength</button></div>`
+    : "";
   return `<section class="demo-reel-family" data-demo-recipe="${escape(library.key)}">
     <header class="lm-group-heading demo-reel-family-heading">
-      <h3>${escape(library.label)}</h3><span class="lm-group-rule" aria-hidden="true"></span>
+      <h3>${escape(library.label)}</h3>
       <span class="demo-reel-family-summary">${summary}</span>
       <div class="lm-group-actions"><label class="switch demo-reel-family-switch"><input type="checkbox" id="demo-reel-recipe-enabled-${escape(library.key)}" data-demo-recipe-enabled="${escape(library.key)}" ${recipe ? "checked" : ""} aria-label="Generate images for ${escape(library.label)}" /><span aria-hidden="true"></span><em>${recipe ? "On" : "Off"}</em></label></div>
     </header>
@@ -173,6 +179,7 @@ function familyMarkup(library, config, details) {
         <label class="field"><span>Workflow</span><select id="demo-reel-source-${escape(library.key)}" data-demo-source="${escape(library.key)}">${library.sources.map((source) => `<option value="${escape(source.source_key)}" ${source.source_key === recipe.source_key ? "selected" : ""}>${escape(source.label)}</option>`).join("")}</select></label>
         <label class="field"><span>LoRA strength</span><input type="number" min="0.000001" step="any" required id="demo-reel-strength-${escape(library.key)}" data-demo-strength="${escape(library.key)}" value="${escape(recipe.strength)}" /></label>
       </div>
+      ${override}
       <p class="demo-reel-help">Every Demo Reel image in this family is generated with this workflow. It has to publish a seed control and must not require an uploaded image.</p>
       <ul class="demo-reel-facts">${ownedFacts.map(([term, fact]) => `<li><strong>${escape(term)}</strong><span>${escape(fact)}</span></li>`).join("")}</ul>
       <div class="demo-reel-controls">${controlsMarkup(basic, values, detail, { family: library.key, idPrefix: `${library.key}-` })}</div>
@@ -191,12 +198,12 @@ const familySummary = (config, details) => (config.libraries || [])
   })
   .join(" · ");
 
-function generationMarkup(config, details, users) {
+function generationMarkup(config, details, users, context) {
   const idle = Math.max(1, Math.round((config.idle_seconds || 300) / 60));
   return `<details class="demo-reel-generation" data-demo-details="generation">
     <summary class="demo-reel-generation-summary"><span class="demo-reel-generation-title">Model families</span><span class="demo-reel-generation-state">${escape(familySummary(config, details))}</span></summary>
     <p class="demo-reel-how"><strong>How this works.</strong> Prompt slots decide what is drawn. A model family decides how — the workflow, its settings, and how strongly each LoRA is applied. Images appear after everyone has been idle for ${idle} minutes.</p>
-    <div class="demo-reel-families">${(config.libraries || []).map((library) => familyMarkup(library, config, details)).join("") || '<p class="demo-reel-empty">No published LoRA libraries are available.</p>'}</div>
+    <div class="demo-reel-families">${(config.libraries || []).map((library) => familyMarkup(library, config, details, context)).join("") || '<p class="demo-reel-empty">No published LoRA libraries are available.</p>'}</div>
     <div class="demo-reel-grading">
       <label class="field demo-reel-grading-user"><span>A/B ratings from</span><select id="demo-reel-rating-user" data-demo-rating-user>${users.map((user) => `<option value="${escape(user.id)}" ${user.id === config.rating_user_id ? "selected" : ""}>${escape(user.username)}</option>`).join("")}</select></label>
       <label class="switch demo-reel-pause"><input type="checkbox" id="demo-reel-paused" data-demo-paused ${config.paused ? "checked" : ""} /><span aria-hidden="true"></span><em>${config.paused ? "Paused" : "Active"}</em></label>
@@ -208,33 +215,25 @@ function generationMarkup(config, details, users) {
 export function demoReelSettingsMarkup(config, details = {}, context = {}, users = []) {
   const idle = Math.max(1, Math.round((config.idle_seconds || 300) / 60));
   const slots = config.slots.map((slot, index) => slotMarkup(slot, index, config, details)).join("");
-  const familyDefault = config.recipes[context.libraryKey]?.strength;
-  // Opened from a LoRA, its own strength override belongs under the title, next to
-  // the LoRA it applies to - not at the bottom of the recipe it inherits from.
-  const strength = context.identity ? config.strengths?.[context.libraryKey]?.[context.identity] : undefined;
-  const override = context.identity && familyDefault !== undefined
-    ? `<div class="demo-reel-subject"><strong class="demo-reel-subject-name">${escape(context.label)}</strong><label class="field demo-reel-subject-field"><span>LoRA strength</span><input type="number" min="0.000001" step="any" id="demo-reel-lora-strength" data-demo-lora-strength value="${escape(strength ?? "")}" placeholder="${escape(familyDefault)}" /></label><span class="demo-reel-subject-hint">Family default ${escape(familyDefault)} · applies to this LoRA only</span><button type="button" class="button low" data-demo-action="lora-strength-reset"${strength === undefined ? " hidden" : ""}>Reset</button></div>`
-    : "";
   return `<form class="dialog-frame demo-reel-settings-frame" data-demo-settings-form>
     <header class="dialog-header demo-reel-settings-header">
       <div class="demo-reel-header-copy"><h2 id="demo-reel-settings-title">Demo Reel settings</h2><p>Shared prompts · every installed LoRA gets one image per slot</p></div>
       <div class="demo-reel-header-side">${statusMarkup(config)}<button type="button" class="icon-button" data-demo-action="cancel-settings" aria-label="Close Demo Reel settings">×</button></div>
     </header>
     <p class="demo-reel-notice form-error" role="alert" data-demo-settings-error${config.error ? "" : " hidden"}>${escape(config.error || "")}</p>
-    ${override}
     <div class="demo-reel-content">
       <section class="demo-reel-section">
         <header class="demo-reel-section-heading">
-          <h3>Prompt slots</h3><span class="lm-group-rule" aria-hidden="true"></span>
+          <h3>Prompt slots</h3>
           <span class="demo-reel-section-count">${config.slots.length} slot${config.slots.length === 1 ? "" : "s"}</span>
           <div class="lm-group-actions"><button type="button" class="button secondary demo-reel-add" data-demo-action="slot-add">${icon("plus")}Add prompt slot</button></div>
         </header>
         <ol class="demo-reel-slots">${slots}</ol>
         ${slots ? "" : '<p class="demo-reel-empty">No prompt slots yet. Add one to start generating.</p>'}
       </section>
-      ${generationMarkup(config, details, users)}
+      ${generationMarkup(config, details, users, context)}
     </div>
-    <footer class="dialog-actions"><span class="muted">Saves after ${idle} quiet minutes across all accounts. Prompt and size changes replace affected images.</span><button type="button" class="button low" data-demo-action="reload-settings">Reload saved settings</button><button type="button" class="button secondary" data-demo-action="cancel-settings">Cancel</button><button type="submit" class="button primary">Save</button></footer>
+    <footer class="dialog-actions"><span class="muted">Saves after ${idle} quiet minutes across all accounts. Prompt and size changes replace affected images.</span><button type="button" class="button secondary" data-demo-action="cancel-settings">Cancel</button><button type="submit" class="button primary">Save</button></footer>
   </form>`;
 }
 
@@ -388,7 +387,6 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
       else if (kind === "settings") await openSettings();
       else if (kind === "cancel-settings") editor.close();
       else if (kind === "cancel-transfer") transfer.close();
-      else if (kind === "reload-settings") await openSettings();
       else if (kind === "more") await refresh(true);
       else if (kind === "photo") onPhoto(id);
       else if (kind === "details") await onDetails(id);
@@ -409,11 +407,6 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onPhoto, onD
         copy.title = settings.slots[index].title ? `${settings.slots[index].title} copy` : "";
         settings.slots.splice(index + 1, 0, copy);
         renderSettings({ focus: `demo-reel-slot-title-${copy.id}` });
-      }
-      else if (kind === "slot-insert") {
-        const slot = settings.slots.find((slot) => slot.id === id);
-        slot.prompt = `${slot.prompt}${slot.prompt && !/\s$/u.test(slot.prompt) ? " " : ""}{subject}`;
-        renderSettings({ focus: `demo-reel-slot-prompt-${slot.id}` });
       }
       else if (kind === "size-reset") {
         const slot = settings.slots.find((slot) => slot.id === id);

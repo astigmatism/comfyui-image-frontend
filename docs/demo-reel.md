@@ -8,7 +8,8 @@ the normal photo viewer. Reel collections stay outside normal navigation.
 
 Administrators choose **Demo Reel settings** in the LoRA picker header, beside its
 close button. The editor is also available inside each reel. Opened from a LoRA it
-additionally exposes that LoRA's own strength override in a strip below the title.
+additionally offers that LoRA's own strength override inside the family card whose
+strength it replaces, named for the LoRA it applies to.
 
 1. Add shared prompt slots. A slot's optional title is its heading. Literal
    `{subject}` expands to each LoRA's published trigger phrase, falling back to its

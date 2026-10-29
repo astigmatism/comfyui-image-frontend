@@ -7170,27 +7170,26 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
    per model family second. Slot and family headers borrow the LoRA dialog's group
    header classes, so their hairline, icon buttons, and touch sizes cannot drift
    away from it. */
-.demo-reel-slot-editor { display: grid; margin: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); overflow: hidden; }
+.demo-reel-slot-editor { display: grid; min-width: 0; margin: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); overflow: hidden; }
 .demo-reel-slot-editor:focus-within { border-color: var(--border-strong); }
-.demo-reel-slot-heading { margin: 0; padding: 5px 7px 5px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.demo-reel-slot-heading { min-width: 0; margin: 0; padding: 5px 7px 5px 8px; background: var(--surface-2); }
+.demo-reel-slot-actions { margin-left: auto; }
 .demo-reel-slot-handle { flex: 0 0 auto; width: 30px; height: 30px; min-height: 30px; padding: 0; color: #7d8ea1; cursor: grab; touch-action: none; border-color: transparent; background: transparent; }
 .demo-reel-slot-handle:hover { color: var(--text); background: var(--surface-3); }
 .demo-reel-slot-handle:active { cursor: grabbing; }
 /* The optional title is the heading text itself, so it is quiet until touched. */
-.demo-reel-slot-title { flex: 1 1 12ch; min-width: 7ch; max-width: 34ch; min-height: 0; height: 30px; padding: 0 6px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; box-shadow: none; color: var(--text); font-family: inherit; font-size: .84rem; font-weight: 650; text-overflow: ellipsis; }
+.demo-reel-slot-title { flex: 1 1 0; width: 0; min-width: 0; max-width: 34ch; min-height: 0; height: 30px; padding: 0 6px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; box-shadow: none; color: var(--text); font-family: inherit; font-size: .84rem; font-weight: 650; text-overflow: ellipsis; }
 .demo-reel-slot-title:hover { border-color: var(--border); background: #0d1420; }
 .demo-reel-slot-title:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; background: #0b1119; text-overflow: unset; }
 .demo-reel-slot-title::placeholder { color: #6f8194; font-weight: 500; }
 .demo-reel-slot-actions .icon-button.is-destructive:hover { color: #f0a8ae; border-color: #683a40; background: #2c171b; }
 .demo-reel-slot-body { display: grid; gap: 10px; padding: 12px 14px 14px; }
 .demo-reel-prompt-field textarea { min-width: 0; min-height: 74px; }
-.demo-reel-slot-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: -2px 0 0; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
-.demo-reel-slot-hint span { min-width: 0; }
+.demo-reel-slot-hint { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
 .demo-reel-slot-hint code { padding: 1px 4px; border-radius: 4px; background: #0b1119; color: var(--text-soft); font-family: inherit; }
-.demo-reel-slot-hint .button { min-height: 26px; padding: 0 8px; font-size: .72rem; }
 /* Resolution overrides: one labelled row per family, with the inherited size in
    the placeholder so leaving both fields empty is obviously the common case. */
-.demo-reel-size-row { display: grid; gap: 7px; padding-top: 11px; border-top: 1px solid var(--border); min-width: 0; }
+.demo-reel-size-row { display: grid; gap: 7px; min-width: 0; }
 .demo-reel-size-label { color: var(--text-soft); font-size: .8rem; font-weight: 600; }
 .demo-reel-size-family { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .demo-reel-size-name { min-width: 5ch; color: var(--text-soft); font-size: .78rem; font-weight: 600; }
@@ -7199,7 +7198,7 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .demo-reel-size-state { color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
 .demo-reel-size-state.is-custom { color: var(--warning); }
 .demo-reel-size-reset { min-height: 26px; padding: 0 8px; font-size: .72rem; }
-.demo-reel-size-reset[hidden], .demo-reel-subject [data-demo-action="lora-strength-reset"][hidden] { display: none; }
+.demo-reel-size-reset[hidden], .demo-reel-override-reset[hidden] { display: none; }
 .demo-reel-settings-header { align-items: center; gap: 14px; }
 .demo-reel-header-copy { min-width: 0; }
 .demo-reel-header-side { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
@@ -7208,10 +7207,13 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .demo-reel-notice[hidden] { display: none; }
 /* The one setting here that is about a single LoRA sits beside the title of the
    LoRA it applies to, instead of at the bottom of the page. */
-.demo-reel-subject { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: end; gap: 6px 14px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1); }
-.demo-reel-subject-name { font-size: .86rem; font-weight: 650; }
-.demo-reel-subject-field { width: 130px; }
-.demo-reel-subject-hint { flex: 1 1 22ch; min-width: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+/* A strength that belongs to one LoRA is set beside the family strength it
+   overrides, named for the LoRA it applies to, instead of at the top of a dialog
+   where everything else is shared by every account and every LoRA. */
+.demo-reel-override { display: flex; flex-wrap: wrap; align-items: end; gap: 6px 14px; min-width: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #0b1119; }
+.demo-reel-override-field { flex: 0 1 190px; min-width: 120px; }
+.demo-reel-override-hint { flex: 1 1 22ch; min-width: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.demo-reel-override-reset { min-height: 30px; padding: 0 10px; font-size: .74rem; }
 .demo-reel-settings-frame .demo-reel-content { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 20px; padding: 0 1.2rem 1.2rem; }
 .demo-reel-section { display: grid; gap: 12px; min-width: 0; }
 /* The slot list is the longest thing in here, so its header stays pinned. */
@@ -7235,6 +7237,8 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .demo-reel-family { display: grid; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: #0d141d; }
 .demo-reel-family-heading { margin: 0; padding: 5px 10px 5px 12px; }
 .demo-reel-family-heading h3 { flex: 0 1 auto; color: var(--text); font-size: .84rem; }
+.demo-reel-family-heading .lm-group-actions { margin-left: auto; }
+.demo-reel-section-heading .lm-group-actions { margin-left: auto; }
 .demo-reel-family-summary { flex: 0 1 auto; min-width: 0; overflow: hidden; color: #8493a6; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
 .demo-reel-family-off { margin: 0; padding: 0 14px 13px; color: var(--muted); font-size: .76rem; }
 .demo-reel-family-body { display: grid; gap: 12px; min-width: 0; padding: 2px 14px 14px; }
@@ -7281,12 +7285,12 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   .demo-reel-settings-header { flex-wrap: wrap; row-gap: 9px; }
   .demo-reel-header-copy, .demo-reel-header-side { flex: 1 1 100%; }
   .demo-reel-header-side { justify-content: space-between; }
-  .demo-reel-subject { padding: 10px 16px; }
-  .demo-reel-subject-field { width: 112px; }
   .demo-reel-settings-frame .demo-reel-content { gap: 16px; padding: 0 .8rem .8rem; }
   .demo-reel-section-heading { margin: 0 -.8rem; padding: 8px .8rem; }
-  .demo-reel-slot-title { flex-basis: 10ch; max-width: none; }
-  .demo-reel-slot-actions .icon-button, .demo-reel-slot-handle { width: 44px; height: 44px; }
+  /* The grip duplicates the arrow buttons, and a phone has no room for either
+     at touch size, so the arrows carry reordering here. */
+  .demo-reel-slot-handle { display: none; }
+  .demo-reel-slot-actions .icon-button { width: 44px; height: 44px; }
   .demo-reel-settings-frame .dialog-actions > span { flex: 1 1 100%; }
 }
 @media (pointer: coarse) {

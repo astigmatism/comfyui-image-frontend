@@ -60,7 +60,11 @@ test("recipe settings explain the workflow's own controls and mark what differs 
   assert.doesNotMatch(markup, /Restore workflow default -2/);
   assert.match(markup, /1 setting differs from the workflow defaults/);
   assert.match(markup, /Krea 2 on \(strength 0\.85\)/);
-  assert.match(markup, /data-demo-lora-strength[^>]*value="1\.2"/);
+  // A single LoRA's override sits with the family strength it overrides, not at
+  // the top of a dialog that is otherwise shared by every LoRA.
+  assert.match(markup, /data-demo-recipe="krea2"[^]*?data-demo-lora-strength[^]*?value="1\.2"/);
+  assert.match(markup, /Alpha · strength/);
+  assert.doesNotMatch(markup, /data-demo-action="reload-settings"|data-demo-action="slot-insert"|class="demo-reel-subject"/);
   assert.match(markup, /<p class="demo-reel-notice form-error" role="alert" data-demo-settings-error hidden>/);
   assert.doesNotMatch(markup, /Preview: /);
   assert.match(demoReelSettingsMarkup({ ...config, error: "Enter a prompt for every slot." }, { source: detail }, {}, []), /data-demo-settings-error>Enter a prompt for every slot\./);
