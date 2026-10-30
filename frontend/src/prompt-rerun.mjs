@@ -505,6 +505,8 @@ export function createPromptRerun(dialog, deps) {
       draft.loraMemory[id] = structuredClone(memory);
       refreshDerived();
     },
+    copyText: deps.copyText,
+    notify: deps.notify,
   });
 
   return {

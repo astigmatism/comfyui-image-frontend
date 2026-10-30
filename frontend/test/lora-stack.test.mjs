@@ -5,6 +5,7 @@ import {
   loraStackError,
   loraStackMarkup,
   loraDefaultPositiveStrength,
+  loraTriggerWord,
   strongestLoraTrigger,
   moveLora,
   steppedLoraStrength,
@@ -188,6 +189,29 @@ test("strongest enabled LoRA uses its verified trigger or published title", () =
   assert.match(loraManagerMarkup({ control: withTrigger, values: titleFallback }), /Subject on Apply: Beta \(LoRA title\)/);
   assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1 }, { id: "a", strength: 1 }]).triggerWord, "Beta");
   assert.equal(strongestLoraTrigger(withTrigger, [{ id: "a", strength: 0 }, { id: "b", strength: 0 }]).triggerWord, null);
+});
+
+test("a catalog entry offers its verified trigger word, falling back to its published title", () => {
+  assert.deepEqual(loraTriggerWord({ id: "a", label: "Alpha", trigger_word: "  AlphaCharacter  " }), { text: "AlphaCharacter", source: "verified" });
+  assert.deepEqual(loraTriggerWord({ id: "b", label: " Beta " }), { text: "Beta", source: "title" });
+  assert.deepEqual(loraTriggerWord({ id: "c", label: "C", trigger_word: "   " }), { text: "C", source: "title" });
+  for (const item of [{ id: "d", label: "  " }, { id: "e" }, undefined]) {
+    assert.deepEqual(loraTriggerWord(item), { text: null, source: null });
+  }
+});
+
+test("the sidebar tile is the copy control and the read-only summary has no dead button", () => {
+  const withTrigger = structuredClone(control);
+  withTrigger.items[0].trigger_word = 'Alpha & "Character"';
+  withTrigger.items[1].label = 'Beta & "Co"';
+  const rows = [{ id: "a", strength: 1 }, { id: "b", strength: 1.2 }];
+  const editable = loraStackMarkup(withTrigger, rows, {}, { editable: true });
+  assert.match(editable, /<button type="button" class="lm-summary-thumb" data-lora-copy-trigger="a" aria-label="Copy trigger word for Alpha" title="Copy trigger word for Alpha"><span aria-hidden="true">✧<\/span><span class="lm-summary-copy-hint" aria-hidden="true"><svg/);
+  assert.match(editable, /aria-label="Copy trigger word for Beta &amp; &quot;Co&quot;"/);
+  assert.doesNotMatch(editable, /Copy trigger word for Beta & "Co"/);
+  const readOnly = loraStackMarkup(withTrigger, rows);
+  assert.match(readOnly, /<span class="lm-summary-thumb"><span aria-hidden="true">✧<\/span><\/span>/);
+  assert.doesNotMatch(readOnly, /data-lora-copy-trigger|lm-summary-copy-hint/);
 });
 
 const publisherSource = await readFile(new URL("../../comfyui_extension/comfyui-image-frontend-interface/web/publication.js", import.meta.url), "utf8");

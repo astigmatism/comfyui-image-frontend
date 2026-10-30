@@ -70,7 +70,9 @@ test("production build emits one content-addressed frontend module graph", async
     auto_generation_progress: new Set([first.assets.user_settings]),
     generation_countdown: new Set([first.assets.render]),
     lib: new Set([first.assets.lora_stack]),
-    lora_stack: new Set(),
+    // The sidebar tile carries the shared copy glyph, so the LoRA summary now draws
+    // on the icon module the manager gallery and render already use.
+    lora_stack: new Set([first.assets.icons]),
     lora_manager: new Set([first.assets.lora_stack, first.assets.lora_gallery]),
     lora_gallery: new Set([first.assets.icons, first.assets.lora_stack, first.assets.lib, first.assets.admin_loras]),
     icons: new Set(),

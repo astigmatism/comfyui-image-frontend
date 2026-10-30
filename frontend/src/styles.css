@@ -6116,8 +6116,10 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .lm-summary-thumb {
   display: grid;
   place-items: center;
+  position: relative;
   width: 42px;
   height: 42px;
+  padding: 0;
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -6125,10 +6127,61 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
   color: var(--muted);
 }
 
+/* The tile doubles as the copy-trigger-word control, so as a button it must look
+   exactly like the tile it replaced and stay reachable by keyboard. */
+button.lm-summary-thumb {
+  appearance: none;
+  cursor: pointer;
+}
+
+button.lm-summary-thumb:hover {
+  border-color: var(--accent);
+}
+
 .lm-summary-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* The badge makes the click discoverable: it lights on hover and focus, and stays
+   lit through the confirmation so the click visibly landed on the tile. */
+.lm-summary-copy-hint {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: var(--radius-sm) 0 var(--radius-sm) 0;
+  background: var(--surface-0);
+  color: var(--text-soft);
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+
+.lm-summary-copy-hint svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lm-summary-thumb:is(:hover, :focus-visible) .lm-summary-copy-hint,
+.lm-summary-thumb.is-copied .lm-summary-copy-hint {
+  opacity: 1;
+}
+
+.lm-summary-thumb.is-copied {
+  border-color: var(--accent);
+}
+
+.lm-summary-thumb.is-copied .lm-summary-copy-hint {
+  color: var(--accent);
 }
 
 .lm-summary-name {

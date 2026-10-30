@@ -1680,7 +1680,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   ).toBe(true);
 });
 
-test("LoRA manager applies the strongest published trigger and preserves remembered strength", async ({ page }, testInfo) => {
+test("LoRA manager applies the strongest published trigger and preserves remembered strength", async ({ page, context }, testInfo) => {
   await page.goto("/");
   await signInFreshUser(page, "lora.trigger-gallery");
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
@@ -1705,6 +1705,15 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
   await expect(page.locator(".lm-summary-item")).toHaveCount(1);
   await page.locator('[data-lora-control="loras"]').screenshot({ path: testInfo.outputPath("lora-summary.png"), animations: "disabled" });
+
+  // The tile beside an enabled LoRA copies its published trigger word to the real
+  // clipboard, so a person can paste it into the prompt.
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate(() => navigator.clipboard.writeText("not yet copied"));
+  await page.getByRole("button", { name: "Copy trigger word for Alpha", exact: true }).click();
+  await expect(page.locator("#toast-region .toast", { hasText: "Trigger word for Alpha copied." })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("AlphaCharacter");
+  expect(await page.locator(".lm-summary-item").count()).toBe(1);
   await expect.poll(async () => {
     const preferences = await (await page.request.get("/api/preferences")).json();
     return preferences.settings.sources?.[sourceKey]?.values?.loras ?? null;

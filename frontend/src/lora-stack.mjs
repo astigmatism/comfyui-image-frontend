@@ -1,3 +1,5 @@
+import { icon } from "./icons.mjs";
+
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 function decimalParts(value) {
@@ -47,13 +49,21 @@ export function loraDefaultPositiveStrength(control) {
   return value > 0 && allowsStrength(control, value) ? value : null;
 }
 
+// A catalog entry offers its phrase as `trigger_word`, and where none was
+// published the published title stands in for it — the same precedence Subject
+// name follows, so a copied phrase is always what the app itself would use.
+export function loraTriggerWord(item) {
+  const verified = typeof item?.trigger_word === "string" ? item.trigger_word.trim() : "";
+  const title = typeof item?.label === "string" ? item.label.trim() : "";
+  return { text: verified || title || null, source: verified ? "verified" : title ? "title" : null };
+}
+
 export function strongestLoraTrigger(control, value) {
   const entry = (value || []).reduce((best, candidate) =>
     candidate.strength > 0 && (!best || candidate.strength > best.strength) ? candidate : best, null);
   const item = control.items.find((candidate) => candidate.id === entry?.id);
-  const verified = typeof item?.trigger_word === "string" ? item.trigger_word.trim() : "";
-  const title = typeof item?.label === "string" ? item.label.trim() : "";
-  return { entry, item, triggerWord: verified || title || null, triggerSource: verified ? "verified" : title ? "title" : null };
+  const { text, source } = loraTriggerWord(item);
+  return { entry, item, triggerWord: text, triggerSource: source };
 }
 
 export function formatLoraStrength(value) {
@@ -83,13 +93,25 @@ export function loraStackMarkup(control, value, images = {}, { editable = false,
       const strength = formatLoraStrength(entry.strength);
       const inputId = `lora-strength-${encodeURIComponent(JSON.stringify([control.id, entry.id]))}`;
       const controls = editable ? `<div class="generation-quantity lm-summary-stepper"><input id="${inputId}" class="quantity-value" type="number" data-lora-strength="${escape(entry.id)}" aria-label="${escape(label)} strength" min="${control.minimum}" max="${control.maximum}" step="${control.step}" value="${strength}" ${disabled ? "disabled" : ""} /><span class="quantity-spinner"><button type="button" class="quantity-arrow" data-lora-step="1" aria-label="Increase ${escape(label)} strength" ${disabled || steppedLoraStrength(control, entry.strength, 1) <= entry.strength ? "disabled" : ""}>▲</button><button type="button" class="quantity-arrow" data-lora-step="-1" aria-label="Decrease ${escape(label)} strength" ${disabled || steppedLoraStrength(control, entry.strength, -1) >= entry.strength ? "disabled" : ""}>▼</button></span></div><button type="button" class="icon-button lm-summary-remove" data-lora-disable aria-label="Disable ${escape(label)}" title="Disable ${escape(label)}" ${disabled ? "disabled" : ""}>×</button><span id="${inputId}-error" class="lm-summary-error" role="alert" hidden></span>` : `<span class="lm-summary-strength">${strength}</span>`;
-      return `<li class="lm-summary-item${editable ? " is-editable" : ""}" data-lora-summary-id="${escape(entry.id)}"><span class="lm-summary-thumb">${url ? `<img src="${escape(url)}" alt="" />` : '<span aria-hidden="true">✧</span>'}</span><span class="lm-summary-name" title="${escape(label)}">${escape(label)}</span>${controls}</li>`;
+      const media = url ? `<img src="${escape(url)}" alt="" />` : '<span aria-hidden="true">✧</span>';
+      // Only the editable list is installed with a copy handler, so the read-only
+      // summary keeps a plain tile rather than a button that does nothing.
+      const copyHint = `<span class="lm-summary-copy-hint" aria-hidden="true">${icon("duplicate")}</span>`;
+      const thumb = editable
+        ? `<button type="button" class="lm-summary-thumb" data-lora-copy-trigger="${escape(entry.id)}" aria-label="Copy trigger word for ${escape(label)}" title="Copy trigger word for ${escape(label)}">${media}${copyHint}</button>`
+        : `<span class="lm-summary-thumb">${media}</span>`;
+      return `<li class="lm-summary-item${editable ? " is-editable" : ""}" data-lora-summary-id="${escape(entry.id)}">${thumb}<span class="lm-summary-name" title="${escape(label)}">${escape(label)}</span>${controls}</li>`;
     }).join("")}</ul>`
     : '<p class="lm-empty-summary">No LoRAs enabled.</p>';
   return `<div class="lora-stack" data-lora-control="${escape(control.id)}" ${editable ? "data-lora-editable" : ""} aria-live="polite">${summary}</div>`;
 }
 
-export function installLoraStackControls(root, { context, apply }) {
+export function installLoraStackControls(root, {
+  context,
+  apply,
+  copyText = async () => { throw new Error("Clipboard access is unavailable in this browser."); },
+  notify = () => {},
+}) {
   let committing = false;
   const details = (element) => {
     const stack = element.closest("[data-lora-editable]");
@@ -161,6 +183,34 @@ export function installLoraStackControls(root, { context, apply }) {
       if (status) status.textContent = `${candidate(strength).filter((entry) => entry.strength > 0).length} active`;
     } finally { committing = false; }
   }
+  const copyTimers = new WeakMap();
+  async function copyTrigger(tile) {
+    // A panel installation also listens on the rerun dialog's list, whose context
+    // belongs to that dialog's own installation; without one, this listener is not
+    // the handler for the click and stays silent.
+    const ctx = details(tile);
+    if (!ctx) return;
+    const item = ctx.control.items.find((entry) => entry.id === ctx.id);
+    const { text, source } = loraTriggerWord(item);
+    if (!text) { notify("Could not copy a trigger word for this LoRA.", "error"); return; }
+    try {
+      await copyText(text);
+    } catch {
+      notify("Could not copy to the clipboard. Clipboard access is unavailable in this browser.", "error");
+      return;
+    }
+    // The tile keeps the confirmation at the place it was earned; the toast names
+    // the LoRA rather than the phrase, which may run to a thousand characters.
+    if (tile.isConnected) {
+      tile.classList.add("is-copied");
+      window.clearTimeout(copyTimers.get(tile));
+      copyTimers.set(tile, window.setTimeout(() => tile.classList.remove("is-copied"), 1200));
+    }
+    const label = item.label?.trim() || ctx.id;
+    notify(source === "verified"
+      ? `Trigger word for ${label} copied.`
+      : `No trigger word is published for ${label}, so its title was copied.`, "success");
+  }
   root.addEventListener("pointerdown", (event) => {
     // A same-row action consumes the typed value directly, including zero.
     const button = event.target.closest("[data-lora-editable] [data-lora-step], [data-lora-editable] [data-lora-disable]");
@@ -168,7 +218,11 @@ export function installLoraStackControls(root, { context, apply }) {
   });
   root.addEventListener("click", (event) => {
     const button = event.target.closest("[data-lora-editable] [data-lora-step], [data-lora-editable] [data-lora-disable]");
-    if (button) commit(button, button.hasAttribute("data-lora-disable") ? "disable" : button.dataset.loraStep);
+    if (button) { commit(button, button.hasAttribute("data-lora-disable") ? "disable" : button.dataset.loraStep); return; }
+    const tile = event.target.closest("[data-lora-editable] [data-lora-copy-trigger]");
+    // Copying reads the published catalog only: no strength, order, Subject name,
+    // or draft is touched, so a click is safe whatever the panel is busy with.
+    if (tile) void copyTrigger(tile);
   });
   root.addEventListener("focusout", (event) => {
     if (event.target.matches("[data-lora-editable] [data-lora-strength]")) commit(event.target, "type", event.relatedTarget);

@@ -18,6 +18,9 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
     window.serverImages = structuredClone(window.images);
     window.posts = [];
     window.notifications = [];
+    window.copies = [];
+    window.toasts = [];
+    window.extraToasts = [];
     window.sourceKey = "source";
     window.revision = { publication_id: "one" };
     window.subject = "Original subject";
@@ -25,9 +28,15 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
     const root = document.querySelector("#app");
     root.innerHTML = `<main style="padding:16px;max-width:600px"><label>Subject name <input id="subject_name" value="Original subject"></label><section class="control-section is-expanded"><div class="control-section-header"><button class="control-section-trigger" aria-expanded="true">LoRAs</button><span class="control-section-status">0 active</span><div class="prompt-field-actions control-section-actions"><button type="button" class="icon-button prompt-editor-launch" data-lora-open data-lora-control-id="loras" aria-label="Open LoRA manager"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div></div><div class="control-section-body"><div id="lora-summary"></div></div></section></main><dialog id="lora-manager-dialog" class="lm-dialog" aria-labelledby="lora-manager-title"></dialog>`;
     window.renderLoras();
+    window.installLoraStackControls = installLoraStackControls;
     installLoraStackControls(root, {
       context: () => ({ control, sourceKey: window.sourceKey, values: window.stack, memory: window.memory }),
       apply: (_id, values, memory) => { window.stack = structuredClone(values); window.memory = structuredClone(memory); },
+      copyText: async (text) => {
+        if (window.copyFails) throw new Error("Clipboard access is unavailable in this browser.");
+        window.copies.push(text);
+      },
+      notify: (message, kind) => window.toasts.push({ message, kind }),
     });
     window.manager = installLoraManager(root, {
       api: async (path, options) => {
@@ -397,6 +406,72 @@ test("typing zero and tabbing moves focus out of the removed row", async ({ page
   await page.getByRole("button", { name: "Disable Beta" }).focus();
   await page.keyboard.press("Space");
   await expect(page.getByRole("button", { name: "Open LoRA manager" })).toBeFocused();
+});
+
+const copyTile = (page, name) => page.getByRole("button", { name: `Copy trigger word for ${name}`, exact: true });
+
+test("a loaded LoRA's icon copies its trigger word, or its title when none is published", async ({ page }) => {
+  await mount(page);
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  const before = await page.evaluate(() => structuredClone(window.stack));
+
+  await copyTile(page, "Alpha").click();
+  expect(await page.evaluate(() => window.copies)).toEqual(["AlphaCharacter"]);
+  expect(await page.evaluate(() => window.toasts.at(-1))).toEqual({ message: "Trigger word for Alpha copied.", kind: "success" });
+  await expect(page.locator('[data-lora-summary-id="a"] .lm-summary-thumb')).toHaveClass(/is-copied/);
+
+  await copyTile(page, "Beta").click();
+  expect(await page.evaluate(() => window.copies)).toEqual(["AlphaCharacter", "Beta"]);
+  expect(await page.evaluate(() => window.toasts.at(-1))).toEqual({
+    message: "No trigger word is published for Beta, so its title was copied.", kind: "success",
+  });
+
+  await copyTile(page, "Beta").focus();
+  await page.keyboard.press("Enter");
+  expect(await page.evaluate(() => window.copies)).toEqual(["AlphaCharacter", "Beta", "Beta"]);
+
+  // The panel's installation also hears clicks bubbling out of a list owned by
+  // another installation, where its own context is deliberately null: it must stay
+  // silent rather than report a copy it did not make.
+  await page.evaluate(() => {
+    window.installLoraStackControls(document.querySelector("#app"), {
+      context: () => null,
+      apply: () => {},
+      copyText: async () => { throw new Error("This listener does not own the row."); },
+      notify: (message, kind) => window.extraToasts.push({ message, kind }),
+    });
+  });
+  await copyTile(page, "Alpha").click();
+  expect(await page.evaluate(() => window.copies)).toEqual(["AlphaCharacter", "Beta", "Beta", "AlphaCharacter"]);
+  expect(await page.evaluate(() => window.extraToasts)).toEqual([]);
+
+  // Copying reads the published catalog only: the stack is exactly as it was.
+  expect(await page.evaluate(() => window.stack)).toEqual(before);
+
+  const copied = await page.evaluate(() => window.copies.length);
+  await page.evaluate(() => { window.copyFails = true; });
+  await copyTile(page, "Alpha").click();
+  expect(await page.evaluate(() => window.copies.length)).toBe(copied);
+  expect(await page.evaluate(() => window.toasts.at(-1))).toEqual({
+    message: "Could not copy to the clipboard. Clipboard access is unavailable in this browser.", kind: "error",
+  });
+  expect(await page.evaluate(() => window.stack)).toEqual(before);
+  await expect(page.locator(".lm-summary-thumb.is-copied")).toHaveCount(0);
+});
+
+test("an icon click commits a typed strength and changes nothing else", async ({ page }) => {
+  await mount(page);
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  const strength = page.getByRole("spinbutton", { name: "Alpha strength", exact: true });
+  await strength.fill("0.65");
+  await copyTile(page, "Alpha").click();
+  await expect(strength).toHaveValue("0.65");
+  expect(await page.evaluate(() => [window.copies, window.stack[0].strength])).toEqual([["AlphaCharacter"], 0.65]);
 });
 
 test("manager fits a narrow viewport with all rows and actions reachable", async ({ browser }, testInfo) => {

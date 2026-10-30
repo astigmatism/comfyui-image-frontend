@@ -499,6 +499,8 @@ function bindDelegatedEvents() {
         values: state.parameters[id], memory: state.loraStrengthMemory[id] || {} } : null;
     },
     apply: (id, values, memory, sourceKey) => commitPanelLoras(id, values, memory, sourceKey, { refreshPanel: false }),
+    copyText: writeClipboardText,
+    notify: toast,
   });
   galleryGroups = bindGalleryGroups(root, {
     getState: () => state, render: renderGallery, notify: toast,
@@ -658,6 +660,8 @@ function promptRerunController() {
     savedSelections: (source) => modelSelectionsForSource(source),
     submit: submitPromptRerun,
     onClose: () => gallerySelection?.restoreFocus(),
+    copyText: writeClipboardText,
+    notify: toast,
   });
   promptRerun = { dialog, controller };
   return controller;
@@ -1788,6 +1792,31 @@ async function readClipboardText() {
     throw new Error("Clipboard access is unavailable in this browser.");
   }
   return String(await navigator.clipboard.readText() ?? "");
+}
+
+// Writing has a fallback the read path does not need: a plain-http origin has no
+// Clipboard API at all, and copying a trigger word by hand from a select is the
+// worse experience. execCommand is deprecated but still the only route there.
+async function writeClipboardText(text) {
+  const value = String(text ?? "");
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.append(field);
+  field.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    field.remove();
+  }
+  if (!copied) throw new Error("Clipboard access is unavailable in this browser.");
 }
 
 async function pastePromptTextFromClipboard(button) {
