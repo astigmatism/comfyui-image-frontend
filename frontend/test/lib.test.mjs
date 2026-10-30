@@ -819,6 +819,41 @@ test("recall preserves the current thinking mode when the recall carries none", 
   assert.equal(recalled.promptAssistant.creativeDirection, "historical direction");
 });
 
+test("recall leaves Creative Direction and Prompt Generation switched off", () => {
+  const state = {
+    activeProfileId: "current",
+    controls: { "prompt.text": "draft" },
+    autoGenerateCreativeDirection: true,
+    promptGeneration: {
+      enabled: true,
+      active_source: "prompt-generator",
+      sources: { "prompt-generator": { values: { "prompt.text": "seed" } } },
+      previous_assistant_mode: "create",
+    },
+    promptAssistant: { available: true, mode: "refine" },
+  };
+  const recalled = overwriteWithRecall(state, {
+    source_key: "krea",
+    parameters: { "prompt.text": "historical prompt" },
+    prompt_assistant: { mode: "create", creative_direction: "historical direction" },
+  });
+  // Either switch would rewrite the prompt on Generate, so both come back off
+  // whatever the recalled generation ran with.
+  assert.equal(recalled.autoGenerateCreativeDirection, false);
+  assert.equal(recalled.promptGeneration.enabled, false);
+  // The prompt generator keeps its configuration, so re-enabling resumes the setup.
+  assert.equal(recalled.promptGeneration.active_source, "prompt-generator");
+  assert.deepEqual(recalled.promptGeneration.sources, state.promptGeneration.sources);
+  assert.equal(recalled.promptGeneration.previous_assistant_mode, "create");
+  // With Prompt Generation off, the historical mode survives instead of being forced to refine.
+  assert.equal(recalled.promptAssistant.mode, "create");
+  assert.equal(recalled.promptAssistant.creativeDirection, "historical direction");
+  // A panel state that never carried prompt generation still ends up disabled.
+  const bare = overwriteWithRecall({ controls: {} }, { source_key: "krea", parameters: {} });
+  assert.equal(bare.autoGenerateCreativeDirection, false);
+  assert.deepEqual(bare.promptGeneration, { enabled: false });
+});
+
 test("recall never restores a historical runtime and only warns when no worker is free", () => {
   // A removed or offline historical worker is irrelevant: the pool binds a
   // worker to the next image at dispatch.

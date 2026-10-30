@@ -1207,6 +1207,13 @@ export function overwriteWithRecall(current, recall, currentContract = null) {
       },
       error: null,
     },
+    // Both prompt-rewriting switches come back off whatever the generation ran
+    // with: either one would turn Generate into a fresh composition instead of a
+    // re-send of the restored prompt. Everything else about Creative Direction
+    // above is still restored, and the prompt generator keeps its per-source
+    // configuration so re-enabling the switch resumes the old setup.
+    autoGenerateCreativeDirection: false,
+    promptGeneration: { ...(current.promptGeneration || {}), enabled: false },
     fieldErrors: {},
     formError: null,
   };

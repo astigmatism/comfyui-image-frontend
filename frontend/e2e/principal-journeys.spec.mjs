@@ -2937,8 +2937,10 @@ test("recall restores the creative direction section from the generation snapsho
   await expect(card).toHaveClass(/status-succeeded/);
 
   // Change the panel after generation so a stale recall would show the wrong values.
+  const promptField = page.getByRole("textbox", { name: "Prompt", exact: true });
   await direction.fill("changed after generation");
   await instructions.fill("Changed instructions that were never used.");
+  await promptField.fill("changed prompt that was never used");
   await thinking.check();
   await ensureControlSectionExpanded(page, "Seed Randomizer");
   const seedRandom = page.getByLabel("Random seed", { exact: true });
@@ -2946,6 +2948,15 @@ test("recall restores the creative direction section from the generation snapsho
   await seedRandom.uncheck();
   await seedRandom.check();
   await expect(seedValue).toBeDisabled();
+
+  // Both prompt-rewriting switches go on, so recall has enablement to undo:
+  // either one left on would compose a different prompt on the next Generate.
+  const creativeDirectionSwitch = page.getByRole("switch", { name: "Use Creative Direction", exact: true });
+  const promptGenerationSwitch = page.getByRole("switch", { name: "Use Prompt Generation", exact: true });
+  await creativeDirectionSwitch.check();
+  await promptGenerationSwitch.check();
+  await expect(creativeDirectionSwitch).toBeChecked();
+  await expect(promptGenerationSwitch).toBeChecked();
 
   const recallResponsePromise = page.waitForResponse(
     (response) =>
@@ -2974,8 +2985,16 @@ test("recall restores the creative direction section from the generation snapsho
   await expect(seedValue).toBeEnabled();
   await expect(seedValue).toHaveValue(recalled.parameters.seed);
 
+  // Both switches come back off even though they were on, and the exact final
+  // prompt survives, so the next Generate re-sends this request unchanged.
+  await expect(creativeDirectionSwitch).not.toBeChecked();
+  await expect(promptGenerationSwitch).not.toBeChecked();
+  await expect(promptField).toHaveValue("a lighthouse standing in rough seas");
+
   // A missing historical publication uses migration but keeps the same seed presentation.
   await seedRandom.check();
+  await creativeDirectionSwitch.check();
+  await promptGenerationSwitch.check();
   const historicalRecall = await (await page.request.get(`/api/generations/${accepted.id}/recall`)).json();
   await page.route(`**/api/generations/${accepted.id}/recall`, async (route) => {
     await route.fulfill({
@@ -2986,6 +3005,8 @@ test("recall restores the creative direction section from the generation snapsho
   await expect(seedRandom).toBeChecked();
   await expect(seedValue).toBeDisabled();
   await expect(seedValue).toHaveValue(recalled.parameters.seed);
+  await expect(creativeDirectionSwitch).not.toBeChecked();
+  await expect(promptGenerationSwitch).not.toBeChecked();
 });
 
 test("cancelling a queued generation removes its card and history", async ({ page }) => {

@@ -6487,6 +6487,9 @@ async function refreshGeneration(
   }
 }
 
+const RECALL_REWRITERS_OFF_MESSAGE =
+  "Creative Direction and Prompt Generation are off, so Generate reuses the same prompt.";
+
 async function recall(id) {
   const recalled = await api(demoReelController?.find(id) ? `${demoReelController.path()}/generations/${id}/recall` : `/api/generations/${id}/recall`);
   if (!recalled.available) {
@@ -6506,6 +6509,7 @@ async function recall(id) {
     state.explicitParameterIds = recalledState.explicitParameterIds;
     state.promptAssistant = recalledState.promptAssistant;
     state.expectations = recalledState.expectations;
+    applyRecalledPromptRewriters(recalledState);
     state.compositionId = null;
     state.serverFieldErrors = {};
     state.formError = null;
@@ -6520,6 +6524,7 @@ async function recall(id) {
       [
         recalled.reason || "Historical settings loaded into the current source.",
         runtimeWarning,
+        RECALL_REWRITERS_OFF_MESSAGE,
       ]
         .filter(Boolean)
         .join(" "),
@@ -6552,6 +6557,7 @@ async function recall(id) {
   state.parameters = applyRecallSeedMode(preRecallParameters, sourceInterface(state.activeSource), state.parameters);
   state.promptAssistant = recalledState.promptAssistant;
   state.expectations = recalledState.expectations;
+  applyRecalledPromptRewriters(recalledState);
   state.compositionId = null;
   state.serverFieldErrors = {};
   state.formError = null;
@@ -6563,10 +6569,27 @@ async function recall(id) {
   closePanel(false);
   document.querySelector("#generation-panel")?.scrollIntoView({ block: "start" });
   toast(
-    runtimeWarning || "Exact historical settings loaded. Press Generate when ready.",
+    [
+      runtimeWarning,
+      "Exact historical settings loaded.",
+      RECALL_REWRITERS_OFF_MESSAGE,
+      "Press Generate when ready.",
+    ]
+      .filter(Boolean)
+      .join(" "),
     runtimeWarning ? "warning" : "success",
   );
   return true;
+}
+
+// Either switch rewrites the prompt the moment Generate is pressed, so a
+// recalled request would stop being the request that made this image. Recall
+// therefore leaves both off and saves that the same way the switches do; the
+// Creative Direction contents above are still restored.
+function applyRecalledPromptRewriters(recalledState) {
+  state.autoGenerateCreativeDirection = recalledState.autoGenerateCreativeDirection;
+  state.promptGeneration = recalledState.promptGeneration;
+  settingsSync?.schedule();
 }
 
 function applyRecalledComfyuiInstance(recalled) {

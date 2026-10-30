@@ -588,6 +588,7 @@ Recall is a core workflow, not a secondary convenience.
 - **RECALL-007:** It MAY restore historical Ollama creative direction and mode inside the collapsed Prompt Assistant, but Generate MUST not call Ollama again.
 - **RECALL-008:** After recall, the user must explicitly press Generate to create a new generation record.
 - **RECALL-009:** A rerun MUST never overwrite or mutate the original history record.
+- **RECALL-021:** Recall MUST leave the **Use Creative Direction** and **Use Prompt Generation** controls switched off irrespective of whether they were enabled when that generation ran, because either one rewrites the prompt on the next Generate, and MUST persist that off state as the account's panel setting so no later settings refresh re-enables it. The Creative Direction contents required by RECALL-007 MUST still be restored, and the switch-off MUST NOT stop the user from deliberately re-enabling either control.
 
 ### 18.2 Requested versus effective controls
 
