@@ -307,13 +307,23 @@ class LoraGroupMembership(Base):
 
 
 class LoraLibraryImage(Base):
-    """One thumbnail per shared LoRA identity, used by every workflow that lists it."""
+    """One display image per shared LoRA identity, derived from that LoRA's Demo Reel.
+
+    The row caches the image the reel's first slot supplies: the earliest favorited
+    one, or the first image in the reel's own display order when nothing there is
+    favorited. ``derived_generation_id``/``derived_artifact_id`` are a derivation
+    marker only. Reconciliation resolves the current source image again and replaces
+    the row whenever the marker no longer matches, so a source image that is deleted
+    or invalidated needs no database reference of its own.
+    """
 
     __tablename__ = "lora_library_images"
 
     lora_identity: Mapped[str] = mapped_column(String(68), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     storage_path: Mapped[str | None] = mapped_column(String(500), unique=True)
+    derived_generation_id: Mapped[str | None] = mapped_column(String(36))
+    derived_artifact_id: Mapped[str | None] = mapped_column(String(36))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

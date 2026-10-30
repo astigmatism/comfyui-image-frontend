@@ -427,7 +427,7 @@ test("rerun source changes survive delayed previews and cancelled dialogs ignore
   await expect(dialog).toBeHidden();
 });
 
-test("sidebar LoRA shortcuts and thumbnail autosaves persist without changing Subject", async ({ page }, testInfo) => {
+test("sidebar LoRA shortcuts persist without changing Subject", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await signInFreshUser(page, "lora.shortcuts");
@@ -459,25 +459,18 @@ test("sidebar LoRA shortcuts and thumbnail autosaves persist without changing Su
   }).toEqual([{ id: "a", strength: 1.15 }, { id: "b", strength: 0 }]);
 
   await panel.getByRole("button", { name: "Open LoRA manager" }).click();
+  // Nothing in the gallery uploads a LoRA picture any more: it is derived from the
+  // LoRA's Demo Reel, so the card menu carries no thumbnail entry and no file input.
   await manager.getByRole("button", { name: "Actions for Alpha" }).click();
-  await manager.getByRole("button", { name: "Add thumbnail…", exact: true }).click();
-  await manager.locator("[data-lora-file]").setInputFiles({ name: "sample.png", mimeType: "image/png",
-    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64") });
-  await expect(manager.locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
-  await manager.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(1);
+  const popover = manager.locator("[data-lora-popover]");
+  await expect(popover.getByRole("button", { name: "Usage details", exact: true })).toBeVisible();
+  await expect(popover.getByRole("button", { name: /thumbnail/i })).toHaveCount(0);
+  await expect(manager.locator('input[type="file"]')).toHaveCount(0);
+  await manager.getByRole("button", { name: "Toggle Beta" }).click();
+  await expect(manager.getByRole("spinbutton")).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page.reload();
   await expect(strength).toHaveValue("1.15");
   await expect(subject).toHaveValue("Keep my subject");
-  await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(1);
-  await panel.getByRole("button", { name: "Open LoRA manager" }).click();
-  await manager.getByRole("button", { name: "Toggle Beta" }).click();
-  await expect(manager.getByRole("spinbutton")).toHaveCount(0);
-  await manager.getByRole("button", { name: "Actions for Alpha" }).click();
-  await manager.getByRole("button", { name: "Remove thumbnail", exact: true }).click();
-  await expect(manager.locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
-  await page.keyboard.press("Escape");
-  await page.reload();
-  await expect(panel.locator('.lm-summary-item')).toHaveCount(1);
-  await expect(panel.locator('.lm-summary-thumb img')).toHaveCount(0);
+  await expect(panel.locator(".lm-summary-item")).toHaveCount(1);
 });

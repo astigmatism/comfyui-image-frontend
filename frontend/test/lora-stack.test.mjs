@@ -86,10 +86,11 @@ test("gallery sorts thumbnails independently of application order and keeps capt
   for (const id of ["a", "b"]) {
     assert.doesNotMatch(markup, new RegExp(`data-lora-range="${id}"|data-lora-number="${id}"`));
   }
-  assert.match(markup, /data-lora-image-change="a"/);
+  // Thumbnails are derived from the Demo Reel, so the gallery offers no upload at all.
+  assert.doesNotMatch(markup, /data-lora-image-change|data-lora-image-remove|data-lora-file/);
   assert.match(markup, /data-lora-handle/);
   assert.match(markup, /Example workflow/);
-  assert.match(markup, /changes save immediately/);
+  assert.match(markup, /A LoRA shows its Demo Reel/);
   assert.match(markup, /Use: &lt;character&gt; &amp; &quot;style&quot;/);
   assert.doesNotMatch(markup, /<script>/);
   assert.doesNotMatch(markup, /Quick pick|Mix &amp; adjust|data-lora-solo/);
@@ -136,7 +137,9 @@ test("the LoRA menu carries Demo Reel only where the caption has no room for it"
   const galleryControl = { ...control, items, default: items.map((item) => ({ id: item.id, strength: 0 })) };
   const values = [{ id: "a", strength: 0 }, { id: "b", strength: 0 }];
   const withoutImage = loraManagerMarkup({ control: galleryControl, values, libraryKey: "family", menuId: "a" });
-  assert.match(withoutImage, /data-lora-details="a">Usage details<\/button>\s*<button type="button" data-lora-demo-reel="a"\s*>Demo Reel<\/button>\s*<button type="button" data-lora-image-change="a"[^>]*>Add thumbnail/);
+  assert.match(withoutImage, /data-lora-details="a">Usage details<\/button>\s*<button type="button" data-lora-demo-reel="a"\s*>Demo Reel<\/button>/);
+  const actions = [...(/<div class="lm-card-popover"[\s\S]*?<\/div>/.exec(withoutImage)?.[0] ?? "").matchAll(/data-lora-([a-z-]+)="a"/g)];
+  assert.deepEqual(actions.map((match) => match[1]), ["details", "demo-reel"]);
   const withImage = loraManagerMarkup({ control: galleryControl, values, images: { a: { image_url: "/api/x", version: "1" } }, libraryKey: "family", menuId: "a" });
   assert.doesNotMatch(withImage, /data-lora-demo-reel="a"\s*>Demo Reel/);
 });

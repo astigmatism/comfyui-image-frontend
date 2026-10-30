@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -46,12 +47,18 @@ from ..schemas import GenerationCreate, SourceRevision
 from .demo_reel_activity import IDLE_SECONDS, SYSTEM_OWNER_ID, record_activity
 from .lora_groups import grouping
 from .lora_library import Library, LibraryMember, catalog_identities, libraries, library_key
+from .lora_thumbnails import refresh as refresh_thumbnails
 from .user_state import lock_user_state
 
 if TYPE_CHECKING:
     from ..container import AppContainer
 
 logger = logging.getLogger(__name__)
+
+# How often the idle loop re-checks every LoRA's display image against its reel. A
+# favorite refreshes its own LoRA immediately, so this only has to catch deletions,
+# invalidations, and settings changes.
+THUMBNAIL_SWEEP_SECONDS = 20.0
 
 
 def digest(value: Any) -> str:
@@ -130,6 +137,7 @@ class DemoReelService:
         self._task: asyncio.Task[None] | None = None
         self._cancellations: set[asyncio.Task[None]] = set()
         self._cancel_keys: set[tuple[str, str]] = set()
+        self._thumbnails_at = 0.0
 
     def config(self, session: Session) -> DemoReelConfig:
         row = session.get(DemoReelConfig, 1)
@@ -518,6 +526,7 @@ class DemoReelService:
             if not config.slots and session.scalar(select(DemoReelEntry.id).limit(1)) is None:
                 session.commit()
                 self.cleanup()
+                self.thumbnails()
                 return []
             candidates, targets = self.reconcile(session, config)
             if self.foreground_requests or self._busy(session):
@@ -597,7 +606,36 @@ class DemoReelService:
                         break
             session.commit()
         self.cleanup()
+        self.thumbnails()
         return targets
+
+    def thumbnails(self, *, force: bool = False) -> None:
+        """Give every LoRA the display image its Demo Reel now supplies.
+
+        Reconciling is idempotent and only rewrites LoRAs whose reel image actually
+        changed, so an interval is enough to converge after a deletion, an
+        invalidation, or a settings change without touching every LoRA each second.
+        """
+
+        now = time.monotonic()
+        if not force and now - self._thumbnails_at < THUMBNAIL_SWEEP_SECONDS:
+            return
+        self._thumbnails_at = now
+        try:
+            refresh_thumbnails(self.container)
+        except Exception:
+            # A LoRA display image is presentation only: never disturb reel work, and
+            # retry on the next pass instead of waiting out the whole interval.
+            self._thumbnails_at = 0.0
+            logger.exception("demo_reel_thumbnail_sweep_failed")
+
+    def thumbnail(self, library_key: str, lora_identity: str) -> None:
+        """Re-derive one LoRA's display image, as soon as its reel was favorited."""
+
+        try:
+            refresh_thumbnails(self.container, identities={(library_key, lora_identity)})
+        except Exception:
+            logger.exception("demo_reel_thumbnail_refresh_failed")
 
     def cleanup(self) -> None:
         with self.container.db.session_factory() as session:

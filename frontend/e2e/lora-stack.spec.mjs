@@ -16,7 +16,6 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
     const thumb = "data:image/gif;base64,R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
     window.images = Object.fromEntries(control.items.map(({ id }) => [id, { id, version: "a".repeat(64), image_url: thumbnails.includes(id) ? thumb : null }]));
     window.serverImages = structuredClone(window.images);
-    window.posts = [];
     window.notifications = [];
     window.copies = [];
     window.toasts = [];
@@ -41,20 +40,10 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
     window.manager = installLoraManager(root, {
       api: async (path, options) => {
         if (path.includes("/lora-groups/")) return { library_key: "krea2", revision: 0, groups: [{ id: "uncategorized", name: "Uncategorized", system: true }], assignments: {} };
-        if (!options) {
-          if (window.holdLoad) await new Promise((resolve) => { window.finishLoad = resolve; });
-          if (window.failLoad) throw new Error("Offline");
-          return { items: structuredClone(Object.values(window.serverImages)) };
-        }
-        const changes = JSON.parse(options.body.get("changes"));
-        window.posts.push(changes);
-        if (window.holdSave) await new Promise((resolve) => { window.finishSave = resolve; });
-        if (window.rejectSave) throw new Error("Upload rejected");
-        if (window.forceConflict) { const error = new Error("Image changed."); error.code = "lora_image_conflict"; throw error; }
-        for (const change of changes) {
-          if (change.version !== window.serverImages[change.id].version) throw Object.assign(new Error("Image changed"), { code: "lora_image_conflict" });
-          window.serverImages[change.id] = { id: change.id, version: String(window.posts.length).padStart(64, "0"), image_url: change.action === "set" ? `/sample-image-${window.posts.length}.webp` : null };
-        }
+        // A LoRA's picture is derived from its Demo Reel, so reading the picture
+        // metadata is the only image request the manager may make; a write is a bug.
+        if (options) throw new Error(`Unexpected ${options.method || "write"} request to ${path}`);
+        if (window.failLoad) throw new Error("Offline");
         return { items: structuredClone(Object.values(window.serverImages)) };
       },
       context: (_id, owner) => owner === "rerun" ? null : ({ control, sourceKey: window.sourceKey, publicationRevision: window.revision, sourceName: "Sample workflow", values: window.stack, memory: window.memory, images: window.images }),
@@ -210,145 +199,43 @@ test("thumbnail selection preserves scrolling and the card menu does not toggle 
   expect(await content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });
 
-const sample = { name: "sample.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") };
 async function imageMenu(page, label = "Beta") {
   await dialog(page).getByRole("button", { name: `Actions for ${label}`, exact: true }).click();
   return dialog(page).locator("[data-lora-popover]");
 }
-async function uploadImage(page, label = "Beta") {
-  const menu = await imageMenu(page, label);
-  await menu.getByRole("button", { name: /(?:Add|Change) thumbnail/ }).click();
-  await dialog(page).locator("[data-lora-file]").setInputFiles(sample);
-}
 
-test("thumbnail additions, replacements and removals save independently of Cancel and Escape", async ({ page }) => {
-  await mount(page);
+test("a card menu has no thumbnail actions because every picture comes from the Demo Reel", async ({ page }) => {
+  await mount(page, { thumbnails: ["a"] });
   await open(page);
-  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
-  await uploadImage(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  expect(await page.evaluate(() => window.posts.length)).toBe(1);
-  expect(await page.evaluate(() => window.stack.every((entry) => entry.strength === 0))).toBe(true);
-  await open(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] img')).toBeVisible();
-  await uploadImage(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-  await page.keyboard.press("Escape");
-  await open(page);
-  const menu = await imageMenu(page);
-  await menu.getByRole("button", { name: "Remove thumbnail", exact: true }).click();
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-  await dialog(page).getByRole("button", { name: "Cancel and close LoRA manager" }).click();
-  await open(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] img')).toHaveCount(0);
-  expect(await page.evaluate(() => window.posts.flat().map((change) => change.action))).toEqual(["set", "set", "remove"]);
-  expect(await page.evaluate(() => window.posts[1][0].version)).toBe("1".padStart(64, "0"));
+  for (const label of ["Alpha", "Beta"]) {
+    const menu = await imageMenu(page, label);
+    await expect(menu.getByRole("button", { name: "Usage details", exact: true })).toBeVisible();
+    await expect(menu.getByRole("button", { name: /thumbnail/i })).toHaveCount(0);
+    // A LoRA whose reel has not produced a picture yet offers the reel itself instead.
+    await expect(menu.getByRole("button", { name: "Demo Reel", exact: true })).toHaveCount(label === "Beta" ? 1 : 0);
+  }
+  await expect(dialog(page).locator('input[type="file"], [data-lora-file]')).toHaveCount(0);
+  await expect(dialog(page).locator(".lm-image-status")).toHaveCount(0);
+  await expect(dialog(page).locator(".lm-footer-context small")).toHaveText("A LoRA shows its Demo Reel’s first picture.");
+  expect(await page.evaluate(() => window.notifications)).toEqual([]);
 });
 
-test("pending thumbnail saves survive closing and reopening without committing selection edits", async ({ page }) => {
-  await mount(page);
-  await open(page);
-  await page.evaluate(() => { window.holdSave = true; });
-  await uploadImage(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saving…");
-  const menu = await imageMenu(page);
-  await expect(menu.getByRole("button", { name: "Add thumbnail…", exact: true })).toBeDisabled();
-  await page.keyboard.press("Escape");
-  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await open(page);
-  await expect(dialog(page).getByRole("button", { name: "Toggle Alpha" })).toHaveAttribute("aria-pressed", "false");
-  await page.evaluate(() => { window.holdSave = false; window.finishSave(); });
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-  expect(await page.evaluate(() => window.images.b.image_url)).toBe("/sample-image-1.webp");
-});
-
-test("conflicts refresh images without overwriting them or blocking Apply", async ({ page }) => {
-  await mount(page);
-  await open(page);
-  await page.evaluate(() => { window.serverImages.b = { id: "b", version: "c".repeat(64), image_url: "/other-user.webp" }; });
-  await uploadImage(page);
-  await expect(dialog(page).getByRole("alert")).toContainText("changed elsewhere");
-  await expect(dialog(page).locator('[data-lora-id="b"] img')).toHaveAttribute("src", "/other-user.webp");
-  expect(await page.evaluate(() => window.posts.length)).toBe(1);
-  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
-  await dialog(page).getByRole("button", { name: "Apply" }).click();
-  await expect(page.locator(".lm-summary-item")).toHaveCount(1);
-  await open(page);
-  await uploadImage(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-});
-
-test("loading errors allow selection edits and a retry; rejected saves restore the confirmed image", async ({ page }) => {
-  await mount(page);
+test("a failed picture read keeps selection working and retries on demand", async ({ page }) => {
+  await mount(page, { thumbnails: ["a"] });
   await page.evaluate(() => { window.failLoad = true; });
   await open(page);
   await expect(dialog(page).getByRole("alert")).toContainText("Images could not be loaded");
   const menu = await imageMenu(page);
-  await expect(menu.getByRole("button", { name: "Add thumbnail…", exact: true })).toBeDisabled();
-  await page.keyboard.press("Escape");
+  await expect(menu.getByRole("button", { name: /thumbnail/i })).toHaveCount(0);
   await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   await expect(page.locator(".lm-summary-item")).toHaveCount(1);
   await open(page);
-  await page.evaluate(() => { window.failLoad = false; });
+  await expect(dialog(page).getByRole("alert")).toContainText("Images could not be loaded");
+  await page.evaluate(() => { window.failLoad = false; window.serverImages.a.image_url = "/from-the-demo-reel.webp"; });
   await dialog(page).getByRole("button", { name: "Reload images" }).click();
-  await uploadImage(page);
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-  await page.evaluate(() => { window.rejectSave = true; });
-  await uploadImage(page);
-  await expect(dialog(page).getByRole("alert")).toContainText("Upload rejected");
-  await expect(dialog(page).locator('[data-lora-id="b"] img')).toHaveAttribute("src", "/sample-image-1.webp");
-});
-
-test("save failure after closing is reported, and a stale publication cannot update the current cache", async ({ page }) => {
-  await mount(page);
-  await open(page);
-  await page.evaluate(() => { window.holdSave = true; });
-  await uploadImage(page);
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.evaluate(() => { window.rejectSave = true; window.finishSave(); });
-  await expect.poll(() => page.evaluate(() => window.notifications.length)).toBe(1);
-  await page.evaluate(() => { window.rejectSave = false; });
-  await open(page);
-  await uploadImage(page);
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.evaluate(() => {
-    window.revision = { publication_id: "two" };
-    window.images.b.image_url = "/new-publication.webp";
-    window.finishSave();
-  });
-  await expect.poll(() => page.evaluate(() => window.serverImages.b.image_url)).toBe("/sample-image-2.webp");
-  expect(await page.evaluate(() => window.images.b.image_url)).toBe("/new-publication.webp");
-});
-
-test("edits to different thumbnails are serialized without losing either image", async ({ page }) => {
-  await mount(page);
-  await open(page);
-  await page.evaluate(() => { window.holdSave = true; });
-  await uploadImage(page, "Alpha");
-  await uploadImage(page, "Beta");
-  expect(await page.evaluate(() => window.posts.length)).toBe(1);
-  await page.evaluate(() => { window.holdSave = false; window.finishSave(); });
-  await expect(dialog(page).locator('.lm-image-status').filter({ hasText: "Saved" })).toHaveCount(2);
-  expect(await page.evaluate(() => [window.images.a.image_url, window.images.b.image_url])).toEqual(["/sample-image-1.webp", "/sample-image-2.webp"]);
-});
-
-test("a background save keeps an open file chooser attached to its target", async ({ page }) => {
-  await mount(page);
-  await open(page);
-  await page.evaluate(() => { window.holdSave = true; });
-  await uploadImage(page, "Alpha");
-  const menu = await imageMenu(page);
-  await menu.getByRole("button", { name: "Add thumbnail…", exact: true }).click();
-  const fileInput = await dialog(page).locator("[data-lora-file]").elementHandle();
-  await page.evaluate(() => { window.holdSave = false; window.finishSave(); });
-  await expect(dialog(page).locator('[data-lora-id="a"] .lm-image-status')).toHaveText("Saved");
-  expect(await fileInput.evaluate((element) => element.isConnected)).toBe(true);
-  await fileInput.setInputFiles(sample);
-  await expect(dialog(page).locator('[data-lora-id="b"] .lm-image-status')).toHaveText("Saved");
-  expect(await page.evaluate(() => window.posts.map((changes) => changes[0].id))).toEqual(["a", "b"]);
+  await expect(dialog(page).getByRole("alert")).toHaveCount(0);
+  await expect(dialog(page).locator('[data-lora-id="a"] img')).toHaveAttribute("src", "/from-the-demo-reel.webp");
 });
 
 test("sidebar edits step by 0.5, accept fine values, disable and restore remembered strengths", async ({ page }) => {

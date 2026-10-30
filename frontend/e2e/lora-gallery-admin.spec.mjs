@@ -80,6 +80,8 @@ async function newGroup(page, name) {
 test("admin groups save immediately while selection stays a draft", async ({ page }, testInfo) => {
   await mount(page);
   await page.getByRole("button", { name: "Open selector" }).click();
+  // Pictures are derived from Demo Reels, so only the admin's own edits save here.
+  await expect(manager(page).locator(".lm-footer-context small")).toHaveText("Library and group changes save immediately.");
   await manager(page).getByRole("button", { name: "Toggle Beta" }).click();
   await newGroup(page, "Portraits");
   await expect(manager(page).getByText("No LoRAs in this group.", { exact: true })).toBeVisible();

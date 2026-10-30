@@ -210,7 +210,7 @@ its original deadline after expiry and across restart; requeue clears it for the
 
 ## Files and deletion
 
-Uploads, original artifacts, and thumbnails are normal files, not database blobs. Paths are relative to the configured data root and filenames are opaque. Every open/delete resolves the target and rejects paths outside the root. LoRA thumbnails are normalized static WebP files; replacing or removing one updates its shared row and removes the old file after the metadata transaction commits.
+Uploads, original artifacts, and thumbnails are normal files, not database blobs. Paths are relative to the configured data root and filenames are opaque. Every open/delete resolves the target and rejects paths outside the root. LoRA display images are normalized static WebP files derived from Demo Reel results; writing one updates its shared row and removes the superseded file after the metadata transaction commits.
 
 Migration `6e4b9c2a7d15_add_collection_favorites.py` revises `2f8d6a1c4b90` and adds UUID bookmarks with `owner_id`, `collection_id`, and `created_at`. Both foreign keys use `ON DELETE CASCADE`. The unique owner/collection constraint enforces binary favorites; `(owner_id, created_at, id)` supports the mixed feed, and a collection index supports target deletion. Collection and user deletion remove their collection bookmarks automatically; generation favorites likewise cascade on generation or user deletion.
 
@@ -287,6 +287,14 @@ current generation; signatures determine invalidation independently of ordering.
 Failure counts and retry timestamps persist. Actor/key transfer receipts make
 cross-owner copy/move replay safe. Copies explicitly replace both generation and
 artifact ownership and retain independent files.
+
+Migration `7d1a4c8e5b32` adds `derived_generation_id` and `derived_artifact_id` to
+`lora_library_images`. A LoRA's picture is now the Demo Reel first-slot image named by
+that pair; the columns are a derivation marker, not a reference — reconciliation resolves
+the current source image again and replaces the row when the marker no longer matches, so
+deleting an image, invalidating a slot, or removing a LoRA needs no cascade. A row whose
+marker is empty holds a hand-uploaded file from before derivation, which the first
+reconciliation replaces or clears and whose file it then removes.
 
 Shared artifacts remain ordinary generation artifacts under the internal owner;
 reel-specific reads validate current eligibility and final-result membership.

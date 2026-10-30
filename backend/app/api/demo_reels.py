@@ -274,6 +274,10 @@ def action(
         session.rollback()
         container.assets.delete_paths(created_paths)
         raise
+    if payload.action in {"favorite", "unfavorite"}:
+        # A Demo Reel image is what the LoRA library shows as this LoRA's picture, so
+        # a favorite is settled here instead of waiting for the idle sweep.
+        service.thumbnail(library_key, identity)
     return {"generation_ids": copied}
 
 

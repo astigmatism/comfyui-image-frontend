@@ -30,8 +30,9 @@ async function signIn(page) {
   throw new Error("Could not sign in to the local fake application");
 }
 
-// A LoRA with a thumbnail opens its reel from the caption icon; a thumbnail-free
-// LoRA has no caption, so the same action is its menu's Demo Reel entry.
+// A LoRA whose Demo Reel has produced a picture opens that reel from the caption
+// icon; a LoRA without a picture yet has no caption, so the same action is its
+// menu's Demo Reel entry.
 async function openDemoReel(picker, card) {
   const caption = card.getByRole("button", { name: /^Open Demo Reel/ });
   if (await caption.count()) return caption.click();

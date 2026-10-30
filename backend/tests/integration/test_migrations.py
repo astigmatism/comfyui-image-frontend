@@ -28,7 +28,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "c43d89e12a70"
+HEAD_REVISION = "7d1a4c8e5b32"
+DERIVATION_REVISION = "c43d89e12a70"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -735,6 +736,9 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
         for fk in inspect(engine).get_foreign_keys("collection_favorites")
     } == {("users", "CASCADE"), ("collections", "CASCADE")}
 
+    derivation = {column["name"] for column in inspect(engine).get_columns("lora_library_images")}
+    assert {"derived_generation_id", "derived_artifact_id"}.issubset(derivation)
+
     command.downgrade(config, "base")
     assert "users" not in inspect(engine).get_table_names()
 
@@ -742,6 +746,58 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     assert revision == HEAD_REVISION
+    engine.dispose()
+
+
+def test_thumbnail_derivation_round_trip_keeps_a_hand_uploaded_picture(tmp_path):
+    """Derivation columns must never orphan the file a hand-uploaded row points at.
+
+    The first reconciliation after this migration replaces those rows, so the
+    upgrade has to leave them readable and the downgrade has to leave them alone.
+    """
+
+    identity = "lr1_" + "a" * 64
+    picture = "lora-images/hand-uploaded.webp"
+    path = tmp_path / "thumbnail-derivation.db"
+    config = _config(path)
+    command.upgrade(config, DERIVATION_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO lora_library_images "
+                "(lora_identity, revision, storage_path, updated_at) VALUES "
+                "(:identity, 3, :picture, '2026-01-01 00:00:00+00')"
+            ),
+            {"identity": identity, "picture": picture},
+        )
+
+    def stored() -> tuple:
+        with engine.connect() as connection:
+            return tuple(
+                connection.execute(
+                    text(
+                        "SELECT revision, storage_path, derived_generation_id, derived_artifact_id "
+                        "FROM lora_library_images"
+                    )
+                ).one()
+            )
+
+    command.upgrade(config, "head")
+    # The uploaded picture is kept: reconciliation reads it, then replaces and deletes it.
+    assert stored() == (3, picture, None, None)
+
+    command.downgrade(config, DERIVATION_REVISION)
+    columns = {column["name"] for column in inspect(engine).get_columns("lora_library_images")}
+    assert {"derived_generation_id", "derived_artifact_id"}.isdisjoint(columns)
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT storage_path FROM lora_library_images")).scalar_one()
+            == picture
+        )
+
+    command.upgrade(config, "head")
+    assert stored() == (3, picture, None, None)
     engine.dispose()
 
 

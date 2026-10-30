@@ -91,12 +91,35 @@ workflow changes invalidate affected results and require recipe review and Save.
 If the rating account disappears, generation blocks and existing images remain
 available until an administrator chooses a replacement account.
 
+## LoRA display picture
+
+The library picture of a LoRA is one of these images: the earliest image any signed-in
+account has favorited in the reel's **first prompt slot**, or, while nothing in that
+slot is favorited, the slot's own first image — slot order, then the rating account's A
+then B checkpoint order. A later slot never supplies it, and making another slot first
+moves the picture to that slot.
+
+Nothing is uploaded or deleted by hand. A picture appears as soon as the first slot
+holds an image, follows a favorite the moment it is favorited or removed, and goes away
+when that image is deleted or invalidated, when the LoRA leaves the library, or when the
+first slot is emptied. Favorites stay private to each account; the picture they choose
+is shared, because a LoRA's picture belongs to its shared identity.
+
+The LoRA gallery draws a LoRA as a card while it has a picture and as a compact row
+while it does not. Reconciling pictures is presentation work: it runs after reel
+reconciliation on the idle loop, rewrites only LoRAs whose source image actually
+changed, and never interrupts or fails reel work. See
+[LoRA display images](api.md#shared-lora-images).
+
 ## Storage and access
 
 Migration `c43d89e12a70` adds `users.is_system`, `demo_reel_config`, `demo_reels`,
 `demo_reel_entries`, and `demo_reel_transfers`. Configuration stores ordered slots,
 family recipes and overrides as revision-checked JSON. Entries uniquely identify
 each reel/slot/checkpoint combination, with durable failure/backoff state.
+Migration `7d1a4c8e5b32` adds the two columns by which a LoRA's display image names
+the reel image it was made from; that row is a cache rebuilt from these entries and
+never something the reel itself depends on.
 
 Generations, hidden collections, and artifacts use a protected internal account.
 It cannot sign in, be reset/deleted, or appear in account-management choices.

@@ -25,7 +25,6 @@ export function loraPublicationRevisionMatches(first, second) {
 export function installLoraManager(root, { api, context, apply, onImages, notify = () => {}, isAdmin = () => false, adminController = null, onDemoReel = () => {}, onDemoSettings = () => {} }) {
   let draft = null;
   let returnFocus = null;
-  let fileTarget = null;
   let dragId = null;
   let touchDrag = null;
   let refreshingLibrary = false;
@@ -44,16 +43,6 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     for (const owner of ["panel", "rerun"]) {
       const ctx = context(store.controlId, owner);
       if (matches(store, ctx) && JSON.stringify(ctx.images || {}) !== JSON.stringify(store.images)) onImages(store.sourceKey, store.controlId, structuredClone(store.images), owner);
-    }
-  };
-  // Thumbnails are shared by every workflow that lists the LoRA, so a saved change
-  // makes other workflows' cached image lists stale; they reload when next opened.
-  const forgetOtherStores = (store) => {
-    for (const [key, other] of imageStores) {
-      if (other !== store && !other.loading && !Object.values(other.states || {}).some((item) => item?.saving)) {
-        other.active = false;
-        imageStores.delete(key);
-      }
     }
   };
   function loadImages(store) {
@@ -78,51 +67,6 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     refreshImages(store);
     return store.loading;
   }
-  function saveImage(id, action, file = null) {
-    const session = draft;
-    const store = session?.imageStore;
-    if (!store?.loaded || store.loading || store.states[id]?.saving) return;
-    if (!session.management && !matches(store, context(session.control.id, session.owner))) {
-      store.loadError = "The workflow changed. Reopen the LoRA manager.";
-      refreshImages(store);
-      return;
-    }
-    const preview = file ? URL.createObjectURL(file) : null;
-    const version = store.images[id]?.version;
-    store.states[id] = { saving: true, preview };
-    refreshImages(store);
-    // Serialize mutations because every response includes the entire image catalog.
-    store.queue = store.queue.then(async () => {
-      try {
-        if (!store.active || !store.loaded) throw new Error("Reload images before trying again.");
-        if (!version) throw new Error("Image versions are unavailable. Reload images and try again.");
-        const change = { id, version, action };
-        const form = new FormData();
-        if (file) { change.file_key = "image_0"; form.append("image_0", file); }
-        form.append("changes", JSON.stringify([change]));
-        const source = store.imageSources?.[id] || { sourceKey: store.sourceKey, controlId: store.controlId };
-        const result = await api(loraImagePath(source.sourceKey, source.controlId), { method: "POST", body: form });
-        if (!store.active) return;
-        store.images = { ...store.images, ...Object.fromEntries((result.items || []).map((item) => [item.id, item])) };
-        store.states[id] = { message: "Saved" };
-        publishImages(store);
-        forgetOtherStores(store);
-      } catch (error) {
-        const conflict = error.code === "lora_image_conflict";
-        const message = conflict
-          ? "This image changed elsewhere. Review the latest image and try your edit again."
-          : `Image was not saved: ${error.message || "Try again."}`;
-        // Reconcile even a lost response: the server may have committed the upload.
-        if (store.active) await loadImages(store);
-        store.states[id] = { error: true, message };
-        if (!dialog()?.open || draft?.imageStore !== store) notify(message, "error");
-      } finally {
-        if (preview) URL.revokeObjectURL(preview);
-        if (store.states[id]?.saving) delete store.states[id];
-        refreshImages(store);
-      }
-    });
-  }
   const render = (focus = null) => {
     if (!draft) return;
     const target = dialog();
@@ -138,11 +82,9 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     const editor = target.querySelector(".lm-editor");
     const editorKey = editor?.dataset.editorKey;
     const nextEditorKey = JSON.stringify(draft.panel);
-    const markup = loraManagerMarkup({ ...draft, thumbnailScale, admin: isAdmin(), adminController, images: draft.imageStore.images, imageStates: draft.imageStore.states, imagesLoading: !draft.imageStore.loaded || Boolean(draft.imageStore.loading), imageError: draft.imageStore.loadError });
+    const markup = loraManagerMarkup({ ...draft, thumbnailScale, admin: isAdmin(), adminController, images: draft.imageStore.images, imageError: draft.imageStore.loadError });
     const frame = target.querySelector(".lm-dialog-frame");
     if (frame) {
-      // Keep the file input alive if another thumbnail finishes saving while
-      // the native file chooser is open.
       const template = document.createElement("template");
       template.innerHTML = markup;
       frame.replaceWith(template.content.querySelector(".lm-dialog-frame"));
@@ -175,7 +117,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     let store = imageStores.get(key);
     if (!store) {
       store = { key, sourceKey: ctx.sourceKey, controlId: ctx.control.id, imageSources: ctx.imageSources, active: true,
-        images: structuredClone(ctx.images || {}), states: {}, loaded: false, loading: null, loadError: "", queue: Promise.resolve() };
+        images: structuredClone(ctx.images || {}), loaded: false, loading: null, loadError: "" };
       imageStores.set(key, store);
     }
     return store;
@@ -212,7 +154,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     dialog().showModal();
     dialog().querySelector("[data-lora-toggle]")?.focus({ preventScroll: true });
     const session = draft;
-    await Promise.all([loadGroups(session), !Object.values(imageStore.states).some((state) => state.saving) ? loadImages(imageStore) : Promise.resolve()]);
+    await Promise.all([loadGroups(session), loadImages(imageStore)]);
     if (draft === session && isAdmin() && adminController) await adminController.initialize(session.libraryKey);
   }
   function configureCancel() {
@@ -396,19 +338,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
       draft.values = draft.values.map((entry) => ({ id: entry.id, strength: 0 }));
       render(); return;
     }
-    if (event.target.closest("[data-lora-images-reload]")) {
-      if (!Object.values(draft.imageStore.states).some((state) => state.saving)) void loadImages(draft.imageStore);
-      return;
-    }
-    const image = event.target.closest("[data-lora-image-change]");
-    if (image && !image.disabled) {
-      fileTarget = { id: image.dataset.loraImageChange, session: draft };
-      draft.menuId = null;
-      dialog().querySelector("[data-lora-file]")?.click();
-      return;
-    }
-    const remove = event.target.closest("[data-lora-image-remove]");
-    if (remove && !remove.disabled) { draft.menuId = null; saveImage(remove.dataset.loraImageRemove, "remove"); return; }
+    if (event.target.closest("[data-lora-images-reload]")) { void loadImages(draft.imageStore); return; }
     if (draft.menuId && !event.target.closest("[data-lora-popover]")) { draft.menuId = null; render(); }
   });
   root.addEventListener("submit", (event) => {
@@ -433,20 +363,6 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (event.target.matches("[data-lora-library-family]") && !adminController?.state.busy) {
       adminController.selectLibrary(event.target.value);
       void showManagement().catch((error) => { if (draft) { draft.error = error.message; render(); } });
-      return;
-    }
-    const fileInput = event.target.closest("[data-lora-file]");
-    if (fileInput) {
-      const file = fileInput.files?.[0];
-      fileInput.value = "";
-      if (!file || !fileTarget || fileTarget.session !== draft) return;
-      const id = fileTarget.id;
-      fileTarget = null;
-      if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-        draft.imageStore.states[id] = { error: true, message: "Choose a PNG, JPEG, or WebP image." };
-        render(); return;
-      }
-      saveImage(id, "set", file);
       return;
     }
   });
@@ -533,7 +449,6 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     const restoreFocus = document.activeElement === document.body || event.target.contains(document.activeElement);
     const controlId = draft?.control.id;
     const owner = draft?.owner;
-    fileTarget = null;
     managementToken += 1;
     draft = null;
     if (!restoreFocus) return;

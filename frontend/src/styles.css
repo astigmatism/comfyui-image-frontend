@@ -6271,9 +6271,6 @@ button.lm-summary-thumb:hover {
 .lm-caption .icon-button { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; }
 .lm-caption .icon-button:disabled { opacity: .4; }
 .lm-menu-button { font-size: 0.9rem; }
-.lm-image-status { display: block; color: var(--muted); font-size: 0.75rem; padding: 0 12px 8px; overflow-wrap: anywhere; }
-.lm-image-status:empty { display: none; }
-.lm-image-status.is-error { color: var(--danger); }
 /* A LoRA without a thumbnail is an on/off switch, so it is one line in a
    compact list rather than a card the size of a portrait. */
 .lm-minimal-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--lm-minimal-size, 240px)), 1fr)); gap: 6px 12px; align-items: start; padding: 0; margin: 0; list-style: none; }
@@ -6284,7 +6281,6 @@ button.lm-summary-thumb:hover {
 .lm-card-minimal .lm-card-name { flex: 1; }
 .lm-card-minimal .lm-selection-mark { position: static; flex: 0 0 auto; width: 20px; height: 20px; font-size: 0.7rem; }
 .lm-card-minimal .lm-menu-button { width: 28px; height: 28px; font-size: 0.85rem; }
-.lm-card-minimal .lm-image-status { flex: 1 0 100%; padding: 0 0 2px; }
 .lm-group-empty { font-size: 0.8rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: 12px; }
 /* Inline glyph icons, drawn with the same stroke treatment as the rest of the
    application's icon buttons. */

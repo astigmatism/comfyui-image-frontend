@@ -102,7 +102,6 @@ Items follow deployment-configuration order. `configuration_mode` is `explicit` 
 | `GET` | `/api/workflows` | List current ready, cached/offline, and known unavailable publication summaries |
 | `GET` | `/api/workflows/{source_key}` | Get the selected source's allowlisted public interface |
 | `GET` | `/api/workflows/{source_key}/lora-images/{control_id}` | Get versioned shared images for one published `lora_stack` control |
-| `POST` | `/api/workflows/{source_key}/lora-images/{control_id}` | Atomically set/remove selected LoRA images with per-item version checks |
 | `GET` | `/api/workflows/{source_key}/lora-images/{control_id}/{item_id}/content?v={version}` | Read one authenticated WebP thumbnail (kept for open editors; serves the library image) |
 | `GET` | `/api/lora-library/images/{lora_identity}/content?v={version}` | Read the shared WebP thumbnail of one LoRA identity |
 | `GET` | `/api/services` | Restrained ComfyUI/Ollama availability state |
@@ -150,7 +149,7 @@ Only one LoRA operation runs at a time. Reusing the same idempotency key for a d
 
 ### Shared LoRA images
 
-Image metadata is separate from the public workflow interface and generation parameters. A signed-in user may read or update images for LoRAs in the selected workflow's published `lora_stack` catalog. The lookup returns every published item in catalog order:
+Image metadata is separate from the public workflow interface and generation parameters. A signed-in user may read the images of the LoRAs in the selected workflow's published `lora_stack` catalog. The lookup returns every published item in catalog order:
 
 ```json
 {
@@ -161,16 +160,7 @@ Image metadata is separate from the public workflow interface and generation par
 }
 ```
 
-To save staged changes, send one `multipart/form-data` POST with a `changes` JSON field and a named file part for each `set` action. Example `changes` value:
-
-```json
-[
-  {"id": "tifa", "version": "<version-from-GET>", "action": "set", "file_key": "image_0"},
-  {"id": "claire", "version": "<version-from-GET>", "action": "remove"}
-]
-```
-
-The multipart part named `image_0` contains the local file. Static PNG, JPEG, and WebP files are accepted within the configured upload byte and pixel limits; the server stores only a small normalized WebP thumbnail. The request requires the session CSRF header and returns the same shape as the metadata GET. The batch is conditional on every item's opaque `version`. If any changed item has a stale version, the entire update returns HTTP 409 with `lora_image_conflict`; the client must reload and let the user review the latest images. Unknown control or catalog IDs and malformed parts are rejected. Content URLs require authentication and use a versioned private cache policy. Images belong to the LoRA's shared identity (a hash of its private model file), so every workflow that lists the LoRA shows the same image and a change in one workflow appears in all of them. Republishing never hides an image; only a verified LoRA removal does.
+Nothing is uploaded. A LoRA's image is derived from that LoRA's [Demo Reel](demo-reel.md): the earliest favorited image of the reel's first prompt slot, or that slot's first image when nothing in it is favorited. `services/lora_thumbnails.py` is the only writer of `lora_library_images`; the Demo Reel idle loop reconciles every LoRA, and favoriting inside a reel refreshes that LoRA immediately. An item stays `image_url: null` until its reel's first slot holds an image, and its `version` is an opaque token that changes exactly when the image does, so a replaced picture reaches already open browsers without a reload hint. Content URLs require authentication and use a versioned private cache policy. Images belong to the LoRA's shared identity (a hash of its private model file), so every workflow that lists the LoRA shows the same image. Republishing never hides an image; only a verified LoRA removal does.
 
 The `instance_id` on a workflow summary identifies its authoritative catalog and execution service: the image assignment for `/api/workflows`, the prompt assignment for `/api/workflows?output_kind=text`. Other copies appear only in safe `replicas` metadata. Old source keys may resolve to the authoritative profile by logical identity; controls and submitted revisions are checked against that profile.
 
