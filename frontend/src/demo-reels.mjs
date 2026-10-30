@@ -51,11 +51,8 @@ function reelStatusText(view) {
 }
 
 export function demoReelHeaderMarkup(view) {
-  const button = (kind, label, glyph, pressed) => `<button type="button" class="icon-button lm-header-button" data-demo-action="${kind}" aria-label="${escape(label)}" title="${escape(label)}"${pressed ? ` aria-pressed="${pressed}"` : ""}>${glyph}</button>`;
   const manage = view.can_manage
-    ? `${button("settings", "Edit Demo Reel", icon("reel"))}${button("retry", "Retry failed images", icon("retry"))}${view.paused
-        ? button("resume", "Resume background generation", icon("play"), "true")
-        : button("pause", "Pause background generation", icon("pause"), "false")}`
+    ? `<button type="button" class="icon-button lm-header-button" data-demo-action="settings" aria-label="Edit Demo Reel" title="Edit Demo Reel">${icon("reel")}</button>`
     : "";
   return `<header class="dialog-header lm-dialog-header demo-reel-header"><div class="demo-reel-header-copy"><h2 id="demo-reel-title">${escape(view.label)} · Demo Reel</h2><p role="status" data-demo-reel-status>${escape(reelStatusText(view))}</p></div><div class="lm-header-actions">${manage}<button type="button" class="icon-button lm-close-button" data-demo-action="close" aria-label="Close Demo Reel" title="Close Demo Reel">×</button></div></header>`;
 }
@@ -69,8 +66,8 @@ function slotGroupMarkup(view, slot, index, collapsed) {
   const prompt = expandDemoReelPrompt(slot.prompt, view.subject);
   const cards = entries.map((entry) => (entry.generation
     ? demoReelGalleryCardMarkup(entry.generation, { checkpointTiers: view.checkpointTiers })
-    : demoReelPlaceholderCardMarkup(entry, { canManage: view.can_manage }))).join("");
-  return `<section class="prompt-group demo-reel-slot-group" data-demo-slot-group="${id}" aria-label="${escape(`${label}, ${entries.length} Demo Reel images`)}"><header class="prompt-group-header"><button type="button" class="prompt-group-collapse" data-demo-action="toggle-slot" data-demo-id="${slot.id}" aria-expanded="${String(!closed)}" aria-controls="demo-reel-slot-${id}" aria-label="${closed ? "Expand" : "Collapse"} ${escape(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button><span class="demo-reel-slot-copy" title="${escape(prompt)}"><strong>${escape(label)}</strong><span>${escape(prompt)}</span></span><span class="prompt-group-rule" aria-hidden="true"></span><span class="prompt-group-count">${entries.length} ${entries.length === 1 ? "image" : "images"}</span></header><div class="prompt-group-grid" id="demo-reel-slot-${id}" ${closed ? "hidden" : ""}>${cards}</div></section>`;
+    : demoReelPlaceholderCardMarkup(entry))).join("");
+  return `<section class="prompt-group demo-reel-slot-group" data-demo-slot-group="${id}" aria-label="${escape(`${label}, ${entries.length} Demo Reel images`)}"><header class="prompt-group-header"><button type="button" class="prompt-group-collapse" data-demo-action="toggle-slot" data-demo-id="${slot.id}" aria-expanded="${String(!closed)}" aria-controls="demo-reel-slot-${id}" aria-label="${closed ? "Expand" : "Collapse"} ${escape(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button><span class="demo-reel-slot-copy" title="${escape(prompt)}">${escape(label)}</span><span class="prompt-group-rule" aria-hidden="true"></span><span class="prompt-group-count">${entries.length} ${entries.length === 1 ? "image" : "images"}</span></header><div class="prompt-group-grid" id="demo-reel-slot-${id}" ${closed ? "hidden" : ""}>${cards}</div></section>`;
 }
 
 export function demoReelGroupsMarkup(view) {
@@ -305,7 +302,7 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
   // A cheap fingerprint of everything the grid draws. The five-second poll is
   // otherwise a re-render every five seconds under a resting cursor.
   const signature = () => JSON.stringify([
-    view?.completed, view?.expected, view?.status, view?.paused, view?.next_offset, view?.message, view?.can_manage, view?.rating_username,
+    view?.completed, view?.expected, view?.status, view?.next_offset, view?.message, view?.can_manage, view?.rating_username,
     (view?.slots || []).map((slot) => [slot.id, slot.title, slot.prompt]),
     (view?.entries || []).map((entry) => [entry.id, entry.slot_id, entry.state, entry.error, entry.generation?.id, entry.generation?.status, entry.generation?.is_favorite]),
   ]);
@@ -348,12 +345,15 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
     if (!content) {
       headerMarkup = demoReelHeaderMarkup(marked());
       gallery.innerHTML = demoReelShellMarkup(marked());
-      mountThumbnails();
     } else {
       const scroll = content.scrollTop;
       preserveHover(() => { content.innerHTML = demoReelGroupsMarkup(marked()); });
       content.scrollTop = scroll;
     }
+    // Closing the dialog disposes the thumbnail install along with its observers,
+    // while the shell and its scroller stay in the DOM: so the grid that the next
+    // open draws is observed only if this open re-installs it.
+    if (!thumbnails) mountThumbnails();
     syncHeader();
     observePaging();
   }
@@ -513,7 +513,6 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
       }
       else if (kind === "rerun") onRerun(id, { library_key: context.libraryKey, lora_identity: context.identity });
       else if (["copy", "move"].includes(kind)) await chooseTransfer(kind, id);
-      else if (["favorite", "retry", "pause", "resume"].includes(kind)) await action(kind, id ? [id] : []);
       else if (["delete", "regenerate"].includes(kind)) {
         if (window.confirm("Remove this Demo Reel image? A fresh random image will replace it during the next idle period. Personal copies are kept.")) await action(kind, [id]);
       } else if (kind === "slot-add") {

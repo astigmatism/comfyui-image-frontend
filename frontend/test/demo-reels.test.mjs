@@ -45,7 +45,12 @@ const reelView = ({ manage = false, ...overrides } = {}) => ({
 
 test("the reel is the grouped gallery: one group per slot, gallery cards, no captions", () => {
   const user = demoReelGalleryMarkup(reelView());
-  assert.match(user, /&lt;subject&gt; beside a lake/);
+  // The header names the slot, draws the rule, and counts the images; the slot's
+  // prompt, which settings already show in full, is a tooltip rather than a line.
+  assert.match(user, /class="demo-reel-slot-copy" title="&lt;subject&gt; beside a lake">Portrait<\/span>/);
+  assert.match(user, /class="prompt-group-count">1 image</);
+  const header = user.slice(user.indexOf("prompt-group-header"), user.indexOf("prompt-group-grid"));
+  assert.doesNotMatch(header.replace(/title="[^"]*"/, ""), /beside a lake/);
   assert.match(user, /class="prompt-group demo-reel-slot-group"/);
   assert.match(user, /class="prompt-group-grid" id="demo-reel-slot-s"/);
   assert.match(user, /data-gallery-card="generation" data-generation-id="g"/);
@@ -64,29 +69,32 @@ test("the reel is the grouped gallery: one group per slot, gallery cards, no cap
   const admin = demoReelGalleryMarkup(reelView({ manage: true }));
   for (const action of ["move", "regenerate"]) assert.match(admin, new RegExp(`data-demo-action="${action}" data-demo-id="g"`));
   assert.match(admin, /class="delete-generation-button"/);
-  // An entry without an image yet keeps its place in the grid as a card.
+  // An entry without an image yet keeps its place in the grid as a card, and it is
+  // the idle worker's own business to retry it: nobody is offered a button for that.
   const failed = demoReelGalleryMarkup(reelView({
     manage: true,
     entries: [{ id: "e", slot_id: "s", checkpoint_label: "A model", state: "failed", error: "Out of video memory", generation: null }],
   }));
   assert.match(failed, /data-gallery-card="demo-entry"/);
   assert.match(failed, /Out of video memory/);
-  assert.match(failed, /data-demo-action="retry"/);
-  assert.doesNotMatch(demoReelGalleryMarkup(reelView({
-    entries: [{ id: "e", slot_id: "s", checkpoint_label: "A model", state: "failed", error: "Out of video memory", generation: null }],
-  })), /data-demo-action="retry"/);
+  assert.doesNotMatch(failed, /data-demo-action="retry"/);
 });
 
-test("the reel's controls live in the title area as icons and paging follows the gallery", () => {
+test("the title area carries the reel's one control and paging follows the gallery", () => {
+  const actions = (markup) => {
+    const header = markup.slice(markup.indexOf("<header class="), markup.indexOf("</header>") + 9);
+    return [...header.matchAll(/data-demo-action="([a-z-]+)"/g)].map((match) => match[1]);
+  };
   const user = demoReelGalleryMarkup(reelView());
-  // A person browsing the reel is never offered the shared reel's switches.
-  for (const action of ["settings", "retry", "pause", "resume"]) assert.doesNotMatch(user, new RegExp(`data-demo-action="${action}"(?!-)`));
+  assert.deepEqual(actions(user), ["close"]);
+  // Retrying failed images and pausing the background worker belong to the process
+  // that produces them, so the reel that browses the results offers neither - and
+  // pausing stays available where the reel is configured.
+  assert.doesNotMatch(user, /data-demo-action="(retry|pause|resume)"/);
   assert.match(user, /data-demo-action="close"[^>]*aria-label="Close Demo Reel"/);
   const admin = demoReelGalleryMarkup(reelView({ manage: true }));
-  for (const [action, label] of [["settings", "Edit Demo Reel"], ["retry", "Retry failed images"], ["pause", "Pause background generation"]]) {
-    assert.match(admin, new RegExp(`data-demo-action="${action}"[^>]*aria-label="${label}"`));
-  }
-  assert.match(demoReelGalleryMarkup(reelView({ manage: true, paused: true })), /data-demo-action="resume"[^>]*aria-pressed="true"/);
+  assert.deepEqual(actions(admin), ["settings", "close"]);
+  assert.match(admin, /data-demo-action="settings"[^>]*aria-label="Edit Demo Reel"/);
   // Paging is a sentinel the dialog watches; the button stays for a browser without
   // IntersectionObserver.
   assert.match(user, /data-demo-reel-sentinel hidden/);

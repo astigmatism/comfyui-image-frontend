@@ -2126,7 +2126,9 @@ export function demoReelCardActionsMarkup(generation) {
 
 // Slot images that do not exist yet - queued, generating, failed, or blocked -
 // still hold their place in the grid, as a card rather than as a foreign box.
-export function demoReelPlaceholderCardMarkup(entry, { canManage = false } = {}) {
+// Retrying them is the idle worker's own business, so the card only says what it
+// is waiting for, and why when the reason belongs to that image.
+export function demoReelPlaceholderCardMarkup(entry) {
   const labels = {
     missing: "Waiting for an idle period",
     running: "Generating",
@@ -2135,14 +2137,10 @@ export function demoReelPlaceholderCardMarkup(entry, { canManage = false } = {})
     blocked: "Generation blocked",
   };
   const label = labels[entry.state] || statusLabel(entry.state);
-  const retry = canManage
-    ? `<button type="button" class="retry-button" data-demo-action="retry" aria-label="Retry failed Demo Reel images" title="Retry failed Demo Reel images">${icon("retry")}</button>`
-    : "";
   return `<article class="gallery-card demo-reel-placeholder-card" data-gallery-card="demo-entry" data-demo-entry-id="${escapeHtml(entry.id)}">
     <div class="card-media-frame">
       <div class="card-media" aria-label="${escapeHtml(`${entry.checkpoint_label}, ${label}`)}"><div class="status-placeholder"><div class="status-symbol" aria-hidden="true"></div><strong>${escapeHtml(label)}</strong>${entry.error ? `<span class="status-error">${escapeHtml(entry.error)}</span>` : ""}${entry.checkpoint_label ? `<span class="status-runtime">${escapeHtml(entry.checkpoint_label)}</span>` : ""}</div></div>
       <div class="card-hover-scrim" aria-hidden="true"></div>
-      ${retry ? `<div class="card-bottom-overlay"><div class="card-actions card-hover-reveal demo-reel-card-actions" role="group" aria-label="Demo Reel image actions">${retry}</div></div>` : ""}
     </div>
   </article>`;
 }

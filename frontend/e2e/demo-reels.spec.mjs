@@ -156,8 +156,11 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await expect(firstCard).toHaveClass(/card-controls-visible/);
   await expect(firstCard.locator(".card-actions")).toHaveCSS("opacity", "1");
   await expect(firstCard.getByRole("button", { name: "Regenerate this image" })).toBeVisible();
-  // The shared reel's switches live in the title area as icons; here generation is paused.
-  await expect(reel.getByRole("button", { name: "Resume background generation" })).toBeVisible();
+  // The title area carries the one control browsing needs. Retrying failed images
+  // and pausing the background worker belong to the process that makes them.
+  await expect(reel.locator(".lm-header-actions [data-demo-action]")).toHaveCount(2);
+  await expect(reel.getByRole("button", { name: "Edit Demo Reel", exact: true })).toBeVisible();
+  await expect(reel.getByRole("button", { name: /Retry|background generation/ })).toHaveCount(0);
   await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-desktop.png"), animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-mobile.png"), animations: "disabled" });
@@ -181,6 +184,15 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await expect(firstCard).toBeHidden();
   await firstGroup.getByRole("button", { name: /^Expand / }).click();
   await expect(firstCard).toBeVisible();
+  await reel.getByRole("button", { name: "Close Demo Reel" }).click();
+  await expect(reel).toBeHidden();
+  // Reopening is the path that used to lose the dialog's thumbnail observers: the
+  // shell and its scroller survive the close, so the grid the next open draws has
+  // to be observed again or every card stays a blank frame.
+  await openDemoReel(picker, card);
+  await expect(firstCard).toBeVisible();
+  await expect.poll(() => firstCard.locator(".card-media img").getAttribute("data-thumbnail-state"), { timeout: 20_000 }).toBe("ready");
+  expect(await firstCard.locator(".card-media img").getAttribute("src")).toMatch(/^blob:/);
   await reel.getByRole("button", { name: "Close Demo Reel" }).click();
   await picker.getByRole("button", { name: "Cancel", exact: true }).click();
   expect((await (await page.request.get("/api/admin/demo-reels")).json()).slots).toEqual(config.slots);

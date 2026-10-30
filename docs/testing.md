@@ -303,6 +303,8 @@ fixtures through the real photo viewer to verify ordered navigation without a
 five-minute wall-clock delay. The reel is then checked as a gallery: one group per
 prompt slot that collapses and expands, gallery cards whose entire control row -
 including the reel's re-run, copy, move, and regenerate - stays hidden until the
-card is hovered and favors through the reel's own action endpoint, and a slot header
-that carries the slot's prompt instead of a caption under each image. Screenshots
-cover the mobile editor and the reel at desktop and phone widths.
+card is hovered and favors through the reel's own action endpoint, a title area that
+offers only **Edit Demo Reel** beside its close control, and a reopened reel whose
+cards still load their thumbnails, which the observers disposed on close used to
+leave as blank frames. Screenshots cover the mobile editor and the reel at desktop
+and phone widths.

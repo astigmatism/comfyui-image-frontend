@@ -1585,7 +1585,6 @@ code {
 .move-generation-button,
 .delete-generation-button,
 .reel-action-button,
-.retry-button,
 .rename-collection-button,
 .delete-collection-button,
 .collection-previews-button,
@@ -1614,7 +1613,6 @@ code {
 .move-generation-button svg,
 .delete-generation-button svg,
 .reel-action-button svg,
-.retry-button svg,
 .rename-collection-button svg,
 .delete-collection-button svg,
 .collection-previews-button svg {
@@ -1631,7 +1629,6 @@ code {
 .move-generation-button path,
 .delete-generation-button path,
 .reel-action-button path,
-.retry-button path,
 .rename-collection-button path,
 .delete-collection-button path {
   fill: transparent;
@@ -1640,8 +1637,7 @@ code {
   stroke-width: 1.8;
 }
 
-.reel-action-button path,
-.retry-button path {
+.reel-action-button path {
   stroke-linecap: round;
 }
 
@@ -1661,8 +1657,7 @@ code {
 }
 
 /* The reel's own controls are gallery controls in every respect, hover included. */
-.reel-action-button:hover:not(:disabled),
-.retry-button:hover:not(:disabled) {
+.reel-action-button:hover:not(:disabled) {
   border-color: #45698f;
   background: #17263a;
   color: #d7e9ff;
@@ -7245,11 +7240,9 @@ img[data-thumbnail-src]:not([data-thumbnail-state="ready"]) { opacity: 0; }
 .demo-reel-content { flex: 1; min-height: 0; overflow: auto; padding: 1.2rem; }
 .demo-reel-dialog .demo-reel-content { --gallery-card-min: var(--gallery-scale-card, 420px); padding: var(--space-4); background: radial-gradient(circle at 50% -15%, rgb(43 70 104 / 12%), transparent 34%), var(--bg); scrollbar-color: #3a4d63 transparent; scrollbar-width: thin; }
 .demo-reel-sentinel { margin-top: 18px; }
-/* The slot's prompt is the informative half of the header, so it shares the line
-   with the label and ellipsises instead of wrapping the header into a paragraph. */
-.demo-reel-slot-copy { display: flex; min-width: 0; max-width: min(100%, 96ch); overflow: hidden; gap: 9px; }
-.demo-reel-slot-copy strong { overflow: hidden; color: #e0e8f2; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.demo-reel-slot-copy span { overflow: hidden; color: #8493a6; text-overflow: ellipsis; white-space: nowrap; }
+/* The header names the slot, draws the rule, and counts its images; the prompt a
+   person can already read in the settings travels as a tooltip instead of text. */
+.demo-reel-slot-copy { min-width: 0; max-width: min(100%, 60ch); overflow: hidden; color: #e0e8f2; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .status-error { color: #f0a8ae; }
 .demo-reel-slots { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
 /* The settings dialog is a list of prompt slots first and one collapsible section

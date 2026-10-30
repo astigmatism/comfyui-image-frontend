@@ -2,12 +2,16 @@
 
 Each LoRA card's **Demo Reel** control opens its shared gallery above the picker.
 That gallery is the main viewport's grouped view: one collapsible group per prompt
-slot, and inside it the gallery's own cards, whose controls — details, download,
-favorite, recall, re-run, copy, move, regenerate, and delete — are revealed on
-hover and never written underneath the image. Paging follows the viewport too, so
-a long reel loads as it is scrolled. The reel's own switches sit in its header as
-icons beside the close button: **Edit Demo Reel**, **Retry failed images**, and
-Pause/Resume, shown only to administrators. Returning preserves uncommitted LoRA
+slot, each headed by the slot's title, a rule drawn across, and how many images it
+holds — the slot's own prompt stays available as a tooltip rather than as a line of
+text. Inside each group sit the gallery's own cards, whose controls — details,
+download, favorite, recall, re-run, copy, move, regenerate, and delete — are
+revealed on hover and never written underneath the image. Paging follows the
+viewport too, so a long reel loads as it is scrolled. Beside the dialog's close
+button, an administrator is offered one icon: **Edit Demo Reel**. Retrying failed
+images and pausing the background worker are the business of the process that
+produces them, so neither is offered while browsing the results; pausing remains
+available where the reel is configured. Returning preserves uncommitted LoRA
 selections and scroll position. Images use the normal photo viewer. Reel
 collections stay outside normal navigation.
 
@@ -56,8 +60,9 @@ One background image runs globally. Order follows model families, LoRA gallery
 order, slots, then A and B checkpoints in the rating account's saved order. Failed
 or blocked combinations do not hold up other work. Image failures receive three
 attempts with one-minute and five-minute retry waits. Unavailable workers wait
-without accepting an attempt. **Retry failed images** resets exhausted entries;
-Pause/Resume also restarts the quiet period.
+without accepting an attempt. Exhausted entries are retried through the reel's
+`retry` action, and pausing is offered in **Demo Reel settings**: neither is a
+browsing concern, so the reel itself offers no button for either.
 
 Activity durably revokes an in-progress attempt before requesting safe targeted
 ComfyUI cancellation. Navigation does not wait for interruption. Late or partial
