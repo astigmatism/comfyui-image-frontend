@@ -899,8 +899,13 @@ The transcription request is multipart with one `file` field whose media type is
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
 | `PUT` | `/api/collections/{id}/favorite` | Idempotently bookmark an owned collection; returns updated `Collection` |
 | `DELETE` | `/api/collections/{id}/favorite` | Remove collection bookmark; returns `204` |
-| `GET` | `/api/preferences` | Read owner gallery scale and checkpoint tiers; legacy source rating/color fields remain for stored-data compatibility |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100 and/or account-wide checkpoint ranks; legacy source rating/color updates remain accepted |
+| `GET` | `/api/preferences` | Read owner gallery scale/layout and checkpoint tiers; legacy source rating/color fields remain for stored-data compatibility |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100, a grouped/classic layout, and/or account-wide checkpoint ranks; legacy source rating/color updates remain accepted |
+
+`gallery_scale` and `settings.gallery_layout` are the account's copy of the gallery view, which
+seeds a browser that has never chosen one; while it holds no view of its own a browser echoes those
+values back rather than restating them. A browser's chosen size and layout live in its own storage,
+so a second browser on the same account keeps its own view instead of being restyled.
 
 Favorites are private, binary bookmarks. List endpoints expose them as an `is_favorite` boolean:
 every `GenerationSummary` (gallery pages and single-generation reads) and every `Collection`

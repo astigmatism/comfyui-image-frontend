@@ -2,7 +2,21 @@ import { expect, test } from "@playwright/test";
 
 const grades = ["A", "B", "C", "D", "F"];
 const identity = index => `cp1_${index.toString(16).padStart(64, "0")}`;
+// The rank filter's controls are withdrawn from the toolbar, so the retained wiring is driven
+// through the action those buttons carried: a click on a matching element inside the application
+// reaches the same handler and the same filter state the toolbar button drove.
+const toggleRank = (page, grade) => page.evaluate((rank) => {
+  const button = document.createElement("button");
+  button.dataset.action = "toggle-checkpoint-rank-filter";
+  button.dataset.checkpointRank = rank;
+  document.querySelector("#app").append(button);
+  button.click();
+  button.remove();
+}, grade);
+// The withdrawn control is the only thing the header must no longer contain.
 const rankButton = (page, grade) => page.getByRole("button", { name: `Show rank ${grade}`, exact: true });
+// Every gallery read carries the filter it answered, which is what the hidden control changed.
+const lastFilter = (data) => data.requests.at(-1)?.excluded_checkpoint_ranks ?? null;
 const cards = page => page.locator('[data-gallery-card="generation"]');
 
 async function fixture(page, { count = 135, activity = false } = {}) {
@@ -70,11 +84,16 @@ async function fixture(page, { count = 135, activity = false } = {}) {
   await page.goto("/");
   await expect(page.locator('.classic-gallery-count')).toHaveText(`${count} generations · 1 folder`);
   await expect(cards(page).first()).toBeVisible();
+  // The controls are withdrawn from the header beside Favorites, while everything else there stays.
+  await expect(rankButton(page, "C")).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Visible model ranks" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Favorites", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Classic", exact: true })).toBeVisible();
   return data;
 }
 
 async function onlyAB(page) {
-  for (const grade of ["C", "D", "F"]) await rankButton(page, grade).click();
+  for (const grade of ["C", "D", "F"]) await toggleRank(page, grade);
   await expect(page.locator('.classic-gallery-count')).toHaveText("54 generations");
 }
 
@@ -101,24 +120,26 @@ test("rank toggles intersect Favorites and whole-view selections include only ma
 });
 
 test("all-off recovery preserves Favorites; filters survive layout and folder changes but reset on reload", async ({ page }) => {
-  await fixture(page);
+  const data = await fixture(page);
   const favorites = page.getByRole("button", { name: "Favorites", exact: true });
   await favorites.click();
-  for (const grade of grades) await rankButton(page, grade).click();
+  for (const grade of grades) await toggleRank(page, grade);
   await expect(page.getByRole("heading", { name: "All model ranks are hidden" })).toBeVisible();
   await page.getByRole("button", { name: "Show all ranks", exact: true }).click();
   await expect(favorites).toHaveAttribute("aria-pressed", "true");
-  for (const grade of grades) await expect(rankButton(page, grade)).toHaveAttribute("aria-pressed", "true");
-  await rankButton(page, "C").focus(); await page.keyboard.press("Space");
-  await expect(rankButton(page, "C")).toBeFocused();
+  await expect.poll(() => lastFilter(data)).toEqual([]);
+  await toggleRank(page, "C");
+  await expect.poll(() => lastFilter(data)).toEqual(["C"]);
   await page.getByRole("button", { name: "Grouped", exact: true }).click();
-  await expect(rankButton(page, "C")).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(() => lastFilter(data)).toEqual(["C"]);
   await page.evaluate(() => { window.location.hash = "#/c/folder"; });
   await expect(page).toHaveURL(/#\/c\/folder$/);
   await expect(page.locator("#collection-bar")).toContainText("Portraits");
-  await expect(rankButton(page, "C")).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(() => lastFilter(data)).toEqual(["C"]);
+  const requestsBeforeReload = data.requests.length;
   await page.reload();
-  for (const grade of grades) await expect(rankButton(page, grade)).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => data.requests.length).toBeGreaterThan(requestsBeforeReload);
+  await expect.poll(() => lastFilter(data)).toEqual([]);
   await expect(page.getByRole("button", { name: "Favorites", exact: true })).toHaveAttribute("aria-pressed", "false");
 });
 
@@ -131,7 +152,7 @@ test("group counts and selection use matching members and filter changes clear s
   await select.click();
   await expect(page.locator('#gallery-selection-toolbar')).toContainText("54 selected");
   await expect(select).toHaveAttribute("aria-checked", "true");
-  await rankButton(page, "B").click();
+  await toggleRank(page, "B");
   await expect(page.locator('#gallery-selection-toolbar')).toBeHidden();
   await expect(page.getByRole("checkbox", { name: "Select group of 27 generations" })).toBeEnabled();
 });
@@ -141,9 +162,9 @@ test("late filtered requests are discarded and remote rank changes refresh match
   let release;
   data.holdNext = new Promise(resolve => { release = resolve; });
   const before = data.requests.length;
-  await rankButton(page, "C").click();
+  await toggleRank(page, "C");
   await expect.poll(() => data.requests.length).toBeGreaterThan(before);
-  await rankButton(page, "D").click();
+  await toggleRank(page, "D");
   await expect(page.locator('.classic-gallery-count')).toHaveText("81 generations");
   release();
   await expect(page.locator('#gallery .checkpoint-tier-C, #gallery .checkpoint-tier-D')).toHaveCount(0);
@@ -191,10 +212,13 @@ test("filters fit desktop and narrow headers with activity and selection", async
         const overlap = controls.some((a, i) => controls.slice(i + 1).some(b => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1));
         return fits && !overlap && gallery.top >= topbar.bottom - 1 && document.documentElement.scrollWidth <= innerWidth;
       }), { message: `Header geometry at ${width}px, selection ${selecting}` }).toBe(true);
-      for (const grade of grades) {
-        await expect(rankButton(page, grade)).toBeVisible();
-        const box = await rankButton(page, grade).boundingBox();
-        if (width <= 800) { expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44); }
+      // The withdrawn control leaves the header empty of it at every width, and the Favorites
+      // control it used to sit beside keeps the 44px touch target the filter used to share.
+      await expect(rankButton(page, "C")).toHaveCount(0);
+      if (width <= 800) {
+        const box = await page.getByRole("button", { name: "Favorites", exact: true }).boundingBox();
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(44);
       }
       if (selecting) await page.keyboard.press("Escape");
     }

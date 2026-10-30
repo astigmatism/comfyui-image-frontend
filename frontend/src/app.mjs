@@ -51,6 +51,8 @@ import {
   MAX_BATCH_GENERATION_ITEMS,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
+  DEFAULT_GALLERY_SCALE,
+  GALLERY_VIEW_STORAGE_KEY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
   applyCollectionOrder,
@@ -82,6 +84,7 @@ import {
   normalizeCheckpointTierLayout,
   normalizeCheckpointRanks,
   normalizeExpectationSettings,
+  normalizeGalleryScale,
   checkpointRank,
   moveCheckpointRank,
   normalizeSourceModelSelections,
@@ -93,6 +96,8 @@ import {
   overwriteWithRecall,
   parametersForRequest,
   parameterStateStorageKey,
+  parseGalleryView,
+  formatGalleryView,
   photoViewerImageLayout,
   positivePromptInput,
   promptInstructionsForMode,
@@ -257,7 +262,7 @@ const state = {
   favoritesMode: "all",
   excludedCheckpointRanks: [],
   photoViewerDetachedGeneration: null,
-  galleryScale: 45,
+  galleryScale: DEFAULT_GALLERY_SCALE,
   galleryLayout: "grouped",
   gallerySkippedCursor: null,
   services: [],
@@ -356,6 +361,11 @@ let speechSessionSequence = 0;
 let applicationStartupController = null;
 let servicePollingController = null;
 let startupGalleryBoundary = null;
+// The account still carries a gallery size and layout, but they are no longer this browser's view:
+// the copy seeds a browser that has never chosen once, and it is echoed back unchanged so that a
+// shared account cannot restyle a browser that has chosen, and so two browsers on one account
+// cannot fight over the account's copy of it.
+let accountGalleryView = { layout: "grouped", scale: DEFAULT_GALLERY_SCALE };
 let activityRefreshTimer = null;
 let activityRequestToken = 0;
 let activityRefreshRequest = null;
@@ -2992,7 +3002,7 @@ async function enterApplication() {
   state.collectionsStatus = "loading";
   state.collectionsMessage = null;
   setGalleryRoute(collectionIdFromHash());
-  state.galleryLayout = "grouped";
+  restoreStoredGalleryView();
   state.favoritesMode = "all";
   state.excludedCheckpointRanks = [];
   state.galleryStatus = "loading";
@@ -7687,6 +7697,24 @@ function renderServiceBanner() {
   }
 }
 
+// The gallery's grouping and card size belong to the browser that chose them, so a returning
+// browser opens on the same view: the account keeps a copy only to seed a browser that has never
+// chosen for itself. Reading it before the first paint keeps the toolbar from showing the
+// defaults first, and navigating between collections never touches it.
+function storedGalleryView() {
+  return parseGalleryView(readStoredItem(GALLERY_VIEW_STORAGE_KEY));
+}
+
+function storeGalleryView() {
+  writeStoredItem(GALLERY_VIEW_STORAGE_KEY, formatGalleryView({ layout: state.galleryLayout, scale: state.galleryScale }));
+}
+
+function restoreStoredGalleryView() {
+  const view = storedGalleryView() || { layout: "grouped", scale: DEFAULT_GALLERY_SCALE };
+  state.galleryLayout = view.layout;
+  state.galleryScale = view.scale;
+}
+
 function updateGalleryLayout(value, persist = false) {
   const layout = value === "classic" ? "classic" : "grouped";
   const changed = layout !== state.galleryLayout;
@@ -7707,13 +7735,15 @@ function updateGalleryLayout(value, persist = false) {
     if (viewport && anchor?.isConnected) viewport.scrollTop += anchor.getBoundingClientRect().top - previousTop;
     setupPaginationObserver();
   }
-  if (persist) settingsSync?.schedule();
+  // A choice this browser made stays in this browser; the account copy is echoed back untouched,
+  // so changing the view never writes to the account and two browsers can never fight over it.
+  if (persist) storeGalleryView();
 }
 
 function updateGalleryScale(value, persist) {
-  state.galleryScale = Number(value);
+  state.galleryScale = normalizeGalleryScale(value);
   applyGalleryScale();
-  if (persist) settingsSync?.schedule();
+  if (persist) storeGalleryView();
 }
 
 function applyGalleryScale() {
@@ -7873,8 +7903,8 @@ function captureSharedSettings() {
       recent[key] ||= loadRecentResolutions(readStoredItem(recentResolutionKey(sessionStorageUserId(), key)));
     }
   }
-  return { gallery_scale: state.galleryScale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
-    gallery_layout: state.galleryLayout,
+  return { gallery_scale: accountGalleryView.scale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
+    gallery_layout: accountGalleryView.layout,
     prompt_generation: structuredClone(state.promptGeneration),
     active_source: state.activeSourceKey,
     sources, model_selections: Object.fromEntries(state.modelSelectionsBySourceRevision),
@@ -7890,12 +7920,21 @@ function captureSharedSettings() {
 
 async function applySharedSettings(preferences) {
   const saved = normalizePanelSettings(preferences).settings;
+  // The account's gallery size and layout are held exactly as they arrived and echoed back on
+  // every save, so a browser's own view never travels to the account and cannot collide there
+  // with a second browser's view.
+  accountGalleryView = { scale: normalizeGalleryScale(preferences.gallery_scale), layout: saved.gallery_layout };
   const oldPromptSource = state.promptGeneration.active_source;
   state.promptGeneration = structuredClone(saved.prompt_generation || { enabled: false, active_source: null, sources: {}, previous_assistant_mode: null });
   const previousSource = state.activeSourceKey;
   const changed = !settingsEqual(captureSharedSettings(), preferences);
-  state.galleryScale = preferences.gallery_scale;
-  updateGalleryLayout(saved.gallery_layout);
+  // A browser that has chosen for itself keeps that choice; the account copy only seeds a browser
+  // that has never chosen, and that seed is stored at once, so a shared account can never restyle
+  // a configured browser.
+  const storedView = storedGalleryView();
+  state.galleryScale = storedView ? storedView.scale : accountGalleryView.scale;
+  updateGalleryLayout(storedView ? storedView.layout : accountGalleryView.layout);
+  if (!storedView) storeGalleryView();
   const ranksChanged = !settingsEqual(state.checkpointTiers, normalizedCheckpointTiers(preferences.checkpoint_tiers));
   state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
   if (ranksChanged) {

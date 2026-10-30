@@ -7,6 +7,7 @@ import {
   AUTO_GENERATE_COMPOSITION_MAX_ATTEMPTS,
   AUTO_GENERATE_COMPOSITION_RETRY_MAX_MS,
   DEFAULT_OPEN_CONTROL_SECTION_KINDS,
+  DEFAULT_GALLERY_SCALE,
   MAX_GENERATION_QUANTITY,
   MIN_GENERATION_QUANTITY,
   activeSourceStorageKey,
@@ -31,6 +32,9 @@ import {
   defaultsForInterface,
   directionSignalNextStatus,
   formatTimelineMonth,
+  formatGalleryView,
+  normalizeGalleryScale,
+  parseGalleryView,
   generationSourceModelVariant,
   hasActiveGeneration,
   insertTranscription,
@@ -639,6 +643,26 @@ test("gallery scale spans compact thumbnails through a full-width card", () => {
   assert.deepEqual(scaleToLayout(100), { full: true, cardWidth: 1200 });
   assert.equal(scaleToLayout(0).cardWidth, 170);
   assert.ok(scaleToLayout(75).cardWidth > scaleToLayout(25).cardWidth);
+});
+
+test("a browser's own gallery view round-trips and refuses anything else", () => {
+  assert.equal(parseGalleryView(null), null);
+  assert.equal(parseGalleryView(""), null);
+  assert.equal(parseGalleryView("not json"), null);
+  assert.equal(parseGalleryView("[]"), null);
+  // Both choices are written together, so half a choice is no choice.
+  assert.equal(parseGalleryView(JSON.stringify({ layout: "classic" })), null);
+  assert.equal(parseGalleryView(JSON.stringify({ scale: 70 })), null);
+  assert.equal(parseGalleryView(JSON.stringify({ layout: "sidebar", scale: 70 })), null);
+  assert.equal(parseGalleryView(JSON.stringify({ layout: "classic", scale: "wide" })), null);
+  assert.deepEqual(parseGalleryView(formatGalleryView({ layout: "classic", scale: 70 })), { layout: "classic", scale: 70 });
+  // A value written by hand or by an older slider is clamped instead of obeyed.
+  assert.deepEqual(parseGalleryView(JSON.stringify({ layout: "grouped", scale: "-12" })), { layout: "grouped", scale: 0 });
+  assert.deepEqual(parseGalleryView(JSON.stringify({ layout: "grouped", scale: 4_000 })), { layout: "grouped", scale: 100 });
+  assert.deepEqual(parseGalleryView(JSON.stringify({ layout: "anything", scale: 45 })), null);
+  assert.equal(formatGalleryView({ layout: "classic", scale: 4_000 }), JSON.stringify({ layout: "classic", scale: 100 }));
+  assert.equal(normalizeGalleryScale(undefined), DEFAULT_GALLERY_SCALE);
+  assert.equal(normalizeGalleryScale("62.4"), 62);
 });
 
 test("slideshow selects only the newest fully completed image generation", () => {

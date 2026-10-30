@@ -22,8 +22,10 @@ these Unsplash samples: [mountain](https://images.unsplash.com/photo-14648227590
 
 ## Try the interaction
 
-Use **Grouped / Classic** after the Favorites and rank filters to change the gallery layout.
-Grouped is the default; the choice is saved with your account settings. Classic keeps the existing
+Use **Grouped / Classic** beside Favorites to change the gallery layout. Grouped is the default, and
+the choice — like the **Gallery scale** slider next to it — belongs to the browser it was made in: it
+is still there after a reload or a walk into a folder and back, and a second browser keeps its own.
+Classic keeps the existing
 thumbnail proportions and scale in one continuous grid, with folder tiles above it. Its **All items**
 header counts the entire current view. **Select all** includes unloaded generations and matching
 folder tiles, including collections with more than 500 items. The Favorites button cycles three
@@ -35,7 +37,9 @@ checkbox. Switching layouts
 preserves selection, while new arrivals stay unselected. Classic also resumes any history skipped
 by collapsed prompt groups. Changing location or either filter clears selection.
 
-The five **A / B / C / D / F** buttons beside Favorites start enabled. Click a rank to hide it;
+The five **A / B / C / D / F** buttons beside Favorites start enabled. Their controls are currently
+withdrawn from the toolbar, so this describes the filtering that stays in force behind them and what
+returns if the control is put back. Click a rank to hide it;
 colored buttons with a checkmark remain visible, and muted buttons can be turned back on.
 Enabled ranks combine with OR; Favorites narrows that set further. For example, A and B with
 Favorites active shows only favorites made with currently A- or B-ranked models. Unranked models

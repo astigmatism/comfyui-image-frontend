@@ -255,6 +255,16 @@ Active progress, errors, and cancel
 remain visible, and an Info button opens details containing generation duration. Gallery redraws
 preserve hover intent and keyboard focus for the same card.
 
+The gallery's view controls — **Gallery scale** and the **Grouped / Classic** choice — belong to the
+browser rather than the account. Both live under `cif.gallery-view.v1` in local storage, so the chosen
+size and layout return after a reload or a walk into a collection and back, and a second browser keeps
+its own. The account's `gallery_scale` and `settings.gallery_layout` seed a browser that has never
+chosen and are echoed back unchanged afterwards, which keeps one browser's thumbnails from opening a
+settings conflict in another. The LoRA dialog's thumbnail size follows the same rule under
+`cif.lora-thumbnail-scale.v1`. The model-rank filter's five toggles are withdrawn from the header in
+this release — `RANK_FILTER_CONTROLS_VISIBLE` in `gallery-view.mjs` puts them back beside Favorites —
+while rank filtering keeps applying to reads, counts, group membership, and scoped bulk operations.
+
 The toolbar's generation activity indicator sits between Gallery scale and the account menu.
 It displays Current and All remaining times, mirrored in the photo viewer and browser title.
 Tooltips explain evidence and confidence. When no accepted image work remains, the badge disappears

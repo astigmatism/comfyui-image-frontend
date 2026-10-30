@@ -476,6 +476,42 @@ export function scaleToLayout(value) {
   return { full: false, cardWidth };
 }
 
+// What this browser was last told to show, held apart from the account so the same account on a
+// second browser and a second account on this browser each keep the size and layout chosen there.
+export const GALLERY_VIEW_STORAGE_KEY = "cif.gallery-view.v1";
+export const DEFAULT_GALLERY_SCALE = 45;
+
+export function normalizeGalleryLayout(value) {
+  return value === "classic" ? "classic" : "grouped";
+}
+
+export function normalizeGalleryScale(value) {
+  const scale = Number(value);
+  if (!Number.isFinite(scale)) return DEFAULT_GALLERY_SCALE;
+  return Math.max(0, Math.min(100, Math.round(scale)));
+}
+
+// Both choices are written together, so a payload missing either one — or corrupt JSON, or a
+// number written where a layout name belongs — counts as this browser never having chosen, and
+// the caller falls back to the account and finally to the defaults.
+export function parseGalleryView(value) {
+  if (typeof value !== "string" || !value) return null;
+  let stored;
+  try {
+    stored = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!stored || typeof stored !== "object") return null;
+  if (stored.layout !== "grouped" && stored.layout !== "classic") return null;
+  if (stored.scale === null || stored.scale === "" || !Number.isFinite(Number(stored.scale))) return null;
+  return { layout: stored.layout, scale: normalizeGalleryScale(stored.scale) };
+}
+
+export function formatGalleryView({ layout, scale }) {
+  return JSON.stringify({ layout: normalizeGalleryLayout(layout), scale: normalizeGalleryScale(scale) });
+}
+
 export function photoViewerImageLayout(imageWidth, imageHeight, viewportWidth, viewportHeight) {
   const dimensions = [imageWidth, imageHeight, viewportWidth, viewportHeight].map(Number);
   if (dimensions.some((value) => !Number.isFinite(value) || value <= 0)) return null;

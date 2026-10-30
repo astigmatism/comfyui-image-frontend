@@ -1780,6 +1780,23 @@ test("topbar favorites button cycles three states under one accessible name", ()
   assert.match(unfavorited, /class="favorites-launch-label">Unfavorited/);
 });
 
+test("the withdrawn rank filter leaves the toolbar holding only Favorites", () => {
+  const shell = shellMarkup({
+    session: { user: { role: "user", username: "artist" } },
+    collections: [],
+    excludedCheckpointRanks: ["C"],
+  });
+  // The control is withdrawn rather than hidden, so nothing of it reaches the page: no buttons,
+  // no group, and no divider between Favorites and the layout control.
+  assert.doesNotMatch(shell, /toggle-checkpoint-rank-filter/);
+  assert.doesNotMatch(shell, /checkpoint-rank-filter/);
+  assert.doesNotMatch(shell, /Visible model ranks/);
+  // Everything else in that corner of the toolbar is untouched.
+  assert.match(shell, /data-action="toggle-favorites-filter"/);
+  assert.match(shell, /data-gallery-layout="classic"/);
+  assert.match(shell, /id="gallery-scale"/);
+});
+
 test("one generation renders one card while progressive media changes in place", () => {
   const generation = {
     id: "g1",

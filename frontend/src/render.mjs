@@ -1,7 +1,7 @@
 import { promptRuntimeError } from "./prompt-routing.mjs";
 import { icon } from "./icons.mjs";
 import { promptGroupsMarkup } from "./gallery-groups.mjs";
-import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup } from "./gallery-view.mjs";
+import { checkpointRankFilterMarkup, classicGalleryHeaderMarkup, favoritesFilterPresentation, favoritesMode, galleryLayoutMarkup, RANK_FILTER_CONTROLS_VISIBLE } from "./gallery-view.mjs";
 import { loraStackMarkup } from "./lora-stack.mjs";
 import { checkIsActive, expectationCheckBusy, expectationPanelPresentation, expectationPipeline, expectationStatusMarkup, expectationsMarkup } from "./expectation-check.mjs";
 import {
@@ -102,7 +102,7 @@ export function shellMarkup(state) {
           <div class="topbar-spacer"></div>
           <div class="gallery-filter-controls" role="group" aria-label="Gallery filters">
           <button type="button" class="button low favorites-launch-button" data-action="toggle-favorites-filter" aria-label="Favorites" title="${presentation.title}" aria-pressed="${presentation.pressed}" data-favorites-mode="${mode}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21s-7.2-4.4-9.5-8.7C.7 8.8 2.2 4.5 6.1 3.4c2.2-.6 4.5.2 5.9 2 1.4-1.8 3.7-2.6 5.9-2 3.9 1.1 5.4 5.4 3.6 8.9C19.2 16.6 12 21 12 21Z" /><path class="favorites-slash-backing" d="M4.5 20.5 20 4.2" /><path class="favorites-slash" d="M4.5 20.5 20 4.2" /></svg><span class="favorites-launch-label">${presentation.label}</span></button>
-          ${checkpointRankFilterMarkup(state)}
+          ${RANK_FILTER_CONTROLS_VISIBLE ? checkpointRankFilterMarkup(state) : ""}
           </div>
           ${galleryLayoutMarkup(state.galleryLayout)}
           <label class="scale-control">

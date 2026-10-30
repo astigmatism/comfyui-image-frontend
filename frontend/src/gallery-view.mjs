@@ -28,6 +28,12 @@ export function galleryViewParameters(state, extras = {}) {
   return parameters;
 }
 
+// The rank filter's controls are withdrawn from the toolbar while its filtering stays in force:
+// the toggles' state, the request parameter, membership, group counts, and scoped bulk operations
+// all behave as they did. Setting this back to true puts the segmented control back in the header
+// beside Favorites, with no other change.
+export const RANK_FILTER_CONTROLS_VISIBLE = false;
+
 export function checkpointRankFilterMarkup(state) {
   const excluded = excludedCheckpointRanks(state);
   return `<div class="checkpoint-rank-filter" role="group" aria-label="Visible model ranks"><div class="rank-filter-segments">${CHECKPOINT_TIER_DEFINITIONS.map(({ id }) => `<button type="button" class="rank-filter-button checkpoint-tier-${id}" data-action="toggle-checkpoint-rank-filter" data-checkpoint-rank="${id}" aria-label="Show rank ${id}" aria-pressed="${!excluded.includes(id)}" title="${excluded.includes(id) ? "Show" : "Hide"} images from rank ${id}${id === "C" ? " (includes unranked models)" : ""}">${id}</button>`).join("")}</div></div>`;

@@ -252,6 +252,34 @@ test("group move controls save shared order, support the fallback, and require e
   expect(await manager(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 });
 
+test("a chosen thumbnail size is this browser's own and returns when the library reopens", async ({ page, browser }) => {
+  await mount(page);
+  await page.getByRole("button", { name: "Open library" }).click();
+  const scale = manager(page).getByRole("slider", { name: "LoRA thumbnail size" });
+  await expect(scale).toHaveValue("100");
+  await scale.fill("130");
+  await expect(scale).toHaveAttribute("aria-valuetext", "130%");
+  await expect(manager(page).locator("[data-lora-thumbnail-scale-value]")).toHaveText("130%");
+  await expect(manager(page).locator(".lm-dialog-frame")).toHaveAttribute("style", /--lm-card-size: 338px/);
+  await manager(page).getByRole("button", { name: "Close LoRA library" }).click();
+
+  // The same browser, reloaded: the library opens on the size it was left on.
+  await page.reload();
+  await mount(page);
+  await page.getByRole("button", { name: "Open library" }).click();
+  await expect(manager(page).getByRole("slider", { name: "LoRA thumbnail size" })).toHaveValue("130");
+  await expect(manager(page).locator(".lm-dialog-frame")).toHaveAttribute("style", /--lm-card-size: 338px/);
+  await manager(page).getByRole("button", { name: "Close LoRA library" }).click();
+
+  // A second browser is not this browser, so it starts at the default rather than inheriting a
+  // choice made somewhere else: the size belongs to neither the account nor the library.
+  const second = await (await browser.newContext()).newPage();
+  await mount(second);
+  await second.getByRole("button", { name: "Open library" }).click();
+  await expect(manager(second).getByRole("slider", { name: "LoRA thumbnail size" })).toHaveValue("100");
+  await second.close();
+});
+
 test("a style LoRA leaves the Demo Reel and its picture disappears with its images", async ({ page }) => {
   await mount(page);
   await page.getByRole("button", { name: "Open selector" }).click();

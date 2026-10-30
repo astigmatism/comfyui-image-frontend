@@ -522,7 +522,7 @@ The authenticated application uses a two-dimensional shell:
 - **GAL-008:** At its largest setting, one card MUST occupy essentially the full available gallery width.
 - **GAL-009:** At its smallest setting, cards MUST be thumbnail-like but remain large enough to identify the image and operate Recall settings.
 - **GAL-010:** The slider MUST change gallery layout/card width only. It MUST NOT zoom the entire page, left panel, toolbar, typography, or dialogs.
-- **GAL-011:** The chosen scale MUST persist as a per-user preference across reloads and sessions.
+- **GAL-011:** The chosen scale MUST persist for the browser it was chosen in, across reloads, navigation between collections, and sign-out. It MUST NOT be an account preference: it MUST NOT restyle another browser, and it MUST survive a different account signing in on this browser. A browser that has never chosen MAY adopt the value stored on the account once, after which the browser's own choice wins until it is changed again.
 - **GAL-012:** Resizing SHOULD animate subtly without distracting from active generations.
 
 ### 17.3 Card media area
@@ -569,7 +569,11 @@ The card footer is intentionally minimal.
 
 ### 17.8 Model-rank filters
 
-- **GAL-038:** Five persistent A, B, C, D, F toggles beside Favorites MUST start enabled and hide their rank when switched off. Enabled ranks combine with OR and intersect the Favorites mode. Filtering MUST use the owner's current checkpoint ranks, with unassigned or missing model identities treated as C, and MUST apply before pagination to pages, inventories, group counts, group members, and scoped bulk operations. Filtered views MUST omit folder tiles and preserve original prompt-group boundaries. Filter changes MUST clear selection and discard stale reads; rank changes MUST refresh membership. All-off MUST show an explicit empty state with a Show all ranks action that preserves Favorites. Filter choices MUST survive folder/layout navigation but reset on reload and sign-out. Buttons MUST expose their pressed state, support keyboard input, and remain visible together in a wrapping header with 44px touch targets on narrow screens.
+- **GAL-038:** Five persistent A, B, C, D, F toggles beside Favorites MUST start enabled and hide their rank when switched off. Enabled ranks combine with OR and intersect the Favorites mode. Filtering MUST use the owner's current checkpoint ranks, with unassigned or missing model identities treated as C, and MUST apply before pagination to pages, inventories, group counts, group members, and scoped bulk operations. Filtered views MUST omit folder tiles and preserve original prompt-group boundaries. Filter changes MUST clear selection and discard stale reads; rank changes MUST refresh membership. All-off MUST show an explicit empty state with a Show all ranks action that preserves Favorites. Filter choices MUST survive folder/layout navigation but reset on reload and sign-out. Buttons MUST expose their pressed state, support keyboard input, and remain visible together in a wrapping header with 44px touch targets on narrow screens. The current release withdraws those controls from the toolbar while keeping every filtering rule above in force; a withdrawn control MUST be restorable in full, and while withdrawn no part of it is rendered.
+
+### 17.9 Grouped and classic views
+
+- **GAL-039:** The toolbar MUST offer a choice between grouping repeat generations and listing every generation, and MUST make the current choice explicit. The chosen layout MUST follow the same browser-local rule as GAL-011: it MUST survive reloads, navigation between collections, and sign-out in the browser it was chosen in, MUST NOT restyle another browser, and MUST NOT be rewritten by a different account signing in there. A browser that has never chosen MAY adopt the layout stored on the account once.
 
 ---
 
@@ -767,7 +771,7 @@ At minimum, automated tests MUST prove:
 17. Recall restoring the resolved seed and exact final submitted prompt.
 18. Recall not invoking Ollama.
 19. Recall being unavailable when the exact workflow version/hash is absent.
-20. Gallery slider moving from a one-card-wide layout to compact thumbnails and persisting per user.
+20. Gallery slider moving from a one-card-wide layout to compact thumbnails and persisting in the browser it was chosen in, across collections and reloads.
 21. Card footer containing source, centered dot, date, and only the Recall settings action.
 22. User deletion cascading through all application records and files without exposing content to the administrator.
 23. Generation deletion removing application-owned content but not invoking external deletion.
@@ -816,7 +820,7 @@ The application is acceptable only when all of the following are true:
 10. The left panel has a restrained Generate button at the top, source selector below it, and dynamic controls beneath.
 11. Users can submit multiple generations and the application queues them durably and fairly.
 12. The gallery is the main view and shows one card for every accepted generation, including failed and cancelled attempts.
-13. The top-right slider scales cards from approximately one per row to compact thumbnails and persists per user.
+13. The top-right slider scales cards from approximately one per row to compact thumbnails and persists in the browser it was chosen in; the grouped/classic choice beside it does the same.
 14. Each completed card footer displays `generation source · generation duration` plus its actions; cards without a completed duration display only the generation source. When the source exposes a selectable checkpoint, the footer displays `generation source · checkpoint · generation duration` instead, and the execution runtime is not shown there.
 15. A running card updates in place as contract-declared artifacts arrive.
 16. Only a terminal successful output is marked canonical; cancelled/failed checkpoints remain visibly non-final.

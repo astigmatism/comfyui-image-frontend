@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
 
+// What this browser remembers of the gallery: grouping and card size, kept apart from the account.
+const storedView = (page) => page.evaluate(() => localStorage.getItem("cif.gallery-view.v1"));
+
 async function fixture(page, { count = 525, activity = false, folderPreviews = true } = {}) {
   const data = { arrivals: [], requests: [], operations: [], failInventory: false };
   const settings = { gallery_layout: "grouped", prompt_generation: { enabled: false, active_source: null, sources: {} }, active_source: null, runtime_id: null, sources: {}, model_selections: {}, quantity: 1, control_sections: {}, recent_resolutions: {}, creative_direction: "", assistant_mode: "refine", assistant_think: true, assistant_instructions: {}, use_creative_direction: false, max_generations: 200 };
@@ -92,12 +95,43 @@ test("classic selection spans unloaded cards, supports exclusions, and persists 
   await page.getByRole("button", { name: "Classic", exact: true }).click();
   await expect(selectedCount(page)).toHaveText("525 selected");
   await page.getByRole("slider", { name: "Gallery scale" }).fill("35");
-  await expect.poll(() => data.saved().settings.gallery_layout).toBe("classic");
-  await expect.poll(() => data.saved().gallery_scale).toBe(35);
+  // The view belongs to this browser: the choice lands in browser storage, and the account keeps
+  // the copy it already held rather than being restyled by one browser.
+  await expect.poll(() => storedView(page)).toBe(JSON.stringify({ layout: "classic", scale: 35 }));
+  await expect(data.saved()).toMatchObject({ settings: { gallery_layout: "grouped" }, gallery_scale: 20 });
   await page.reload();
   await expect(page.getByRole("button", { name: "Classic", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("slider", { name: "Gallery scale" })).toHaveValue("35");
   await expect(page.locator(".classic-gallery-header")).toBeVisible();
+});
+
+test("the gallery view is this browser's own: it survives collections and reloads, and never travels", async ({ page, browser }) => {
+  const data = await fixture(page);
+  await page.getByRole("button", { name: "Classic", exact: true }).click();
+  await page.getByRole("slider", { name: "Gallery scale" }).fill("68");
+  // Walking into a collection and back is the case that used to lose both choices.
+  await page.evaluate(() => { window.location.hash = "#/c/folder"; });
+  await expect(page.locator("#collection-bar")).toContainText("Landscapes");
+  await expect(page.getByRole("button", { name: "Classic", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("slider", { name: "Gallery scale" })).toHaveValue("68");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Classic", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("slider", { name: "Gallery scale" })).toHaveValue("68");
+  expect(data.saved()).toMatchObject({ settings: { gallery_layout: "grouped" }, gallery_scale: 20 });
+
+  // A second browser on the same account has never chosen, so it opens on the account's copy:
+  // the account seeds a browser, and a browser's own view never leaves it.
+  const second = await (await browser.newContext()).newPage();
+  await fixture(second);
+  await expect(second.getByRole("button", { name: "Grouped", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(second.getByRole("slider", { name: "Gallery scale" })).toHaveValue("20");
+  await expect.poll(() => storedView(second)).toBe(JSON.stringify({ layout: "grouped", scale: 20 }));
+  await second.getByRole("button", { name: "Classic", exact: true }).click();
+  // The first browser is untouched by the second one's choice, in either direction.
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Classic", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("slider", { name: "Gallery scale" })).toHaveValue("68");
+  await second.close();
 });
 
 test("new arrivals remain unselected; each filter selects only its matching unloaded items", async ({ page }) => {
