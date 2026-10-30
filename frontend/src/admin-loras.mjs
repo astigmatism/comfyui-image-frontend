@@ -325,6 +325,33 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     if (state.busy || !state.library?.can_sync) return;
     await runOperation("sync", {});
   }
+  // One LoRA can be worth excluding from the Demo Reel: a style LoRA has no face of its own to
+  // show. Excluding it deletes what its reel produced, so it asks first and then refreshes the
+  // library the menu was opened from, which is what tells the menu to offer the opposite label.
+  async function setDemoReel(id, enabled) {
+    const item = findItem(id);
+    const key = state.library?.key;
+    if (!item?.lora_identity || !key || state.busy) return false;
+    if (!enabled && !confirm(`Disable the Demo Reel for “${item.label || item.id}”? Its Demo Reel images and its picture in the LoRA library are deleted for everyone. Enabling it again starts a new reel from scratch.`)) return false;
+    state.busy = true;
+    state.error = "";
+    state.status = enabled ? "Returning this LoRA to the Demo Reel…" : "Deleting this LoRA’s Demo Reel images…";
+    render();
+    try {
+      await api(`/api/admin/lora-library/${encodeURIComponent(key)}/demo-reel/${encodeURIComponent(item.lora_identity)}`, { method: "PUT", body: JSON.stringify({ enabled }) });
+      await loadLibrary();
+      state.status = enabled ? "Demo Reel enabled. Its images will be generated again." : "Demo Reel disabled. Its images and its library picture are deleted.";
+      notify?.(state.status, "success");
+      return true;
+    } catch (error) {
+      state.error = error.message || "The Demo Reel could not be changed.";
+      state.status = "";
+      return false;
+    } finally {
+      state.busy = false;
+      render();
+    }
+  }
   function beginEdit(id) {
     const item = findItem(id);
     if (!item || state.busy || !state.library?.eligible || pendingStatuses.includes(currentOperation()?.status)) return;
@@ -462,7 +489,7 @@ export function createAdminLoraController({ api, getCsrfToken, refreshSources, n
     else void loadLibrary().then(recoverOperations);
   }
   return {
-    mount, loadLibrary, state, install, remove, beginEdit, cancelEdit, edit, sync, retryUpload, cancelPendingUpload,
+    mount, loadLibrary, state, install, remove, setDemoReel, beginEdit, cancelEdit, edit, sync, retryUpload, cancelPendingUpload,
     currentOperation,
     subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     selectLibrary: (key) => { if (!state.busy) { selectLibrary(key); render(); } },

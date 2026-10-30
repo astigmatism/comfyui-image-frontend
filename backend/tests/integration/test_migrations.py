@@ -28,8 +28,9 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "7d1a4c8e5b32"
+HEAD_REVISION = "3f9c2a7d5b14"
 DERIVATION_REVISION = "c43d89e12a70"
+THUMBNAIL_REVISION = "7d1a4c8e5b32"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -738,6 +739,7 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
 
     derivation = {column["name"] for column in inspect(engine).get_columns("lora_library_images")}
     assert {"derived_generation_id", "derived_artifact_id"}.issubset(derivation)
+    assert "disabled" in {column["name"] for column in inspect(engine).get_columns("demo_reels")}
 
     command.downgrade(config, "base")
     assert "users" not in inspect(engine).get_table_names()
@@ -798,6 +800,59 @@ def test_thumbnail_derivation_round_trip_keeps_a_hand_uploaded_picture(tmp_path)
 
     command.upgrade(config, "head")
     assert stored() == (3, picture, None, None)
+    engine.dispose()
+
+
+def test_demo_reel_opt_out_round_trip_returns_the_lora_to_the_reel(tmp_path):
+    """A switched-off Demo Reel is a preference, so a downgrade is allowed to forget it.
+
+    Forgetting it must still leave the reel and its hidden collection intact: the LoRA
+    simply takes part again, and its next idle generation starts a fresh set of images.
+    """
+
+    path = tmp_path / "demo-reel-opt-out.db"
+    config = _config(path)
+    command.upgrade(config, "head")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, username_normalized, password_hash, role, state, "
+                "must_change_password, is_bootstrap, is_system, session_epoch, created_at, "
+                "updated_at) VALUES ('owner-1', 'admin', 'admin', 'hash', 'ADMIN', 'ACTIVE', 0, 0, "
+                "1, 0, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO collections (id, owner_id, name, previews_enabled, position, "
+                "created_at, updated_at) VALUES ('collection-1', 'owner-1', 'Demo Reel', 1, 0, "
+                "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO demo_reels (id, library_key, lora_identity, collection_id, disabled) "
+                "VALUES ('reel-1', 'krea2', :identity, 'collection-1', 1)"
+            ),
+            {"identity": "lr1_" + "b" * 64},
+        )
+
+    def flags() -> bool:
+        with engine.connect() as connection:
+            return bool(
+                connection.execute(
+                    text("SELECT disabled FROM demo_reels WHERE id = 'reel-1'")
+                ).scalar_one()
+            )
+
+    command.downgrade(config, THUMBNAIL_REVISION)
+    assert "disabled" not in {
+        column["name"] for column in inspect(engine).get_columns("demo_reels")
+    }
+    command.upgrade(config, "head")
+    assert "disabled" in {column["name"] for column in inspect(engine).get_columns("demo_reels")}
+    assert flags() is False
     engine.dispose()
 
 

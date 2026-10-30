@@ -251,6 +251,16 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     render();
     dialog()?.querySelector(".lm-editor input,.lm-editor select,.lm-editor button")?.focus();
   }
+  // A LoRA can be taken out of the Demo Reel, which deletes the images its reel had produced.
+  // The gallery keeps those pictures itself, so they are read again once the change is through.
+  async function toggleDemoReel(id) {
+    const session = draft;
+    const item = adminController?.state.library?.items?.find((entry) => entry.id === id);
+    if (!isAdmin() || !session || !item) return;
+    session.menuId = null;
+    render();
+    if (await adminController.setDemoReel(id, item.demo_reel_enabled === false) && session === draft) await loadImages(session.imageStore);
+  }
   async function mutateGroups(path, method, fields, focus = null) {
     const session = draft;
     if (!isAdmin() || !session?.grouping || session.groupsBusy) return;
@@ -322,6 +332,8 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (event.target.closest("[data-lora-group-add]")) { openPanel("create"); return; }
     const deletion = event.target.closest("[data-lora-delete]");
     if (deletion && isAdmin()) { draft.menuId = null; void adminController.remove(deletion.dataset.loraDelete); render(); return; }
+    const demoToggle = event.target.closest("[data-lora-demo-toggle]");
+    if (demoToggle && isAdmin()) { void toggleDemoReel(demoToggle.dataset.loraDemoToggle); return; }
     const groupDeletion = event.target.closest("[data-lora-group-delete]");
     if (groupDeletion) { void deleteGroup(groupDeletion.dataset.loraGroupDelete); return; }
     if (event.target.closest("[data-lora-groups-reload]")) { void loadGroups(); return; }

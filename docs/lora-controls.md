@@ -14,7 +14,10 @@ The **Open Demo Reel** icon in a card's caption opens that LoRA's shared image
 gallery; a LoRA without a thumbnail opens it from **Demo Reel** in its menu.
 Administrators configure shared prompt slots and idle generation recipes through
 the picker's **Demo Reel** subsection. Saved reel settings are independent of
-selection Apply/Cancel. See [LoRA Demo Reels](demo-reel.md).
+selection Apply/Cancel. A LoRA an administrator has taken out of the reel has no
+images and says so in place of waiting for them; it is otherwise an ordinary LoRA,
+selectable and drawable in every generation. See
+[LoRA Demo Reels](demo-reel.md).
 
 Every LoRA belongs to one group per model-family library. Administrators create and rename groups and use a card's **Move to group** action to assign its LoRA. Each group heading has **Move up** and **Move down** controls, including Uncategorized. These changes are shared by all users and compatible workflows, save immediately, and are not undone by Cancel. Initially custom groups sort alphabetically, including empty groups, followed by **Uncategorized**. After reordering, the saved order survives renames and deletions; new groups appear immediately before Uncategorized. Cards remain alphabetical within each group. Gallery arrangement never determines generation order.
 

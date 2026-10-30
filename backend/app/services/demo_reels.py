@@ -307,6 +307,10 @@ class DemoReelService:
                 if not identity:
                     continue
                 reel = self._reel(session, key, identity, item["label"])
+                if reel.disabled:
+                    # An administrator took this LoRA out of the Demo Reel: no candidates means
+                    # its images are reconciled away below, exactly like a retired LoRA's.
+                    continue
                 for slot in config.slots:
                     for checkpoint_id in rank_order:
                         if checkpoint_id not in all_choices:
@@ -757,6 +761,67 @@ class DemoReelService:
         session.commit()
         return self.settings(session)
 
+    def set_enabled(
+        self, session: Session, library_key: str, identity: str, *, enabled: bool
+    ) -> dict[str, Any]:
+        """Take one LoRA out of the Demo Reel, or put it back.
+
+        Switching a LoRA off is the same retirement a removed LoRA gets: below, it drops out of
+        the candidate matrix, so its images are discarded and their files deleted.  It happens
+        in this request rather than on the next pass because the LoRA gallery answers straight
+        afterwards and an administrator should not be looking at a picture that no longer
+        exists.  Switching it back on leaves nothing to restore: the reel starts over.
+        """
+
+        lock_user_state(session)
+        config = self.config(session)
+        library = self._libraries(session).get(library_key)
+        item = (
+            next(
+                (
+                    item
+                    for item in library.canonical
+                    if catalog_identities([item]).get(item["id"]) == identity
+                ),
+                None,
+            )
+            if library
+            else None
+        )
+        if item is None:
+            raise AppError("not_found", "LoRA was not found.", status_code=404)
+        reel = self._reel(session, library_key, identity, item["label"])
+        produced = int(
+            session.scalar(
+                select(func.count())
+                .select_from(DemoReelEntry)
+                .where(DemoReelEntry.reel_id == reel.id, DemoReelEntry.generation_id.is_not(None))
+            )
+            or 0
+        )
+        changed = bool(reel.disabled) != (not enabled)
+        reel.disabled = not enabled
+        if enabled:
+            session.commit()
+            return {
+                "library_key": library_key,
+                "lora_identity": identity,
+                "demo_reel_enabled": True,
+                "images_removed": 0,
+                "changed": changed,
+            }
+        self.reconcile(session, config)
+        session.commit()
+        self.cleanup()
+        self.thumbnail(library_key, identity)
+        return {
+            "library_key": library_key,
+            "lora_identity": identity,
+            "demo_reel_enabled": False,
+            "images_removed": produced,
+            "changed": changed,
+        }
+
     def settings(self, session: Session) -> dict[str, Any]:
         config = self.config(session)
         owner = session.get(User, config.rating_user_id) if config.rating_user_id else None
@@ -765,6 +830,9 @@ class DemoReelService:
             session.execute(
                 select(DemoReelEntry.state, func.count()).group_by(DemoReelEntry.state)
             ).all()
+        )
+        disabled_reels = int(
+            session.scalar(select(func.count()).select_from(DemoReel).where(DemoReel.disabled)) or 0
         )
         return {
             "revision": config.revision,
@@ -778,6 +846,7 @@ class DemoReelService:
             },
             "strengths": config.strengths,
             "idle_seconds": self.idle_seconds,
+            "disabled_reels": disabled_reels,
             "progress": {
                 "completed": counts.get("ready", 0),
                 "expected": sum(counts.values()),
@@ -879,7 +948,9 @@ class DemoReelService:
             )
         complete = sum(entry["state"] == "ready" for entry in entries)
         status = (
-            "paused"
+            "off"
+            if reel.disabled
+            else "paused"
             if config.paused
             else "generating"
             if any(entry["state"] == "running" for entry in entries)
@@ -907,12 +978,15 @@ class DemoReelService:
             "completed": complete,
             "expected": len(entries),
             "status": status,
+            "demo_reel_enabled": not reel.disabled,
             "can_manage": admin,
             "paused": config.paused,
             "revision": config.revision,
             "rating_username": rating_owner.username if rating_owner else None,
             "message": "Rating account unavailable. Select an active account in Demo Reel settings."
             if rating_unavailable
+            else "Demo Reel is off for this LoRA."
+            if reel.disabled
             else None,
         }
         session.commit()

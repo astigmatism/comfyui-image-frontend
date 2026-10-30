@@ -34,6 +34,7 @@ class DemoReel(Base):
     collection_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("collections.id", ondelete="CASCADE"), unique=True
     )
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class DemoReelEntry(Base):

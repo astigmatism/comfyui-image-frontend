@@ -285,3 +285,47 @@ def test_a_second_library_listing_the_same_lora_keeps_its_picture(gallery_client
     assert (after.storage_path, after.revision) == (before.storage_path, before.revision)
     assert after.derived_generation_id == before.derived_generation_id
     assert pictures(client, detail)[control(detail)["items"][0]["id"]]["image_url"] is not None
+
+
+def test_switching_a_loras_reel_off_erases_its_picture_too(gallery_client):
+    """A LoRA that has left the Demo Reel must not go on showing a picture of it."""
+
+    client, detail, _, _ = gallery_client
+    item = control(detail)["items"][0]
+    _, path = configure(client, detail)
+    ready = [entry for entry in generate(client, path) if entry["generation"]]
+    favorite(client, path, ready[1]["generation"]["id"])
+    sweep(client)
+    before = stored(client, item["lora_identity"])
+    picture = pictures(client, detail)[item["id"]]["image_url"]
+    assert picture is not None
+    assert before.derived_generation_id == ready[1]["generation"]["id"]
+
+    answer = client.put(
+        f"/api/admin/lora-library/krea2/demo-reel/{item['lora_identity']}",
+        headers={"X-CSRF-Token": csrf(client)},
+        json={"enabled": False},
+    )
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["images_removed"] == len(ready)
+
+    assert pictures(client, detail)[item["id"]]["image_url"] is None
+    row = stored(client, item["lora_identity"])
+    assert (row.storage_path, row.derived_generation_id) == (None, None)
+    assert not (container_of(client).assets.data_dir / before.storage_path).is_file()
+    # The favorite that chose this picture was only a marker on the erased image.
+    with container_of(client).db.session_factory() as session:
+        assert session.scalars(select(Favorite)).first() is None
+    assert client.get(picture).status_code == 404
+
+    # Putting the LoRA back in the reel does not resurrect the picture.
+    assert (
+        client.put(
+            f"/api/admin/lora-library/krea2/demo-reel/{item['lora_identity']}",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"enabled": True},
+        ).status_code
+        == 200
+    )
+    sweep(client)
+    assert pictures(client, detail)[item["id"]]["image_url"] is None

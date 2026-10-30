@@ -257,6 +257,7 @@ class AdminLoraItem(APIModel):
     description: str | None = None
     trigger_word: str | None = None
     lora_identity: str | None = None
+    demo_reel_enabled: bool = True
 
 
 class LibraryMemberRevision(APIModel):

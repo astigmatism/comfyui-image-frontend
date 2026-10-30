@@ -513,3 +513,59 @@ async function waitFor(check) {
   }
   assert.fail("Expected asynchronous state was not reached.");
 }
+
+test("a disabled LoRA is deleted from the Demo Reel only after the administrator confirms it", async () => {
+  const calls = [];
+  let items = [{ id: "style", label: "Style", lora_identity: "identity-1", demo_reel_enabled: true }];
+  const api = async (path, options) => {
+    calls.push({ path, options });
+    if (isLibrary(path)) return view(items);
+    if (path === "/api/admin/lora-library/krea2/demo-reel/identity-1") return { demo_reel_enabled: false, images_removed: 4 };
+    throw new Error(`Unexpected path ${path}`);
+  };
+  const notices = [];
+  let asked = null;
+  const controller = createAdminLoraController({
+    api,
+    getCsrfToken: () => "token",
+    notify: (message) => notices.push(message),
+    confirm: (message) => { asked = message; return true; },
+    refreshSources: async () => {},
+  });
+  controller.mount({ isConnected: true, innerHTML: "", addEventListener() {} }, [{ source_key: "source-1" }], "source-1");
+  await waitFor(() => controller.state.library);
+
+  items = [{ ...items[0], demo_reel_enabled: false }];
+  assert.equal(await controller.setDemoReel("style", false), true);
+  const request = calls.find((call) => call.path.endsWith("/demo-reel/identity-1"));
+  assert.equal(request.options.method, "PUT");
+  assert.deepEqual(JSON.parse(request.options.body), { enabled: false });
+  assert.match(asked, /Disable the Demo Reel for “Style”/);
+  assert.match(notices.at(-1), /images and its library picture are deleted/);
+  assert.equal(controller.state.library.items[0].demo_reel_enabled, false);
+  assert.equal(controller.state.busy, false);
+  assert.equal(controller.state.error, "");
+});
+
+test("backing out of the confirmation asks the server nothing, and re-enabling does not ask at all", async () => {
+  const calls = [];
+  const api = async (path, options) => {
+    calls.push({ path, options });
+    if (isLibrary(path)) return view([{ id: "style", label: "Style", lora_identity: "identity-1", demo_reel_enabled: false }]);
+    if (path.endsWith("/demo-reel/identity-1")) return { demo_reel_enabled: true, images_removed: 0 };
+    throw new Error(`Unexpected path ${path}`);
+  };
+  const controller = createAdminLoraController({
+    api, getCsrfToken: () => "token", confirm: () => false, refreshSources: async () => {},
+  });
+  controller.mount({ isConnected: true, innerHTML: "", addEventListener() {} }, [{ source_key: "source-1" }], "source-1");
+  await waitFor(() => controller.state.library);
+
+  assert.equal(await controller.setDemoReel("style", false), false);
+  assert.equal(calls.filter((call) => call.path.endsWith("/demo-reel/identity-1")).length, 0);
+
+  assert.equal(await controller.setDemoReel("style", true), true);
+  const request = calls.find((call) => call.path.endsWith("/demo-reel/identity-1"));
+  assert.deepEqual(JSON.parse(request.options.body), { enabled: true });
+  assert.match(controller.state.status, /will be generated again/);
+});

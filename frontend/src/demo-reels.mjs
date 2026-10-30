@@ -73,7 +73,11 @@ function slotGroupMarkup(view, slot, index, collapsed) {
 export function demoReelGroupsMarkup(view) {
   const collapsed = view.collapsed || new Set();
   const groups = (view.slots || []).map((slot, index) => slotGroupMarkup(view, slot, index, collapsed)).filter(Boolean).join("");
-  const empty = groups ? "" : '<section class="empty-gallery"><h2>No Demo Reel images yet.</h2><p>Images appear after prompts, a generation recipe, and A/B checkpoints are configured, then all users have been idle for five minutes.</p></section>';
+  // A LoRA that has been taken out of the Demo Reel is not waiting for anything, so it must not
+  // be told images are still five minutes away.
+  const empty = groups ? "" : view.status === "off"
+    ? '<section class="empty-gallery"><h2>Demo Reel is off for this LoRA.</h2><p>Its images were removed. An administrator can turn the Demo Reel back on from this LoRA in the LoRA library.</p></section>'
+    : '<section class="empty-gallery"><h2>No Demo Reel images yet.</h2><p>Images appear after prompts, a generation recipe, and A/B checkpoints are configured, then all users have been idle for five minutes.</p></section>';
   const hasMore = view.next_offset !== null && view.next_offset !== undefined;
   return `${groups}${empty}<div class="gallery-sentinel demo-reel-sentinel" data-demo-reel-sentinel${hasMore ? "" : " hidden"}>${hasMore ? '<button type="button" class="button secondary" data-demo-action="more">Load more</button>' : ""}</div>`;
 }
@@ -238,6 +242,12 @@ const familySummary = (config, details) => (config.libraries || [])
 
 function generationMarkup(config, details, users, context) {
   const idle = Math.max(1, Math.round((config.idle_seconds || 300) / 60));
+  // A LoRA switched off sits on the LoRA card, not in these settings, so the settings say that
+  // far away LoRAs are excluded rather than leaving the count to be discovered image by image.
+  const excluded = Number(config.disabled_reels) || 0;
+  const excludedNote = excluded
+    ? ` ${excluded} LoRA${excluded === 1 ? "" : "s"} ${excluded === 1 ? "has" : "have"} been taken out of the Demo Reel with Disable Demo Reel in a LoRA card menu.`
+    : "";
   return `<details class="demo-reel-generation" data-demo-details="generation">
     <summary class="demo-reel-generation-summary"><span class="demo-reel-generation-title">Model families</span><span class="demo-reel-generation-state">${escape(familySummary(config, details))}</span></summary>
     <p class="demo-reel-how"><strong>How this works.</strong> Prompt slots decide what is drawn. A model family decides how — the workflow, its settings, and how strongly each LoRA is applied. Images appear after everyone has been idle for ${idle} minutes.</p>
@@ -245,7 +255,7 @@ function generationMarkup(config, details, users, context) {
     <div class="demo-reel-grading">
       <label class="field demo-reel-grading-user"><span>A/B ratings from</span><select id="demo-reel-rating-user" data-demo-rating-user>${users.map((user) => `<option value="${escape(user.id)}" ${user.id === config.rating_user_id ? "selected" : ""}>${escape(user.username)}</option>`).join("")}</select></label>
       <label class="switch demo-reel-pause"><input type="checkbox" id="demo-reel-paused" data-demo-paused ${config.paused ? "checked" : ""} /><span aria-hidden="true"></span><em>${config.paused ? "Paused" : "Active"}</em></label>
-      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify. Pausing stops new images until someone resumes it.</p>
+      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify. Pausing stops new images until someone resumes it.${excludedNote}</p>
     </div>
   </details>`;
 }

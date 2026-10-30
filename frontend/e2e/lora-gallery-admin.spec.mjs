@@ -10,7 +10,7 @@ async function mount(page) {
     const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
     const { createAdminLoraController } = await import(new URL("./admin-loras.mjs", base));
     const identity = (letter) => `lr1_${letter.repeat(64)}`;
-    window.catalog = [{ id: "a", label: "Alpha", lora_identity: identity("a") }, { id: "b", label: "Beta", lora_identity: identity("b") }];
+    window.catalog = [{ id: "a", label: "Alpha", lora_identity: identity("a"), demo_reel_enabled: true }, { id: "b", label: "Beta", lora_identity: identity("b"), demo_reel_enabled: true }];
     window.revision = { publication_id: "one" };
     window.grouping = { library_key: "krea2", revision: 0, groups: [{ id: "uncategorized", name: "Uncategorized", system: true }], assignments: {} };
     window.stack = [{ id: "a", strength: .65 }, { id: "b", strength: 0 }];
@@ -19,6 +19,7 @@ async function mount(page) {
     window.images = {};
     window.requests = [];
     window.notices = [];
+    window.demoReel = [];
     window.drift = false;
     const control = () => ({ id: "loras", type: "lora_stack", label: "LoRAs", items: structuredClone(window.catalog), minimum: 0, maximum: 2, step: .05, default: window.catalog.map(({ id }) => ({ id, strength: 0 })) });
     const library = () => ({ key: "krea2", label: "Krea 2", eligible: true, in_sync: !window.drift, can_sync: window.drift, items: window.catalog, members: [{ source_key: "source", display_name: "Workflow", in_sync: !window.drift, missing_count: window.drift ? 1 : 0 }], expected_library: [{ source_key: "source", revision: window.revision }] });
@@ -27,7 +28,13 @@ async function mount(page) {
       const body = options?.body && typeof options.body === "string" ? JSON.parse(options.body) : {};
       if (path === "/api/admin/lora-library") return { libraries: [library(), { ...library(), key: "other", label: "Other", items: [], members: [] }] };
       if (path === "/api/workflows/source") return { interface: { inputs: [control()] }, revision: window.revision };
-      if (path.includes("lora-images")) return { items: window.catalog.map((item) => ({ id: item.id, lora_identity: item.lora_identity, version: "a".repeat(64), image_url: item.id === "a" || item.id === "b" ? `/gallery-sample-${item.id}.webp` : null })) };
+      if (path.includes("lora-images")) return { items: window.catalog.map((item) => ({ id: item.id, lora_identity: item.lora_identity, version: "a".repeat(64), image_url: item.demo_reel_enabled ? `/gallery-sample-${item.id}.webp` : null })) };
+      if (path.includes("/demo-reel/")) {
+        const item = window.catalog.find((entry) => entry.lora_identity === decodeURIComponent(path.split("/").pop()));
+        item.demo_reel_enabled = body.enabled;
+        window.demoReel.push(body);
+        return { library_key: "krea2", lora_identity: item.lora_identity, demo_reel_enabled: body.enabled, images_removed: body.enabled ? 0 : 2, changed: true };
+      }
       if (path === "/api/admin/lora-operations") {
         const id = String(Object.keys(window.operations).length + 1);
         const operation = { id, status: body.kind === "install" ? "awaiting_upload" : "succeeded" };
@@ -243,4 +250,22 @@ test("group move controls save shared order, support the fallback, and require e
   expect(box.width).toBeGreaterThanOrEqual(44);
   expect(box.height).toBeGreaterThanOrEqual(44);
   expect(await manager(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
+
+test("a style LoRA leaves the Demo Reel and its picture disappears with its images", async ({ page }) => {
+  await mount(page);
+  await page.getByRole("button", { name: "Open selector" }).click();
+  const card = manager(page).locator('[data-lora-id="a"]');
+  await expect(card.locator(".lm-thumbnail")).toBeVisible();
+
+  await actions(page, "Alpha");
+  await manager(page).getByRole("button", { name: "Disable Demo Reel", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.demoReel)).toEqual([{ enabled: false }]);
+  await expect(card.locator(".lm-thumbnail")).toHaveCount(0);
+  expect(await page.evaluate(() => window.notices.at(-1))).toContain("Demo Reel disabled");
+
+  await actions(page, "Alpha");
+  await manager(page).getByRole("button", { name: "Enable Demo Reel", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.demoReel.at(-1))).toEqual({ enabled: true });
+  await expect(card.locator(".lm-thumbnail")).toBeVisible();
 });

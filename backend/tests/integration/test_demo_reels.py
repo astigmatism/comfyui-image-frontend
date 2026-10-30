@@ -578,3 +578,135 @@ def test_shared_download_and_prompt_rerun_create_personal_work_without_changing_
     assert client.get(path).json()["completed"] == 1
     item = rerun.json()["items"][0]["generation"]
     assert client.get(f"/api/generations/{item['id']}").status_code == 200
+
+
+def reel_stack(detail) -> list[dict]:
+    control = next(item for item in detail["interface"]["inputs"] if item["type"] == "lora_stack")
+    return control["items"]
+
+
+def switch(client, identity, *, enabled, cookie=None):
+    """An administrator takes one LoRA out of the Demo Reel, or puts it back."""
+
+    if cookie is not None:
+        restore_cookie(client, cookie)
+    return client.put(
+        f"/api/admin/lora-library/krea2/demo-reel/{identity}",
+        headers={"X-CSRF-Token": csrf(client)},
+        json={"enabled": enabled},
+    )
+
+
+def test_disabling_a_lora_erases_its_images_and_leaves_the_reel_to_the_others(reel_client):
+    client, detail, _, _ = reel_client
+    items = reel_stack(detail)
+    _, path = configure(client, detail, slots=2)
+    identity = path.rsplit("/", 1)[1]
+    tick(client, quiet=True)
+    produced = jobs(client)[0]
+    finish(client, produced.id)
+    container = client.app.state.container
+    with container.db.session_factory() as session:
+        files = [
+            stored
+            for artifact in session.scalars(
+                select(Artifact).where(Artifact.generation_id == produced.id)
+            )
+            for stored in (artifact.storage_path, artifact.thumbnail_path)
+            if stored
+        ]
+    assert files and client.get(path).json()["completed"] == 1
+
+    answer = switch(client, identity, enabled=False)
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {
+        "library_key": "krea2",
+        "lora_identity": identity,
+        "demo_reel_enabled": False,
+        "images_removed": 1,
+        "changed": True,
+    }
+
+    # Erased, not hidden: no card, no work, and no file on disk.
+    view = client.get(path).json()
+    assert view["status"] == "off" and view["demo_reel_enabled"] is False
+    assert (view["entries"], view["expected"], view["completed"]) == ([], 0, 0)
+    with container.db.session_factory() as session:
+        assert session.get(Generation, produced.id) is None
+    assert not any((container.assets.data_dir / stored).is_file() for stored in files)
+
+    # The LoRA gallery is told, so its menu can offer to put the LoRA back.
+    excluded = {
+        item["id"]: item["demo_reel_enabled"]
+        for item in client.get("/api/admin/lora-library").json()["libraries"][0]["items"]
+    }
+    assert excluded[items[0]["id"]] is False and excluded[items[1]["id"]] is True
+    assert client.get("/api/admin/demo-reels").json()["disabled_reels"] == 1
+
+    # Generation continues for everybody else and never enables the disabled LoRA again.
+    for _ in range(3):
+        tick(client, quiet=True)
+        finish(client, jobs(client)[-1].id)
+    assert client.get(path).json()["entries"] == []
+    assert jobs(client)
+    assert all(
+        any(
+            entry["id"] == items[0]["id"] and entry["strength"] == 0
+            for entry in job.effective_controls_json["loras"]
+        )
+        for job in jobs(client)
+    )
+    settings = client.get("/api/admin/demo-reels").json()
+    assert settings["progress"]["completed"] > 0 and settings["disabled_reels"] == 1
+
+
+def test_rejoining_the_demo_reel_starts_the_lora_over(reel_client):
+    client, detail, _, _ = reel_client
+    _, path = configure(client, detail)
+    identity = path.rsplit("/", 1)[1]
+    tick(client, quiet=True)
+    finish(client, jobs(client)[0].id)
+    assert client.get(path).json()["completed"] == 1
+
+    assert switch(client, identity, enabled=False).status_code == 200
+    assert switch(client, identity, enabled=True).json()["demo_reel_enabled"] is True
+
+    # Nothing is restored: the reel has the same work to do it had before.
+    view = client.get(path).json()
+    assert view["demo_reel_enabled"] is True and view["completed"] == 0 and view["expected"] == 2
+    assert {entry["state"] for entry in view["entries"]} == {"missing"}
+    tick(client, quiet=True)
+    finish(client, jobs(client)[-1].id)
+    assert client.get(path).json()["completed"] == 1
+
+
+def test_only_an_administrator_may_switch_a_loras_demo_reel(reel_client):
+    client, detail, admin_cookie, user_cookie = reel_client
+    _, path = configure(client, detail)
+    identity = path.rsplit("/", 1)[1]
+    url = f"/api/admin/lora-library/krea2/demo-reel/{identity}"
+
+    assert switch(client, identity, enabled=False, cookie=user_cookie).status_code == 403
+    restore_cookie(client, admin_cookie)
+    assert client.put(url, json={"enabled": False}).status_code == 403
+    assert (
+        client.put(
+            "/api/admin/lora-library/krea2/demo-reel/lr1_missing",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"enabled": False},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.put(
+            f"/api/admin/lora-library/notebook/demo-reel/{identity}",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"enabled": False},
+        ).status_code
+        == 404
+    )
+
+    assert switch(client, identity, enabled=False).json()["changed"] is True
+    again = switch(client, identity, enabled=False)
+    assert again.status_code == 200 and again.json()["changed"] is False
+    assert client.get(path).json()["status"] == "off"

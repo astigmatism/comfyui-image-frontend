@@ -199,3 +199,40 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   expect((await (await page.request.get("/api/admin/demo-reels")).json()).slots).toEqual(config.slots);
   expect(errors).toEqual([]);
 });
+
+test("a LoRA that has left the Demo Reel says it is off instead of waiting for images", async ({ page }) => {
+  const session = await signIn(page);
+  let control;
+  for (const source of await (await page.request.get("/api/workflows")).json()) {
+    const detail = await (await page.request.get(`/api/workflows/${source.source_key}`)).json();
+    control = detail.interface.inputs.find((entry) => entry.type === "lora_stack");
+    if (control) {
+      await page.locator("#workflow-source").click();
+      const sources = page.locator("#source-picker-dialog");
+      await sources.locator("[data-source-workflow-choice]").selectOption(source.source_key);
+      await sources.getByRole("button", { name: "Apply", exact: true }).click();
+      break;
+    }
+  }
+  expect(control).toBeTruthy();
+  const identity = control.items[0].lora_identity;
+  try {
+    await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
+    const picker = page.locator("#lora-manager-dialog");
+    const card = picker.locator('[data-lora-id="a"]');
+    page.once("dialog", (dialog) => dialog.accept());
+    await card.getByRole("button", { name: /^Actions for / }).click();
+    await picker.getByRole("button", { name: "Disable Demo Reel", exact: true }).click();
+    await card.getByRole("button", { name: /^Actions for / }).click();
+    await expect(picker.getByRole("button", { name: "Enable Demo Reel", exact: true })).toBeVisible();
+
+    await openDemoReel(picker, card);
+    const reel = page.locator("#demo-reel-dialog");
+    await expect(reel.getByRole("heading", { name: "Alpha · Demo Reel" })).toBeVisible();
+    await expect(reel.locator("[data-demo-reel-notice]")).toContainText("Demo Reel is off for this LoRA.");
+    await expect(reel.getByText("Its images were removed.", { exact: false })).toBeVisible();
+    await expect(reel.getByText("No Demo Reel images yet.", { exact: false })).toHaveCount(0);
+  } finally {
+    await page.request.put(`/api/admin/lora-library/krea2/demo-reel/${identity}`, { headers: { "X-CSRF-Token": session.csrf_token }, data: { enabled: true }, timeout: 8000, failOnStatusCode: false }).catch(() => {});
+  }
+});

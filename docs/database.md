@@ -296,6 +296,15 @@ deleting an image, invalidating a slot, or removing a LoRA needs no cascade. A r
 marker is empty holds a hand-uploaded file from before derivation, which the first
 reconciliation replaces or clears and whose file it then removes.
 
+Migration `3f9c2a7d5b14` adds `demo_reels.disabled`. It keeps one LoRA out of the reel
+universe: reconciliation stops offering it work, and everything it had produced is retired
+through the same path a removed LoRA takes, which is why the flag lives on the reel row and
+not in `demo_reel_config` — a per-LoRA switch must not invalidate the shared configuration
+revision, and it must not survive the LoRA leaving the library, when the reel row itself is
+collected. The row and its hidden collection stay while a LoRA is out so that enabling it
+again has somewhere to return; a downgrade simply forgets the choice and the LoRA takes part
+again.
+
 Shared artifacts remain ordinary generation artifacts under the internal owner;
 reel-specific reads validate current eligibility and final-result membership.
 Personal queries do not include system content. Invalidation first revokes shared

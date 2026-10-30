@@ -57,3 +57,9 @@ class DemoReelAction(APIModel):
     collection_id: str | None = None
     key: UUID | None = None
     revision: int | None = Field(default=None, ge=0)
+
+
+class DemoReelEnabled(APIModel):
+    """Whether this LoRA takes part in the Demo Reel, set by an administrator per LoRA."""
+
+    enabled: bool

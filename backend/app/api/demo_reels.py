@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from ..demo_reel_models import DemoReel, DemoReelEntry, DemoReelTransfer
-from ..demo_reel_schemas import DemoReelAction, DemoReelUpdate
+from ..demo_reel_schemas import DemoReelAction, DemoReelEnabled, DemoReelUpdate
 from ..dependencies import (
     AuthContext,
     database_handler,
@@ -71,6 +71,25 @@ def save_settings(
     if context.user.role != UserRole.ADMIN:
         raise AppError("forbidden", "Administrator access is required.", status_code=403)
     return get_container(request).demo_reels.save(session, context.user.id, payload)
+
+
+@router.put("/admin/lora-library/{library_key}/demo-reel/{identity}")
+@database_handler
+def set_lora_demo_reel(
+    library_key: str,
+    identity: str,
+    payload: DemoReelEnabled,
+    request: Request,
+    session: Annotated[Session, Depends(get_db, scope="function")],
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> dict[str, Any]:
+    """Take one LoRA out of the Demo Reel, erasing what it produced, or put it back."""
+
+    if context.user.role != UserRole.ADMIN:
+        raise AppError("forbidden", "Administrator access is required.", status_code=403)
+    return get_container(request).demo_reels.set_enabled(
+        session, library_key, identity, enabled=payload.enabled
+    )
 
 
 @router.post("/activity", status_code=204)

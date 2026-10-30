@@ -76,11 +76,15 @@ function menuMarkup(state) {
   const libraryItem = library?.items?.find((entry) => entry.id === item.id);
   const pending = ["awaiting_upload", "running", "repair_required"].includes(state.adminController?.currentOperation()?.status);
   const adminDisabled = pending || state.adminController?.state.busy || !library?.eligible || library.key !== state.libraryKey || !item.lora_identity || libraryItem?.lora_identity !== item.lora_identity;
+  // The Demo Reel is not part of a workflow, so a family that needs a weight sync still lets an
+  // administrator decide that a LoRA should stop being drawn.
+  const reelDisabled = pending || state.adminController?.state.busy || !library || library.key !== state.libraryKey || libraryItem?.lora_identity !== item.lora_identity;
   const hasImage = Boolean(state.images[item.id]?.image_url);
+  const reelOff = libraryItem?.demo_reel_enabled === false;
   return `<div class="lm-card-popover" data-lora-popover role="group" aria-label="Actions for ${escape(item.label)}">
     <button type="button" data-lora-details="${id}">Usage details</button>
     ${hasImage ? "" : `<button type="button" data-lora-demo-reel="${id}" ${!state.libraryKey || !item.lora_identity ? "disabled" : ""}>Demo Reel</button>`}
-    ${state.admin ? `<hr /><button type="button" data-lora-move="${id}" ${!state.grouping || state.groupsBusy ? "disabled" : ""}>Move to group…</button><button type="button" data-lora-edit="${id}" ${adminDisabled ? "disabled" : ""}>Edit LoRA details…</button><button type="button" class="destructive" data-lora-delete="${id}" ${adminDisabled ? "disabled" : ""}>Delete LoRA…</button>` : ""}</div>`;
+    ${state.admin ? `<hr /><button type="button" ${reelOff ? "" : 'class="destructive" '}data-lora-demo-toggle="${id}" ${reelDisabled ? "disabled" : ""}>${reelOff ? "Enable Demo Reel" : "Disable Demo Reel"}</button><button type="button" data-lora-move="${id}" ${!state.grouping || state.groupsBusy ? "disabled" : ""}>Move to group…</button><button type="button" data-lora-edit="${id}" ${adminDisabled ? "disabled" : ""}>Edit LoRA details…</button><button type="button" class="destructive" data-lora-delete="${id}" ${adminDisabled ? "disabled" : ""}>Delete LoRA…</button>` : ""}</div>`;
 }
 
 export function loraManagerMarkup(options) {

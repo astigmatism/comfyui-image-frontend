@@ -24,6 +24,7 @@ from fastapi import Request
 from sqlalchemy import select
 
 from ..blocking import run_blocking
+from ..demo_reel_models import DemoReel
 from ..domain.lora_identity import lora_identity_v1
 from ..domain.lora_stack import MAX_TRIGGER_WORD
 from ..domain.publication import (
@@ -493,9 +494,21 @@ class LoraOperationService:
                 .limit(1)
             )
 
+    def _disabled_reels(self) -> set[tuple[str, str]]:
+        with self.container.db.session_factory() as session:
+            return {
+                (key, identity)
+                for key, identity in session.execute(
+                    select(DemoReel.library_key, DemoReel.lora_identity).where(
+                        DemoReel.disabled.is_(True)
+                    )
+                )
+            }
+
     async def library(self) -> AdminLoraLibraries:
         current = await run_blocking(self._current_libraries)
         active = await run_blocking(self._active_operation)
+        excluded = await run_blocking(self._disabled_reels)
         try:
             self._secret()
             disabled: str | None = None
@@ -543,7 +556,8 @@ class LoraOperationService:
                                 for key in ("id", "label", "description", "trigger_word")
                                 if key in item
                             },
-                            lora_identity=identities.get(item["id"]),
+                            lora_identity=(identity := identities.get(item["id"])),
+                            demo_reel_enabled=(library.key, identity) not in excluded,
                         )
                         for item in library.canonical
                     ],

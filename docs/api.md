@@ -1083,6 +1083,7 @@ replacement, and access. Ordinary collection/generation routes remain owner-scop
 | Method | Route | Purpose |
 |---|---|---|
 | `GET`, `PUT` | `/api/admin/demo-reels` | Administrator configuration; PUT requires CSRF and `revision` |
+| `PUT` | `/api/admin/lora-library/{library}/demo-reel/{identity}` | Administrator takes one LoRA out of the reel, deleting what it produced, or returns it; requires CSRF |
 | `POST` | `/api/activity` | Authenticated CSRF-protected user interaction signal; returns 204 |
 | `GET` | `/api/demo-reels/{library}/{identity}` | Shared LoRA gallery, slots, counts, states, and image summaries; `offset` and `limit` (1–60) paginate entries |
 | `GET` | `/api/demo-reels/{library}/{identity}/generations/{id}` | Current shared image details |
@@ -1103,6 +1104,15 @@ Actions accept `action`, explicit `generation_ids`, and optional destination
 reusing a key with different inputs returns 409. Only administrators can remove or
 regenerate shared images, retry failures, or pause/resume. Pause/resume require the
 current `revision`. Favorites and copies belong to the acting user.
+
+A LoRA an administrator has taken out of the reel answers its gallery with
+`status: "off"`, `demo_reel_enabled: false`, no entries, and a message saying so; it holds
+no work, so the family's progress counts the LoRAs still taking part. The `PUT` accepts
+`enabled` and replies with the new `demo_reel_enabled`, how many images were
+`images_removed`, and whether the choice `changed`; disabling returns 200 whether or not
+the LoRA had produced anything. Configuration replies report how many LoRAs are out as
+`disabled_reels`, and every item of `GET /api/admin/lora-library` carries
+`demo_reel_enabled`.
 
 `POST /api/gallery/prompt-rerun` additionally accepts optional `demo_reel` containing
 `library_key` and `lora_identity`. It allows explicit current reel generation IDs

@@ -144,6 +144,32 @@ test("the LoRA menu carries Demo Reel only where the caption has no room for it"
   assert.doesNotMatch(withImage, /data-lora-demo-reel="a"\s*>Demo Reel/);
 });
 
+test("an administrator takes a LoRA out of the Demo Reel from its card menu", () => {
+  const items = [{ id: "a", label: "Alpha", lora_identity: "one" }, { id: "b", label: "Beta", lora_identity: "two" }];
+  const galleryControl = { ...control, items, default: items.map((item) => ({ id: item.id, strength: 0 })) };
+  const values = [{ id: "a", strength: 0 }, { id: "b", strength: 0 }];
+  const grouping = { groups: [{ id: "style", name: "Style" }, { id: "uncategorized", name: "Uncategorized", system: true }], assignments: { one: "style" } };
+  const menu = (admin, demo_reel_enabled) => {
+    const adminController = {
+      currentOperation: () => null,
+      state: {
+        busy: false,
+        library: { key: "family", eligible: true, items: items.map((item) => ({ ...item, demo_reel_enabled })), members: [] },
+        libraries: [], pendingUploads: new Map(), uploadPercent: null,
+      },
+    };
+    const markup = loraManagerMarkup({ control: galleryControl, values, libraryKey: "family", grouping, menuId: "a", admin, adminController });
+    return /<div class="lm-card-popover"[\s\S]*?<\/div>/.exec(markup)?.[0] ?? "";
+  };
+  const actions = (markup) => [...markup.matchAll(/data-lora-([a-z-]+)="a"/g)].map((match) => match[1]);
+
+  assert.deepEqual(actions(menu(false, true)), ["details", "demo-reel"]);
+  assert.deepEqual(actions(menu(true, true)), ["details", "demo-reel", "demo-toggle", "move", "edit", "delete"]);
+  assert.match(menu(true, true), /class="destructive" data-lora-demo-toggle="a"\s*>Disable Demo Reel</);
+  assert.match(menu(true, false), /data-lora-demo-toggle="a"\s*>Enable Demo Reel</);
+  assert.doesNotMatch(menu(true, false), /class="destructive" data-lora-demo-toggle="a"/);
+});
+
 test("grouped gallery includes empty groups and defaults missing memberships to Uncategorized", () => {
   const items = [{ id: "z", label: "Zeta", lora_identity: "one" }, { id: "a", label: "Alpha", lora_identity: "two" }];
   const grouping = { groups: [{ id: "empty", name: "Empty" }, { id: "named", name: "Named" }, { id: "uncategorized", name: "Uncategorized", system: true }], assignments: { one: "named" } };

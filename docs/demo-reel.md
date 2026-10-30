@@ -91,6 +91,26 @@ workflow changes invalidate affected results and require recipe review and Save.
 If the rating account disappears, generation blocks and existing images remain
 available until an administrator chooses a replacement account.
 
+## Opting a LoRA out
+
+A LoRA that carries a style rather than a subject has nothing of its own to show, so an
+administrator takes it out of the Demo Reel from its card menu: **Disable Demo Reel**, which
+reads **Enable Demo Reel** while it is out. The choice belongs to that LoRA in one model
+family, and it is offered to administrators only — anyone else simply finds no reel images
+for it. Settings say how many LoRAs are out, because they are switched from a LoRA card and
+not from the settings themselves.
+
+Disabling is the same retirement that happens when a LoRA leaves the library. Its work leaves
+the queue, so nothing new is generated for it and the family's progress counts only the LoRAs
+still taking part, and everything its reel produced is deleted: its images and their files,
+their entries, the favorites marked on them, and the LoRA's picture in the library. Personal
+copies other accounts made of those images belong to those accounts and survive. The
+confirmation names what will be removed before anything happens.
+
+Enabling returns the LoRA to the queue wherever the family's idle loop next reaches it, and
+its reel starts from nothing: images deleted while it was out do not come back, and its
+library picture reappears once the first slot holds an image again.
+
 ## LoRA display picture
 
 The library picture of a LoRA is one of these images: the earliest image any signed-in
@@ -101,9 +121,10 @@ moves the picture to that slot.
 
 Nothing is uploaded or deleted by hand. A picture appears as soon as the first slot
 holds an image, follows a favorite the moment it is favorited or removed, and goes away
-when that image is deleted or invalidated, when the LoRA leaves the library, or when the
-first slot is emptied. Favorites stay private to each account; the picture they choose
-is shared, because a LoRA's picture belongs to its shared identity.
+when that image is deleted or invalidated, when the LoRA leaves the library, when an
+administrator takes the LoRA out of the reel, or when the first slot is emptied. Favorites
+stay private to each account; the picture they choose is shared, because a LoRA's picture
+belongs to its shared identity.
 
 The LoRA gallery draws a LoRA as a card while it has a picture and as a compact row
 while it does not. Reconciling pictures is presentation work: it runs after reel
@@ -119,7 +140,10 @@ family recipes and overrides as revision-checked JSON. Entries uniquely identify
 each reel/slot/checkpoint combination, with durable failure/backoff state.
 Migration `7d1a4c8e5b32` adds the two columns by which a LoRA's display image names
 the reel image it was made from; that row is a cache rebuilt from these entries and
-never something the reel itself depends on.
+never something the reel itself depends on. Migration `3f9c2a7d5b14` adds
+`demo_reels.disabled`. It is the only thing a disabled LoRA keeps: the reel row and its
+hidden collection stay so that re-enabling has somewhere to return to, and both are
+collected as usual once the LoRA leaves the library.
 
 Generations, hidden collections, and artifacts use a protected internal account.
 It cannot sign in, be reset/deleted, or appear in account-management choices.
