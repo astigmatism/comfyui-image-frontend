@@ -7,6 +7,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from app.demo_reel_models import DemoReelEntry
 from app.main import create_app
 from app.models import Favorite, LoraLibraryImage, utcnow
 from fastapi.testclient import TestClient
@@ -68,7 +69,12 @@ def stored(client, identity: str) -> LoraLibraryImage | None:
 
 
 def generate(client, path: str, *, rounds=2) -> list[dict]:
-    """Run the idle reel until its images exist, then return the reel's entries."""
+    """Produce ``rounds`` reel images, then return the inspected reel's entries.
+
+    Rounds are counted in generated images, not in images of this reel: the idle loop fills the
+    first prompt slot of every LoRA before starting the next slot, so another LoRA's work can
+    come between two of this reel's images.
+    """
 
     for _ in range(rounds):
         tick(client, quiet=True)
@@ -162,7 +168,9 @@ def test_only_the_first_slot_supplies_the_picture(gallery_client):
     client, detail, _, _ = gallery_client
     identity = control(detail)["items"][0]["lora_identity"]
     settings, path = configure(client, detail, slots=2)
-    entries = generate(client, path, rounds=4)
+    # Two LoRAs, two slots, two checkpoints: the loop takes the first slot of both LoRAs before
+    # the second slot of either, so this reel is only complete after all eight images.
+    entries = generate(client, path, rounds=8)
     first_slot = [entry for entry in entries if entry["slot_id"] == settings["slots"][0]["id"]]
     second_slot = [entry for entry in entries if entry["slot_id"] == settings["slots"][1]["id"]]
     sweep(client)
@@ -175,6 +183,33 @@ def test_only_the_first_slot_supplies_the_picture(gallery_client):
     assert update(client, settings, slots=list(reversed(settings["slots"]))).status_code == 200
     sweep(client)
     assert stored(client, identity).derived_generation_id == second_slot[0]["generation"]["id"]
+
+
+def test_every_loras_picture_arrives_before_any_reel_is_complete(gallery_client):
+    """The first slot is filled for every LoRA first, so the library fills with pictures early."""
+
+    client, detail, _, _ = gallery_client
+    items = control(detail)["items"]
+    settings, path = configure(client, detail, slots=2)
+    first_slot = settings["slots"][0]["id"]
+    # Two checkpoints of the first slot for each of the two LoRAs, and no later slot at all.
+    generate(client, path, rounds=4)
+    sweep(client)
+
+    for item in items:
+        assert pictures(client, detail)[item["id"]]["image_url"] is not None
+        row = stored(client, item["lora_identity"])
+        assert row is not None
+        with container_of(client).db.session_factory() as session:
+            slot_id = session.scalar(
+                select(DemoReelEntry.slot_id).where(
+                    DemoReelEntry.generation_id == row.derived_generation_id
+                )
+            )
+        assert slot_id == first_slot
+
+    reel = client.get(path).json()
+    assert reel["completed"] < reel["expected"]
 
 
 def test_removing_the_source_image_falls_back(gallery_client):

@@ -60,8 +60,10 @@ Entry, foregrounding, navigation, pointer, keyboard, touch, and scrolling input
 count. Passive polling, SSE, image loading, and programmatic scrolling do not.
 Browsers immediately report the first interaction and coalesce continued input.
 
-One background image runs globally. Order follows model families, LoRA gallery
-order, slots, then A and B checkpoints in the rating account's saved order. Failed
+One background image runs globally. Order follows the prompt slots first: every LoRA in every
+model family has its first slot filled before any later slot starts, because a LoRA's picture in
+the library is one of its first slot's images. Within a slot the order follows model families,
+LoRA gallery order, then A and B checkpoints in the rating account's saved order. Failed
 or blocked combinations do not hold up other work. Image failures receive three
 attempts with one-minute and five-minute retry waits. Unavailable workers wait
 without accepting an attempt. Exhausted entries are retried through the reel's
@@ -138,7 +140,9 @@ holds an image, follows a favorite the moment it is favorited or removed, and go
 when that image is deleted or invalidated, when the LoRA leaves the library, when an
 administrator takes the LoRA out of the reel, or when the first slot is emptied. Favorites
 stay private to each account; the picture they choose is shared, because a LoRA's picture
-belongs to its shared identity.
+belongs to its shared identity. The background loop works slot by slot, so the whole library
+gains its pictures one slot at a time instead of finishing one LoRA's reel before the next LoRA
+has any.
 
 The LoRA gallery draws a LoRA as a card while it has a picture and as a compact row
 while it does not. Reconciling pictures is presentation work: it runs after reel

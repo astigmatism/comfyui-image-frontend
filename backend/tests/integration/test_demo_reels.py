@@ -713,3 +713,32 @@ def test_only_an_administrator_may_switch_a_loras_demo_reel(reel_client):
     again = switch(client, identity, enabled=False)
     assert again.status_code == 200 and again.json()["changed"] is False
     assert client.get(path).json()["status"] == "off"
+
+
+def test_the_first_slot_of_every_lora_is_filled_before_the_next_slot(reel_client):
+    """The idle loop works prompt slot by prompt slot, not LoRA by LoRA.
+
+    A LoRA's picture in the library is one of its first slot's images, so the whole library
+    should be showing pictures long before any single reel has finished.
+    """
+
+    client, detail, _, _ = reel_client
+    _, path = configure(client, detail, slots=2)
+    # The fixture grades the first two checkpoints A and B, and only graded checkpoints are
+    # generated, in that rank order.
+    graded = [choice["checkpoint_id"] for choice in detail["model_selectors"][0]["choices"][:2]]
+    attempts: list[tuple[str, str]] = []
+    for _ in range(8):
+        tick(client, quiet=True)
+        latest = jobs(client)[-1]
+        attempts.append((latest.final_prompt, latest.checkpoint_id))
+        finish(client, latest.id)
+
+    assert attempts == [
+        (f"portrait {slot} of {lora}", checkpoint)
+        for slot in range(2)
+        for lora in ("Alpha", "Beta")
+        for checkpoint in graded
+    ]
+    view = client.get(path).json()
+    assert view["completed"] == view["expected"] == 4

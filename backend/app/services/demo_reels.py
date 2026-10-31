@@ -126,6 +126,27 @@ class Candidate:
         return self.reel.id, self.slot["id"], self.checkpoint_id
 
 
+@dataclass(frozen=True)
+class _Family:
+    """One model family's part of the matrix, prepared once for every prompt slot.
+
+    Nothing here depends on the slot, which is what lets the idle loop fill one slot across all
+    the families and LoRAs it holds before starting the next.
+    """
+
+    key: str
+    recipe: dict[str, Any]
+    member: LibraryMember | None
+    choices: dict[str, tuple[str, str, str]]
+    supported: dict[str, tuple[str, str, str]]
+    checkpoints: tuple[str, ...]
+    catalog_ids: frozenset[str]
+    conflicts: bool
+    render_revision: str | None
+    strengths: dict[str, Any]
+    reels: tuple[tuple[dict[str, Any], str, DemoReel], ...]
+
+
 class DemoReelService:
     def __init__(self, container: AppContainer) -> None:
         self.container = container
@@ -304,6 +325,14 @@ class DemoReelService:
         return [{"id": identity, "label": available[identity]} for identity in order]
 
     def _matrix(self, session: Session, config: DemoReelConfig) -> list[Candidate]:
+        """Every image the Demo Reel should hold, in the order the idle loop should make it.
+
+        Prompt slots are the outermost priority: every LoRA in every model family has its first
+        slot filled before any later slot starts, because that slot is what a LoRA's library
+        picture is derived from. Within a slot the order is the one the gallery lists — model
+        family, LoRA gallery order, then the rating account's A and B checkpoint order.
+        """
+
         preference = (
             session.get(UserPreference, config.rating_user_id) if config.rating_user_id else None
         )
@@ -319,8 +348,8 @@ class DemoReelService:
                     .order_by(DemoReelEntry.checkpoint_id)
                 )
             )
-        result = []
         inventory = self._checkpoint_inventory(session)
+        families: list[_Family] = []
         for key, library in sorted(self._libraries(session).items()):
             recipe = config.recipes.get(key, {})
             member = next(
@@ -328,19 +357,18 @@ class DemoReelService:
             )
             all_choices = inventory.get(key, {})
             supported = checkpoint_choices(member) if member else {}
-            current_render_revision = render_revision(member.profile) if member else None
+            reels: list[tuple[dict[str, Any], str, DemoReel]] = []
             identities = catalog_identities(library.canonical)
             groups = grouping(session, key, identities.values())
             group_order = {group["id"]: i for i, group in enumerate(groups["groups"])}
-            items = sorted(
+            for item in sorted(
                 library.canonical,
                 key=lambda item: (
                     group_order.get(groups["assignments"].get(identities.get(item["id"])), 0),
                     item["label"].casefold(),
                     item["id"],
                 ),
-            )
-            for item in items:
+            ):
                 identity = identities.get(item["id"])
                 if not identity:
                     continue
@@ -349,34 +377,58 @@ class DemoReelService:
                     # An administrator took this LoRA out of the Demo Reel: no candidates means
                     # its images are reconciled away below, exactly like a retired LoRA's.
                     continue
-                for slot in config.slots:
-                    for checkpoint_id in rank_order:
-                        if checkpoint_id not in all_choices:
-                            continue
+                reels.append((item, identity, reel))
+            families.append(
+                _Family(
+                    key=key,
+                    recipe=recipe,
+                    member=member,
+                    choices=all_choices,
+                    supported=supported,
+                    checkpoints=tuple(
+                        checkpoint_id
+                        for checkpoint_id in rank_order
+                        if checkpoint_id in all_choices
+                    ),
+                    catalog_ids=frozenset(str(entry["id"]) for entry in member.catalog)
+                    if member
+                    else frozenset(),
+                    conflicts=bool(library.conflicts),
+                    render_revision=(render_revision(member.profile) if member else None),
+                    strengths=config.strengths.get(key, {}),
+                    reels=tuple(reels),
+                )
+            )
+        result: list[Candidate] = []
+        for slot in config.slots:
+            for family in families:
+                member = family.member
+                recipe = family.recipe
+                for item, identity, reel in family.reels:
+                    in_catalog = str(item["id"]) in family.catalog_ids
+                    for checkpoint_id in family.checkpoints:
                         error = None
-                        if not member:
+                        if member is None:
                             error = "Choose an available Demo Reel workflow for this model family."
-                        elif library.conflicts:
+                        elif family.conflicts:
                             error = "Repair the LoRA library conflicts before generating."
-                        elif recipe.get("render_revision") != current_render_revision:
+                        elif recipe.get("render_revision") != family.render_revision:
                             error = (
                                 "Rendering workflow changed. Review and save its Demo Reel recipe."
                             )
-                        elif checkpoint_id not in supported:
+                        elif checkpoint_id not in family.supported:
                             error = (
                                 "This A/B checkpoint is not available in the configured workflow."
                             )
-                        elif item["id"] not in {entry["id"] for entry in member.catalog}:
+                        elif not in_catalog:
                             error = "Sync this LoRA into the configured workflow."
                         parameters = copy.deepcopy(recipe.get("parameters", {}))
                         prompt = slot["prompt"].replace(
                             "{subject}", item.get("trigger_word") or item["label"]
                         )
-                        strength = config.strengths.get(key, {}).get(
-                            identity, recipe.get("strength", 1.0)
-                        )
+                        strength = family.strengths.get(identity, recipe.get("strength", 1.0))
                         if member:
-                            parameters.update(slot.get("resolutions", {}).get(key, {}))
+                            parameters.update(slot.get("resolutions", {}).get(family.key, {}))
                             for control in member.profile.resolved_contract_json.get("inputs", []):
                                 if control.get("semantic_role") == "positive_prompt":
                                     parameters[control["id"]] = prompt
@@ -392,18 +444,18 @@ class DemoReelService:
                                         }
                                         for entry in control["items"]
                                     ]
-                            if checkpoint_id in supported:
-                                control_id, value, _ = supported[checkpoint_id]
+                            if checkpoint_id in family.supported:
+                                control_id, value, _ = family.supported[checkpoint_id]
                                 parameters[control_id] = value
                         signature = digest(
                             [
                                 prompt,
-                                slot.get("resolutions", {}).get(key, {}),
+                                slot.get("resolutions", {}).get(family.key, {}),
                                 recipe,
                                 strength,
                                 checkpoint_id,
                                 identity,
-                                current_render_revision,
+                                family.render_revision,
                                 error,
                             ]
                         )
@@ -412,7 +464,7 @@ class DemoReelService:
                                 reel,
                                 slot,
                                 checkpoint_id,
-                                all_choices[checkpoint_id][2],
+                                family.choices[checkpoint_id][2],
                                 signature,
                                 member,
                                 parameters,
