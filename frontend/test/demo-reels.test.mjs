@@ -115,6 +115,38 @@ test("settings keep random seeds implicit and offer independent prompt save and 
   assert.match(markup, /data-demo-resolution="width"/);
 });
 
+test("settings pick one checkpoint for every LoRA picture and say what it does not change", () => {
+  const details = { source: { interface: { inputs: [] } } };
+  const config = (thumbnail_checkpoint_id) => ({
+    slots: [],
+    recipes: { krea2: { source_key: "source", strength: 1, parameters: {} } },
+    strengths: {},
+    thumbnail_checkpoint_id,
+    thumbnail_checkpoint_choices: [{ id: "lr1_a", label: "Flux Dev" }, { id: "lr1_b", label: "Realvis" }],
+    libraries: [{ key: "krea2", label: "Krea", sources: [{ source_key: "source", label: "Workflow" }] }],
+  });
+
+  const automatic = demoReelSettingsMarkup(config(null), details);
+  assert.match(automatic, /<option value="" selected>Automatic · highest-ranked checkpoint<\/option>/);
+  assert.match(automatic, /<option value="lr1_a" >Flux Dev<\/option>/);
+  assert.match(automatic, /LoRA pictures use the highest-ranked checkpoint, unless a first-slot image is favorited/);
+
+  const chosen = demoReelSettingsMarkup(config("lr1_b"), details);
+  assert.match(chosen, /<option value="lr1_b" selected>Realvis<\/option>/);
+  assert.doesNotMatch(chosen, /<option value="" selected>/);
+  assert.match(chosen, /LoRA pictures use Realvis/);
+  // The choice moves pictures only: it is stated next to what keeps happening regardless.
+  assert.match(chosen, /Every qualifying checkpoint still gets one image per prompt slot/);
+  assert.match(chosen, /A favorited first-slot image always supplies that LoRA's picture instead/);
+
+  // A saved checkpoint that can no longer be chosen — downgraded out of A/B, or gone from the
+  // installed workflows — is reported as what it is, not quietly shown as Automatic.
+  const unavailable = demoReelSettingsMarkup(config("lr1_gone"), details);
+  assert.match(unavailable, /<option value="lr1_gone" selected>lr1_gone · no longer available<\/option>/);
+  assert.doesNotMatch(unavailable, /Automatic · highest-ranked checkpoint/);
+  assert.match(unavailable, /LoRA pictures use lr1_gone, which is no longer available/);
+});
+
 test("a LoRA's strength override belongs to the family that replaces it, and an unconfigured family still opens", () => {
   const context = { libraryKey: "krea2", identity: "lr1_a", label: "Alpha", subject: "Alpha" };
   const details = { source: { interface: { inputs: [] } } };

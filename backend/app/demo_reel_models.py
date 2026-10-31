@@ -18,6 +18,7 @@ class DemoReelConfig(Base):
     rating_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL")
     )
+    thumbnail_checkpoint_id: Mapped[str | None] = mapped_column(String(68))
     slots: Mapped[list[Any]] = mapped_column(JSON, default=list)
     recipes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     strengths: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

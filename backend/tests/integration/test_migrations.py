@@ -28,9 +28,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "3f9c2a7d5b14"
+HEAD_REVISION = "9c5b27e0a416"
 DERIVATION_REVISION = "c43d89e12a70"
 THUMBNAIL_REVISION = "7d1a4c8e5b32"
+OPT_OUT_REVISION = "3f9c2a7d5b14"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -853,6 +854,65 @@ def test_demo_reel_opt_out_round_trip_returns_the_lora_to_the_reel(tmp_path):
     command.upgrade(config, "head")
     assert "disabled" in {column["name"] for column in inspect(engine).get_columns("demo_reels")}
     assert flags() is False
+    engine.dispose()
+
+
+def test_thumbnail_checkpoint_choice_round_trip_is_forgotten_by_a_downgrade(tmp_path):
+    """Which checkpoint supplies LoRA pictures is a preference, so a downgrade may forget it.
+
+    No Demo Reel image depends on that choice, so the upgrade must not backfill it — an existing
+    configuration keeps the behaviour it already had — and neither direction may touch a reel,
+    its entries, or a LoRA's derived picture.
+    """
+
+    path = tmp_path / "thumbnail-checkpoint-choice.db"
+    config = _config(path)
+    command.upgrade(config, OPT_OUT_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO demo_reel_config "
+                "(id, revision, paused, slots, recipes, strengths, last_activity_at) "
+                "VALUES (1, 4, 0, '[]', '{}', '{}', '2026-01-01 00:00:00+00')"
+            )
+        )
+
+    def choice() -> str | None:
+        with engine.connect() as connection:
+            return connection.execute(
+                text("SELECT thumbnail_checkpoint_id FROM demo_reel_config")
+            ).scalar_one()
+
+    command.upgrade(config, "head")
+    assert choice() is None
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE demo_reel_config SET thumbnail_checkpoint_id = :identity"),
+            {"identity": "lr1_" + "b" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO lora_library_images "
+                "(lora_identity, revision, storage_path, updated_at) "
+                "VALUES (:identity, 3, 'lora-images/derived.webp', '2026-01-01 00:00:00+00')"
+            ),
+            {"identity": "lr1_" + "b" * 64},
+        )
+
+    command.downgrade(config, OPT_OUT_REVISION)
+    assert "thumbnail_checkpoint_id" not in {
+        column["name"] for column in inspect(engine).get_columns("demo_reel_config")
+    }
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT revision FROM demo_reel_config")).scalar_one() == 4
+        picture = connection.execute(
+            text("SELECT revision, storage_path FROM lora_library_images")
+        ).one()
+    assert picture == (3, "lora-images/derived.webp")
+
+    command.upgrade(config, "head")
+    assert choice() is None
     engine.dispose()
 
 

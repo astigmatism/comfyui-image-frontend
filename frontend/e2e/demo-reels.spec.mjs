@@ -9,7 +9,7 @@ test.afterEach(async ({ page }) => {
   if (fixtureGenerationId) await page.request.delete(`/api/generations/${fixtureGenerationId}`, { headers });
   if (originalSettings) {
     const current = await (await page.request.get("/api/admin/demo-reels")).json();
-    const data = Object.fromEntries(["paused", "rating_user_id", "slots", "recipes", "strengths"].map((key) => [key, originalSettings[key]]));
+    const data = Object.fromEntries(["paused", "rating_user_id", "thumbnail_checkpoint_id", "slots", "recipes", "strengths"].map((key) => [key, originalSettings[key]]));
     await page.request.put("/api/admin/demo-reels", { headers, data: { ...data, revision: current.revision } });
   }
   originalSettings = null;
@@ -234,5 +234,62 @@ test("a LoRA that has left the Demo Reel says it is off instead of waiting for i
     await expect(reel.getByText("No Demo Reel images yet.", { exact: false })).toHaveCount(0);
   } finally {
     await page.request.put(`/api/admin/lora-library/krea2/demo-reel/${identity}`, { headers: { "X-CSRF-Token": session.csrf_token }, data: { enabled: true }, timeout: 8000, failOnStatusCode: false }).catch(() => {});
+  }
+});
+
+test("one checkpoint choice decides every LoRA picture, and the settings keep it", async ({ page }) => {
+  const session = await signIn(page);
+  originalSettings = await (await page.request.get("/api/admin/demo-reels")).json();
+  // The picture can only be a checkpoint the grading account ranks, so grade two of the
+  // workflow's own checkpoints for the length of this test and put the account back afterwards.
+  const preferences = await (await page.request.get("/api/preferences")).json();
+  const savedTiers = preferences.checkpoint_tiers;
+  let detail;
+  for (const source of await (await page.request.get("/api/workflows")).json()) {
+    const candidate = await (await page.request.get(`/api/workflows/${source.source_key}`)).json();
+    if (candidate.interface.inputs.some((control) => control.type === "lora_stack")) { detail = candidate; break; }
+  }
+  expect(detail).toBeTruthy();
+  const graded = detail.model_selectors[0].choices.slice(0, 2).map((choice) => choice.checkpoint_id);
+  await page.request.put("/api/preferences", {
+    headers: { "X-CSRF-Token": session.csrf_token },
+    data: { expected_revision: preferences.revision, checkpoint_tiers: { A: [graded[0]], B: [graded[1]] } },
+  });
+  try {
+    await page.locator("#workflow-source").click();
+    const sources = page.locator("#source-picker-dialog");
+    await sources.locator("[data-source-workflow-choice]").selectOption(detail.source_key);
+    await sources.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
+    const picker = page.locator("#lora-manager-dialog");
+    await picker.getByRole("button", { name: "Demo Reel settings" }).click();
+    const editor = page.locator("#demo-reel-settings-dialog");
+    await expect(editor).toBeVisible();
+    await editor.getByText("Model families", { exact: false }).click();
+
+    const choice = editor.locator("[data-demo-thumbnail-checkpoint]");
+    await expect(choice).toBeVisible();
+    // Automatic plus exactly the two graded checkpoints, in the grading account's order.
+    await expect(choice.locator("option")).toHaveCount(3);
+    await expect(choice.locator("option").nth(1)).toHaveAttribute("value", graded[0]);
+    await expect(choice.locator("option").nth(2)).toHaveAttribute("value", graded[1]);
+    await expect(choice).toHaveValue("");
+
+    await choice.selectOption(graded[1]);
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/admin/demo-reels") && response.request().method() === "PUT");
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    expect((await saved).ok()).toBe(true);
+    expect((await (await page.request.get("/api/admin/demo-reels")).json()).thumbnail_checkpoint_id).toBe(graded[1]);
+
+    await picker.getByRole("button", { name: "Demo Reel settings" }).click();
+    await editor.getByText("Model families", { exact: false }).click();
+    await expect(editor.locator("[data-demo-thumbnail-checkpoint]")).toHaveValue(graded[1]);
+    await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+    await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+  } finally {
+    await page.request.put("/api/preferences", {
+      headers: { "X-CSRF-Token": session.csrf_token },
+      data: { expected_revision: (await (await page.request.get("/api/preferences")).json()).revision, checkpoint_tiers: savedTiers },
+    }).catch(() => {});
   }
 });

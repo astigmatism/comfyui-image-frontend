@@ -305,6 +305,14 @@ collected. The row and its hidden collection stay while a LoRA is out so that en
 again has somewhere to return; a downgrade simply forgets the choice and the LoRA takes part
 again.
 
+Migration `9c5b27e0a416` adds `demo_reel_config.thumbnail_checkpoint_id`: the one checkpoint an
+administrator allows to supply LoRA pictures. It lives in the singleton configuration because the
+picture is shared per LoRA and the choice is library-wide, and it is nullable because NULL is a
+meaning — no preference, which is how every existing row behaved — rather than a value to backfill
+from whatever checkpoint happened to rank first at migration time. Nothing derives from it, so no
+entry, signature, image, or file is read or rewritten by the upgrade, and a downgrade simply forgets
+the preference and returns every picture to the highest-ranked first-slot image.
+
 Shared artifacts remain ordinary generation artifacts under the internal owner;
 reel-specific reads validate current eligibility and final-result membership.
 Personal queries do not include system content. Invalidation first revokes shared

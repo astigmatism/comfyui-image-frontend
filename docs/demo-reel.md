@@ -36,7 +36,11 @@ strength it replaces, named for the LoRA it applies to.
    reset for the whole family. Individual LoRAs can override strength.
 5. Choose whose checkpoint grades qualify models. Initial setup uses the current
    administrator's account. Only that account's A/B grades affect eligibility.
-6. Save. These changes are independent of selection Apply/Cancel. Canceling the
+6. Choose which checkpoint supplies a LoRA's picture in the library. Left on **Automatic**, the
+   picture comes from the highest-ranked checkpoint that has an image in the first prompt slot;
+   naming one checkpoint chooses that checkpoint's image for every LoRA instead. The choice is
+   library-wide, because a LoRA's picture is shared, and it never changes what is generated.
+7. Save. These changes are independent of selection Apply/Cancel. Canceling the
    picker does not undo saved Demo Reel settings.
 
 Recipes require a published seed control and cannot require uploaded images.
@@ -114,10 +118,20 @@ library picture reappears once the first slot holds an image again.
 ## LoRA display picture
 
 The library picture of a LoRA is one of these images: the earliest image any signed-in
-account has favorited in the reel's **first prompt slot**, or, while nothing in that
-slot is favorited, the slot's own first image — slot order, then the rating account's A
-then B checkpoint order. A later slot never supplies it, and making another slot first
-moves the picture to that slot.
+account has favorited in the reel's **first prompt slot**; while nothing in that slot is
+favorited, that slot's image of the checkpoint named in **Demo Reel settings**; and when that
+checkpoint has no image in the slot — it is not installed in that family's workflow, or its image
+is still waiting to be generated, or no checkpoint was named — the slot's own first image. Within a
+slot, checkpoints follow the rating account's A then B checkpoint order. A later slot never supplies
+it, and making another slot first moves the picture to that slot.
+
+That choice is one setting for the whole library, decided where the reels are configured rather
+than LoRA by LoRA, because a LoRA's picture belongs to its shared identity. It is presentation
+only: every qualifying checkpoint still gets one image per prompt slot in the same order, and
+saving or clearing the choice regenerates and invalidates nothing. The affected pictures are
+re-derived on the next idle pass. A choice that stops being a graded checkpoint — the grading
+account changed, or the checkpoint dropped below B — is kept and simply stops matching, which
+leaves every LoRA on the highest-ranked image.
 
 Nothing is uploaded or deleted by hand. A picture appears as soon as the first slot
 holds an image, follows a favorite the moment it is favorited or removed, and goes away
@@ -143,7 +157,10 @@ the reel image it was made from; that row is a cache rebuilt from these entries 
 never something the reel itself depends on. Migration `3f9c2a7d5b14` adds
 `demo_reels.disabled`. It is the only thing a disabled LoRA keeps: the reel row and its
 hidden collection stay so that re-enabling has somewhere to return to, and both are
-collected as usual once the LoRA leaves the library.
+collected as usual once the LoRA leaves the library. Migration `9c5b27e0a416` adds
+`demo_reel_config.thumbnail_checkpoint_id`, the one checkpoint allowed to supply LoRA pictures.
+NULL means no preference, so an upgraded installation changes nothing until an administrator
+chooses, and no entry, image, or signature takes part in that column.
 
 Generations, hidden collections, and artifacts use a protected internal account.
 It cannot sign in, be reset/deleted, or appear in account-management choices.

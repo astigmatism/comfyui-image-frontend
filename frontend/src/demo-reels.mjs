@@ -103,12 +103,21 @@ const recipeInputs = (detail) => (detail?.interface?.inputs || []).filter((contr
 const recipeControls = (detail) => sortInterfaceInputs(recipeInputs(detail).filter((control) => !isCheckpointControl(control)));
 const dimensionControls = (detail) => recipeInputs(detail).filter((control) => ["width", "height"].includes(control.semantic_role));
 const recipeValues = (controls, recipe) => Object.fromEntries(controls.map((control) => [control.id, recipe?.parameters?.[control.id] ?? control.default]));
-const ownedFacts = [
+const ownedFacts = (config) => [
   ["Prompt", "each prompt slot, with {subject} replaced by the LoRA trigger phrase"],
   ["Seed", "a new random seed for every image"],
   ["LoRAs", "only this image's LoRA, at the strength set above"],
-  ["Checkpoint", "one image for each A and B checkpoint, chosen by A/B grades"],
+  ["Checkpoint", `one image for each A and B checkpoint, chosen by A/B grades · LoRA pictures use ${thumbnailCheckpointFact(config)}`],
 ];
+// The checkpoints that may supply a LoRA's picture, in the order the server says pictures prefer
+// them. A saved choice can stop being choosable - its checkpoint left the A/B grades or the
+// installed workflows - and is then reported as what it is rather than quietly dropped, so the
+// settings explain why the pictures did not change.
+const thumbnailChoices = (config) => (config.thumbnail_checkpoint_choices || []);
+const chosenCheckpoint = (config) => thumbnailChoices(config).find((choice) => choice.id === config.thumbnail_checkpoint_id);
+const thumbnailCheckpointFact = (config) => config.thumbnail_checkpoint_id
+  ? (chosenCheckpoint(config)?.label || `${config.thumbnail_checkpoint_id}, which is no longer available`)
+  : "the highest-ranked checkpoint, unless a first-slot image is favorited";
 
 function statusMarkup(config) {
   const states = config.progress?.states || {};
@@ -223,7 +232,7 @@ function familyMarkup(library, config, details, context) {
       </div>
       ${override}
       <p class="demo-reel-help">Every Demo Reel image in this family is generated with this workflow. It has to publish a seed control and must not require an uploaded image.</p>
-      <ul class="demo-reel-facts">${ownedFacts.map(([term, fact]) => `<li><strong>${escape(term)}</strong><span>${escape(fact)}</span></li>`).join("")}</ul>
+      <ul class="demo-reel-facts">${ownedFacts(config).map(([term, fact]) => `<li><strong>${escape(term)}</strong><span>${escape(fact)}</span></li>`).join("")}</ul>
       <div class="demo-reel-controls">${controlsMarkup(basic, values, detail, { family: library.key, idPrefix: `${library.key}-` })}</div>
       ${extra.length ? `<details class="demo-reel-advanced" data-demo-details="advanced-${escape(library.key)}"><summary><strong>Advanced</strong><span>${extra.length} settings · leave these alone unless a workflow author says otherwise</span></summary><div class="demo-reel-controls">${controlsMarkup(extra, values, detail, { family: library.key, idPrefix: `${library.key}-`, headings: false })}</div></details>` : ""}
       <p class="demo-reel-family-foot"><button type="button" class="button low" data-demo-action="recipe-reset" data-demo-family="${escape(library.key)}">Reset to workflow defaults</button><span class="muted">${changed ? `${changed} setting${changed === 1 ? "" : "s"} ${changed === 1 ? "differs" : "differ"} from the workflow defaults` : "Everything is at the workflow defaults"}</span></p>
@@ -248,14 +257,23 @@ function generationMarkup(config, details, users, context) {
   const excludedNote = excluded
     ? ` ${excluded} LoRA${excluded === 1 ? "" : "s"} ${excluded === 1 ? "has" : "have"} been taken out of the Demo Reel with Disable Demo Reel in a LoRA card menu.`
     : "";
+  // One choice for the whole library, because a LoRA's picture is shared by every account:
+  // favorites still win, and this decides the picture for every LoRA that has none.
+  const saved = config.thumbnail_checkpoint_id || "";
+  const choices = thumbnailChoices(config);
+  const unavailable = saved && !choices.some((choice) => choice.id === saved)
+    ? `<option value="${escape(saved)}" selected>${escape(saved)} · no longer available</option>`
+    : "";
+  const checkpointOptions = `${unavailable || `<option value=""${saved ? "" : " selected"}>Automatic · highest-ranked checkpoint</option>`}${choices.map((choice) => `<option value="${escape(choice.id)}" ${choice.id === saved ? "selected" : ""}>${escape(choice.label)}</option>`).join("")}`;
   return `<details class="demo-reel-generation" data-demo-details="generation">
     <summary class="demo-reel-generation-summary"><span class="demo-reel-generation-title">Model families</span><span class="demo-reel-generation-state">${escape(familySummary(config, details))}</span></summary>
     <p class="demo-reel-how"><strong>How this works.</strong> Prompt slots decide what is drawn. A model family decides how — the workflow, its settings, and how strongly each LoRA is applied. Images appear after everyone has been idle for ${idle} minutes.</p>
     <div class="demo-reel-families">${(config.libraries || []).map((library) => familyMarkup(library, config, details, context)).join("") || '<p class="demo-reel-empty">No published LoRA libraries are available.</p>'}</div>
     <div class="demo-reel-grading">
       <label class="field demo-reel-grading-user"><span>A/B ratings from</span><select id="demo-reel-rating-user" data-demo-rating-user>${users.map((user) => `<option value="${escape(user.id)}" ${user.id === config.rating_user_id ? "selected" : ""}>${escape(user.username)}</option>`).join("")}</select></label>
+      <label class="field demo-reel-grading-checkpoint"><span>LoRA pictures from</span><select id="demo-reel-thumbnail-checkpoint" data-demo-thumbnail-checkpoint>${checkpointOptions}</select></label>
       <label class="switch demo-reel-pause"><input type="checkbox" id="demo-reel-paused" data-demo-paused ${config.paused ? "checked" : ""} /><span aria-hidden="true"></span><em>${config.paused ? "Paused" : "Active"}</em></label>
-      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify. Pausing stops new images until someone resumes it.${excludedNote}</p>
+      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify, and they set this picture choice's order. Every qualifying checkpoint still gets one image per prompt slot; this only chooses which of them the LoRA gallery shows, and it changes nothing about what is generated. A favorited first-slot image always supplies that LoRA's picture instead, and a checkpoint with no image in the first slot yet falls back to the highest-ranked one until it has. Pausing stops new images until someone resumes it.${excludedNote}</p>
     </div>
   </details>`;
 }
@@ -576,6 +594,7 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
     } else if (data.demoStrength) settings.recipes[data.demoStrength].strength = Number(input.value);
     else if (input.matches("[data-demo-paused]")) settings.paused = input.checked;
     else if (input.matches("[data-demo-rating-user]")) settings.rating_user_id = input.value;
+    else if (input.matches("[data-demo-thumbnail-checkpoint]")) settings.thumbnail_checkpoint_id = input.value || null;
     else if (input.matches("[data-demo-lora-strength]")) {
       settings.strengths[context.libraryKey] ||= {};
       if (input.value === "") delete settings.strengths[context.libraryKey][context.identity];
@@ -608,7 +627,7 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
     const button = editor.querySelector('[type="submit"]');
     button.disabled = true;
     try {
-      const payload = Object.fromEntries(["revision", "paused", "rating_user_id", "slots", "recipes", "strengths"].map((key) => [key, settings[key]]));
+      const payload = Object.fromEntries(["revision", "paused", "rating_user_id", "thumbnail_checkpoint_id", "slots", "recipes", "strengths"].map((key) => [key, settings[key]]));
       await api("/api/admin/demo-reels", { method: "PUT", body: JSON.stringify(payload) });
       editor.close();
       notify(`Demo Reel settings saved. Generation waits for ${Math.max(1, Math.round((settings.idle_seconds || 300) / 60))} quiet minutes.`, "success");

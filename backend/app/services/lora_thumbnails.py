@@ -1,13 +1,17 @@
 """Every LoRA's display image is derived from that LoRA's Demo Reel first slot.
 
-The rule is deliberately short: the earliest favorited image of the reel's first
-slot, and when nothing there is favorited, the image that slot lists first. Favorites
-are private while a LoRA's display image is shared, so a favorite by any signed-in
-user supplies it. Nothing is uploaded any more, which makes the Demo Reel the only
-writer of ``lora_library_images``; this module is that writer.
+The rule is deliberately short. A favorited image of the reel's first slot supplies the picture,
+and the earliest favorite keeps it when several are marked. Nothing there is favorited, so the
+picture comes from the checkpoint an administrator named in **Demo Reel settings**; and when that
+checkpoint has no image in the slot — it is not installed in that family's workflow, its image is
+still waiting to be generated, or no checkpoint was named at all — the picture comes from the
+image that slot lists first. Favorites are private while a LoRA's display image is shared, so a
+favorite by any signed-in user supplies it. Nothing is uploaded any more, which makes the Demo
+Reel the only writer of ``lora_library_images``; this module is that writer.
 
-Within a slot the order is the reel gallery's own: the rating account's saved A then B
-checkpoint grades, falling back to checkpoint ID order once that account is gone.
+Within a slot, checkpoints are ordered as the reel gallery orders them: the rating account's saved
+A then B checkpoint grades, falling back to checkpoint ID order once that account is gone. Naming
+a checkpoint changes only which of those images is chosen, never what is generated.
 """
 
 from __future__ import annotations
@@ -57,10 +61,19 @@ class Source:
 
 @dataclass(frozen=True)
 class Option:
+    """One first-slot image that could supply the picture, with everything the rule weighs."""
+
     source: Source
     rank: int
     checkpoint_id: str
     favorited_at: datetime | None
+    priority: int
+
+    @property
+    def key(self) -> tuple[int, int, str]:
+        """Ordering when nothing is favorited: the named checkpoint, then gallery order."""
+
+        return self.priority, self.rank, self.checkpoint_id
 
 
 @dataclass
@@ -139,8 +152,12 @@ def _artifact_file(session: Session, generation: Generation, assets: Any) -> Art
 
 def source_image(
     session: Session, *, config: DemoReelConfig, reels: list[DemoReel], assets: Any
-) -> Source | None:
-    """Resolve the reel image behind one LoRA's display image."""
+) -> Option | None:
+    """Resolve the reel image behind one LoRA's display image.
+
+    The winner is the earliest favorited image of the reels' first slot, and otherwise the image
+    of the checkpoint named in the configuration, falling back to the first image that slot lists.
+    """
 
     slot_id = first_slot_id(config)
     if not slot_id or not reels:
@@ -192,6 +209,7 @@ def source_image(
                 rank=rank_of(orders.get(str(entry.reel_id), []), str(entry.checkpoint_id)),
                 checkpoint_id=str(entry.checkpoint_id),
                 favorited_at=favorites.get(str(generation.id)),
+                priority=0 if str(entry.checkpoint_id) == config.thumbnail_checkpoint_id else 1,
             )
         )
     if not options:
@@ -200,40 +218,39 @@ def source_image(
         (option for option in options if option.favorited_at is not None),
         key=lambda option: (option.favorited_at or EPOCH, option.rank, option.checkpoint_id),
     )
-    plain = sorted(options, key=lambda option: (option.rank, option.checkpoint_id))
-    return (favorited or plain)[0].source
+    return (favorited or sorted(options, key=lambda option: option.key))[0]
 
 
-def _accepted(row: LoraLibraryImage | None, sources: list[Source]) -> bool:
-    """Whether the stored image already comes from one of this LoRA's reels.
+def _accepted(row: LoraLibraryImage | None, source: Source) -> bool:
+    """Whether the stored image already is the one this LoRA's reels agree on.
 
-    One LoRA identity can be listed by more than one library, and each of those reels
-    has its own first slot. The display image is shared and can only point at one of
-    them, so any of them counts as up to date — otherwise every sweep would rewrite
-    the same picture to satisfy the other reel.
+    One LoRA identity can be listed by more than one library, and each of those reels has its own
+    first slot. The image is merged across them before it is compared, so the shared picture is
+    checked against exactly one image: comparing it against every reel's own choice would let a
+    sweep rewrite the same file on every pass to satisfy the other reel.
     """
 
     if row is None or not row.storage_path:
         return False
-    marker = (row.derived_generation_id, row.derived_artifact_id)
-    return marker in {source.marker for source in sources}
+    return (row.derived_generation_id, row.derived_artifact_id) == source.marker
 
 
 def _outstanding(
-    planned: dict[tuple[str, str], tuple[LoraLibraryImage | None, Source | None]],
-) -> dict[str, tuple[LoraLibraryImage | None, Source | None]]:
+    planned: dict[tuple[str, str], tuple[LoraLibraryImage | None, Option | None]],
+) -> dict[str, tuple[LoraLibraryImage | None, Option | None]]:
     """The work left to do, merged from each reel's view onto the shared per-identity row."""
 
-    grouped: dict[str, list[tuple[LoraLibraryImage | None, Source | None]]] = {}
+    grouped: dict[str, list[tuple[LoraLibraryImage | None, Option | None]]] = {}
     for (_, identity), entry in sorted(planned.items()):
         grouped.setdefault(identity, []).append(entry)
-    changes: dict[str, tuple[LoraLibraryImage | None, Source | None]] = {}
+    changes: dict[str, tuple[LoraLibraryImage | None, Option | None]] = {}
     for identity, entries in grouped.items():
         row = next((stored for stored, _ in entries if stored is not None), None)
-        sources = [source for _, source in entries if source is not None]
-        if sources:
-            if not _accepted(row, sources):
-                changes[identity] = (row, sources[0])
+        options = [option for _, option in entries if option is not None]
+        if options:
+            best = min(options, key=lambda option: option.key)
+            if not _accepted(row, best.source):
+                changes[identity] = (row, best)
         elif row is not None and (row.storage_path or row.derived_generation_id):
             changes[identity] = (row, None)
     return changes
@@ -245,7 +262,7 @@ def plan(
     config: DemoReelConfig,
     assets: Any,
     identities: set[tuple[str, str]] | None = None,
-) -> dict[tuple[str, str], tuple[LoraLibraryImage | None, Source | None]]:
+) -> dict[tuple[str, str], tuple[LoraLibraryImage | None, Option | None]]:
     """Each reel's stored display image beside the image it should now show.
 
     Keys are ``(library_key, lora_identity)``, one entry per reel, although the picture
@@ -296,6 +313,8 @@ def refresh(container: AppContainer, *, identities: set[tuple[str, str]] | None 
 
     Cheap to call often: a LoRA whose reel still points at the stored image is left
     completely alone, so the periodic sweep only encodes files that really changed.
+    A saved thumbnail-checkpoint preference is picked up exactly the same way, one small
+    file per LoRA, with nothing in the reel regenerated or invalidated.
     Returns the number of LoRAs whose display image was replaced or cleared.
     """
 
@@ -309,7 +328,8 @@ def refresh(container: AppContainer, *, identities: set[tuple[str, str]] | None 
         return 0
 
     jobs: list[_Job] = []
-    for identity, (row, source) in sorted(changes.items()):
+    for identity, (row, option) in sorted(changes.items()):
+        source = option.source if option is not None else None
         superseded = [row.storage_path] if row is not None and row.storage_path else []
         stored: StoredImage | None = None
         if source is not None:

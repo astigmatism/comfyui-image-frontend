@@ -7397,7 +7397,7 @@ button.lm-summary-thumb:hover {
 .demo-reel-advanced .demo-reel-controls { padding: 12px; }
 .demo-reel-family-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: .74rem; }
 .demo-reel-family-foot .button { min-height: 30px; padding: 0 10px; font-size: .74rem; }
-.demo-reel-grading { display: grid; grid-template-columns: minmax(190px, 280px) auto; justify-content: space-between; gap: 8px 20px; margin: 0 14px; padding: 14px 0 0; border-top: 1px solid var(--border); }
+.demo-reel-grading { display: grid; grid-template-columns: minmax(180px, 260px) minmax(180px, 300px) auto; justify-content: space-between; gap: 8px 20px; margin: 0 14px; padding: 14px 0 0; border-top: 1px solid var(--border); }
 .demo-reel-pause { align-self: end; padding-bottom: 4px; font-size: .8rem; font-weight: 600; }
 .demo-reel-grading .demo-reel-help { grid-column: 1/-1; }
 @media (max-width: 800px) {

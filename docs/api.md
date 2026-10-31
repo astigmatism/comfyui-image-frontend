@@ -160,7 +160,7 @@ Image metadata is separate from the public workflow interface and generation par
 }
 ```
 
-Nothing is uploaded. A LoRA's image is derived from that LoRA's [Demo Reel](demo-reel.md): the earliest favorited image of the reel's first prompt slot, or that slot's first image when nothing in it is favorited. `services/lora_thumbnails.py` is the only writer of `lora_library_images`; the Demo Reel idle loop reconciles every LoRA, and favoriting inside a reel refreshes that LoRA immediately. An item stays `image_url: null` until its reel's first slot holds an image, and its `version` is an opaque token that changes exactly when the image does, so a replaced picture reaches already open browsers without a reload hint. Content URLs require authentication and use a versioned private cache policy. Images belong to the LoRA's shared identity (a hash of its private model file), so every workflow that lists the LoRA shows the same image. Republishing never hides an image; only a verified LoRA removal does.
+Nothing is uploaded. A LoRA's image is derived from that LoRA's [Demo Reel](demo-reel.md): the earliest favorited image of the reel's first prompt slot; otherwise that slot's image of the checkpoint named by `thumbnail_checkpoint_id` in `PUT /api/admin/demo-reels`; and when that checkpoint has no image in the slot, or none was named, the slot's first image. `services/lora_thumbnails.py` is the only writer of `lora_library_images`; the Demo Reel idle loop reconciles every LoRA, and favoriting inside a reel refreshes that LoRA immediately. An item stays `image_url: null` until its reel's first slot holds an image, and its `version` is an opaque token that changes exactly when the image does, so a replaced picture reaches already open browsers without a reload hint. Content URLs require authentication and use a versioned private cache policy. Images belong to the LoRA's shared identity (a hash of its private model file), so every workflow that lists the LoRA shows the same image. Republishing never hides an image; only a verified LoRA removal does.
 
 The `instance_id` on a workflow summary identifies its authoritative catalog and execution service: the image assignment for `/api/workflows`, the prompt assignment for `/api/workflows?output_kind=text`. Other copies appear only in safe `replicas` metadata. Old source keys may resolve to the authoritative profile by logical identity; controls and submitted revisions are checked against that profile.
 
@@ -1087,7 +1087,7 @@ replacement, and access. Ordinary collection/generation routes remain owner-scop
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET`, `PUT` | `/api/admin/demo-reels` | Administrator configuration; PUT requires CSRF and `revision` |
+| `GET`, `PUT` | `/api/admin/demo-reels` | Administrator configuration: slots, recipes, the grading account, and the library-wide checkpoint that supplies LoRA pictures (`thumbnail_checkpoint_id`, offered as `thumbnail_checkpoint_choices` in the grading account's order); PUT requires CSRF and `revision` |
 | `PUT` | `/api/admin/lora-library/{library}/demo-reel/{identity}` | Administrator takes one LoRA out of the reel, deleting what it produced, or returns it; requires CSRF |
 | `POST` | `/api/activity` | Authenticated CSRF-protected user interaction signal; returns 204 |
 | `GET` | `/api/demo-reels/{library}/{identity}` | Shared LoRA gallery, slots, counts, states, and image summaries; `offset` and `limit` (1–60) paginate entries |

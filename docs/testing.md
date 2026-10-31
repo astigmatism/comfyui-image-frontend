@@ -295,6 +295,16 @@ concurrent admission, restart and queued cancellation, late-output discard,
 persisted failure backoff, pause revision conflicts, cross-owner access, favorites,
 copy/move rollback and file independence, downloads, and personal prompt re-runs.
 
+`backend/tests/integration/test_lora_thumbnails.py` derives the pictures themselves: first-slot
+derivation and the end of uploading, the earliest favorite keeping a picture, no later slot ever
+supplying one, fallback when a source image disappears, a hand-uploaded file being replaced once, a
+second library leaving the shared row alone, and a LoRA taken out of the reel losing its picture.
+The library-wide checkpoint choice is covered there too: a named checkpoint supplies every picture
+and clearing the choice returns them, a favorite still wins, a checkpoint with no image in the slot
+waits for one, settings list only the graded checkpoints in rank order and reject anything else, and
+one shared row takes the merged choice of every reel of a LoRA. Migration coverage adds the column
+without a backfill and lets a downgrade forget the preference without touching an image.
+
 `frontend/test/demo-reels.test.mjs` covers literal subject substitution, slot
 ordering, permitted image actions, editor controls, and activity coalescing.
 `frontend/e2e/demo-reels.spec.mjs` saves settings through the real API, checks keyboard
@@ -306,5 +316,7 @@ including the reel's re-run, copy, move, and regenerate - stays hidden until the
 card is hovered and favors through the reel's own action endpoint, a title area that
 offers only **Edit Demo Reel** beside its close control, and a reopened reel whose
 cards still load their thumbnails, which the observers disposed on close used to
-leave as blank frames. Screenshots cover the mobile editor and the reel at desktop
+leave as blank frames. A separate journey grades two checkpoints, chooses one of them for every
+LoRA picture, saves, and reopens the settings to find that choice waiting.
+Screenshots cover the mobile editor and the reel at desktop
 and phone widths.

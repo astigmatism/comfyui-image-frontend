@@ -19,6 +19,18 @@ from tests.conftest import csrf
 from tests.helpers import login_ready_admin, provision_user, restore_cookie
 from tests.publication_fixtures import moody_lora_library_files
 
+# A settings PUT replaces the whole configuration, so a test that leaves one of these out of its
+# payload clears that setting rather than leaving it as it was.
+SETTINGS_FIELDS = [
+    "revision",
+    "paused",
+    "rating_user_id",
+    "thumbnail_checkpoint_id",
+    "slots",
+    "recipes",
+    "strengths",
+]
+
 
 @pytest.fixture
 def reel_client(fake_state, settings_factory):
@@ -49,10 +61,7 @@ def reel_client(fake_state, settings_factory):
 
 def configure(client, detail, *, slots=1):
     settings = client.get("/api/admin/demo-reels").json()
-    payload = {
-        key: settings[key]
-        for key in ["revision", "paused", "rating_user_id", "slots", "recipes", "strengths"]
-    }
+    payload = {key: settings[key] for key in SETTINGS_FIELDS}
     payload["slots"] = [
         {
             "id": str(uuid4()),
@@ -113,10 +122,7 @@ def finish(client, generation_id):
 
 
 def update(client, settings, **changes):
-    payload = {
-        key: settings[key]
-        for key in ["revision", "paused", "rating_user_id", "slots", "recipes", "strengths"]
-    }
+    payload = {key: settings[key] for key in SETTINGS_FIELDS}
     payload.update(changes)
     return client.put("/api/admin/demo-reels", headers={"X-CSRF-Token": csrf(client)}, json=payload)
 
@@ -322,10 +328,7 @@ def test_revisions_system_account_protection_and_cross_reel_denial(reel_client):
         client.put(
             "/api/admin/demo-reels",
             headers={"X-CSRF-Token": csrf(client)},
-            json={
-                key: settings[key]
-                for key in ["revision", "paused", "rating_user_id", "slots", "recipes", "strengths"]
-            },
+            json={key: settings[key] for key in SETTINGS_FIELDS},
         ).status_code
         == 403
     )

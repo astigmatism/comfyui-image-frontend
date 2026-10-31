@@ -33,9 +33,20 @@ class DemoReelUpdate(APIModel):
     revision: int = Field(ge=0)
     paused: bool = False
     rating_user_id: UUID | None = None
+    thumbnail_checkpoint_id: str | None = Field(default=None, max_length=68)
     slots: list[DemoReelSlot] = Field(default_factory=list, max_length=100)
     recipes: dict[str, DemoReelRecipe] = Field(default_factory=dict)
     strengths: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    @field_validator("thumbnail_checkpoint_id", mode="before")
+    @classmethod
+    def blank_checkpoint(cls, value: Any) -> Any:
+        # An empty choice means "no preference": every LoRA picture keeps coming from the
+        # highest-ranked first-slot image. The settings offer "" for that choice, and storing an
+        # empty string instead of NULL would have to be translated on every read.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def bounded(self) -> DemoReelUpdate:

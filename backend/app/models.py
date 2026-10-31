@@ -310,11 +310,12 @@ class LoraLibraryImage(Base):
     """One display image per shared LoRA identity, derived from that LoRA's Demo Reel.
 
     The row caches the image the reel's first slot supplies: the earliest favorited
-    one, or the first image in the reel's own display order when nothing there is
-    favorited. ``derived_generation_id``/``derived_artifact_id`` are a derivation
-    marker only. Reconciliation resolves the current source image again and replaces
-    the row whenever the marker no longer matches, so a source image that is deleted
-    or invalidated needs no database reference of its own.
+    one, or that slot's image of the checkpoint named in the Demo Reel configuration,
+    or the first image in the reel's own display order when neither applies.
+    ``derived_generation_id``/``derived_artifact_id`` are a derivation marker only.
+    Reconciliation resolves the current source image again and replaces the row
+    whenever the marker no longer matches, so a source image that is deleted or
+    invalidated needs no database reference of its own.
     """
 
     __tablename__ = "lora_library_images"

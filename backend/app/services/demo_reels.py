@@ -254,6 +254,55 @@ class DemoReelService:
             session.flush()
         return reel
 
+    def _checkpoint_inventory(self, session: Session) -> dict[str, dict[str, tuple[str, str, str]]]:
+        """Every checkpoint identity published by a current image workflow, per model family.
+
+        Keys are the family's library key, then the checkpoint identity a Demo Reel entry records;
+        values are the workflow control, the value it must be set to, and the label a workflow
+        author published for it.
+        """
+
+        inventory: dict[str, dict[str, tuple[str, str, str]]] = {}
+        for profile in session.scalars(
+            select(WorkflowProfile).where(
+                WorkflowProfile.instance_id == self.container.comfyui_instances.default_id,
+                WorkflowProfile.is_current.is_(True),
+                WorkflowProfile.state == WorkflowState.VALID,
+            )
+        ):
+            if publication_kind(profile.resolved_contract_json) == "image":
+                inventory.setdefault(library_key(profile.manifest_json)[0], {}).update(
+                    checkpoint_choices(profile)
+                )
+        return inventory
+
+    def _thumbnail_choices(self, session: Session, config: DemoReelConfig) -> list[dict[str, str]]:
+        """The checkpoints that may supply a LoRA's display picture, in the order pictures prefer.
+
+        This is the rating account's saved A then B order restricted to checkpoints an installed
+        image workflow actually publishes; once that account is gone the published inventory is
+        listed by identity, which is the same fallback the reel gallery and the picture rule use.
+        """
+
+        available: dict[str, str] = {}
+        for choices in self._checkpoint_inventory(session).values():
+            for identity, (_, _, label) in choices.items():
+                available.setdefault(identity, label)
+        owner = session.get(User, config.rating_user_id) if config.rating_user_id else None
+        preference = (
+            session.get(UserPreference, config.rating_user_id) if config.rating_user_id else None
+        )
+        if owner is None or owner.state != UserState.ACTIVE or preference is None:
+            order = sorted(available)
+        else:
+            ratings = preference.checkpoint_tiers_json or {}
+            order = [
+                identity
+                for identity in dict.fromkeys([*ratings.get("A", []), *ratings.get("B", [])])
+                if identity in available
+            ]
+        return [{"id": identity, "label": available[identity]} for identity in order]
+
     def _matrix(self, session: Session, config: DemoReelConfig) -> list[Candidate]:
         preference = (
             session.get(UserPreference, config.rating_user_id) if config.rating_user_id else None
@@ -271,18 +320,7 @@ class DemoReelService:
                 )
             )
         result = []
-        inventory: dict[str, dict[str, tuple[str, str, str]]] = {}
-        for profile in session.scalars(
-            select(WorkflowProfile).where(
-                WorkflowProfile.instance_id == self.container.comfyui_instances.default_id,
-                WorkflowProfile.is_current.is_(True),
-                WorkflowProfile.state == WorkflowState.VALID,
-            )
-        ):
-            if publication_kind(profile.resolved_contract_json) == "image":
-                inventory.setdefault(library_key(profile.manifest_json)[0], {}).update(
-                    checkpoint_choices(profile)
-                )
+        inventory = self._checkpoint_inventory(session)
         for key, library in sorted(self._libraries(session).items()):
             recipe = config.recipes.get(key, {})
             member = next(
@@ -742,6 +780,20 @@ class DemoReelService:
                 "render_revision": render_revision(member.profile),
             }
         config.rating_user_id = owner_id
+        # The picture preference is checked against the account that now grades the checkpoints,
+        # because that account's A/B order is what the preference picks from. A value saved here
+        # and only later downgraded out of A/B is kept and simply stops matching, which leaves the
+        # pictures on the highest-ranked image instead of silently rewriting a saved setting.
+        checkpoint_id = payload.thumbnail_checkpoint_id
+        if checkpoint_id is not None and checkpoint_id not in {
+            choice["id"] for choice in self._thumbnail_choices(session, config)
+        }:
+            raise AppError(
+                "demo_reel_checkpoint_invalid",
+                "Choose a checkpoint this account ranks A or B for LoRA pictures, or Automatic.",
+                status_code=422,
+            )
+        config.thumbnail_checkpoint_id = checkpoint_id
         config.slots = [slot.model_dump(mode="json") for slot in payload.slots]
         config.recipes = recipes
         config.strengths = copy.deepcopy(payload.strengths)
@@ -759,6 +811,11 @@ class DemoReelService:
                 requested_controls=candidate.parameters,
             )
         session.commit()
+        # A saved picture preference changes which image every LoRA is drawn from, so the next
+        # idle step re-derives them at once instead of waiting out the sweep interval. The work
+        # stays off this request: it re-encodes one small file per LoRA, and the reels themselves
+        # are untouched, since all A and B images are still generated either way.
+        self._thumbnails_at = 0.0
         return self.settings(session)
 
     def set_enabled(
@@ -839,6 +896,8 @@ class DemoReelService:
             "paused": config.paused,
             "rating_user_id": config.rating_user_id,
             "rating_username": owner.username if owner else None,
+            "thumbnail_checkpoint_id": config.thumbnail_checkpoint_id,
+            "thumbnail_checkpoint_choices": self._thumbnail_choices(session, config),
             "slots": config.slots,
             "recipes": {
                 key: {k: v for k, v in recipe.items() if k != "render_revision"}
