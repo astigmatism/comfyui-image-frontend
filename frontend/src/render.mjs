@@ -21,6 +21,7 @@ import {
   isAdvancedInput,
   normalizeCheckpointTierLayout,
   normalizeSourceModelSelections,
+  orderWorkflowsByCapability,
   positivePromptInput,
   resolutionConstraints,
   resolutionGridConstraints,
@@ -33,6 +34,9 @@ import {
   sourceModelParameterVariants,
   sourceModelSelectors,
   statusLabel,
+  workflowCapability,
+  workflowPipelineSummary,
+  workflowShortName,
 } from "./lib.mjs";
 
 import { serverClockOffset } from "./server-clock.mjs";
@@ -375,24 +379,13 @@ export function sourcePickerDialogMarkup(
   const choices = selector?.choices || [];
   const selectedCount = choices.filter((choice) => selectedValues.has(choice.value)).length;
   const totalCount = choices.length;
-  const architecture = activeSource
-    ? sourceMetadataPresentation(activeSource).architecture
-    : "—";
   const layout = normalizeCheckpointTierLayout(
     selector,
     checkpointTiers,
   );
   const choiceByValue = new Map(choices.map((choice) => [choice.value, choice]));
   const query = String(searchQuery || "").trim().toLocaleLowerCase();
-  const workflowOptions = availableSources
-    .map((source) => {
-      const optionArchitecture = sourceMetadataPresentation(source).architecture;
-      const label = [source.display_name, optionArchitecture !== "—" ? optionArchitecture : ""]
-        .filter(Boolean)
-        .join(" — ");
-      return `<option value="${escapeHtml(sourceKey(source))}" ${sourceKey(source) === activeSourceKey ? "selected" : ""}>${escapeHtml(label)}</option>`;
-    })
-    .join("");
+  const rankedSources = orderWorkflowsByCapability(availableSources);
   const tierMarkup = selector
     ? CHECKPOINT_TIER_DEFINITIONS.map((tier) =>
         checkpointTierMarkup({
@@ -410,7 +403,6 @@ export function sourcePickerDialogMarkup(
   const summary = selector
     ? `${selectedCount} checkpoint${selectedCount === 1 ? "" : "s"} selected · ${selectedCount} generation${selectedCount === 1 ? "" : "s"} will be queued`
     : "This workflow will queue one generation.";
-  const architectureCopy = architecture === "—" ? "Architecture not specified" : `${architecture} architecture`;
   return `<form class="dialog-frame source-picker-dialog-frame" method="dialog">
     <header class="dialog-header source-picker-dialog-header">
       <div><h2 id="source-picker-title">Generation source</h2><p>Choose one workflow, then select the checkpoints to run.</p></div>
@@ -418,13 +410,8 @@ export function sourcePickerDialogMarkup(
     </header>
     <div class="source-picker-dialog-content">
       <div class="source-workflow-field">
-        <span class="source-workflow-label">Workflow</span>
-        <label class="source-workflow-select">
-          <svg class="source-workflow-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="18" r="2" /><path d="M12 7v4M6 16v-2.5h12V16" /></svg>
-          <span><strong>${escapeHtml(activeSource?.display_name || "No workflow available")}</strong><small>${escapeHtml(`${architectureCopy} · ${totalCount} checkpoint${totalCount === 1 ? "" : "s"}`)}</small></span>
-          <svg class="source-workflow-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7.5 5 5 5-5" /></svg>
-          <select data-source-workflow-choice aria-label="Workflow" ${availableSources.length ? "" : "disabled"}>${workflowOptions}</select>
-        </label>
+        <span class="source-workflow-label" id="source-workflow-label">Workflow</span>
+        <div class="source-workflow-row" role="radiogroup" aria-labelledby="source-workflow-label">${sourceWorkflowRowMarkup(rankedSources, activeSourceKey)}</div>
       </div>
       <div class="checkpoint-picker-heading">
         <div><span><h3>Checkpoints</h3><small data-source-selection-count>${escapeHtml(`${selectedCount} of ${totalCount} selected`)}</small></span><p>Drag checkpoints between tiers. New checkpoints start at C.</p></div>
@@ -517,6 +504,32 @@ function checkpointChoicePresentation(choice) {
     label: label.slice(0, parenthetical.index).trim(),
     badge: precision.toUpperCase(),
   };
+}
+
+// One button per published workflow, ordered most advanced first by
+// orderWorkflowsByCapability(). The button carries the published full name as
+// its tooltip and accessible name, so the shortened label never hides which
+// workflow it selects.
+function sourceWorkflowRowMarkup(sources, activeSourceKey) {
+  if (!sources.length) {
+    return '<p class="source-workflow-empty">No published workflow is available.</p>';
+  }
+  return sources
+    .map((source) => {
+      const key = sourceKey(source);
+      const capability = workflowCapability(source);
+      const summary = workflowPipelineSummary(source);
+      const active = key === activeSourceKey;
+      return `<button type="button" role="radio" class="source-workflow-option" data-source-workflow-choice
+          data-source-workflow-key="${escapeHtml(key)}" data-action="select-generation-source-workflow"
+          aria-checked="${active}" tabindex="${active ? "0" : "-1"}" title="${escapeHtml(source.display_name)}"
+          aria-label="${escapeHtml(`${capability.label}: ${source.display_name}`)}">
+          <span class="source-workflow-option-tier">${escapeHtml(capability.label)}</span>
+          <strong class="source-workflow-option-name">${escapeHtml(workflowShortName(source, sources))}</strong>
+          ${summary ? `<small class="source-workflow-option-meta">${escapeHtml(summary)}</small>` : ""}
+        </button>`;
+    })
+    .join("");
 }
 
 function sourceMetadataPresentation(source) {

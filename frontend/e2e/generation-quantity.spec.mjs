@@ -40,12 +40,11 @@ async function selectPublishedSource(page, name) {
   await selector.click();
   const dialog = page.locator("#source-picker-dialog");
   await expect(dialog).toBeVisible();
-  const workflow = dialog.locator("[data-source-workflow-choice]");
-  const option = workflow.locator("option").filter({ hasText: name });
+  const option = dialog.getByRole("radio", { name, exact: false });
   await expect(option).toHaveCount(1);
-  const value = await option.getAttribute("value");
+  const value = await option.getAttribute("data-source-workflow-key");
   expect(value).toBeTruthy();
-  await workflow.selectOption(value);
+  await option.click();
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
   await expect(selector).toBeFocused();

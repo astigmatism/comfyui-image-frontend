@@ -131,9 +131,9 @@ async function selectPublishedSource(page, name) {
   await selector.click();
   const dialog = page.locator("#source-picker-dialog");
   await expect(dialog).toBeVisible();
-  const workflow = dialog.locator("[data-source-workflow-choice]");
-  const value = await workflow.locator("option").filter({ hasText: name }).getAttribute("value");
-  await workflow.selectOption(value);
+  const option = dialog.getByRole("radio", { name, exact: false });
+  const value = await option.getAttribute("data-source-workflow-key");
+  await option.click();
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
 }
@@ -370,9 +370,17 @@ test("rerun source changes survive delayed previews and cancelled dialogs ignore
   await toolbar.click();
   await expect(dialog.locator("[data-rerun-summary]")).toContainText("Reading");
   await sourceTrigger.click();
-  const workflow = picker.locator("[data-source-workflow-choice]");
-  const otherKey = await workflow.locator(`option:not([value="${mainKey}"]):not([disabled])`).first().getAttribute("value");
-  await workflow.selectOption(otherKey);
+  const workflowChoices = picker.locator("[data-source-workflow-choice]");
+  let otherKey = "";
+  for (let index = 0; index < (await workflowChoices.count()); index += 1) {
+    const key = await workflowChoices.nth(index).getAttribute("data-source-workflow-key");
+    if (key && key !== mainKey) {
+      otherKey = key;
+      break;
+    }
+  }
+  expect(otherKey).toBeTruthy();
+  await picker.locator(`[data-source-workflow-choice][data-source-workflow-key="${otherKey}"]`).click();
   await picker.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(picker).toBeHidden();
   await expect(sourceTrigger).toHaveAttribute("data-source-key", otherKey);
@@ -405,7 +413,7 @@ test("rerun source changes survive delayed previews and cancelled dialogs ignore
     await route.fulfill({ response });
   });
   await sourceTrigger.click();
-  await workflow.selectOption(otherKey);
+  await picker.locator(`[data-source-workflow-choice][data-source-workflow-key="${otherKey}"]`).click();
   await picker.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(picker.getByRole("alert")).toContainText("Source temporarily unavailable");
   await page.setViewportSize({ width: 320, height: 640 });

@@ -102,7 +102,7 @@ test("30 checkpoints start in C; picker cancel, drag, ordering and shared workfl
   await expect(card(page, 1).locator(".checkpoint-rank")).toHaveText("B");
   await expect(card(page, 2).locator(".checkpoint-rank")).toHaveText("C");
   await page.locator("#workflow-source").click();
-  await dialog.locator("[data-source-workflow-choice]").selectOption("second");
+  await dialog.locator('[data-source-workflow-choice][data-source-workflow-key="second"]').click();
   await expect(dialog.locator(".checkpoint-tier-B [data-checkpoint-card]")).toHaveCount(2);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.reload();

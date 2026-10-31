@@ -1368,7 +1368,8 @@ test("source picker renders persisted preference tiers without legacy metadata",
   assert.match(preferred, /Version 1/);
   assert.match(occasional, /Drop checkpoints here/);
   assert.match(occasional, /data-checkpoint-tier-toggle[^>]*disabled/);
-  assert.match(html, /FLUX Dev architecture · 2 checkpoints/);
+  assert.doesNotMatch(html, /FLUX Dev architecture|<select data-source-workflow-choice/);
+  assert.match(html, /class="source-workflow-option-name">One<\/strong>/);
   assert.match(html, /data-action="select-all-checkpoints"/);
   assert.match(html, /data-action="clear-all-checkpoints"/);
   assert.match(html, /data-action="cancel-generation-source-dialog">Cancel/);
@@ -1379,6 +1380,58 @@ test("source picker renders persisted preference tiers without legacy metadata",
   );
 });
 
+test("source picker orders the workflow row from most advanced to simplest", () => {
+  // The catalog the appliance publishes today, in the display-name order the
+  // API returns it.
+  const nodes = { 4: 90, 3: 77, 2: 72, 1: 67, 0: 19 };
+  const upscalers = { 4: 2, 3: 1, 2: 1, 1: 1, 0: 0 };
+  const sources = [0, 1, 2, 3, 4].map((index) => ({
+    source_key: `moody-${index}`,
+    display_name: [
+      "Moody Krea2 Minimal v1",
+      "Moody Krea2 Simple v2",
+      "Moody Krea2 Primer v1",
+      "Moody Krea2 Advanced v1",
+      "Moody Krea2 i2i 4KHD v1",
+    ][index],
+    available: true,
+    generation_source: {
+      generation_type: index === 4 ? "image_to_image" : "text_to_image",
+      dimension_policy: index === 4 ? "source_image" : "explicit",
+      tags: index === 4 ? ["krea2", "seedvr2", "ultimate_sd_upscale"] : ["krea2", "ultimate_sd_upscale"],
+      base_model: { architecture: "krea2", architecture_label: "Krea 2" },
+    },
+    technical_inventory: {
+      node_counts: { compiled_api: nodes[index] },
+      upscalers: Array.from({ length: upscalers[index] }, () => ({ artifact: "4x-UltraSharp" })),
+      samplers: [{ class_type: "KSampler" }],
+    },
+  }));
+
+  const html = sourcePickerDialogMarkup(sources, { sourceKey: "moody-2" });
+  const row = html.match(/<div class="source-workflow-row"[\s\S]*?<\/div>/)?.[0] || "";
+  assert.match(row, /role="radiogroup"/);
+  assert.deepEqual(
+    [...row.matchAll(/data-source-workflow-key="([^"]+)"/g)].map(([, key]) => key),
+    ["moody-4", "moody-3", "moody-2", "moody-1", "moody-0"],
+  );
+  assert.deepEqual(
+    [...row.matchAll(/class="source-workflow-option-tier">([^<]+)<\/span>/g)].map(([, tier]) => tier),
+    ["Highest quality", "Advanced", "Balanced", "Fast", "Simplest"],
+  );
+  assert.deepEqual(
+    [...row.matchAll(/class="source-workflow-option-name">([^<]+)<\/strong>/g)].map(([, name]) => name),
+    ["i2i 4KHD", "Advanced", "Primer", "Simple", "Minimal"],
+  );
+  assert.match(row, /class="source-workflow-option-meta">~2m 28s · 90 nodes · 2 upscales<\/small>/);
+  assert.match(row, /class="source-workflow-option-meta">~17s · 19 nodes · 0 upscales<\/small>/);
+  // The published full name survives as the tooltip, and exactly one button
+  // is in the tab order: the selected one.
+  assert.match(row, /title="Moody Krea2 i2i 4KHD v1"/);
+  assert.equal((row.match(/aria-checked="true" tabindex="0"/g) || []).length, 1);
+  assert.match(row, /data-source-workflow-key="moody-2"[^>]*aria-checked="true" tabindex="0"/);
+});
+
 test("source picker offers one available workflow at a time", () => {
   const sources = [
     { source_key: "one", display_name: "One", available: true },
@@ -1386,11 +1439,15 @@ test("source picker offers one available workflow at a time", () => {
     { source_key: "offline", display_name: "Offline", available: false },
   ];
   const html = sourcePickerDialogMarkup(sources, { sourceKey: "two" });
-  const select = html.match(/<select data-source-workflow-choice[\s\S]*?<\/select>/)?.[0] || "";
+  const row = html.match(/<div class="source-workflow-row"[\s\S]*?<\/div>/)?.[0] || "";
 
-  assert.match(select, /value="one"/);
-  assert.match(select, /value="two" selected/);
-  assert.doesNotMatch(select, /offline|Offline/);
+  assert.deepEqual(
+    [...row.matchAll(/data-source-workflow-key="([^"]+)"/g)].map(([, key]) => key),
+    ["one", "two"],
+  );
+  assert.match(row, /data-source-workflow-key="two"[^>]*aria-checked="true" tabindex="0"/);
+  assert.match(row, /data-source-workflow-key="one"[^>]*aria-checked="false" tabindex="-1"/);
+  assert.doesNotMatch(html, /offline|Offline/);
   assert.doesNotMatch(html, /data-source-draft-key|data-source-primary-key/);
 });
 
@@ -1460,7 +1517,7 @@ test("source picker exposes tri-state tier controls and disables Apply at zero s
   assert.match(html, /0 checkpoints selected · 0 generations will be queued/);
 });
 
-test("source picker shows architecture only as workflow subtitle metadata", () => {
+test("source picker leaves architecture out of the workflow row", () => {
   const html = sourcePickerDialogMarkup(
     [
       {
@@ -1479,7 +1536,8 @@ test("source picker shows architecture only as workflow subtitle metadata", () =
     { sourceKey: "krea" },
   );
 
-  assert.match(html, /Krea 2 architecture · 0 checkpoints/);
+  assert.match(html, /class="source-workflow-option-name">Krea Workflow<\/strong>/);
+  assert.doesNotMatch(html, /Krea 2 architecture|0 checkpoints/);
   assert.doesNotMatch(html, /June 2026|Introduced|Generation type|Technologies/);
 });
 

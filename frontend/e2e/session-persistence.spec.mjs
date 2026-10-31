@@ -48,12 +48,11 @@ async function selectPublishedSource(page, name) {
   await selector.click();
   const dialog = page.locator("#source-picker-dialog");
   await expect(dialog).toBeVisible();
-  const workflow = dialog.locator("[data-source-workflow-choice]");
-  const option = workflow.locator("option").filter({ hasText: name });
+  const option = dialog.getByRole("radio", { name, exact: false });
   await expect(option).toHaveCount(1);
-  const value = await option.getAttribute("value");
+  const value = await option.getAttribute("data-source-workflow-key");
   expect(value).toBeTruthy();
-  await workflow.selectOption(value);
+  await option.click();
   // These journeys exercise one image request; other specs persist model fan-out.
   const checkpoints = dialog.locator('[data-checkpoint-card] input[type="checkbox"]');
   if (await checkpoints.count()) {

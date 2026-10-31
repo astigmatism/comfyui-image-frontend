@@ -23,6 +23,10 @@ import {
   collectionDepth,
   collectionSiblingIds,
   collectionSubtree,
+  orderWorkflowsByCapability,
+  workflowCapability,
+  workflowPipelineSummary,
+  workflowShortName,
   collectionTreeRows,
   controlPresentation,
   controlSectionStorageKey,
@@ -1890,4 +1894,122 @@ test("Creative Direction placeholder detection finds template slots only", () =>
   }
   assert.equal(creativeDirectionWarningText("Make it snow."), "");
   assert.match(creativeDirectionWarningText(production), /^Creative Direction contains an unfilled placeholder: “\[DESCRIBE THE NEW POSE HERE — stance, both hand positions, body angle, head an…\]”\./);
+});
+
+const publishedMoodyCatalog = [
+  "Moody Krea2 Advanced v1",
+  "Moody Krea2 i2i 4KHD v1",
+  "Moody Krea2 Minimal v1",
+  "Moody Krea2 Primer v1",
+  "Moody Krea2 Simple v2",
+].map((display_name, index) => ({
+  source_key: `moody-${index}`,
+  display_name,
+  available: true,
+  generation_source: {
+    generation_type: display_name.includes("4KHD") ? "image_to_image" : "text_to_image",
+    dimension_policy: display_name.includes("4KHD") ? "source_image" : "explicit",
+    tags: display_name === "Moody Krea2 Minimal v1"
+      ? ["krea2", "prompt_guided", "text_to_image"]
+      : ["krea2", "detailer", "ultimate_sd_upscale", ...(display_name.includes("4KHD") ? ["model_upscale", "seedvr2"] : [])],
+  },
+  technical_inventory: {
+    node_counts: { compiled_api: { "Moody Krea2 Advanced v1": 77, "Moody Krea2 i2i 4KHD v1": 90, "Moody Krea2 Minimal v1": 19, "Moody Krea2 Primer v1": 72, "Moody Krea2 Simple v2": 67 }[display_name] },
+    upscalers: display_name === "Moody Krea2 Minimal v1" ? [] : [{ artifact: "4x-UltraSharp" }, ...(display_name.includes("4KHD") ? [{ artifact: "SeedVR2" }] : [])],
+    samplers: [{ class_type: "KSampler" }],
+  },
+}));
+
+test("the workflow row runs from the most advanced pipeline to the simplest", () => {
+  // The API hands over the catalog in display-name order; the row is a
+  // capability ladder, so the published order must not leak through.
+  assert.deepEqual(
+    orderWorkflowsByCapability(publishedMoodyCatalog).map((source) => source.display_name),
+    [
+      "Moody Krea2 i2i 4KHD v1",
+      "Moody Krea2 Advanced v1",
+      "Moody Krea2 Primer v1",
+      "Moody Krea2 Simple v2",
+      "Moody Krea2 Minimal v1",
+    ],
+  );
+  assert.deepEqual(
+    orderWorkflowsByCapability(publishedMoodyCatalog).map((source) => workflowCapability(source).label),
+    ["Highest quality", "Advanced", "Balanced", "Fast", "Simplest"],
+  );
+});
+
+test("workflow ranking is stable for the order the catalog arrives in", () => {
+  const forward = orderWorkflowsByCapability(publishedMoodyCatalog).map((source) => source.source_key);
+  const reversed = orderWorkflowsByCapability([...publishedMoodyCatalog].reverse()).map((source) => source.source_key);
+  assert.deepEqual(reversed, forward);
+});
+
+test("a workflow whose name claims no rung is placed by the pipeline it publishes", () => {
+  const unranked = (display_name, compiled_api, upscalers) => ({
+    display_name,
+    technical_inventory: { node_counts: { compiled_api }, upscalers: Array.from({ length: upscalers }, () => ({})) },
+  });
+  const ordered = orderWorkflowsByCapability([
+    unranked("Moody Krea2 Widget v1", 50, 0),
+    unranked("Moody Krea2 Gadget v1", 60, 1),
+    unranked("Moody Krea2 Minimal v1", 19, 0),
+    unranked("Moody Krea2 i2i 4KHD v1", 90, 2),
+  ]).map((source) => source.display_name);
+  assert.deepEqual(ordered, [
+    "Moody Krea2 i2i 4KHD v1",
+    "Moody Krea2 Gadget v1",
+    "Moody Krea2 Widget v1",
+    "Moody Krea2 Minimal v1",
+  ]);
+});
+
+test("published tags never out-rank a workflow name", () => {
+  // Nearly every Moody publication ships ultimate_sd_upscale; reading tags
+  // would lift the simplest workflows to the top of the row.
+  assert.deepEqual(
+    ["Moody Krea2 Minimal v1", "Moody Krea2 i2i 4KHD v1"]
+      .map((name) => publishedMoodyCatalog.find((source) => source.display_name === name))
+      .sort((a, b) => workflowCapability(b).rank - workflowCapability(a).rank)
+      .map((source) => source.display_name),
+    ["Moody Krea2 i2i 4KHD v1", "Moody Krea2 Minimal v1"],
+  );
+});
+
+test("workflow buttons shorten only what the siblings share", () => {
+  const names = orderWorkflowsByCapability(publishedMoodyCatalog);
+  assert.deepEqual(
+    names.map((source) => workflowShortName(source, names)),
+    ["i2i 4KHD", "Advanced", "Primer", "Simple", "Minimal"],
+  );
+  // A foreign family shares no prefix, so its published name stays intact.
+  const mixed = [...names, { source_key: "other", display_name: "Other Family Turbo v3" }];
+  assert.equal(workflowShortName(mixed[mixed.length - 1], mixed), "Other Family Turbo v3");
+  assert.equal(workflowShortName(publishedMoodyCatalog[0], publishedMoodyCatalog.slice(0, 1)), "Moody Krea2 Advanced v1");
+  // Siblings that merely start with the same letter share no word, so nothing
+  // is taken away from either name.
+  const near = [
+    { display_name: "Primary Workflow" },
+    { display_name: "Prompt Lab" },
+  ];
+  assert.deepEqual(
+    near.map((source) => workflowShortName(source, near)),
+    ["Primary Workflow", "Prompt Lab"],
+  );
+});
+
+test("the workflow caption states the pipeline facts behind its place in the row", () => {
+  const [highest] = orderWorkflowsByCapability(publishedMoodyCatalog);
+  const simplest = publishedMoodyCatalog.find((source) => source.display_name === "Moody Krea2 Minimal v1");
+  // The 4K image-to-image pipeline publishes twice the upscaling stages and a
+  // SeedVR2 stage, so it reads as an order of magnitude slower than Minimal.
+  assert.equal(workflowPipelineSummary(highest), "~2m 28s · 90 nodes · 2 upscales");
+  assert.equal(workflowPipelineSummary(simplest), "~17s · 19 nodes · 0 upscales");
+  const seconds = (source) => {
+    const [, minutes, rest] = workflowPipelineSummary(source).match(/^~(?:(\d+)m )?(\d+)s/);
+    return Number(minutes || 0) * 60 + Number(rest);
+  };
+  // The caption's whole job is the comparison the row is asking you to make.
+  assert.ok(seconds(highest) >= seconds(simplest) * 5, `${seconds(highest)}s vs ${seconds(simplest)}s`);
+  assert.equal(workflowPipelineSummary({ display_name: "Legacy" }), "");
 });

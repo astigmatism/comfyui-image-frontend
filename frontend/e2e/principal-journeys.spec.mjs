@@ -69,12 +69,11 @@ async function selectPublishedSource(page, name) {
   await selector.click();
   const dialog = page.locator("#source-picker-dialog");
   await expect(dialog).toBeVisible();
-  const workflow = dialog.locator("[data-source-workflow-choice]");
-  const option = workflow.locator("option").filter({ hasText: name });
+  const option = dialog.getByRole("radio", { name, exact: false });
   await expect(option).toHaveCount(1);
-  const value = await option.getAttribute("value");
+  const value = await option.getAttribute("data-source-workflow-key");
   expect(value).toBeTruthy();
-  await workflow.selectOption(value);
+  await option.click();
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(selector).toHaveAttribute("data-source-key", value);
   await expect(selector).toBeFocused();
@@ -1567,23 +1566,23 @@ test("generation source selection is singular and transactional", async ({ page 
   const trigger = page.locator("#workflow-source");
   await trigger.click();
   const dialog = page.locator("#source-picker-dialog");
-  const workflow = dialog.locator("[data-source-workflow-choice]");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "Generation source" })).toBeVisible();
   await expect(dialog.locator("table")).toHaveCount(0);
   await expect(dialog.getByText(/Primary|Include|Rating|Technologies/, { exact: true })).toHaveCount(0);
 
-  const genericOption = workflow.locator("option").filter({ hasText: "Generic Landscape" });
-  const genericKey = await genericOption.getAttribute("value");
+  const genericOption = dialog.getByRole("radio", { name: "Generic Landscape", exact: false });
+  const genericKey = await genericOption.getAttribute("data-source-workflow-key");
   expect(genericKey).toBeTruthy();
-  await workflow.selectOption(genericKey);
-  await expect(dialog.locator(".source-workflow-select strong")).toHaveText("Generic Landscape");
+  await genericOption.click();
+  await expect(genericOption).toHaveAttribute("aria-checked", "true");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(trigger).toContainText("Krea 2 NSFW V4");
 
   await trigger.click();
-  await expect(dialog.locator("[data-source-workflow-choice]")).not.toHaveValue(genericKey);
-  await dialog.locator("[data-source-workflow-choice]").selectOption(genericKey);
+  await expect(dialog.locator("[data-source-workflow-choice][aria-checked=\"true\"]"))
+    .not.toHaveAttribute("data-source-workflow-key", genericKey);
+  await dialog.locator(`[data-source-workflow-choice][data-source-workflow-key="${genericKey}"]`).click();
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(trigger).toHaveAttribute("data-source-key", genericKey);
   await expect(trigger).toContainText("Generic Landscape");
@@ -1818,10 +1817,9 @@ test("checkpoint tier preference persists across reload and supports keyboard mo
   dialog = page.locator("#source-picker-dialog");
   // Reload can select the workflow from retained history; inspect the workflow
   // whose tier preference this test saved, independently of earlier journeys.
-  const reloadedWorkflow = dialog.locator("[data-source-workflow-choice]");
-  const moodyKey = await reloadedWorkflow.locator("option")
-    .filter({ hasText: "Moody Krea 2 Mix V4" }).getAttribute("value");
-  await reloadedWorkflow.selectOption(moodyKey);
+  const moodyOption = dialog.getByRole("radio", { name: "Moody Krea 2 Mix V4", exact: false });
+  const moodyKey = await moodyOption.getAttribute("data-source-workflow-key");
+  await moodyOption.click();
   await expect(dialog.locator(".checkpoint-tier-A")).toContainText(
     "Moody Krea 2 TYJR MXFP8",
   );
@@ -2027,8 +2025,7 @@ test("changing between twin workflows keeps checkpoints and LoRA picks", async (
 
   // The picker previews the same checkpoints in the twin before anything is applied.
   await trigger.click();
-  const workflow = picker.locator("[data-source-workflow-choice]");
-  await workflow.selectOption(twinKey);
+  await picker.locator(`[data-source-workflow-choice][data-source-workflow-key="${twinKey}"]`).click();
   await expect(picker.locator("[data-source-selection-count]")).toHaveText("3 of 5 selected");
   for (const name of ["Moody Krea 2 V4 INT8 ConvRot", "Moody Krea 2 TYJR MXFP8", "Moody Krea 2 V5 BF16"]) {
     await expect(picker.getByRole("checkbox", { name, exact: true })).toBeChecked();

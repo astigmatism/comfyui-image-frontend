@@ -831,6 +831,7 @@ async function handleClick(event) {
     else if (action === "move-generation") openMoveDialog(target.dataset.generationId, target);
     else if (action === "cancel-move-generation") closeMoveDialog("cancel");
     else if (action === "open-generation-source-dialog") openSourcePickerDialog(target);
+    else if (action === "select-generation-source-workflow") updateSourcePickerDraftWorkflow(target.dataset.sourceWorkflowKey);
     else if (action === "cancel-generation-source-dialog") closeSourcePickerDialog("cancel");
     else if (action === "apply-generation-source-dialog") await applySourcePickerDialog();
     else if (action === "select-all-checkpoints") updateAllSourcePickerCheckpoints(true);
@@ -1014,10 +1015,6 @@ async function handleClick(event) {
     updateExpectationLimit(element, true);
     return;
   }
-  if (element.matches("[data-source-workflow-choice]")) {
-    updateSourcePickerDraftWorkflow(element.value);
-    return;
-  }
   if (element.matches("[data-source-model-choice]")) {
     updateSourcePickerDraftModelSelection(
       element.dataset.sourceModelSourceKey,
@@ -1135,9 +1132,7 @@ function openSourcePickerDialog(button) {
   state.sourcePickerDialogOpen = true;
   renderSourcePickerDialog();
   dialog.showModal();
-  queueMicrotask(() => {
-    dialog.querySelector("[data-source-workflow-choice]")?.focus({ preventScroll: true });
-  });
+  queueMicrotask(() => focusSourceWorkflowChoice());
 }
 
 function renderSourcePickerDialog() {
@@ -1236,11 +1231,34 @@ function updateSourcePickerDraftWorkflow(key) {
   ensureSourcePickerDraftPreferences(source);
   carrySourcePickerDraftSelections(source);
   renderSourcePickerDialog();
-  queueMicrotask(() => {
-    document
-      .querySelector("#source-picker-dialog [data-source-workflow-choice]")
-      ?.focus({ preventScroll: true });
-  });
+  queueMicrotask(() => focusSourceWorkflowChoice());
+}
+
+// Roving tabindex: exactly one workflow button is in the tab order, and it is
+// the selected one, so opening the dialog or choosing a workflow never parks
+// the caret on a different workflow than the one that will run.
+function focusSourceWorkflowChoice() {
+  const options = [...document.querySelectorAll("#source-picker-dialog [data-source-workflow-choice]")];
+  if (!options.length) return;
+  const selected = options.find((option) => option.getAttribute("aria-checked") === "true") || options[0];
+  options.forEach((option) => option.setAttribute("tabindex", option === selected ? "0" : "-1"));
+  selected.focus({ preventScroll: true });
+}
+
+// A workflow row behaves like the segmented controls elsewhere in the app:
+// arrows walk the row and wrap at the ends, Home/End jump to the ends. Focus
+// never moves without the draft workflow moving with it.
+function moveSourceWorkflowChoiceFromKeyboard(option, key) {
+  const options = [...option.parentElement.querySelectorAll("[data-source-workflow-choice]")];
+  const index = options.indexOf(option);
+  const offsets = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+  let next;
+  if (key in offsets) next = options[(index + offsets[key] + options.length) % options.length];
+  else if (key === "Home") next = options[0];
+  else if (key === "End") next = options[options.length - 1];
+  if (!next) return false;
+  updateSourcePickerDraftWorkflow(next.dataset.sourceWorkflowKey);
+  return true;
 }
 
 function updateSourcePickerSearch(value) {
@@ -2251,6 +2269,11 @@ function handleKeyDown(event) {
   }
   const photoViewer = document.querySelector("#photo-viewer");
   if (photoViewer?.open) return;
+  const workflowOption = event.target.closest("#source-picker-dialog [data-source-workflow-choice]");
+  if (workflowOption && moveSourceWorkflowChoiceFromKeyboard(workflowOption, event.key)) {
+    event.preventDefault();
+    return;
+  }
   const checkpointHandle = event.target.closest("[data-checkpoint-drag-handle]");
   if (checkpointHandle && event.altKey) {
     if (moveSourcePickerCheckpointFromKeyboard(checkpointHandle, event.key)) {

@@ -55,7 +55,7 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   expect(detail).toBeTruthy();
   await page.locator("#workflow-source").click();
   const sourcePicker = page.locator("#source-picker-dialog");
-  await sourcePicker.locator("[data-source-workflow-choice]").selectOption(detail.source_key);
+  await sourcePicker.locator(`[data-source-workflow-choice][data-source-workflow-key="${detail.source_key}"]`).click();
   await sourcePicker.getByRole("button", { name: "Apply", exact: true }).click();
   await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
   const picker = page.locator("#lora-manager-dialog");
@@ -209,7 +209,7 @@ test("a LoRA that has left the Demo Reel says it is off instead of waiting for i
     if (control) {
       await page.locator("#workflow-source").click();
       const sources = page.locator("#source-picker-dialog");
-      await sources.locator("[data-source-workflow-choice]").selectOption(source.source_key);
+      await sources.locator(`[data-source-workflow-choice][data-source-workflow-key="${source.source_key}"]`).click();
       await sources.getByRole("button", { name: "Apply", exact: true }).click();
       break;
     }
@@ -258,7 +258,7 @@ test("one checkpoint choice decides every LoRA picture, and the settings keep it
   try {
     await page.locator("#workflow-source").click();
     const sources = page.locator("#source-picker-dialog");
-    await sources.locator("[data-source-workflow-choice]").selectOption(detail.source_key);
+    await sources.locator(`[data-source-workflow-choice][data-source-workflow-key="${detail.source_key}"]`).click();
     await sources.getByRole("button", { name: "Apply", exact: true }).click();
     await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
     const picker = page.locator("#lora-manager-dialog");

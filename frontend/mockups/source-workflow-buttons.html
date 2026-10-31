@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Generation source · workflow button row · preview</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./source-workflow-buttons.css" />
+  </head>
+  <body class="swb-preview-host">
+    <header class="swb-preview-toolbar">
+      <div class="swb-preview-title">
+        <strong>Generation source · workflow buttons</strong>
+        <span>The shipped picker, rendered by src/render.mjs against the catalog this appliance publishes today</span>
+      </div>
+      <div class="swb-preview-actions" role="group" aria-label="Preview controls">
+        <label class="visually-hidden" for="preview-scenario">Published catalog</label>
+        <select id="preview-scenario" aria-label="Published catalog"></select>
+        <button type="button" class="button low is-selected" data-preview-size="desktop" aria-pressed="true">Desktop</button>
+        <button type="button" class="button low" data-preview-size="mobile" aria-pressed="false">Narrow screen</button>
+        <button type="button" class="button secondary" data-preview-action="open">Open dialog</button>
+      </div>
+    </header>
+    <main class="swb-preview-stage">
+      <iframe id="swb-preview-frame" title="Generation source workflow button row preview" src="./source-workflow-buttons-scene.html"></iframe>
+    </main>
+    <script type="module" src="./source-workflow-buttons-host.mjs"></script>
+  </body>
+</html>

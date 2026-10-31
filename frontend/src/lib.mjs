@@ -239,6 +239,131 @@ export function sourceModelSelectors(source) {
   return selectors;
 }
 
+// Published workflows are ranked once, in one place, so the picker's button
+// row and every view that lists sources agree on the order. The row runs from
+// the most advanced pipeline on the left to the simplest and quickest on the
+// right; the rung a workflow claims is read from its published display name,
+// because published tags such as `ultimate_sd_upscale` appear on nearly every
+// bundle and say nothing about where a workflow belongs in the row.
+export const WORKFLOW_CAPABILITY_LADDER = Object.freeze([
+  Object.freeze({ rank: 50, label: "Highest quality", words: ["4k", "4khd", "2160", "upscale", "upscaling", "ultra", "seedvr", "master"] }),
+  Object.freeze({ rank: 40, label: "Advanced", words: ["advanced", "premium", "pro", "max"] }),
+  Object.freeze({ rank: 30, label: "Balanced", words: ["mix", "standard", "default", "base", "balanced"] }),
+  Object.freeze({ rank: 20, label: "Fast", words: ["simple", "quick", "fast", "lite", "turbo", "draft", "rapid", "express"] }),
+  Object.freeze({ rank: 10, label: "Simplest", words: ["minimal", "minimum", "micro", "nano"] }),
+]);
+
+const UNRANKED_WORKFLOW_RANK = 30;
+const UNRANKED_WORKFLOW_LABEL = "Balanced";
+
+function normalizeWorkflowToken(token) {
+  return String(token).toLowerCase().replace(/[^a-z0-9]/gu, "");
+}
+
+function workflowNameTokens(source) {
+  return String(source?.display_name || "").toLowerCase().split(/[^a-z0-9]+/u);
+}
+
+// Which rung of the ladder a published workflow claims, from its name alone.
+// Whole words of the name only, so "Maximum Detail" cannot be read as "max".
+export function workflowCapability(source) {
+  const words = new Set(workflowNameTokens(source).map(normalizeWorkflowToken).filter(Boolean));
+  const level = WORKFLOW_CAPABILITY_LADDER.findIndex(({ words: rung }) =>
+    rung.some((word) => words.has(normalizeWorkflowToken(word))),
+  );
+  return {
+    rank: level === -1 ? UNRANKED_WORKFLOW_RANK : WORKFLOW_CAPABILITY_LADDER[level].rank,
+    label: level === -1 ? UNRANKED_WORKFLOW_LABEL : WORKFLOW_CAPABILITY_LADDER[level].label,
+  };
+}
+
+// How heavy a published pipeline is: upscaling stages first, then graph size.
+// Two workflows whose names claim no rung are told apart by this, never by
+// their position in the catalog.
+function workflowPipelineWeight(source) {
+  const inventory = source?.technical_inventory || {};
+  const compiled = Number(inventory.node_counts?.compiled_api);
+  const upscalers = Array.isArray(inventory.upscalers) ? inventory.upscalers.length : 0;
+  return (Number.isFinite(compiled) ? compiled : 0) + upscalers * 1000;
+}
+
+// Most advanced first. The catalog's own order (display name) is only ever a
+// final tie-break, so the row is stable for a given publication set.
+export function orderWorkflowsByCapability(sources) {
+  const entries = (Array.isArray(sources) ? sources : []).map((source, index) => ({
+    source,
+    index,
+    rank: workflowCapability(source).rank,
+    weight: workflowPipelineWeight(source),
+  }));
+  return entries
+    .sort(
+      (left, right) =>
+        right.rank - left.rank ||
+        (left.rank === right.rank && left.rank === UNRANKED_WORKFLOW_RANK ? right.weight - left.weight : 0) ||
+        left.index - right.index,
+    )
+    .map(({ source }) => source);
+}
+
+// "Moody Krea2 i2i 4KHD v1" beside four siblings of the same family reads as
+// "i2i 4KHD": the leading words every sibling shares and a trailing version
+// are not what distinguishes them. The published full name is always kept as
+// the tooltip and accessible name.
+export function workflowShortName(source, catalog) {
+  const names = (Array.isArray(catalog) ? catalog : [])
+    .map((item) => String(item?.display_name || "").trim())
+    .filter(Boolean);
+  const tokens = String(source?.display_name || "").trim().split(/\s+/u);
+  if (names.length < 2 || !tokens.length) return tokens.join(" ");
+  // Whole words only: "Primary Workflow" beside "Prompt Lab" shares a letter,
+  // not a name, and must keep every word it has.
+  const wordlists = names.map((name) => name.split(/\s+/u).map(normalizeWorkflowToken));
+  let shared = 0;
+  for (;;) {
+    const candidate = wordlists[0][shared];
+    if (!candidate || !wordlists.every((words) => words[shared] === candidate)) break;
+    shared += 1;
+  }
+  if (!shared || shared >= tokens.length) return tokens.join(" ");
+  const rest = tokens.slice(shared);
+  if (rest.length > 1 && /^v\d+$/iu.test(rest[rest.length - 1])) rest.pop();
+  return rest.join(" ");
+}
+
+// Why this workflow sits where it sits, in the units the rest of the
+// application already uses. Node and upscale counts are published facts; the
+// leading figure is a standing estimate of one generation modelled from the
+// same pipeline — sampler and upscaling stages, a source-image (4K) output
+// counted four times, SeedVR2 where published — so the row can be compared
+// left to right. It is a modelled comparison, not a promise about an image.
+const WORKFLOW_STAGE_SECONDS = Object.freeze({ base: 6, sampler: 11, upscale: 6, seedvr: 50 });
+const WORKFLOW_OUTPUT_MULTIPLIER = Object.freeze({ source_image: 4, explicit: 1 });
+
+export function workflowPipelineSummary(source) {
+  const inventory = source?.technical_inventory || {};
+  const metadata = source?.generation_source || {};
+  const tags = Array.isArray(metadata.tags) ? metadata.tags : [];
+  const samplers = Array.isArray(inventory.samplers)
+    ? inventory.samplers.length
+    : Number(inventory.samplers) || 0;
+  const upscales = Array.isArray(inventory.upscalers) ? inventory.upscalers.length : 0;
+  const nodes = Number(inventory.node_counts?.compiled_api) || 0;
+  if (!samplers && !upscales && !nodes) return "";
+  const size = WORKFLOW_OUTPUT_MULTIPLIER[metadata.dimension_policy] || 1;
+  const seconds = Math.round(
+    WORKFLOW_STAGE_SECONDS.base +
+      samplers * WORKFLOW_STAGE_SECONDS.sampler * size +
+      upscales * WORKFLOW_STAGE_SECONDS.upscale * size +
+      (tags.includes("seedvr2") ? WORKFLOW_STAGE_SECONDS.seedvr : 0),
+  );
+  const estimate =
+    seconds >= 60
+      ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`
+      : `${seconds}s`;
+  return [`~${estimate}`, `${nodes} nodes`, `${upscales} upscale${upscales === 1 ? "" : "s"}`].join(" · ");
+}
+
 export const CHECKPOINT_TIER_DEFINITIONS = Object.freeze([
   Object.freeze({ id: "A", label: "A" }),
   Object.freeze({ id: "B", label: "B" }),

@@ -285,9 +285,9 @@ test("quantity and model selections share one generated prompt", async ({ page }
   test.setTimeout(60_000);
   await page.locator("#workflow-source").click();
   const dialog = page.locator("#source-picker-dialog");
-  const choices = dialog.locator("[data-source-workflow-choice]");
-  const source = await choices.locator("option").filter({ hasText: "Moody Krea 2 Mix V4" }).getAttribute("value");
-  await choices.selectOption(source);
+  const moodyChoice = dialog.getByRole("radio", { name: "Moody Krea 2 Mix V4", exact: false });
+  const source = await moodyChoice.getAttribute("data-source-workflow-key");
+  await moodyChoice.click();
   await dialog.getByRole("button", { name: "Clear all", exact: true }).click();
   await dialog.locator('[data-checkpoint-card] input[type="checkbox"]').nth(0).check();
   await dialog.locator('[data-checkpoint-card] input[type="checkbox"]').nth(1).check();

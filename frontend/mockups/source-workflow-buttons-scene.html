@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Generation source · workflow button row · interactive scene</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <link rel="stylesheet" href="./source-workflow-buttons.css" />
+  </head>
+  <body class="swb-scene">
+    <button type="button" class="button secondary swb-open" id="open-preview">
+      Open Generation source
+    </button>
+    <p class="swb-stage-note" id="scene-note"></p>
+    <dialog id="source-picker-dialog" class="source-picker-dialog" aria-labelledby="source-picker-title"></dialog>
+    <script type="module" src="./source-workflow-buttons.mjs"></script>
+  </body>
+</html>

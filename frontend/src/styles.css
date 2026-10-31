@@ -3805,90 +3805,124 @@ dialog::backdrop {
   text-transform: uppercase;
 }
 
-.source-workflow-select {
+.source-workflow-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-workflow-option {
   position: relative;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 20px;
+  grid-template-areas:
+    "tier"
+    "name"
+    "meta";
   align-items: center;
-  gap: 12px;
-  min-height: 68px;
-  padding: 10px 14px;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 168px;
+  padding: 9px 11px 10px;
   overflow: hidden;
-  border: 1px solid #345371;
+  border: 1px solid #2a3d52;
   border-radius: 10px;
-  background:
-    linear-gradient(90deg, rgb(38 89 139 / 22%), transparent 38%),
-    #111b27;
+  background: linear-gradient(180deg, rgb(255 255 255 / 3%), transparent 52%), #101a25;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   transition:
     border-color var(--motion-fast) ease,
-    background var(--motion-fast) ease;
+    background var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
 }
 
-.source-workflow-select:hover {
-  border-color: #527ba5;
-  background:
-    linear-gradient(90deg, rgb(42 101 160 / 28%), transparent 42%),
-    #13202e;
+.source-workflow-option:hover {
+  border-color: #4a6d93;
+  background: linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 52%), #14202e;
 }
 
-.source-workflow-select:focus-within {
+.source-workflow-option:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-.source-workflow-select > span,
-.source-workflow-select strong,
-.source-workflow-select small {
-  display: block;
-  min-width: 0;
+.source-workflow-option[aria-checked="true"] {
+  border-color: #5b9cf5;
+  background:
+    linear-gradient(90deg, rgb(58 122 201 / 30%), transparent 62%),
+    #14273a;
+  box-shadow:
+    inset 0 0 0 1px rgb(91 156 245 / 22%),
+    0 6px 20px rgb(4 12 22 / 40%);
 }
 
-.source-workflow-select strong {
+.source-workflow-option[aria-checked="true"]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent), #3d7fd0);
+}
+
+.source-workflow-option:disabled {
+  color: var(--muted);
+  border-color: var(--border);
+  background: var(--surface-1);
+  cursor: default;
+}
+
+.source-workflow-option-tier,
+.source-workflow-option-name {
+  display: block;
+  min-width: 0;
   overflow: hidden;
-  color: var(--text);
-  font-size: 0.9rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.source-workflow-select small {
-  margin-top: 2px;
-  color: #9bacc0;
-  font-size: 0.72rem;
+.source-workflow-option-tier {
+  grid-area: tier;
+  color: #8dbcf1;
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
 }
 
-.source-workflow-select select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  cursor: pointer;
+.source-workflow-option[aria-checked="true"] .source-workflow-option-tier {
+  color: #a8cffb;
 }
 
-.source-workflow-icon,
-.source-workflow-chevron {
-  fill: none;
-  stroke: #8dbcf1;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.7;
+.source-workflow-option-name {
+  grid-area: name;
+  color: var(--text);
+  font-size: 0.94rem;
+  font-weight: 700;
 }
 
-.source-workflow-icon {
-  width: 28px;
-  height: 28px;
-  padding: 4px;
-  border: 1px solid rgb(103 166 232 / 36%);
-  border-radius: 7px;
-  background: rgb(57 119 181 / 22%);
+.source-workflow-option-meta {
+  display: -webkit-box;
+  grid-area: meta;
+  min-width: 0;
+  overflow: hidden;
+  color: #93a5b9;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.source-workflow-chevron {
-  width: 18px;
-  height: 18px;
-  stroke-width: 2;
+.source-workflow-empty {
+  display: flex;
+  align-items: center;
+  min-height: 68px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .checkpoint-picker-heading {
@@ -5162,6 +5196,18 @@ tr:last-child td {
   .source-workflow-field {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+
+  /* Five workflow buttons never fit side by side at phone width, so the row
+     wraps onto a second row instead of shrinking them or scrolling sideways. */
+  .source-workflow-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .source-workflow-option {
+    flex: 1 1 calc(50% - 3px);
+    min-width: 0;
   }
 
   .checkpoint-picker-heading,
