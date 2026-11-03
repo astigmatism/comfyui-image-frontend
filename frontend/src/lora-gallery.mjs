@@ -1,5 +1,5 @@
 import { icon } from "./icons.mjs";
-import { loraDefaultPositiveStrength, loraStackError, strongestLoraTrigger } from "./lora-stack.mjs";
+import { loraDefaultPositiveStrength, loraStackError, subjectLoraTrigger } from "./lora-stack.mjs";
 import { migrateInterfaceState, migrateLoraStrengthMemory } from "./lib.mjs";
 import { loraLibraryChipMarkup, loraLibraryFormMarkup, loraLibraryMenuId, loraLibraryNoticeMarkup, loraLibraryPopoverMarkup } from "./admin-loras.mjs";
 
@@ -47,11 +47,13 @@ export function reconcileLoraDraft(previous, current) {
 
 export function subjectPreview(control, values, subjectAvailable = true) {
   if (subjectAvailable === null) return "Selected prompts stay unchanged";
-  const strongest = strongestLoraTrigger(control, values);
-  if (!strongest.entry) return "Subject unchanged · no LoRA enabled";
+  const rows = Array.isArray(values) ? values : control.default || [];
+  if (!rows.some((entry) => entry?.strength > 0)) return "Subject unchanged · no LoRA enabled";
   if (!subjectAvailable) return "Subject unchanged · Prompt Generation subject is unavailable";
-  if (!strongest.triggerWord) return "Subject unchanged · LoRA has no published title";
-  return `Subject on Apply: ${strongest.triggerWord}${strongest.triggerSource === "title" ? " (LoRA title)" : ""}`;
+  const { triggerWord } = subjectLoraTrigger(control, values);
+  // A stylistic LoRA has no subject to name, so it is reported rather than filling the field with its title.
+  if (!triggerWord) return "Subject unchanged · no enabled LoRA publishes a trigger word";
+  return `Subject on Apply: ${triggerWord}`;
 }
 
 function panelMarkup(state) {
@@ -60,7 +62,7 @@ function panelMarkup(state) {
   if (["install", "edit"].includes(panel.kind)) return loraLibraryFormMarkup(adminController, panel);
   const item = control.items.find((candidate) => candidate.id === panel.id);
   const group = grouping?.groups.find((candidate) => candidate.id === panel.id);
-  if (panel.kind === "details") return `<section class="lm-editor"><h3>${escape(item?.label)}</h3><p>${escape(item?.description || "Usage guidance not published")}</p><h4>Published trigger word</h4><p class="lm-trigger-word">${escape(item?.trigger_word || "No verified trigger word is published; Subject name uses this LoRA title.")}</p><button type="button" class="button secondary" data-lora-panel-close>Back to gallery</button></section>`;
+  if (panel.kind === "details") return `<section class="lm-editor"><h3>${escape(item?.label)}</h3><p>${escape(item?.description || "Usage guidance not published")}</p><h4>Published trigger word</h4><p class="lm-trigger-word">${escape(item?.trigger_word || "No verified trigger word is published, so this LoRA never fills Subject name.")}</p><button type="button" class="button secondary" data-lora-panel-close>Back to gallery</button></section>`;
   const move = panel.kind === "move";
   return `<form class="lm-editor" data-lora-group-form="${escape(panel.kind)}"><h3>${move ? `Move ${escape(item?.label)} to a group` : group ? "Rename group" : "New group"}</h3>
     ${move ? `<label class="field">Group<select name="group_id">${(grouping?.groups || []).map((entry) => `<option value="${escape(entry.id)}" ${entry.id === grouping.assignments[item?.lora_identity] ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select></label>` : `<label class="field">Group name<input name="name" required maxlength="80" value="${escape(panel.name ?? group?.name ?? "")}" /></label>`}

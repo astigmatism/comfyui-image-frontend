@@ -49,7 +49,9 @@ test("production build emits one content-addressed frontend module graph", async
     // The reel draws gallery cards, so it borrows the gallery's own thumbnail loader.
     demo_reels: new Set([first.assets.icons, first.assets.lib, first.assets.render, first.assets.thumbnails]),
     user_activity: new Set(),
-    prompt_routing: new Set(),
+    // Choosing a prompt source reconciles the outgoing draft with the incoming one,
+    // so the prompt-source rules now lean on the shared interface-migration helpers.
+    prompt_routing: new Set([first.assets.lib]),
     image_cleanup: new Set(),
     photo_viewer_images: new Set([first.assets.image_cleanup]),
     photo_viewer_preload: new Set(),

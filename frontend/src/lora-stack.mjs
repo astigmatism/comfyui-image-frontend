@@ -50,20 +50,28 @@ export function loraDefaultPositiveStrength(control) {
 }
 
 // A catalog entry offers its phrase as `trigger_word`, and where none was
-// published the published title stands in for it — the same precedence Subject
-// name follows, so a copied phrase is always what the app itself would use.
+// published the published title stands in for it. Subject name only ever takes
+// a verified trigger word, because a stylistic LoRA has no subject to name;
+// copying still offers the title so the label is never a dead click.
 export function loraTriggerWord(item) {
   const verified = typeof item?.trigger_word === "string" ? item.trigger_word.trim() : "";
   const title = typeof item?.label === "string" ? item.label.trim() : "";
   return { text: verified || title || null, source: verified ? "verified" : title ? "title" : null };
 }
 
-export function strongestLoraTrigger(control, value) {
-  const entry = (value || []).reduce((best, candidate) =>
-    candidate.strength > 0 && (!best || candidate.strength > best.strength) ? candidate : best, null);
-  const item = control.items.find((candidate) => candidate.id === entry?.id);
-  const { text, source } = loraTriggerWord(item);
-  return { entry, item, triggerWord: text, triggerSource: source };
+// The subject comes from the topmost enabled LoRA in application order — the order
+// the manager numbers and the sidebar lists — that publishes a trigger word. A LoRA
+// with no published trigger word is stylistic, so it is passed over rather than
+// named, and a stronger one further down the stack never outranks it.
+export function subjectLoraTrigger(control, value) {
+  const entries = Array.isArray(value) ? value : control.default;
+  const items = new Map((control.items || []).map((item) => [item.id, item]));
+  const found = (entries || []).find((entry) => {
+    const phrase = entry?.strength > 0 ? items.get(entry.id)?.trigger_word : null;
+    return typeof phrase === "string" && Boolean(phrase.trim());
+  });
+  const item = items.get(found?.id) || null;
+  return { entry: found || null, item, triggerWord: item?.trigger_word?.trim() || null };
 }
 
 export function formatLoraStrength(value) {

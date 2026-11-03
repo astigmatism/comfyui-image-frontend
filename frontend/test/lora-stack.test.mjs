@@ -6,7 +6,7 @@ import {
   loraStackMarkup,
   loraDefaultPositiveStrength,
   loraTriggerWord,
-  strongestLoraTrigger,
+  subjectLoraTrigger,
   moveLora,
   steppedLoraStrength,
   formatLoraStrength,
@@ -201,23 +201,40 @@ test("library refresh preserves draft picks by identity, removes deleted items, 
   assert.deepEqual(reconciled.memory, { renamed: .65 });
 });
 
-test("strongest enabled LoRA uses its verified trigger or published title", () => {
-  const withTrigger = structuredClone(control);
-  withTrigger.items[0].trigger_word = '<Alpha & "Character">';
-  const rows = [{ id: "a", strength: 1 }, { id: "b", strength: 0 }];
-  const markup = loraManagerMarkup({ control: withTrigger, values: rows });
+test("the topmost enabled LoRA publishing a trigger word supplies the subject", () => {
+  const catalog = structuredClone(control);
+  catalog.items = [
+    { id: "a", label: "Alpha", trigger_word: '<Alpha & "Character">' },
+    { id: "b", label: "Beta" },
+    { id: "c", label: "Cinematic grain" },
+  ];
+  catalog.default = [...catalog.default, { id: "c", strength: 0 }];
+  // Beta is the strongest enabled entry and sits at the top of the application order,
+  // but it publishes no trigger word, so the subject comes from Alpha.
+  const rows = [{ id: "b", strength: 1.5 }, { id: "a", strength: 1 }, { id: "c", strength: 0 }];
+  const subject = subjectLoraTrigger(catalog, rows);
+  assert.equal(subject.triggerWord, '<Alpha & "Character">');
+  assert.equal(subject.entry.id, "a");
+  assert.equal(subject.item.label, "Alpha");
+  const markup = loraManagerMarkup({ control: catalog, values: rows });
   assert.match(markup, /&lt;Alpha &amp; &quot;Character&quot;&gt;/);
-  assert.match(loraManagerMarkup({ control: withTrigger, values: rows, subjectAvailable: false }), /Subject unchanged · Prompt Generation subject is unavailable/);
+  assert.match(markup, /Subject on Apply: &lt;Alpha &amp; &quot;Character&quot;&gt;/);
   assert.doesNotMatch(markup, /<Alpha/);
-  assert.equal(strongestLoraTrigger(withTrigger, rows).triggerWord, '<Alpha & "Character">');
-  assert.equal(strongestLoraTrigger(withTrigger, rows).triggerSource, "verified");
-  const titleFallback = [{ id: "b", strength: 1.5 }, { id: "a", strength: 1 }];
-  const fallback = strongestLoraTrigger(withTrigger, titleFallback);
-  assert.equal(fallback.triggerWord, "Beta");
-  assert.equal(fallback.triggerSource, "title");
-  assert.match(loraManagerMarkup({ control: withTrigger, values: titleFallback }), /Subject on Apply: Beta \(LoRA title\)/);
-  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "b", strength: 1 }, { id: "a", strength: 1 }]).triggerWord, "Beta");
-  assert.equal(strongestLoraTrigger(withTrigger, [{ id: "a", strength: 0 }, { id: "b", strength: 0 }]).triggerWord, null);
+  assert.match(loraManagerMarkup({ control: catalog, values: rows, subjectAvailable: false }), /Subject unchanged · Prompt Generation subject is unavailable/);
+
+  const stylisticOnly = [{ id: "a", strength: 0 }, { id: "b", strength: 1.2 }, { id: "c", strength: 0.5 }];
+  assert.equal(subjectLoraTrigger(catalog, stylisticOnly).triggerWord, null);
+  assert.equal(subjectLoraTrigger(catalog, stylisticOnly).entry, null);
+  assert.match(loraManagerMarkup({ control: catalog, values: stylisticOnly }), /Subject unchanged · no enabled LoRA publishes a trigger word/);
+
+  assert.equal(subjectLoraTrigger(catalog, catalog.default).triggerWord, null);
+  assert.equal(subjectLoraTrigger(catalog).triggerWord, null);
+  assert.match(loraManagerMarkup({ control: catalog, values: catalog.default }), /Subject unchanged · no LoRA enabled/);
+
+  // Application order, not strength, breaks a tie between two entries that do publish one.
+  const both = [{ id: "c", strength: 2 }, { id: "b", strength: 2 }, { id: "a", strength: 2 }];
+  catalog.items[2].trigger_word = "grainy 35mm";
+  assert.equal(subjectLoraTrigger(catalog, both).triggerWord, "grainy 35mm");
 });
 
 test("a catalog entry offers its verified trigger word, falling back to its published title", () => {

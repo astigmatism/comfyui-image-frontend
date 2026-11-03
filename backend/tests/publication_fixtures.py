@@ -16,10 +16,14 @@ KREA_STEM = "workflows/comfyui-image-frontend/Krea 2 NSFW V4"
 GENERIC_STEM = "workflows/comfyui-image-frontend/Generic Landscape"
 IMAGE_STEM = "workflows/comfyui-image-frontend/Moody Desire Image Input"
 MOODY_KREA_STEM = "workflows/comfyui-image-frontend/Moody Krea 2 Mix V4"
+PROMPT_STEM = "workflows/comfyui-image-frontend/prompt-generation/Fixture Prompt Generator"
+PROMPT_WRITER_STEM = "workflows/comfyui-image-frontend/prompt-generation/Fixture Prompt Writer"
 KREA_PUBLICATION_ID = "11111111-1111-4111-8111-111111111111"
 GENERIC_PUBLICATION_ID = "22222222-2222-4222-8222-222222222222"
 IMAGE_PUBLICATION_ID = "33333333-3333-4333-8333-333333333333"
 MOODY_KREA_PUBLICATION_ID = "44444444-4444-4444-8444-444444444444"
+TEXT_PUBLICATION_ID = "55555555-5555-4555-8555-555555555555"
+TEXT_WRITER_PUBLICATION_ID = "66666666-6666-4666-8666-666666666666"
 MOODY_KREA_CHECKPOINTS = (
     (
         "v4_int8",
@@ -817,9 +821,14 @@ def _image_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, 
     return stem, workflow, api, manifest
 
 
-def _prompt_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject, JsonObject]:
+def _prompt_documents(
+    publication_id: str,
+    *,
+    stem: str = PROMPT_STEM,
+    subject_default: str = "Mira",
+) -> tuple[str, JsonObject, JsonObject, JsonObject]:
     _, workflow, api, manifest = _generic_documents(publication_id)
-    stem = "workflows/comfyui-image-frontend/prompt-generation/Fixture Prompt Generator"
+    workflow["id"] = stem.rsplit("/", 1)[-1].casefold().replace(" ", "-")
     manifest["source_id"] = f"{stem}.json"
     for key, extension in (
         ("workflow", ".json"),
@@ -833,7 +842,7 @@ def _prompt_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject,
         label="Subject name",
         description="Manual subject.",
         semantic_role="custom",
-        default="Mira",
+        default=subject_default,
     )
     seed.update(
         id="seed",
@@ -846,7 +855,7 @@ def _prompt_documents(publication_id: str) -> tuple[str, JsonObject, JsonObject,
         default=1,
     )
     seed["bindings"] = _binding("111", "CIFSeedParameter")
-    api["110"]["inputs"]["value"] = "Mira"
+    api["110"]["inputs"]["value"] = subject_default
     api["111"]["class_type"] = "CIFSeedParameter"
     del api["120"]
     final = manifest["interface"]["outputs"][0]
@@ -896,8 +905,14 @@ def build_publication_bundle(
     """
 
     if kind == "text":
+        stem, workflow, api, manifest = _prompt_documents(publication_id or TEXT_PUBLICATION_ID)
+    elif kind == "text_writer":
+        # A second text publication, published under its own name and subject default so a
+        # browser can tell a carried subject apart from the destination's own value.
         stem, workflow, api, manifest = _prompt_documents(
-            publication_id or "55555555-5555-4555-8555-555555555555"
+            publication_id or TEXT_WRITER_PUBLICATION_ID,
+            stem=PROMPT_WRITER_STEM,
+            subject_default="Rowan",
         )
     elif kind == "krea":
         stem, workflow, api, manifest = _krea_documents(publication_id or KREA_PUBLICATION_ID)

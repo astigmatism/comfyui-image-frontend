@@ -1679,7 +1679,7 @@ test("tiered checkpoint choices reorder, persist, and fan out", async ({ page })
   ).toBe(true);
 });
 
-test("LoRA manager applies the strongest published trigger and preserves remembered strength", async ({ page, context }, testInfo) => {
+test("LoRA manager fills the subject from the topmost published trigger word and preserves remembered strength", async ({ page, context }, testInfo) => {
   await page.goto("/");
   await signInFreshUser(page, "lora.trigger-gallery");
   await selectPublishedSource(page, "Moody Krea 2 Mix V4");
@@ -1723,17 +1723,31 @@ test("LoRA manager applies the strongest published trigger and preserves remembe
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await setSidebarLoraStrength(page, "Beta", "1.25");
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
-  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject on Apply: Beta (LoRA title)");
+  // Beta publishes no trigger word, so it is a style rather than a subject: the stronger
+  // stylistic LoRA never outranks the character LoRA above it in the application order.
+  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject on Apply: AlphaCharacter");
   await manager.screenshot({ path: testInfo.outputPath("lora-manager.png"), animations: "disabled" });
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("Beta");
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
+
+  // A second browser's prompt source is adopted as it arrived, and this one's LoRA keeps
+  // speaking for the subject: the trigger word outranks a subject typed by hand.
+  await page.getByRole("textbox", { name: "Subject name", exact: true }).fill("Written by hand");
+  const promptSources = await (await page.request.get("/api/workflows?output_kind=text")).json();
+  const otherPromptSource = promptSources.find((item) => item.display_name !== "Fixture Prompt Generator");
+  await page.locator("#prompt-generation-source").selectOption(otherPromptSource.source_key);
+  await expect(page.locator("#prompt-generation-source")).toHaveValue(otherPromptSource.source_key);
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
+
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await manager.getByRole("button", { name: "All off" }).click();
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".lm-summary-item")).toHaveCount(0);
   await page.getByRole("button", { name: "Open LoRA manager" }).click();
   await manager.getByRole("button", { name: "Toggle Beta" }).click();
+  await expect(manager.locator("[data-lora-subject-preview]")).toContainText("Subject unchanged · no enabled LoRA publishes a trigger word");
   await manager.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("AlphaCharacter");
   await expect(page.locator("#generation-panel").getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("1.25");
 });
 

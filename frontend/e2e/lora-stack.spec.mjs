@@ -5,7 +5,7 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
   await page.goto("/");
   await page.evaluate(async ({ triggerWord, description, thumbnails }) => {
     const base = document.querySelector('script[type="module"]').src;
-    const { loraStackMarkup, installLoraStackControls } = await import(new URL("./lora-stack.mjs", base));
+    const { loraStackMarkup, installLoraStackControls, subjectLoraTrigger } = await import(new URL("./lora-stack.mjs", base));
     const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
     const control = { id: "loras", type: "lora_stack", label: "LoRAs", items: [
       { id: "a", label: "Alpha", trigger_word: triggerWord, description, lora_identity: `lr1_${"a".repeat(64)}` },
@@ -52,8 +52,8 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
       apply: (_id, values, memory) => {
         window.stack = structuredClone(values);
         window.memory = structuredClone(memory);
-        const strongest = values.reduce((best, row) => row.strength > 0 && (!best || row.strength > best.strength) ? row : best, null);
-        if (strongest?.id === "a") window.subject = "AlphaCharacter";
+        // The panel fills Subject name from the shipped rule, not a copy of it here.
+        window.subject = subjectLoraTrigger(control, values).triggerWord ?? window.subject;
         document.querySelector("#subject_name").value = window.subject;
         window.renderLoras();
       },
@@ -175,6 +175,36 @@ test("gallery drafts selection and order while strengths remain in the sidebar",
   await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
   await dialog(page).getByRole("button", { name: "Apply" }).click();
   await expect(page.getByRole("spinbutton", { name: "Alpha strength", exact: true })).toHaveValue("1.00");
+});
+
+test("a stylistic LoRA never supplies the subject, at any strength or position", async ({ page }) => {
+  await mount(page);
+  await open(page);
+  // Beta publishes no trigger word: it restyles the picture rather than naming a subject.
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await expect(dialog(page).locator("[data-lora-subject-preview]")).toContainText("Subject unchanged · no enabled LoRA publishes a trigger word");
+  await dialog(page).getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByLabel("Subject name")).toHaveValue("Original subject");
+
+  // At full strength and dragged to the top of the application order it still yields to
+  // the character LoRA beneath it, whose trigger word is the only subject on offer.
+  await page.getByRole("spinbutton", { name: "Beta strength", exact: true }).fill("2");
+  await page.keyboard.press("Enter");
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  await dialog(page).getByRole("button", { name: "Reorder Beta" }).press("ArrowUp");
+  await expect(dialog(page).locator(".lm-order-chip").first()).toHaveAttribute("data-lora-order-id", "b");
+  await expect(dialog(page).locator("[data-lora-subject-preview]")).toContainText("Subject on Apply: AlphaCharacter");
+  await dialog(page).getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByLabel("Subject name")).toHaveValue("AlphaCharacter");
+  await expect(page.locator(".lm-summary-item").first()).toHaveAttribute("data-lora-summary-id", "b");
+
+  // Turning the character LoRA back off leaves nothing to name, so the field keeps what it held.
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Disable Alpha" }).click();
+  await expect(dialog(page).locator("[data-lora-subject-preview]")).toContainText("Subject unchanged · no enabled LoRA publishes a trigger word");
+  await dialog(page).getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByLabel("Subject name")).toHaveValue("AlphaCharacter");
 });
 
 test("thumbnail selection preserves scrolling and the card menu does not toggle selection", async ({ page }) => {

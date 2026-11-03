@@ -1,6 +1,6 @@
 import { createDemoReels, demoReelRerunApi } from "./demo-reels.mjs";
 import { installActivityReporting } from "./user-activity.mjs";
-import { defaultSourceKey, reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
+import { defaultSourceKey, promptSourceDraft, PROMPT_SUBJECT_INPUT_ID, reconcileSourceKey, promptRuntimeId, promptRuntimeError } from "./prompt-routing.mjs";
 import { photoViewerPreloadArtifact, createPhotoViewerPreloader } from "./photo-viewer-preload.mjs";
 import { createPhotoViewerImages, photoKey } from "./photo-viewer-images.mjs";
 import { submitGeneration, setSubmissionOwner, pendingSubmission, createSubmissionRecovery, pendingPromptJobs, finishPromptJob } from "./generation-submissions.mjs";
@@ -10,7 +10,7 @@ import { createSettingsSync, settingsEqual } from "./user-settings.mjs";
 import { createAutoGenerationSync } from "./auto-generation-sync.mjs";
 import { automaticPromptUpdate, olderAutomaticProgress } from "./auto-generation-progress.mjs";
 import { bindGalleryGroups } from "./gallery-groups.mjs";
-import { installLoraStackControls, strongestLoraTrigger } from "./lora-stack.mjs";
+import { installLoraStackControls, subjectLoraTrigger } from "./lora-stack.mjs";
 import { installLoraManager, loraImagePath } from "./lora-manager.mjs";
 import { createAdminLoraController, reconcileLoraStrengthMemory } from "./admin-loras.mjs";
 import { api, getCsrfToken, isTransientError, setCsrfToken, upload } from "./api.mjs";
@@ -472,6 +472,29 @@ let expectationChecks = null;
 // Checks started in this page: the Prompt field value at start (auto-apply rule).
 const expectationStarts = new Map();
 
+// The subject the panel's LoRAs supply: the topmost enabled entry of the workflow's
+// stack that publishes a trigger word. A stylistic LoRA publishes none, so it is
+// passed over rather than named, and a stronger one below never outranks it.
+function panelSubjectTrigger() {
+  for (const control of interfaceInputs(sourceInterface(state.activeSource))) {
+    if (control.type !== "lora_stack") continue;
+    const { triggerWord } = subjectLoraTrigger(control, state.parameters[control.id]);
+    if (triggerWord) return triggerWord;
+  }
+  return null;
+}
+
+// What a prompt source holds right now, in the shape promptSourceDraft reads.
+function promptSourceEntry(key) {
+  const saved = state.promptGeneration.sources[key];
+  if (!saved) return null;
+  return {
+    interface: saved.interface || settingsInterfaces.get(key)?.interface || null,
+    values: saved.values || {},
+    explicitInputIds: saved.explicitInputIds || [],
+  };
+}
+
 function commitPanelLoras(id, values, memory, sourceKey, { updateSubject = false, refreshPanel = true } = {}) {
   if (sourceKey !== state.activeSourceKey) throw new Error("The workflow changed. Reopen the LoRA manager.");
   const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id && item.type === "lora_stack");
@@ -481,14 +504,14 @@ function commitPanelLoras(id, values, memory, sourceKey, { updateSubject = false
   state.explicitParameterIds.add(id);
   delete state.serverFieldErrors[id];
   state.formError = null;
-  const { triggerWord } = strongestLoraTrigger(control, values);
+  const { triggerWord } = subjectLoraTrigger(control, values);
   if (updateSubject && triggerWord) {
     const source = state.promptGeneratorSource;
-    const input = interfaceInputs(source?.interface).find((item) => item.id === "subject_name" && item.type === "string");
+    const input = interfaceInputs(source?.interface).find((item) => item.id === PROMPT_SUBJECT_INPUT_ID && item.type === "string");
     const saved = state.promptGeneration.sources[source?.source_key];
     if (input && saved && source.available !== false) {
-      saved.values.subject_name = triggerWord;
-      if (!saved.explicitInputIds.includes("subject_name")) saved.explicitInputIds.push("subject_name");
+      saved.values[PROMPT_SUBJECT_INPUT_ID] = triggerWord;
+      if (!saved.explicitInputIds.includes(PROMPT_SUBJECT_INPUT_ID)) saved.explicitInputIds.push(PROMPT_SUBJECT_INPUT_ID);
       state.promptGenerationError = null;
     }
   }
@@ -555,7 +578,7 @@ function bindDelegatedEvents() {
       if (!control || !state.activeSourceKey) return null;
       const subjectSource = state.promptGeneratorSource;
       const subjectAvailable = Boolean(subjectSource?.available !== false
-        && interfaceInputs(subjectSource?.interface).some((item) => item.id === "subject_name" && item.type === "string")
+        && interfaceInputs(subjectSource?.interface).some((item) => item.id === PROMPT_SUBJECT_INPUT_ID && item.type === "string")
         && state.promptGeneration.sources[subjectSource?.source_key]);
       return { control, sourceKey: state.activeSourceKey, sourceName: state.activeSource?.display_name || "Workflow",
         publicationRevision: sourceRevision(state.activeSource),
@@ -942,7 +965,7 @@ async function handleClick(event) {
     return;
   }
   if (element.id === "prompt-generation-source") {
-    await selectPromptGenerator(element.value || null);
+    await selectPromptGenerator(element.value || null, undefined, { carryFromPrevious: true });
     return;
   }
   if (element.matches("[data-prompt-generator-id], [data-prompt-generator-seed-mode]")) {
@@ -8327,8 +8350,15 @@ async function loadPromptGenerators(signal = applicationStartupController?.signa
   }
 }
 
-async function selectPromptGenerator(key, signal = applicationStartupController?.signal) {
+// Choosing another prompt source in this browser keeps the draft on screen: the values
+// the new source accepts carry over, and a LoRA's trigger word outranks the subject
+// either source was holding. A source that changed on the account is applied exactly as
+// it arrived, like a remote image-workflow change, so a second browser never pulls this
+// one's subject across.
+async function selectPromptGenerator(key, signal = applicationStartupController?.signal, { carryFromPrevious = false } = {}) {
   key = reconcileSourceKey(state.promptGeneratorSources, key, state.promptGeneration.sources);
+  const previousKey = state.promptGeneration.active_source;
+  const carry = carryFromPrevious && Boolean(previousKey) && previousKey !== key;
   state.promptGeneration.active_source = key;
   state.promptGeneratorSource = null;
   state.promptGenerationError = null;
@@ -8343,11 +8373,19 @@ async function selectPromptGenerator(key, signal = applicationStartupController?
     const saved = state.promptGeneration.sources[key];
     state.promptGeneratorSource = source;
     settingsInterfaces.set(key, source);
-    state.promptGeneration.sources[key] = {
+    const draft = {
       interface: source.interface, revision: sourceRevision(source),
       values: reconcileInterfaceValues(source.interface, saved?.values || {}, saved?.interface, saved?.explicitInputIds || []),
       explicitInputIds: saved?.explicitInputIds || [], selectedPreset: null,
     };
+    if (carry) {
+      const carried = promptSourceDraft({
+        previous: promptSourceEntry(previousKey), next: draft, subjectTrigger: panelSubjectTrigger(),
+      });
+      draft.values = carried.values;
+      draft.explicitInputIds = carried.explicitInputIds;
+    }
+    state.promptGeneration.sources[key] = draft;
     settingsSync?.schedule();
   } catch (error) {
     if (signal?.aborted || token !== promptGeneratorLoadToken) return;

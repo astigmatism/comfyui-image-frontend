@@ -1,3 +1,9 @@
+import { interfaceInputs, migrateInterfaceState } from "./lib.mjs";
+
+// The subject a LoRA supplies lives in the prompt source's own values, and every
+// text publication names it the same way.
+export const PROMPT_SUBJECT_INPUT_ID = "subject_name";
+
 export function catalogSource(sources, key) {
   return (sources || []).find((source) => source.source_key === key ||
     source.replicas?.some((replica) => replica.source_key === key)) || null;
@@ -46,4 +52,50 @@ export function promptRuntimeError(state) {
   if (source.available === false) return "This publication is unavailable on the CPU prompt service.";
   // Validated cached publications may queue while the assigned service is offline.
   return null;
+}
+
+// Changing the prompt source keeps the draft on screen, exactly as changing the image
+// workflow does: every value the destination accepts carries over, and inputs only it
+// declares keep their own last-used value or published default. A topmost enabled
+// LoRA's trigger word outranks the subject either source was holding, and a source
+// left with nothing to carry never blanks the destination's own subject.
+export function promptSourceDraft({ previous = null, next, subjectTrigger = null } = {}) {
+  const baseValues = structuredClone(next?.values || {});
+  const baseExplicitInputIds = [...(next?.explicitInputIds || [])];
+  let values = structuredClone(baseValues);
+  const explicit = new Set(baseExplicitInputIds);
+  if (previous?.interface && next?.interface) {
+    const migrated = migrateInterfaceState(
+      next.interface,
+      previous.interface,
+      previous.values || {},
+      previous.explicitInputIds || [],
+      baseValues,
+      baseExplicitInputIds,
+      { rejectInvalid: true },
+    );
+    values = migrated.values;
+    explicit.clear();
+    for (const id of migrated.explicitInputIds) explicit.add(id);
+  }
+  const subject = interfaceInputs(next?.interface).find(
+    (input) => input.id === PROMPT_SUBJECT_INPUT_ID && input.type === "string");
+  let subjectApplied = false;
+  if (subject) {
+    const left = String(previous?.values?.[subject.id] ?? "").trim();
+    // With both interfaces known the migration already kept whatever the destination
+    // accepted; otherwise the value as it stood is the only thing there is to carry.
+    const carried = previous?.interface ? values[subject.id] : left;
+    const wanted = subjectTrigger?.trim() || (left ? carried : null);
+    if (wanted) {
+      values[subject.id] = wanted;
+      explicit.add(subject.id);
+    } else if (previous?.interface && Object.hasOwn(baseValues, subject.id)) {
+      values[subject.id] = baseValues[subject.id];
+      if (baseExplicitInputIds.includes(subject.id)) explicit.add(subject.id);
+      else explicit.delete(subject.id);
+    }
+    subjectApplied = values[subject.id] !== baseValues[subject.id];
+  }
+  return { values, explicitInputIds: [...explicit], subjectApplied };
 }

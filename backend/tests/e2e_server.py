@@ -18,6 +18,9 @@ def main() -> None:
     worker = LiveFakeServer()
     primary.state.workflow_files.update(build_publication_bundle("image").files)
     primary.state.workflow_files.update(build_publication_bundle("text").files)
+    # A second text publication, so switching the prompt source is a browser journey and
+    # not only a unit test; listings sort by name, so the Generator stays the default.
+    primary.state.workflow_files.update(build_publication_bundle("text_writer").files)
     primary.state.workflow_files.update(
         build_publication_bundle("moody", mutate_artifacts=add_lora_stack).files
     )

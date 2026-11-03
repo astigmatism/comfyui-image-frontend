@@ -37,7 +37,7 @@ test("approved sections, standalone prompt, and every image in a batch", async (
   page.on("pageerror", (error) => errors.push(error.message));
   await expect(page.locator('[data-control-section="prompt-generation"] .control-section-trigger')).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator('[data-control-section="prompt-generation"]')).not.toContainText("Subject entry is independent");
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(1);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
   await page.getByRole("switch", { name: "Use Prompt Generation" }).uncheck();
   await page.getByRole("switch", { name: "Use Creative Direction" }).check();
   await expect(page.locator("#prompt-assistant-thinking-mode")).toBeVisible();
@@ -135,8 +135,42 @@ test("saved primary source controls survive the CPU catalog becoming representat
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toHaveValue("Retained subject");
   await expect(page.locator("#prompt-generation-source")).toHaveValue(source.source_key);
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(1);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
   await expect(page.locator("#prompt-generation-runtime, #comfyui-instance")).toHaveCount(0);
+});
+
+test("changing the prompt source carries the draft subject to the new source", async ({ page }) => {
+  const subject = page.getByRole("textbox", { name: "Subject name", exact: true });
+  const sources = await (await page.request.get("/api/workflows?output_kind=text")).json();
+  const [generator, writer] = [
+    sources.find((item) => item.display_name === "Fixture Prompt Generator"),
+    sources.find((item) => item.display_name === "Fixture Prompt Writer"),
+  ];
+  // The Writer publishes its own default subject, so anything else in its field after
+  // the switch was carried across rather than defaulted.
+  expect(writer).toBeTruthy();
+  expect(generator).toBeTruthy();
+  const active = page.locator("#prompt-generation-source");
+  await expect(active).toHaveValue(generator.source_key);
+  await subject.fill("Mira of the Harbor");
+
+  await active.selectOption(writer.source_key);
+  await expect(subject).toHaveValue("Mira of the Harbor");
+
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/prompt-generations") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Generate prompt", exact: true }).click();
+  const request = await responsePromise;
+  expect(request.request().postDataJSON().source_key).toBe(writer.source_key);
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(/Mira of the Harbor explores a quiet forest/);
+
+  // The draft is stored for both sources, so returning to the first one keeps it too.
+  await expect.poll(async () => {
+    const preferences = await (await page.request.get("/api/preferences")).json();
+    const prompt = preferences.settings.prompt_generation;
+    return Object.values(prompt.sources).map((entry) => entry.values.subject_name).sort();
+  }).toEqual(["Mira of the Harbor", "Mira of the Harbor"]);
+  await active.selectOption(generator.source_key);
+  await expect(subject).toHaveValue("Mira of the Harbor");
 });
 
 async function controlledAutomaticPipeline(page) {
@@ -547,5 +581,5 @@ test("an initially empty CPU catalog is reloaded after discovery recovers", asyn
   ready = true;
   await expect(page.getByRole("textbox", { name: "Subject name", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Generate prompt", exact: true })).toBeEnabled();
-  await expect(page.locator("#prompt-generation-source option")).toHaveCount(1);
+  await expect(page.locator("#prompt-generation-source option")).toHaveCount(2);
 });

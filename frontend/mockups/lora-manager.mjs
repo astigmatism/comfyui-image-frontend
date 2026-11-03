@@ -87,8 +87,14 @@ function activeRows(rows) {
   return rows.filter((row) => row.strength > 0);
 }
 
-function strongestRow(rows) {
-  return rows.reduce((best, row) => row.strength > 0 && (!best || row.strength > best.strength) ? row : best, null);
+// The subject follows the application order, and only a LoRA that publishes a trigger
+// word has one: a stylistic entry is passed over rather than named.
+function subjectRow(rows) {
+  return rows.find((row) => row.strength > 0 && row.trigger) || null;
+}
+
+function enabledRow(rows) {
+  return rows.find((row) => row.strength > 0) || null;
 }
 
 function imageMarkup(row) {
@@ -197,12 +203,12 @@ function rowMarkup(row) {
 
 function updateSubjectPreview() {
   if (!draft) return;
-  const strongest = strongestRow(draft);
-  const preview = !strongest
-    ? "Subject unchanged · no LoRA enabled"
-    : strongest.trigger
-      ? `Subject on Apply: ${strongest.trigger}`
-      : `Subject on Apply: ${strongest.label} (LoRA title)`;
+  const carrier = subjectRow(draft);
+  const preview = carrier
+    ? `Subject on Apply: ${carrier.trigger}`
+    : enabledRow(draft)
+      ? "Subject unchanged · no enabled LoRA publishes a trigger word"
+      : "Subject unchanged · no LoRA enabled";
   document.querySelector("#lm-subject-preview").textContent = preview;
 }
 
@@ -248,8 +254,8 @@ function applyDialog() {
     return;
   }
   committed = structuredClone(draft);
-  const strongest = strongestRow(committed);
-  if (strongest) subject.value = strongest.trigger || strongest.label;
+  const carrier = subjectRow(committed);
+  if (carrier) subject.value = carrier.trigger;
   renderSummary();
   closeDialog("apply");
   showToast("LoRA choices and images applied to this preview.");
