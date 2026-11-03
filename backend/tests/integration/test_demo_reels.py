@@ -26,6 +26,7 @@ SETTINGS_FIELDS = [
     "paused",
     "rating_user_id",
     "thumbnail_checkpoint_id",
+    "qualifying_checkpoint_ids",
     "slots",
     "recipes",
     "strengths",
@@ -742,3 +743,121 @@ def test_the_first_slot_of_every_lora_is_filled_before_the_next_slot(reel_client
     ]
     view = client.get(path).json()
     assert view["completed"] == view["expected"] == 4
+
+
+def developed(client) -> set[str]:
+    """The checkpoints the reel is being asked for, read from the entries it holds."""
+
+    with client.app.state.container.db.session_factory() as session:
+        return {str(entry.checkpoint_id) for entry in session.scalars(select(DemoReelEntry))}
+
+
+def rows(client) -> list[dict]:
+    return client.get("/api/admin/demo-reels").json()["thumbnail_checkpoint_choices"]
+
+
+def test_a_chosen_checkpoint_list_develops_only_those_checkpoints(reel_client):
+    """Which checkpoints are developed is a choice; which ones qualify stays a grade.
+
+    The list narrows the graded checkpoints and never widens them: a checkpoint nobody ranks A or
+    B cannot be developed by naming it, while the automatic setting holds no list at all, so a
+    checkpoint graded next week joins on its own.
+    """
+
+    client, detail, _, _ = reel_client
+    settings, _ = configure(client, detail)
+    choices = detail["model_selectors"][0]["choices"]
+    graded = [choice["checkpoint_id"] for choice in choices[:2]]
+    ungraded = choices[2]["checkpoint_id"]
+
+    automatic = client.get("/api/admin/demo-reels").json()
+    assert automatic["qualifying_checkpoint_ids"] is None
+    assert [row["id"] for row in automatic["thumbnail_checkpoint_choices"]] == graded
+    assert [row["developing"] for row in automatic["thumbnail_checkpoint_choices"]] == [True, True]
+    # What a settings row has to say beside its tick: the grade, the family, and why a tick may
+    # still be producing nothing.
+    assert [row["tier"] for row in automatic["thumbnail_checkpoint_choices"]] == ["A", "B"]
+    assert all(row["library_key"] == "krea2" for row in automatic["thumbnail_checkpoint_choices"])
+    assert all(row["note"] is None and row["images"] == 0 for row in rows(client))
+    assert developed(client) == set(graded)
+
+    saved = update(client, settings, qualifying_checkpoint_ids=[graded[1]])
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["qualifying_checkpoint_ids"] == [graded[1]]
+    assert [row["developing"] for row in saved.json()["thumbnail_checkpoint_choices"]] == [
+        False,
+        True,
+    ]
+    assert developed(client) == {graded[1]}
+    tick(client, quiet=True)
+    assert {job.checkpoint_id for job in jobs(client)} == {graded[1]}
+
+    # A checkpoint outside the grades is refused rather than stored waiting for a grade it may
+    # never earn, and it is not even offered — the list is a narrowing of the graded set.
+    assert ungraded not in {row["id"] for row in rows(client)}
+    rejected = update(client, saved.json(), qualifying_checkpoint_ids=[graded[0], ungraded])
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "demo_reel_checkpoints_invalid"
+    assert developed(client) == {graded[1]}
+
+    # Duplicates collapse, and automatic returns as a NULL rather than as a list of everything
+    # graded at the moment the button was pressed.
+    doubled = update(client, saved.json(), qualifying_checkpoint_ids=[graded[1], graded[1]])
+    assert doubled.json()["qualifying_checkpoint_ids"] == [graded[1]]
+    restored = update(client, doubled.json(), qualifying_checkpoint_ids=None)
+    assert restored.json()["qualifying_checkpoint_ids"] is None
+    assert developed(client) == set(graded)
+
+
+def test_leaving_a_checkpoint_out_removes_the_images_it_had_made(reel_client):
+    """A checkpoint left out of the list stops being part of the shared gallery.
+
+    This is the one destructive thing these settings do, and it is the rule an administrator
+    already knows from switching a model family or a single LoRA off: the images leave every
+    account's reel, their files go with them, and nothing is generated to replace them.
+    """
+
+    client, detail, _, _ = reel_client
+    settings, path = configure(client, detail)
+    tick(client, quiet=True)
+    kept = jobs(client)[0]
+    finish(client, kept.id)
+    tick(client, quiet=True)
+    dropped = jobs(client)[-1]
+    assert dropped.checkpoint_id != kept.checkpoint_id
+    finish(client, dropped.id)
+    assert client.get(path).json()["completed"] == 2
+
+    saved = update(client, settings, qualifying_checkpoint_ids=[kept.checkpoint_id])
+    assert saved.status_code == 200, saved.text
+    assert developed(client) == {kept.checkpoint_id}
+    view = client.get(path).json()
+    assert [entry["checkpoint_id"] for entry in view["entries"] if entry["generation"]] == [
+        kept.checkpoint_id
+    ]
+    assert view["completed"] == view["expected"] == 1
+    assert rows(client)[0]["images"] == 1
+    with client.app.state.container.db.session_factory() as session:
+        assert session.get(Generation, dropped.id).pending_delete is True
+    client.app.state.container.demo_reels.cleanup()
+    with client.app.state.container.db.session_factory() as session:
+        assert session.get(Generation, dropped.id) is None
+
+
+def test_an_empty_checkpoint_list_develops_nothing(reel_client):
+    """An empty list is a decision, not a form that forgot to send anything.
+
+    Nothing is generated and the shared gallery is empty until a checkpoint is put back on the
+    list, which is what clearing it says; the automatic state stays one button away.
+    """
+
+    client, detail, _, _ = reel_client
+    settings, path = configure(client, detail)
+    saved = update(client, settings, qualifying_checkpoint_ids=[])
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["qualifying_checkpoint_ids"] == []
+    assert developed(client) == set()
+    assert [row["developing"] for row in rows(client)] == [False, False]
+    assert client.get(path).json()["expected"] == 0
+    tick(client, quiet=True)
+    assert not [job for job in jobs(client) if job.status == GenerationStatus.QUEUED]

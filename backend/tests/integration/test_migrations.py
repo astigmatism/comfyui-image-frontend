@@ -28,10 +28,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "9c5b27e0a416"
+HEAD_REVISION = "b5d1e8a3c092"
 DERIVATION_REVISION = "c43d89e12a70"
 THUMBNAIL_REVISION = "7d1a4c8e5b32"
 OPT_OUT_REVISION = "3f9c2a7d5b14"
+THUMBNAIL_CHOICE_REVISION = "9c5b27e0a416"
 LEGACY_USER_ID = "00000000-0000-4000-8000-000000000001"
 LEGACY_PROFILE_ID = "00000000-0000-4000-8000-000000000002"
 LEGACY_GENERATION_ID = "00000000-0000-4000-8000-000000000003"
@@ -913,6 +914,97 @@ def test_thumbnail_checkpoint_choice_round_trip_is_forgotten_by_a_downgrade(tmp_
 
     command.upgrade(config, "head")
     assert choice() is None
+    engine.dispose()
+
+
+def test_developed_checkpoints_are_a_preference_a_downgrade_may_forget(tmp_path):
+    """Which checkpoints a Demo Reel develops is a preference, so a downgrade may forget it.
+
+    A configuration row had no list before this column existed and developed every checkpoint the
+    rating account ranked A or B, which is exactly what NULL still means. Backfilling a list from
+    the grades of the moment would turn automatic behaviour into a choice nobody made, and would
+    quietly stop developing a checkpoint graded the following week, so the upgrade leaves every row
+    at NULL. Neither direction may touch a reel, an entry, or a LoRA's derived picture: which
+    checkpoints are developed decides how many images are asked for, never what an image is.
+    """
+
+    path = tmp_path / "qualifying-checkpoints.db"
+    config = _config(path)
+    command.upgrade(config, THUMBNAIL_CHOICE_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, username_normalized, password_hash, role, state, "
+                "must_change_password, is_bootstrap, is_system, session_epoch, created_at, "
+                "updated_at) VALUES ('owner-1', 'admin', 'admin', 'hash', 'ADMIN', 'ACTIVE', 0, 0, "
+                "1, 0, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO collections (id, owner_id, name, previews_enabled, position, "
+                "created_at, updated_at) VALUES ('collection-1', 'owner-1', 'Demo Reel', 1, 0, "
+                "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO demo_reel_config "
+                "(id, revision, paused, slots, recipes, strengths, last_activity_at) "
+                "VALUES (1, 4, 0, '[]', '{}', '{}', '2026-01-01 00:00:00+00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO demo_reels (id, library_key, lora_identity, collection_id, disabled) "
+                "VALUES ('reel-1', 'krea2', :identity, 'collection-1', 0)"
+            ),
+            {"identity": "lr1_" + "a" * 64},
+        )
+
+    def developed() -> object:
+        with engine.connect() as connection:
+            return connection.execute(
+                text("SELECT qualifying_checkpoint_ids FROM demo_reel_config")
+            ).scalar_one()
+
+    command.upgrade(config, "head")
+    columns = {column["name"] for column in inspect(engine).get_columns("demo_reel_config")}
+    assert "qualifying_checkpoint_ids" in columns
+    # No backfill: the row that existed before the column keeps asking for everything it graded.
+    assert developed() is None
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE demo_reel_config SET qualifying_checkpoint_ids = :ids"),
+            {"ids": f'["lr1_{"b" * 64}"]'},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO demo_reel_entries "
+                "(id, reel_id, slot_id, checkpoint_id, signature, state, failures) "
+                "VALUES ('entry-1', 'reel-1', 'slot-1', :identity, 'signature', 'ready', 0)"
+            ),
+            {"identity": "lr1_" + "b" * 64},
+        )
+
+    command.downgrade(config, THUMBNAIL_CHOICE_REVISION)
+    assert "qualifying_checkpoint_ids" not in {
+        column["name"] for column in inspect(engine).get_columns("demo_reel_config")
+    }
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT revision FROM demo_reel_config")).scalar_one() == 4
+        assert (
+            connection.execute(
+                text("SELECT state FROM demo_reel_entries WHERE id = 'entry-1'")
+            ).scalar_one()
+            == "ready"
+        )
+
+    # A downgrade forgets the list rather than half-remembering it, and the entry it had stopped
+    # developing is still there to be used again once the preference comes back.
+    command.upgrade(config, "head")
+    assert developed() is None
     engine.dispose()
 
 

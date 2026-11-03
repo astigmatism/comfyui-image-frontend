@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .schemas import APIModel
+
+# A checkpoint identity as a Demo Reel entry records it: the hash of the workflow control, its
+# value, the graph, and the source key. 68 characters is that hash's own width, so a value longer
+# than this was not produced by it and could never match an entry.
+CheckpointId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=68)]
 
 
 class DemoReelSlot(APIModel):
@@ -34,6 +39,11 @@ class DemoReelUpdate(APIModel):
     paused: bool = False
     rating_user_id: UUID | None = None
     thumbnail_checkpoint_id: str | None = Field(default=None, max_length=68)
+    # None is "automatic": develop every checkpoint the rating account ranks A or B. A list, even
+    # an empty one, is a choice, and only the checkpoints in it are developed. Which checkpoints
+    # are on the list never takes part in what an image is, so changing it invalidates nothing --
+    # it asks the matrix for fewer or more whole images.
+    qualifying_checkpoint_ids: list[CheckpointId] | None = Field(default=None, max_length=64)
     slots: list[DemoReelSlot] = Field(default_factory=list, max_length=100)
     recipes: dict[str, DemoReelRecipe] = Field(default_factory=dict)
     strengths: dict[str, dict[str, float]] = Field(default_factory=dict)

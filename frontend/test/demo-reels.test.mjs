@@ -157,7 +157,7 @@ test("settings pick one checkpoint for every LoRA picture and say what it does n
   assert.doesNotMatch(chosen, /<option value="" selected>/);
   assert.match(chosen, /LoRA pictures use Realvis/);
   // The choice moves pictures only: it is stated next to what keeps happening regardless.
-  assert.match(chosen, /Every qualifying checkpoint still gets one image per prompt slot/);
+  assert.match(chosen, /A checkpoint ticked there gets one image per prompt slot/);
   assert.match(chosen, /A favorited first-slot image always supplies that LoRA's picture instead/);
 
   // A saved checkpoint that can no longer be chosen — downgraded out of A/B, or gone from the
@@ -166,6 +166,82 @@ test("settings pick one checkpoint for every LoRA picture and say what it does n
   assert.match(unavailable, /<option value="lr1_gone" selected>lr1_gone · no longer available<\/option>/);
   assert.doesNotMatch(unavailable, /Automatic · highest-ranked checkpoint/);
   assert.match(unavailable, /LoRA pictures use lr1_gone, which is no longer available/);
+});
+
+test("settings say which checkpoints are developed and let the list be chosen", () => {
+  const details = { source: { interface: { inputs: [] } } };
+  const choices = [
+    { id: "lr1_a", label: "Moody Krea2 V5 BF16", tier: "A", library_label: "Krea 2", images: 6, note: null },
+    { id: "lr1_b", label: "Moody Krea2 V4 INT8", tier: "A", library_label: "Krea 2", images: 6, note: null },
+    { id: "lr1_c", label: "Flux Realism Engine", tier: "B", library_label: "Flux Dev", images: 0, note: null },
+  ];
+  const settings = (qualifying_checkpoint_ids, thumbnail_checkpoint_id = null) => demoReelSettingsMarkup({
+    slots: [{ id: "s", title: "", prompt: "{subject}" }],
+    recipes: { krea2: { source_key: "source", strength: 1, parameters: {} } },
+    strengths: {},
+    rating_username: "admin",
+    thumbnail_checkpoint_id,
+    thumbnail_checkpoint_choices: choices,
+    qualifying_checkpoint_ids,
+    libraries: [{ key: "krea2", label: "Krea", sources: [{ source_key: "source", label: "Workflow" }] }],
+  }, details);
+
+  // The automatic state is a meaning rather than an empty list, it says so, and it has nothing to
+  // restore because there is nothing to restore to.
+  const automatic = settings(null);
+  assert.match(automatic, /Develop these checkpoints/);
+  assert.match(automatic, /3 of 3 selected · 3 images per LoRA/);
+  assert.match(automatic, /Automatic · every checkpoint admin ranks A or B, including any graded later/);
+  assert.match(automatic, /data-demo-action="checkpoint-auto"[^>]*hidden/);
+  assert.equal([...automatic.matchAll(/data-demo-checkpoint="[^"]+"[^>]*checked/g)].length, 3);
+
+  // A chosen list is named as one, its count follows its ticks, and the way back is offered.
+  const chosen = settings(["lr1_a", "lr1_c"]);
+  assert.match(chosen, /2 of 3 selected · 2 images per LoRA/);
+  assert.match(chosen, /Your choice · only the checkpoints ticked below are developed/);
+  assert.match(chosen, /Restore automatic · every A and B checkpoint/);
+  assert.match(chosen, /data-demo-checkpoint="lr1_b" aria-label="Moody Krea2 V4 INT8, tier A, Krea 2" \/>/);
+  assert.match(chosen, /row is-off">[\s\S]*?Flux Realism Engine/);
+  // A ticked row says what it already has, including having nothing yet — which is a queue
+  // position, not a failure.
+  assert.match(chosen, /6 images/);
+  assert.match(chosen, /nothing yet · next in the queue/);
+  assert.match(chosen, /class="demo-reel-checkpoint-tier" data-tier="B">B</);
+  assert.match(chosen, /class="demo-reel-checkpoint-family">Flux Dev</);
+  const actions = [...new Set([...chosen.matchAll(/data-demo-action="(checkpoint-[a-z]+)"/g)].map((match) => match[1]))].sort();
+  assert.deepEqual(actions, ["checkpoint-all", "checkpoint-auto", "checkpoint-none"]);
+
+  // An empty list is the destructive one, and reads that way before anything is saved.
+  const none = settings([]);
+  assert.match(none, /0 of 3 selected · 0 images per LoRA/);
+  assert.match(none, /demo-reel-checkpoints-state is-empty/);
+  assert.match(none, /every existing Demo Reel image is removed for everyone/);
+
+  // A row the server knows is producing nothing says why, in its own words rather than the
+  // frontend guessing which of two reasons it is.
+  const blocked = demoReelSettingsMarkup({
+    slots: [], recipes: {}, strengths: {}, thumbnail_checkpoint_choices: [
+      { id: "lr1_a", label: "Moody Krea2 V5 BF16", tier: "A", library_label: "Krea 2", images: 6, note: null },
+      { id: "lr1_d", label: "Flux Dev 1.1 Hires", tier: "B", library_label: "Flux Dev", images: 0, note: "not in the selected workflow" },
+    ],
+    libraries: [],
+  }, details);
+  assert.match(blocked, /demo-reel-checkpoint-note is-problem">not in the selected workflow</);
+  assert.doesNotMatch(blocked, /nothing yet/);
+  // Nothing graded A or B is nothing to choose, and the grading choice below already says that.
+  assert.doesNotMatch(
+    demoReelSettingsMarkup({ slots: [], recipes: {}, strengths: {}, thumbnail_checkpoint_choices: [], libraries: [] }, details),
+    /Develop these checkpoints/,
+  );
+
+  // A checkpoint left out has no image to be a picture, so the picker stops offering it and the
+  // facts say which of the two reasons a saved choice has for not working.
+  const leftOut = settings(["lr1_a"], "lr1_c");
+  assert.match(leftOut, /<option value="lr1_c" selected>Flux Realism Engine · not being developed<\/option>/);
+  assert.match(leftOut, /LoRA pictures use Flux Realism Engine, which is not being developed/);
+  assert.match(leftOut, /demo-reel-checkpoint-picture" data-stale>/);
+  assert.match(settings(["lr1_c"], "lr1_c"), /<option value="lr1_c" selected>Flux Realism Engine<\/option>/);
+  assert.match(settings(["lr1_c"], "lr1_c"), /demo-reel-checkpoint-picture">/);
 });
 
 test("a LoRA's strength override belongs to the family that replaces it, and an unconfigured family still opens", () => {
@@ -195,15 +271,16 @@ test("recipe settings explain the workflow's own controls and mark what differs 
     slots: [],
     strengths: { krea2: { lr1: 1.2 } },
     recipes: { krea2: { source_key: "source", strength: 0.85, parameters: { steps: 34, clip_skip: -2 } } },
+    thumbnail_checkpoint_choices: [{ id: "lr1_a", label: "Moody V5", tier: "A", library_label: "Krea 2", images: 1, note: null }],
     libraries: [{ key: "krea2", label: "Krea 2", sources: [{ source_key: "source", label: "Moody" }] }],
   };
   const markup = demoReelSettingsMarkup(config, { source: detail }, { libraryKey: "krea2", identity: "lr1", label: "Alpha", subject: "alpha" }, []);
   // Controls come from the workflow's own renderer, descriptions included.
   assert.match(markup, /data-control-id="steps"/);
   assert.match(markup, /More steps cost more time\./);
-  // Checkpoints are chosen by A/B grades, so that control is explained, not offered.
+  // Checkpoints are chosen on their own card, so that control is explained, not offered.
   assert.doesNotMatch(markup, /data-control-id="checkpoint"/);
-  assert.match(markup, /Checkpoint<\/strong><span>one image for each A and B checkpoint/);
+  assert.match(markup, /Checkpoint<\/strong><span>one image for each checkpoint ticked below/);
   assert.match(markup, /data-demo-details="advanced-krea2"/);
   // Only a value that differs from the published default is flagged, and it can be undone.
   assert.match(markup, /class="demo-reel-control is-changed"/);

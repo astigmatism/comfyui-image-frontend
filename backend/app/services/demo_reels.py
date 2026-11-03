@@ -297,32 +297,98 @@ class DemoReelService:
                 )
         return inventory
 
-    def _thumbnail_choices(self, session: Session, config: DemoReelConfig) -> list[dict[str, str]]:
-        """The checkpoints that may supply a LoRA's display picture, in the order pictures prefer.
+    def _thumbnail_choices(self, session: Session, config: DemoReelConfig) -> list[dict[str, Any]]:
+        """The checkpoints this Demo Reel may develop, in the order pictures prefer them.
 
         This is the rating account's saved A then B order restricted to checkpoints an installed
         image workflow actually publishes; once that account is gone the published inventory is
         listed by identity, which is the same fallback the reel gallery and the picture rule use.
+        Being listed is not the same as being developed: ``qualifying_checkpoint_ids`` narrows
+        this list, and a row says which side of that tick it is on.
+
+        Each row carries what a settings list has to say beside its tick — the tier it is graded
+        at, the model family publishing it, whether it is developed at all, how many images it
+        holds now, and why a ticked row can still be producing nothing — because a checkbox with
+        no way to explain itself is a checkbox nobody dares touch.
         """
 
-        available: dict[str, str] = {}
-        for choices in self._checkpoint_inventory(session).values():
+        inventory = self._checkpoint_inventory(session)
+        libraries = self._libraries(session)
+        available: dict[str, tuple[str, str]] = {}
+        publishers: dict[str, set[str]] = {}
+        for key, choices in inventory.items():
             for identity, (_, _, label) in choices.items():
-                available.setdefault(identity, label)
+                available.setdefault(identity, (key, label))
+                publishers.setdefault(identity, set()).add(key)
+        # What the workflow a family's recipe chose publishes is narrower than what that family
+        # publishes, and only the narrower set can ever be generated.
+        configured: set[str] = set()
+        producible: set[str] = set()
+        for key, recipe in config.recipes.items():
+            configured.add(key)
+            library = libraries.get(key)
+            member = (
+                next(
+                    (
+                        candidate
+                        for candidate in library.members
+                        if candidate.source_key == recipe.get("source_key")
+                    ),
+                    None,
+                )
+                if library
+                else None
+            )
+            if member is not None:
+                producible.update(checkpoint_choices(member))
+        counts = {
+            str(checkpoint_id): int(total)
+            for checkpoint_id, total in session.execute(
+                select(DemoReelEntry.checkpoint_id, func.count())
+                .where(DemoReelEntry.state == "ready")
+                .group_by(DemoReelEntry.checkpoint_id)
+            ).all()
+        }
         owner = session.get(User, config.rating_user_id) if config.rating_user_id else None
         preference = (
             session.get(UserPreference, config.rating_user_id) if config.rating_user_id else None
         )
+        ratings = (preference.checkpoint_tiers_json if preference else None) or {}
+        tiers = {str(identity): tier for tier in ("A", "B") for identity in ratings.get(tier, [])}
         if owner is None or owner.state != UserState.ACTIVE or preference is None:
             order = sorted(available)
         else:
-            ratings = preference.checkpoint_tiers_json or {}
             order = [
                 identity
                 for identity in dict.fromkeys([*ratings.get("A", []), *ratings.get("B", [])])
                 if identity in available
             ]
-        return [{"id": identity, "label": available[identity]} for identity in order]
+        selected = config.qualifying_checkpoint_ids
+        rows = []
+        for identity in order:
+            key, label = available[identity]
+            library = libraries.get(key)
+            rows.append(
+                {
+                    "id": identity,
+                    "label": label,
+                    "tier": tiers.get(str(identity)),
+                    "library_key": key,
+                    "library_label": (library.label if library else None) or key,
+                    "developing": selected is None or identity in set(selected),
+                    "images": int(counts.get(identity) or 0),
+                    "note": (
+                        None
+                        if identity in producible
+                        else (
+                            "not in the selected workflow"
+                            if publishers[identity] & configured
+                            else "its model family is off"
+                        )
+                    ),
+                }
+            )
+        return rows
 
     def _matrix(self, session: Session, config: DemoReelConfig) -> list[Candidate]:
         """Every image the Demo Reel should hold, in the order the idle loop should make it.
@@ -331,6 +397,10 @@ class DemoReelService:
         slot filled before any later slot starts, because that slot is what a LoRA's library
         picture is derived from. Within a slot the order is the one the gallery lists — model
         family, LoRA gallery order, then the rating account's A and B checkpoint order.
+
+        The grades decide that order and nothing else: which graded checkpoints are asked for at
+        all is ``qualifying_checkpoint_ids``, so narrowing the reel drops whole images rather than
+        changing any image that stays.
         """
 
         preference = (
@@ -349,6 +419,10 @@ class DemoReelService:
                 )
             )
         inventory = self._checkpoint_inventory(session)
+        # The graded order decides which checkpoint comes first; this decides which ones are asked
+        # for at all. None is automatic, and an empty list is a deliberate "none": both are the
+        # administrator's choice, and neither is a reason to invent a checkpoint to develop.
+        selected = config.qualifying_checkpoint_ids
         families: list[_Family] = []
         for key, library in sorted(self._libraries(session).items()):
             recipe = config.recipes.get(key, {})
@@ -389,6 +463,7 @@ class DemoReelService:
                         checkpoint_id
                         for checkpoint_id in rank_order
                         if checkpoint_id in all_choices
+                        and (selected is None or checkpoint_id in selected)
                     ),
                     catalog_ids=frozenset(str(entry["id"]) for entry in member.catalog)
                     if member
@@ -832,20 +907,41 @@ class DemoReelService:
                 "render_revision": render_revision(member.profile),
             }
         config.rating_user_id = owner_id
+        choices = self._thumbnail_choices(session, config)
+        # The list of developed checkpoints is checked against the graded checkpoints rather than
+        # against what is already being developed: leaving one out is a choice about generating,
+        # and an administrator may well put a checkpoint back on the list they are naming here.
+        # A name outside the graded set is a different thing -- a checkpoint that qualified for
+        # nothing before and qualifies for nothing now -- so it is refused rather than stored
+        # quietly waiting for grades that may never come.
+        if payload.qualifying_checkpoint_ids is not None:
+            graded = {choice["id"] for choice in choices}
+            unknown = [
+                identity for identity in payload.qualifying_checkpoint_ids if identity not in graded
+            ]
+            if unknown:
+                raise AppError(
+                    "demo_reel_checkpoints_invalid",
+                    "Develop only checkpoints this account ranks A or B, or restore automatic.",
+                    status_code=422,
+                )
         # The picture preference is checked against the account that now grades the checkpoints,
         # because that account's A/B order is what the preference picks from. A value saved here
         # and only later downgraded out of A/B is kept and simply stops matching, which leaves the
         # pictures on the highest-ranked image instead of silently rewriting a saved setting.
         checkpoint_id = payload.thumbnail_checkpoint_id
-        if checkpoint_id is not None and checkpoint_id not in {
-            choice["id"] for choice in self._thumbnail_choices(session, config)
-        }:
+        if checkpoint_id is not None and checkpoint_id not in {choice["id"] for choice in choices}:
             raise AppError(
                 "demo_reel_checkpoint_invalid",
                 "Choose a checkpoint this account ranks A or B for LoRA pictures, or Automatic.",
                 status_code=422,
             )
         config.thumbnail_checkpoint_id = checkpoint_id
+        config.qualifying_checkpoint_ids = (
+            None
+            if payload.qualifying_checkpoint_ids is None
+            else list(dict.fromkeys(payload.qualifying_checkpoint_ids))
+        )
         config.slots = [slot.model_dump(mode="json") for slot in payload.slots]
         config.recipes = recipes
         config.strengths = copy.deepcopy(payload.strengths)
@@ -949,6 +1045,7 @@ class DemoReelService:
             "rating_user_id": config.rating_user_id,
             "rating_username": owner.username if owner else None,
             "thumbnail_checkpoint_id": config.thumbnail_checkpoint_id,
+            "qualifying_checkpoint_ids": config.qualifying_checkpoint_ids,
             "thumbnail_checkpoint_choices": self._thumbnail_choices(session, config),
             "slots": config.slots,
             "recipes": {

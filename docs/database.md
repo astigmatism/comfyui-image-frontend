@@ -313,6 +313,19 @@ from whatever checkpoint happened to rank first at migration time. Nothing deriv
 entry, signature, image, or file is read or rewritten by the upgrade, and a downgrade simply forgets
 the preference and returns every picture to the highest-ranked first-slot image.
 
+Migration `b5d1e8a3c092` adds `demo_reel_config.qualifying_checkpoint_ids`: which of the graded
+checkpoints the reel develops at all. NULL is a meaning — every checkpoint the rating account ranks
+A or B, which is what every existing row had been doing — and is therefore not backfilled from the
+grades of the moment: that would record a choice nobody made, and a checkpoint graded the following
+week would silently stop being developed. An empty list is the opposite choice and is stored as
+itself, not folded back into NULL. It is a JSON list on the singleton rather than a table of rows
+because it is one small ordered document read and written whole with the rest of the configuration,
+and because its meaning depends on the grades it narrows: the checkpoint identities in it are the
+same `lr1_…` identities the grading account stores, and a checkpoint that leaves the grades leaves
+this list's meaning with it rather than orphaning a row. Like the picture column it enters no
+signature and no file name; it decides only how many `demo_reel_entries` the matrix asks for, so
+reconcile discards what a narrower list excludes and a downgrade simply forgets the list.
+
 Shared artifacts remain ordinary generation artifacts under the internal owner;
 reel-specific reads validate current eligibility and final-result membership.
 Personal queries do not include system content. Invalidation first revokes shared

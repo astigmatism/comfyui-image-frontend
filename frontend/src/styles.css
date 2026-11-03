@@ -7407,6 +7407,46 @@ button.lm-summary-thumb:hover {
 .demo-reel-generation-state { color: var(--muted); font-size: .74rem; overflow-wrap: anywhere; }
 .demo-reel-how { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); background: #0d141d; color: var(--text-soft); font-size: .78rem; line-height: 1.5; }
 .demo-reel-how strong { color: var(--text); }
+/* Which of the graded checkpoints the reel develops. A row keeps the two facts that make a
+   checkpoint recognisable — the grade it carries, in the accents the checkpoint board already
+   uses, and the model family publishing it — and puts on the right whatever its tick currently
+   means, so the tick is never the only clue. Long names lose their tail before they wrap. */
+.demo-reel-checkpoints { margin: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: #0d141d; }
+.demo-reel-checkpoints-heading { margin: 0; padding: 5px 10px 5px 12px; border-bottom: 1px solid var(--border); }
+.demo-reel-checkpoints-heading h3 { flex: 0 1 auto; color: var(--text); font-size: .84rem; }
+.demo-reel-checkpoints-heading .lm-group-actions { margin-left: auto; }
+.demo-reel-checkpoints-count { flex: 0 1 auto; min-width: 0; overflow: hidden; color: #8493a6; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.demo-reel-checkpoint-tool { min-height: 28px; padding: 0 9px; font-size: .73rem; }
+.demo-reel-checkpoints-state { margin: 0; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text-soft); font-size: .74rem; line-height: 1.45; }
+/* An empty list removes every Demo Reel image, so it reads as a warning and not as a caption. */
+.demo-reel-checkpoints-state.is-empty { border-left: 2px solid var(--warning); background: rgb(216 170 99 / 8%); color: #e6c48f; }
+.demo-reel-checkpoint-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.demo-reel-checkpoint-row + .demo-reel-checkpoint-row { border-top: 1px solid #16202b; }
+.demo-reel-checkpoint-pick { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; grid-template-areas: "box tier name family aside"; align-items: center; gap: 0 10px; min-width: 0; padding: 8px 12px; cursor: pointer; }
+.demo-reel-checkpoint-row:hover .demo-reel-checkpoint-pick { background: #111a24; }
+.demo-reel-checkpoint-pick input { grid-area: box; margin: 0; }
+/* The chip is two characters wide wherever it lands, and a grid column would otherwise stretch it
+   to fill the row on a narrow screen. */
+.demo-reel-checkpoint-tier { grid-area: tier; justify-self: start; padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--tier-accent) 45%, #33404e); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--tier-accent) 12%, #080d14); color: var(--tier-accent); font-size: .66rem; font-weight: 750; letter-spacing: .04em; }
+.demo-reel-checkpoint-tier[data-tier="A"] { --tier-accent: #d98383; }
+.demo-reel-checkpoint-tier[data-tier="B"] { --tier-accent: #d9a06c; }
+.demo-reel-checkpoint-name { grid-area: name; min-width: 0; overflow: hidden; color: var(--text); font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
+.demo-reel-checkpoint-family { grid-area: family; color: #7f8fa1; font-size: .7rem; white-space: nowrap; }
+.demo-reel-checkpoint-aside { grid-area: aside; display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.demo-reel-checkpoint-note { color: var(--muted); font-size: .7rem; white-space: nowrap; }
+.demo-reel-checkpoint-picture { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid color-mix(in srgb, var(--favorite-gold) 40%, #33404e); border-radius: 999px; background: color-mix(in srgb, var(--favorite-gold) 12%, #080d14); color: var(--favorite-gold-light); font-size: .68rem; font-weight: 650; white-space: nowrap; }
+/* The app's glyph convention: inline SVG stroked with round caps, so the reel icon matches every
+   other icon and does not depend on a font carrying a star. */
+.demo-reel-checkpoint-picture svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+/* A tick that is off still has to read as a checkpoint you own, so only its name dims; the box
+   already says the rest. */
+.demo-reel-checkpoint-row.is-off .demo-reel-checkpoint-name { color: var(--text-soft); }
+.demo-reel-checkpoint-row.is-off .demo-reel-checkpoint-tier { opacity: .5; }
+.demo-reel-checkpoint-note.is-problem, .demo-reel-checkpoint-picture[data-stale] { color: var(--warning); }
+.demo-reel-checkpoint-picture[data-stale] { border-color: color-mix(in srgb, var(--warning) 45%, #33404e); background: color-mix(in srgb, var(--warning) 10%, #080d14); color: #e6c48f; }
+.demo-reel-checkpoints-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0; padding: 10px 12px; border-top: 1px solid var(--border); }
+.demo-reel-checkpoints-foot .button { min-height: 28px; padding: 0 9px; font-size: .73rem; }
+.demo-reel-checkpoints-foot .button[hidden] { display: none; }
 .demo-reel-families { display: grid; gap: 12px; padding: 14px; min-width: 0; }
 .demo-reel-family { display: grid; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: #0d141d; }
 .demo-reel-family-heading { margin: 0; padding: 5px 10px 5px 12px; }
@@ -7452,6 +7492,19 @@ button.lm-summary-thumb:hover {
   .demo-reel-family-heading { flex-wrap: wrap; }
   .demo-reel-family-summary { flex: 1 1 100%; order: 3; white-space: normal; overflow-wrap: anywhere; }
   .demo-reel-group, .demo-reel-family-grid, .demo-reel-facts, .demo-reel-grading { grid-template-columns: minmax(0, 1fr); }
+  /* Same trade for the checkpoint list: the count is a sentence, the title is not. */
+  .demo-reel-checkpoints-heading { flex-wrap: wrap; }
+  .demo-reel-checkpoints-count { flex: 1 1 100%; order: 3; white-space: normal; }
+  /* Below the name there is no room for a family and a note side by side, so a
+     row spends its height instead of dropping the family that publishes it. */
+  .demo-reel-checkpoint-pick {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "box tier name"
+      "box family aside";
+    row-gap: 3px;
+  }
+  .demo-reel-checkpoint-family, .demo-reel-checkpoint-note { white-space: normal; }
 }
 @media (max-width: 600px) {
   /* The status chip is a sentence, not a badge: on a phone it gets its own row

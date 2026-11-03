@@ -19,6 +19,11 @@ class DemoReelConfig(Base):
         String(36), ForeignKey("users.id", ondelete="SET NULL")
     )
     thumbnail_checkpoint_id: Mapped[str | None] = mapped_column(String(68))
+    # Which of the graded checkpoints the reel develops at all. NULL is a meaning rather than a
+    # missing value: "all of them", which is every installation's behaviour before anyone chooses,
+    # and it is what lets a checkpoint graded later be developed without anyone remembering to
+    # widen a stored list. An empty list is the opposite choice, made deliberately.
+    qualifying_checkpoint_ids: Mapped[list[str] | None] = mapped_column(JSON, default=None)
     slots: Mapped[list[Any]] = mapped_column(JSON, default=list)
     recipes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     strengths: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

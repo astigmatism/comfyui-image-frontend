@@ -37,18 +37,26 @@ strength it replaces, named for the LoRA it applies to.
    reset for the whole family. Individual LoRAs can override strength.
 5. Choose whose checkpoint grades qualify models. Initial setup uses the current
    administrator's account. Only that account's A/B grades affect eligibility.
-6. Choose which checkpoint supplies a LoRA's picture in the library. Left on **Automatic**, the
+6. Choose which checkpoints the reel develops. Left on **Automatic** it develops every checkpoint
+   the rating account ranks A or B, including one graded after the choice was made. A list you keep
+   yourself develops only the checkpoints ticked on it; one left out gets no images at all, and the
+   images it had made are removed the same way a switched-off model family's are. The grades stay
+   the gate: the list narrows the checkpoints they let through and cannot widen it, so naming a
+   checkpoint nobody ranks A or B is refused.
+7. Choose which checkpoint supplies a LoRA's picture in the library. Left on **Automatic**, the
    picture comes from the highest-ranked checkpoint that has an image in the first prompt slot;
    naming one checkpoint chooses that checkpoint's image for every LoRA instead. The choice is
-   library-wide, because a LoRA's picture is shared, and it never changes what is generated.
-7. Save. These changes are independent of selection Apply/Cancel. Canceling the
+   library-wide, because a LoRA's picture is shared, and it never changes what is generated. Only a
+   developed checkpoint can be a picture, since nothing else has an image to be one.
+8. Save. These changes are independent of selection Apply/Cancel. Canceling the
    picker does not undo saved Demo Reel settings.
 
 Recipes require a published seed control and cannot require uploaded images.
 Every new attempt randomizes its seed, including workflows whose normal default
 is fixed. Only the target selectable LoRA is enabled, and each image's checkpoint
-comes from the rating account's A/B grades; the family card lists those three as
-things the Demo Reel decides rather than offering settings that it overwrites.
+comes from the rating account's A/B grades, narrowed to the checkpoints the settings develop; the
+family card lists those three as things the Demo Reel decides rather than offering settings that it
+overwrites.
 Prompts run directly after
 subject substitution, without Prompt Generation or Creative Direction. The
 configured workflow is exclusive; eligible checkpoints exposed by another library
@@ -64,7 +72,9 @@ Browsers immediately report the first interaction and coalesce continued input.
 One background image runs globally. Order follows the prompt slots first: every LoRA in every
 model family has its first slot filled before any later slot starts, because a LoRA's picture in
 the library is one of its first slot's images. Within a slot the order follows model families,
-LoRA gallery order, then A and B checkpoints in the rating account's saved order. Failed
+LoRA gallery order, then the developed checkpoints in the rating account's saved A then B order.
+Leaving a checkpoint out of the developed list drops its images from the matrix rather than
+reordering what is left, so the order stays a property of the grades alone. Failed
 or blocked combinations do not hold up other work. Image failures receive three
 attempts with one-minute and five-minute retry waits. Unavailable workers wait
 without accepting an attempt. Exhausted entries are retried through the reel's
@@ -130,8 +140,8 @@ it, and making another slot first moves the picture to that slot.
 
 That choice is one setting for the whole library, decided where the reels are configured rather
 than LoRA by LoRA, because a LoRA's picture belongs to its shared identity. It is presentation
-only: every qualifying checkpoint still gets one image per prompt slot in the same order, and
-saving or clearing the choice regenerates and invalidates nothing. The affected pictures are
+only: which checkpoints are developed is the list above, and saving or clearing the picture choice
+regenerates and invalidates nothing. The affected pictures are
 re-derived on the next idle pass. A choice that stops being a graded checkpoint — the grading
 account changed, or the checkpoint dropped below B — is kept and simply stops matching, which
 leaves every LoRA on the highest-ranked image.
@@ -166,6 +176,14 @@ collected as usual once the LoRA leaves the library. Migration `9c5b27e0a416` ad
 `demo_reel_config.thumbnail_checkpoint_id`, the one checkpoint allowed to supply LoRA pictures.
 NULL means no preference, so an upgraded installation changes nothing until an administrator
 chooses, and no entry, image, or signature takes part in that column.
+Migration `b5d1e8a3c092` adds `demo_reel_config.qualifying_checkpoint_ids`: which of the graded
+checkpoints the reel develops at all. NULL is again a meaning rather than a missing value — every
+checkpoint the rating account ranks A or B, as every installation had been doing — so it is not
+backfilled from the grades of the moment, which would turn automatic behaviour into a choice nobody
+made and stop developing a checkpoint graded the following week. An empty list is the opposite
+choice, made deliberately. Like the picture column it changes no signature and no file name, but it
+does decide how many entries the matrix holds, so a downgrade forgets the list and the next idle
+pass develops every graded checkpoint again.
 
 Generations, hidden collections, and artifacts use a protected internal account.
 It cannot sign in, be reset/deleted, or appear in account-management choices.

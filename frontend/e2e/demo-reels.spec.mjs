@@ -9,7 +9,7 @@ test.afterEach(async ({ page }) => {
   if (fixtureGenerationId) await page.request.delete(`/api/generations/${fixtureGenerationId}`, { headers });
   if (originalSettings) {
     const current = await (await page.request.get("/api/admin/demo-reels")).json();
-    const data = Object.fromEntries(["paused", "rating_user_id", "thumbnail_checkpoint_id", "slots", "recipes", "strengths"].map((key) => [key, originalSettings[key]]));
+    const data = Object.fromEntries(["paused", "rating_user_id", "thumbnail_checkpoint_id", "qualifying_checkpoint_ids", "slots", "recipes", "strengths"].map((key) => [key, originalSettings[key]]));
     await page.request.put("/api/admin/demo-reels", { headers, data: { ...data, revision: current.revision } });
   }
   originalSettings = null;
@@ -286,6 +286,105 @@ test("one checkpoint choice decides every LoRA picture, and the settings keep it
     await expect(editor.locator("[data-demo-thumbnail-checkpoint]")).toHaveValue(graded[1]);
     await editor.getByRole("button", { name: "Cancel", exact: true }).click();
     await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+  } finally {
+    await page.request.put("/api/preferences", {
+      headers: { "X-CSRF-Token": session.csrf_token },
+      data: { expected_revision: (await (await page.request.get("/api/preferences")).json()).revision, checkpoint_tiers: savedTiers },
+    }).catch(() => {});
+  }
+});
+
+// Which checkpoints the reel develops is stored as a list, so the tick that is on the screen is
+// the tick that is saved, and a checkpoint that is not developed has no image for a LoRA picture
+// to be drawn from either.
+test("the settings choose which graded checkpoints are developed, and the list survives a save", async ({ page }) => {
+  test.setTimeout(60_000);
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const session = await signIn(page);
+  originalSettings = await (await page.request.get("/api/admin/demo-reels")).json();
+  const preferences = await (await page.request.get("/api/preferences")).json();
+  const savedTiers = preferences.checkpoint_tiers;
+  let detail;
+  for (const source of await (await page.request.get("/api/workflows")).json()) {
+    const candidate = await (await page.request.get(`/api/workflows/${source.source_key}`)).json();
+    if (candidate.interface.inputs.some((control) => control.type === "lora_stack")) { detail = candidate; break; }
+  }
+  expect(detail).toBeTruthy();
+  const graded = detail.model_selectors[0].choices.slice(0, 2).map((choice) => choice.checkpoint_id);
+  expect((await page.request.put("/api/preferences", {
+    headers: { "X-CSRF-Token": session.csrf_token },
+    data: { expected_revision: preferences.revision, checkpoint_tiers: { A: [graded[0]], B: [graded[1]] } },
+  })).ok()).toBe(true);
+  const send = async (changes) => {
+    const current = await (await page.request.get("/api/admin/demo-reels")).json();
+    const data = Object.fromEntries(["paused", "rating_user_id", "thumbnail_checkpoint_id", "qualifying_checkpoint_ids", "slots", "recipes", "strengths"].map((key) => [key, current[key]]));
+    const answer = await page.request.put("/api/admin/demo-reels", {
+      headers: { "X-CSRF-Token": session.csrf_token },
+      data: { ...data, revision: current.revision, ...changes },
+    });
+    expect(answer.ok(), await answer.text()).toBe(true);
+    return await answer.json();
+  };
+  // Grade, point the reel at this account, and name no picture checkpoint, so the card below has
+  // exactly these two checkpoints to offer however a previous test left the appliance.
+  await send({ rating_user_id: session.user.id, thumbnail_checkpoint_id: null });
+  try {
+    await page.locator("#workflow-source").click();
+    const sources = page.locator("#source-picker-dialog");
+    await sources.locator(`[data-source-workflow-choice][data-source-workflow-key="${detail.source_key}"]`).click();
+    await sources.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
+    const picker = page.locator("#lora-manager-dialog");
+    await picker.getByRole("button", { name: "Demo Reel settings" }).click();
+    const editor = page.locator("#demo-reel-settings-dialog");
+    // The settings dialog remembers which sections were open, so the section is opened rather than
+    // toggled: a click on a section that is already open closes the card this test is about to read.
+    const expand = () => editor.locator("[data-demo-details=\"generation\"]").evaluate((node) => { node.open = true; });
+    await expand();
+
+    const card = editor.locator("[data-demo-checkpoints]");
+    const boxes = card.locator("[data-demo-checkpoint]");
+    // Nothing has been chosen on this installation, so it is automatic: both graded checkpoints
+    // are developed, in the grading account's order, and there is no automatic state to return to.
+    await expect(boxes).toHaveCount(2);
+    await expect(boxes.nth(0)).toBeChecked();
+    await expect(boxes.nth(1)).toBeChecked();
+    await expect(card).toContainText("Automatic · every checkpoint");
+    await expect(card.getByRole("button", { name: /Restore automatic/ })).toBeHidden();
+
+    // One tick off and the card counts what the reel will be asked for, and says who still decides
+    // the order of what is left.
+    await boxes.nth(1).uncheck();
+    await expect(card).toContainText("1 of 2 selected");
+    await expect(card).toContainText("Your choice");
+    await expect(card.getByRole("button", { name: /Restore automatic/ })).toBeVisible();
+    // And a checkpoint that is not developed has no image for a LoRA picture, so the picker below
+    // stops offering it rather than saving a choice that could never be drawn.
+    await expect(editor.locator("[data-demo-thumbnail-checkpoint] option")).toHaveCount(2);
+
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/admin/demo-reels") && response.request().method() === "PUT");
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    expect((await saved).ok()).toBe(true);
+    expect((await (await page.request.get("/api/admin/demo-reels")).json()).qualifying_checkpoint_ids).toEqual([graded[0]]);
+
+    // Reopening reads the saved list back rather than showing automatic again, and one press of
+    // Restore automatic gives the automatic state - not a list of everything graded - back.
+    await picker.getByRole("button", { name: "Demo Reel settings" }).click();
+    await expand();
+    await expect(editor.locator(`[data-demo-checkpoint="${graded[0]}"]`)).toBeChecked();
+    await expect(editor.locator(`[data-demo-checkpoint="${graded[1]}"]`)).not.toBeChecked();
+    await editor.getByRole("button", { name: /Restore automatic/ }).click();
+    await expect(editor.locator(`[data-demo-checkpoint="${graded[1]}"]`)).toBeChecked();
+    await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+    await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+
+    // An empty list is kept as an empty list rather than folded back into automatic, because it
+    // means the opposite of it.
+    const cleared = await send({ qualifying_checkpoint_ids: [] });
+    expect(cleared.qualifying_checkpoint_ids).toEqual([]);
+    expect(cleared.thumbnail_checkpoint_choices.map((choice) => choice.developing)).toEqual([false, false]);
+    expect(errors).toEqual([]);
   } finally {
     await page.request.put("/api/preferences", {
       headers: { "X-CSRF-Token": session.csrf_token },

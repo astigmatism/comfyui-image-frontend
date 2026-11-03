@@ -60,7 +60,7 @@ const configFixture = () => ({
   idle_seconds: 300,
   rating_user_id: "u1",
   rating_username: "admin",
-  progress: { completed: 6, expected: 24, states: { ready: 6, running: 1, blocked: 2, failed: 3, missing: 12 } },
+  progress: { completed: 6, expected: 9, states: { ready: 6, running: 1, blocked: 0, failed: 0, missing: 2 } },
   slots: [
     { id: "s1", title: "Portrait study", prompt: "a cinematic portrait of {subject}, 85mm, soft window light", resolutions: {} },
     { id: "s2", title: "", prompt: "{subject} beside a lake at golden hour, shallow depth of field", resolutions: { krea2: { width: 1024 } } },
@@ -72,8 +72,19 @@ const configFixture = () => ({
       strength: 0.85,
       parameters: { width: 768, height: 1024, steps: 34, guidance: 4.5, sampler: "euler_a", scheduler: "normal", denoise: 0.72, clip_skip: -2, noise_bias: 0, tiling: false, output_format: "png" },
     },
+    flux: {
+      source_key: fluxWorkflow.source_key,
+      strength: 0.9,
+      parameters: { width: 1024, height: 1024, steps: 20 },
+    },
   },
   strengths: { krea2: { "lr1_a": 1.15 } },
+  // `picout=on` is the state where the checkpoint that supplies every LoRA
+  // picture has been left out of the list: the picture falls back, and the
+  // picker has to say why its own saved value is not on offer.
+  thumbnail_checkpoint_id: params.get("picout") === "on" ? checkpointIdentity("krea2fast") : checkpointIdentity("krea2v5"),
+  thumbnail_checkpoint_choices: checkpointUniverse(),
+  qualifying_checkpoint_ids: selectionFor(params.get("cps") || "some"),
   libraries: [
     { key: "krea2", label: "Krea 2", sources: [{ source_key: kreaWorkflow.source_key, label: kreaWorkflow.display_name }, { source_key: "moody-krea2-fast", label: "Moody Krea2 Fast v4" }] },
     { key: "flux", label: "Flux Dev", sources: [{ source_key: fluxWorkflow.source_key, label: fluxWorkflow.display_name }] },
@@ -82,6 +93,44 @@ const configFixture = () => ({
 
 const context = { libraryKey: "krea2", identity: "lr1_a", label: "Heroline Ember", subject: "heroline ember" };
 const users = [{ id: "u1", username: "admin" }, { id: "u2", username: "sam" }];
+
+// ---------------------------------------- the checkpoints worth developing ---
+// The reel develops the checkpoints on a list the administrator keeps, and every
+// one of them is a checkpoint the grading account ranks A or B: the grades stay
+// the gate, and the list only ever narrows what they let through. Left automatic
+// it is still every A and B checkpoint, which on a real installation is a lot of
+// images nobody chose one by one.
+//
+// This is the same list `LoRA pictures from` offers, so a preview has to be able
+// to show what the two do to each other: `thumbnail_checkpoint_choices` carries
+// the tier a row is graded at, the family that publishes it, how many images it
+// already has, and why a row may be ticked and still produce nothing, and
+// `qualifying_checkpoint_ids` is the stored selection — NULL is automatic, an
+// empty list is a deliberate none. Both families are on here, because a family
+// switched off is a reason a checkpoint produces nothing, and that belongs in the
+// row that produces nothing.
+const checkpointIdentity = (seed) => `lr1_${seed.padEnd(64, "0")}`;
+
+const checkpointUniverse = () => [
+  { id: checkpointIdentity("krea2v5"), label: "Moody Krea2 V5 BF16", tier: "A", library_label: "Krea 2", images: 6, note: null },
+  { id: checkpointIdentity("krea2v4"), label: "Moody Krea2 V4 INT8", tier: "A", library_label: "Krea 2", images: 6, note: null },
+  { id: checkpointIdentity("fluxhires"), label: "Flux Dev 1.1 Hires", tier: "B", library_label: "Flux Dev", images: 0, note: null },
+  { id: checkpointIdentity("krea2fast"), label: "Moody Krea2 Fast v4", tier: "B", library_label: "Krea 2", images: 0, note: "not in the selected workflow" },
+  { id: checkpointIdentity("fluxrealism"), label: "Flux Realism Engine", tier: "B", library_label: "Flux Dev", images: 0, note: null },
+];
+
+// `auto` is the stored NULL: everything the account ranks A or B, including a
+// checkpoint graded later, which is exactly what an explicit list gives up.
+const selectionFor = (mode) => {
+  const all = checkpointUniverse().map((choice) => choice.id);
+  if (mode === "none") return [];
+  if (mode === "all") return all;
+  if (mode === "some") return all.slice(0, 3);
+  return null;
+};
+
+const developedIds = (config) => config.qualifying_checkpoint_ids ?? checkpointUniverse().map((choice) => choice.id);
+
 // ------------------------------------------------- retired design snapshot ---
 
 function parameterMarkup(control, value, attributes) {
@@ -155,6 +204,9 @@ function act(button) {
     if (kind === "recipe-reset") recipe.parameters = Object.fromEntries(inputs.map((control) => [control.id, recipeDefault(recipe.source_key, control)]));
     else recipe.parameters[button.dataset.demoControl] = recipeDefault(recipe.source_key, inputs.find((control) => control.id === button.dataset.demoControl));
   } else if (kind === "lora-strength-reset") delete config.strengths[context.libraryKey][context.identity];
+  else if (kind === "checkpoint-all") config.qualifying_checkpoint_ids = checkpointUniverse().map((row) => row.id);
+  else if (kind === "checkpoint-none") config.qualifying_checkpoint_ids = [];
+  else if (kind === "checkpoint-auto") config.qualifying_checkpoint_ids = null;
   else if (kind === "cancel-settings") state.open = false;
   else if (kind === "reload-settings") config = configFixture();
   else return false;
@@ -176,11 +228,12 @@ function render() {
       node.open = opened.get(key) ?? (key === "generation" ? state.generationOpen : state.advancedOpen && key.startsWith("advanced-"));
     }
   }
-  note.textContent = `${layout === "current" ? "Retired design" : "Proposed design"} · ${state.generationOpen ? "Model families open" : "closed"}`;
+  note.textContent = `${layout === "current" ? "Retired design" : "Development list"} · ${state.generationOpen ? "Model families open" : "closed"}`;
   if (state.open && !dialog.open) dialog.showModal();
   if (!state.open && dialog.open) dialog.close();
   const next = dialog.querySelector(".demo-reel-content");
   if (next) next.scrollTop = params.get("scroll") ? Number(params.get("scroll")) : scroll;
+  if (params.get("focus") === "checkpoints") dialog.querySelector("[data-demo-checkpoints]")?.scrollIntoView({ block: "start" });
 }
 
 dialog.addEventListener("click", (event) => {
@@ -188,6 +241,18 @@ dialog.addEventListener("click", (event) => {
 });
 dialog.addEventListener("change", (event) => {
   if (layout !== "proposed") return;
+  const checkpoint = event.target.dataset?.demoCheckpoint;
+  if (checkpoint) {
+    const picked = new Set(developedIds(config));
+    if (event.target.checked) picked.add(checkpoint);
+    else picked.delete(checkpoint);
+    // Stored in the grading account's A-then-B order, never in click order: the
+    // reel gallery and the picture picker both list checkpoints that way.
+    config.qualifying_checkpoint_ids = checkpointUniverse().map((row) => row.id).filter((id) => picked.has(id));
+    render();
+    dialog.querySelector(`[data-demo-checkpoint="${CSS.escape(checkpoint)}"]`)?.focus();
+    return;
+  }
   const family = event.target.dataset.demoRecipeEnabled;
   if (!family) return;
   if (event.target.checked) {

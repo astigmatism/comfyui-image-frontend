@@ -399,6 +399,47 @@ def test_a_chosen_checkpoint_supplies_every_picture_and_clearing_it_returns(gall
     assert stored(client, identity).derived_generation_id == ready[0]["generation"]["id"]
 
 
+def test_a_picture_whose_checkpoint_stopped_being_developed_falls_back(gallery_client):
+    """A LoRA's picture has to come from an image its reel still holds.
+
+    Leaving a checkpoint out of the developed list takes its images with it, so naming that
+    checkpoint for pictures afterwards names an image that is no longer there. The choice is kept —
+    it becomes correct again the moment the checkpoint goes back on the list — and the picture
+    moves to the highest-ranked image that does exist, which is how a checkpoint downgraded out of
+    the grades already behaves.
+    """
+
+    client, detail, _, _ = gallery_client
+    identity = control(detail)["items"][0]["lora_identity"]
+    settings, path = configure(client, detail)
+    ready = [entry for entry in generate(client, path) if entry["generation"]]
+    graded = [choice["checkpoint_id"] for choice in detail["model_selectors"][0]["choices"][:2]]
+    chosen = choose(client, settings, graded[1])
+    sweep(client)
+    assert stored(client, identity).derived_generation_id == ready[1]["generation"]["id"]
+
+    narrowed = update(client, chosen, qualifying_checkpoint_ids=[graded[0]])
+    assert narrowed.status_code == 200, narrowed.text
+    # Naming a graded checkpoint that is not being developed stays legal, because putting it back
+    # is one click, and the settings say which of the two states the checkpoint is in.
+    assert narrowed.json()["thumbnail_checkpoint_id"] == graded[1]
+    assert [row["developing"] for row in narrowed.json()["thumbnail_checkpoint_choices"]] == [
+        True,
+        False,
+    ]
+    sweep(client)
+    assert stored(client, identity).derived_generation_id == ready[0]["generation"]["id"]
+
+    # Put the checkpoint back and the reel makes its image again, which the picture then follows.
+    back = update(client, narrowed.json(), qualifying_checkpoint_ids=graded)
+    assert back.status_code == 200, back.text
+    again = [entry for entry in generate(client, path, rounds=1) if entry["generation"]]
+    sweep(client)
+    assert stored(client, identity).derived_generation_id == next(
+        entry["generation"]["id"] for entry in again if entry["checkpoint_id"] == graded[1]
+    )
+
+
 def test_a_chosen_checkpoint_still_yields_to_a_favorite(gallery_client):
     """The preference decides the picture only where a favorite does not already decide it."""
 

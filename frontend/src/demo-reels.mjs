@@ -107,17 +107,29 @@ const ownedFacts = (config) => [
   ["Prompt", "each prompt slot, with {subject} replaced by the LoRA trigger phrase"],
   ["Seed", "a new random seed for every image"],
   ["LoRAs", "only this image's LoRA, at the strength set above"],
-  ["Checkpoint", `one image for each A and B checkpoint, chosen by A/B grades · LoRA pictures use ${thumbnailCheckpointFact(config)}`],
+  // With nothing graded A or B there is no list to point at, and a fact that points at a card
+  // that was never drawn explains nothing.
+  ["Checkpoint", `${checkpointRows(config).length ? "one image for each checkpoint ticked below" : "nothing until a checkpoint is graded A or B"} · LoRA pictures use ${thumbnailCheckpointFact(config)}`],
 ];
-// The checkpoints that may supply a LoRA's picture, in the order the server says pictures prefer
-// them. A saved choice can stop being choosable - its checkpoint left the A/B grades or the
-// installed workflows - and is then reported as what it is rather than quietly dropped, so the
-// settings explain why the pictures did not change.
-const thumbnailChoices = (config) => (config.thumbnail_checkpoint_choices || []);
-const chosenCheckpoint = (config) => thumbnailChoices(config).find((choice) => choice.id === config.thumbnail_checkpoint_id);
-const thumbnailCheckpointFact = (config) => config.thumbnail_checkpoint_id
-  ? (chosenCheckpoint(config)?.label || `${config.thumbnail_checkpoint_id}, which is no longer available`)
-  : "the highest-ranked checkpoint, unless a first-slot image is favorited";
+// The graded checkpoints a Demo Reel may draw from, in the order the server says to list them: the
+// rating account's A then B. Being listed is not being developed — that is
+// `qualifying_checkpoint_ids`, which is what the list below lets someone choose.
+const checkpointRows = (config) => config.thumbnail_checkpoint_choices || [];
+const developedIds = (config) => new Set(config.qualifying_checkpoint_ids ?? checkpointRows(config).map((choice) => choice.id));
+// Only a developed checkpoint has an image to be a picture, so a checkpoint left out of the list
+// is not on offer here either.
+const thumbnailChoices = (config) => checkpointRows(config).filter((choice) => developedIds(config).has(choice.id));
+const pictureCheckpoint = (config) => checkpointRows(config).find((choice) => choice.id === config.thumbnail_checkpoint_id);
+// A saved picture choice can stop being usable in two different ways, and the settings say which:
+// a checkpoint left out of the developed list is one tick away from working again, while one the
+// rating account no longer ranks A or B needs a different account or a different checkpoint. A
+// choice that is merely waiting for its first image keeps its label and no complaint.
+const thumbnailCheckpointFact = (config) => {
+  if (!config.thumbnail_checkpoint_id) return "the highest-ranked checkpoint, unless a first-slot image is favorited";
+  const choice = pictureCheckpoint(config);
+  if (!choice) return `${config.thumbnail_checkpoint_id}, which is no longer available`;
+  return developedIds(config).has(choice.id) ? choice.label : `${choice.label}, which is not being developed`;
+};
 
 function statusMarkup(config) {
   const states = config.progress?.states || {};
@@ -251,6 +263,51 @@ const familySummary = (config, details) => (config.libraries || [])
   })
   .join(" · ");
 
+// Half of every Demo Reel image is chosen here: the prompt slots say what an image is about, this
+// says which checkpoints it is made with. A checkpoint left out stops being developed and its
+// images go, which is the same rule an administrator already knows from switching a model family
+// or a single LoRA off, so it is said on the card rather than discovered after a Save.
+function checkpointRowMarkup(config, choice) {
+  const developing = developedIds(config).has(choice.id);
+  const note = choice.note
+    ? `<span class="demo-reel-checkpoint-note is-problem">${escape(choice.note)}</span>`
+    : developing
+      ? `<span class="demo-reel-checkpoint-note">${choice.images ? `${choice.images} ${choice.images === 1 ? "image" : "images"}` : "nothing yet · next in the queue"}</span>`
+      : "";
+  const picture = choice.id === config.thumbnail_checkpoint_id;
+  // One label wraps the row, so the whole line is the hit area and the checkbox is announced with
+  // its checkpoint, its grade, and the family that publishes it rather than as "checkbox".
+  const name = [choice.label, choice.tier && `tier ${choice.tier}`, choice.library_label].filter(Boolean).join(", ");
+  return `<li class="demo-reel-checkpoint-row${developing ? "" : " is-off"}">
+    <label class="demo-reel-checkpoint-pick"><input type="checkbox" data-demo-checkpoint="${escape(choice.id)}" aria-label="${escape(name)}"${developing ? " checked" : ""} /><span class="demo-reel-checkpoint-tier" data-tier="${escape(choice.tier || "")}">${escape(choice.tier || "?")}</span><span class="demo-reel-checkpoint-name">${escape(choice.label)}</span><span class="demo-reel-checkpoint-family">${escape(choice.library_label || "")}</span><span class="demo-reel-checkpoint-aside">${note}${picture ? `<span class="demo-reel-checkpoint-picture"${developing ? "" : " data-stale"}>${icon("reel")}<span>LoRA picture${developing ? "" : " · not being developed"}</span></span>` : ""}</span></label>
+  </li>`;
+}
+
+function checkpointCardMarkup(config) {
+  const rows = checkpointRows(config);
+  // With nothing graded A or B there is no list to edit and nothing is developed, which the
+  // grading choice below already explains; an empty card here would only repeat it.
+  if (!rows.length) return "";
+  const developing = developedIds(config);
+  const automatic = config.qualifying_checkpoint_ids === null || config.qualifying_checkpoint_ids === undefined;
+  const perLora = developing.size * config.slots.length;
+  const state = !developing.size
+    ? '<p class="demo-reel-checkpoints-state is-empty">No checkpoints selected · on Save, no Demo Reel images are generated and every existing Demo Reel image is removed for everyone.</p>'
+    : automatic
+      ? `<p class="demo-reel-checkpoints-state">Automatic · every checkpoint ${escape(config.rating_username || "the rating account")} ranks A or B, including any graded later. Change a tick to choose the list yourself.</p>`
+      : `<p class="demo-reel-checkpoints-state">Your choice · only the checkpoints ticked below are developed; the others keep no Demo Reel images. ${escape(config.rating_username || "The rating account")} still decides the order they are made and shown in.</p>`;
+  return `<section class="demo-reel-checkpoints" data-demo-checkpoints>
+    <header class="lm-group-heading demo-reel-checkpoints-heading">
+      <h3>Develop these checkpoints</h3>
+      <span class="demo-reel-checkpoints-count">${escape(`${developing.size} of ${rows.length} selected · ${perLora} image${perLora === 1 ? "" : "s"} per LoRA`)}</span>
+      <div class="lm-group-actions"><button type="button" class="button low demo-reel-checkpoint-tool" data-demo-action="checkpoint-all">Select all</button><button type="button" class="button low demo-reel-checkpoint-tool" data-demo-action="checkpoint-none">Clear</button></div>
+    </header>
+    ${state}
+    <ul class="demo-reel-checkpoint-list">${rows.map((choice) => checkpointRowMarkup(config, choice)).join("")}</ul>
+    <p class="demo-reel-checkpoints-foot"><button type="button" class="button low" data-demo-action="checkpoint-auto"${automatic ? " hidden" : ""}>Restore automatic · every A and B checkpoint</button><span class="demo-reel-help">Unchecking a checkpoint removes the Demo Reel images it made for every LoRA, the same as switching a model family off. Nothing else is regenerated or invalidated.</span></p>
+  </section>`;
+}
+
 function generationMarkup(config, details, users, context) {
   const idle = Math.max(1, Math.round((config.idle_seconds || 300) / 60));
   // A LoRA switched off sits on the LoRA card, not in these settings, so the settings say that
@@ -263,19 +320,24 @@ function generationMarkup(config, details, users, context) {
   // favorites still win, and this decides the picture for every LoRA that has none.
   const saved = config.thumbnail_checkpoint_id || "";
   const choices = thumbnailChoices(config);
-  const unavailable = saved && !choices.some((choice) => choice.id === saved)
-    ? `<option value="${escape(saved)}" selected>${escape(saved)} · no longer available</option>`
+  const choosable = choices.some((choice) => choice.id === saved);
+  // A saved picture checkpoint that is graded but left out of the developed list still has a
+  // label, and the reason it is not on offer is one the card above can fix in one tick; only a
+  // checkpoint outside the grades entirely is a name with no story to tell.
+  const unavailable = saved && !choosable
+    ? `<option value="${escape(saved)}" selected>${escape(pictureCheckpoint(config) ? `${pictureCheckpoint(config).label} · not being developed` : `${saved} · no longer available`)}</option>`
     : "";
   const checkpointOptions = `${unavailable || `<option value=""${saved ? "" : " selected"}>Automatic · highest-ranked checkpoint</option>`}${choices.map((choice) => `<option value="${escape(choice.id)}" ${choice.id === saved ? "selected" : ""}>${escape(choice.label)}</option>`).join("")}`;
   return `<details class="demo-reel-generation" data-demo-details="generation">
     <summary class="demo-reel-generation-summary"><span class="demo-reel-generation-title">Model families</span><span class="demo-reel-generation-state">${escape(familySummary(config, details))}</span></summary>
     <p class="demo-reel-how"><strong>How this works.</strong> Prompt slots decide what is drawn. A model family decides how — the workflow, its settings, and how strongly each LoRA is applied. Images appear after everyone has been idle for ${idle} minutes.</p>
+    ${checkpointCardMarkup(config)}
     <div class="demo-reel-families">${(config.libraries || []).map((library) => familyMarkup(library, config, details, context)).join("") || '<p class="demo-reel-empty">No published LoRA libraries are available.</p>'}</div>
     <div class="demo-reel-grading">
       <label class="field demo-reel-grading-user"><span>A/B ratings from</span><select id="demo-reel-rating-user" data-demo-rating-user>${users.map((user) => `<option value="${escape(user.id)}" ${user.id === config.rating_user_id ? "selected" : ""}>${escape(user.username)}</option>`).join("")}</select></label>
       <label class="field demo-reel-grading-checkpoint"><span>LoRA pictures from</span><select id="demo-reel-thumbnail-checkpoint" data-demo-thumbnail-checkpoint>${checkpointOptions}</select></label>
       <label class="switch demo-reel-pause"><input type="checkbox" id="demo-reel-paused" data-demo-paused ${config.paused ? "checked" : ""} /><span aria-hidden="true"></span><em>${config.paused ? "Paused" : "Active"}</em></label>
-      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify, and they set this picture choice's order. Every qualifying checkpoint still gets one image per prompt slot; this only chooses which of them the LoRA gallery shows, and it changes nothing about what is generated. A favorited first-slot image always supplies that LoRA's picture instead, and a checkpoint with no image in the first slot yet falls back to the highest-ranked one until it has. Pausing stops new images until someone resumes it.${excludedNote}</p>
+      <p class="demo-reel-help">Only this account's A/B grades decide which checkpoints qualify, and they set the order of the list above and of this picture choice. A checkpoint ticked there gets one image per prompt slot for every LoRA; one left out gets none, and its images go away. Naming one here only chooses which of those images the LoRA gallery shows, and changes nothing about what is generated. A favorited first-slot image always supplies that LoRA's picture instead, and a checkpoint with no image in the first slot yet falls back to the highest-ranked one until it has. Pausing stops new images until someone resumes it.${excludedNote}</p>
     </div>
   </details>`;
 }
@@ -571,6 +633,14 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
         if (settings.strengths[context.libraryKey]) delete settings.strengths[context.libraryKey][context.identity];
         renderSettings();
       }
+      else if (["checkpoint-all", "checkpoint-none", "checkpoint-auto"].includes(kind)) {
+        // All and none are still a choice the administrator made; only automatic gives the list
+        // back, so that a checkpoint graded next week joins without anyone remembering to widen it.
+        settings.qualifying_checkpoint_ids = kind === "checkpoint-all"
+          ? checkpointRows(settings).map((choice) => choice.id)
+          : kind === "checkpoint-none" ? [] : null;
+        renderSettings();
+      }
       else if (kind === "slot-delete") {
         const index = settings.slots.findIndex((slot) => slot.id === id);
         if (index < 0) return;
@@ -602,6 +672,16 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
       settings.strengths[context.libraryKey] ||= {};
       if (input.value === "") delete settings.strengths[context.libraryKey][context.identity];
       else settings.strengths[context.libraryKey][context.identity] = Number(input.value);
+    } else if (input.matches("[data-demo-checkpoint]")) {
+      // One tick moves from the automatic state to a chosen list, and from a chosen list back to
+      // nothing chosen; the order stored is always the grading account's, never the click order.
+      const picked = developedIds(settings);
+      const identity = input.dataset.demoCheckpoint;
+      if (input.checked) picked.add(identity);
+      else picked.delete(identity);
+      settings.qualifying_checkpoint_ids = checkpointRows(settings).map((choice) => choice.id).filter((id) => picked.has(id));
+      renderSettings();
+      editor.querySelector(`[data-demo-checkpoint="${CSS.escape(identity)}"]`)?.focus();
     } else if (data.demoResolution) {
       const slot = settings.slots.find((slot) => slot.id === data.demoId);
       slot.resolutions ||= {}; slot.resolutions[data.demoFamily] ||= {};
@@ -628,9 +708,12 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
   editor.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = editor.querySelector('[type="submit"]');
+    // The only settings change here that deletes something somebody else is looking at, and the
+    // card has been saying so since the last tick; an empty list still gets one more question.
+    if (!developedIds(settings).size && !window.confirm("No checkpoints are selected. Saving removes every Demo Reel image for every account and generates nothing new until a checkpoint is selected. Save anyway?")) return;
     button.disabled = true;
     try {
-      const payload = Object.fromEntries(["revision", "paused", "rating_user_id", "thumbnail_checkpoint_id", "slots", "recipes", "strengths"].map((key) => [key, settings[key]]));
+      const payload = Object.fromEntries(["revision", "paused", "rating_user_id", "thumbnail_checkpoint_id", "qualifying_checkpoint_ids", "slots", "recipes", "strengths"].map((key) => [key, settings[key]]));
       await api("/api/admin/demo-reels", { method: "PUT", body: JSON.stringify(payload) });
       editor.close();
       notify(`Demo Reel settings saved. Generation waits for ${Math.max(1, Math.round((settings.idle_seconds || 300) / 60))} quiet minutes.`, "success");
