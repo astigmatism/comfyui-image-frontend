@@ -261,9 +261,12 @@ size and layout return after a reload or a walk into a collection and back, and 
 its own. The account's `gallery_scale` and `settings.gallery_layout` seed a browser that has never
 chosen and are echoed back unchanged afterwards, which keeps one browser's thumbnails from opening a
 settings conflict in another. The LoRA dialog's thumbnail size follows the same rule under
-`cif.lora-thumbnail-scale.v1`. The model-rank filter's five toggles are withdrawn from the header in
-this release — `RANK_FILTER_CONTROLS_VISIBLE` in `gallery-view.mjs` puts them back beside Favorites —
-while rank filtering keeps applying to reads, counts, group membership, and scoped bulk operations.
+`cif.lora-thumbnail-scale.v1`, and an individual Demo Reel's follows it under
+`cif.demo-reel-thumbnail-scale.v1` — that one is stored as a share of the gallery scale rather than
+as a width, so sizing a reel never overwrites the size chosen for the gallery. The model-rank
+filter's five toggles are withdrawn from the header in this release —
+`RANK_FILTER_CONTROLS_VISIBLE` in `gallery-view.mjs` puts them back beside Favorites — while rank
+filtering keeps applying to reads, counts, group membership, and scoped bulk operations.
 
 The toolbar's generation activity indicator sits between Gallery scale and the account menu.
 It displays Current and All remaining times, mirrored in the photo viewer and browser title.

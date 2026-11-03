@@ -637,6 +637,14 @@ export function formatGalleryView({ layout, scale }) {
   return JSON.stringify({ layout: normalizeGalleryLayout(layout), scale: normalizeGalleryScale(scale) });
 }
 
+// Two dialogs scale their cards with a slider of their own — the LoRA library and an individual
+// Demo Reel — and both cover 50% to 150% in steps of five so the two controls cannot drift apart.
+// Like the gallery scale above, the chosen size belongs to the browser that chose it.
+export function normalizeThumbnailScale(value) {
+  const scale = Number(value);
+  return value === null || value === "" || !Number.isFinite(scale) ? 100 : Math.max(50, Math.min(150, Math.round(scale / 5) * 5));
+}
+
 export function photoViewerImageLayout(imageWidth, imageHeight, viewportWidth, viewportHeight) {
   const dimensions = [imageWidth, imageHeight, viewportWidth, viewportHeight].map(Number);
   if (dimensions.some((value) => !Number.isFinite(value) || value <= 0)) return null;

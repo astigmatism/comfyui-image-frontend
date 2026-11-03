@@ -1,5 +1,5 @@
 import { icon } from "./icons.mjs";
-import { isAdvancedInput, sortInterfaceInputs } from "./lib.mjs";
+import { isAdvancedInput, normalizeThumbnailScale, sortInterfaceInputs } from "./lib.mjs";
 import { controlMarkup, demoReelGalleryCardMarkup, demoReelPlaceholderCardMarkup } from "./render.mjs";
 import { createThumbnailScheduler, installThumbnails } from "./thumbnails.mjs";
 
@@ -50,11 +50,14 @@ function reelStatusText(view) {
   ].filter(Boolean).join(" · ");
 }
 
-export function demoReelHeaderMarkup(view) {
+// The slider is the LoRA library's, wearing this dialog: 50% to 150% of this browser's Gallery
+// scale, so 100% is exactly the width the main viewport shows and the reel stays the same grid.
+// The chosen size belongs to the browser that chose it, like the gallery scale and the library's.
+export function demoReelHeaderMarkup(view, thumbnailScale = 100) {
   const manage = view.can_manage
     ? `<button type="button" class="icon-button lm-header-button" data-demo-action="settings" aria-label="Edit Demo Reel" title="Edit Demo Reel">${icon("reel")}</button>`
     : "";
-  return `<header class="dialog-header lm-dialog-header demo-reel-header"><div class="demo-reel-header-copy"><h2 id="demo-reel-title">${escape(view.label)} · Demo Reel</h2><p role="status" data-demo-reel-status>${escape(reelStatusText(view))}</p></div><div class="lm-header-actions">${manage}<button type="button" class="icon-button lm-close-button" data-demo-action="close" aria-label="Close Demo Reel" title="Close Demo Reel">×</button></div></header>`;
+  return `<header class="dialog-header lm-dialog-header demo-reel-header"><div class="demo-reel-header-copy"><h2 id="demo-reel-title">${escape(view.label)} · Demo Reel</h2><p role="status" data-demo-reel-status>${escape(reelStatusText(view))}</p></div><label class="lm-scale-control"><span>Thumbnail size</span><input type="range" min="50" max="150" step="5" value="${thumbnailScale}" data-demo-reel-scale aria-label="Demo Reel thumbnail size" aria-valuetext="${thumbnailScale}%" /><output data-demo-reel-scale-value>${thumbnailScale}%</output></label><div class="lm-header-actions">${manage}<button type="button" class="icon-button lm-close-button" data-demo-action="close" aria-label="Close Demo Reel" title="Close Demo Reel">${icon("close")}</button></div></header>`;
 }
 
 function slotGroupMarkup(view, slot, index, collapsed) {
@@ -82,12 +85,12 @@ export function demoReelGroupsMarkup(view) {
   return `${groups}${empty}<div class="gallery-sentinel demo-reel-sentinel" data-demo-reel-sentinel${hasMore ? "" : " hidden"}>${hasMore ? '<button type="button" class="button secondary" data-demo-action="more">Load more</button>' : ""}</div>`;
 }
 
-export function demoReelShellMarkup(view) {
-  return `<div class="dialog-frame demo-reel-frame">${demoReelHeaderMarkup(view)}<p class="demo-reel-notice form-error" role="alert" data-demo-reel-notice${view.message ? "" : " hidden"}>${escape(view.message || "")}</p><div class="demo-reel-content" data-demo-reel-content>${demoReelGroupsMarkup(view)}</div></div>`;
+export function demoReelShellMarkup(view, thumbnailScale = 100) {
+  return `<div class="dialog-frame demo-reel-frame">${demoReelHeaderMarkup(view, thumbnailScale)}<p class="demo-reel-notice form-error" role="alert" data-demo-reel-notice${view.message ? "" : " hidden"}>${escape(view.message || "")}</p><div class="demo-reel-content" data-demo-reel-content>${demoReelGroupsMarkup(view)}</div></div>`;
 }
 
-export function demoReelGalleryMarkup(view) {
-  return demoReelShellMarkup(view);
+export function demoReelGalleryMarkup(view, thumbnailScale = 100) {
+  return demoReelShellMarkup(view, thumbnailScale);
 }
 
 
@@ -348,7 +351,7 @@ export function demoReelSettingsMarkup(config, details = {}, context = {}, users
   return `<form class="dialog-frame demo-reel-settings-frame" data-demo-settings-form>
     <header class="dialog-header demo-reel-settings-header">
       <div class="demo-reel-header-copy"><h2 id="demo-reel-settings-title">Demo Reel settings</h2><p>Shared prompts · every installed LoRA gets one image per slot</p></div>
-      <div class="demo-reel-header-side">${statusMarkup(config)}<button type="button" class="icon-button" data-demo-action="cancel-settings" aria-label="Close Demo Reel settings">×</button></div>
+      <div class="demo-reel-header-side">${statusMarkup(config)}<button type="button" class="icon-button lm-close-button" data-demo-action="cancel-settings" aria-label="Close Demo Reel settings" title="Close Demo Reel settings">${icon("close")}</button></div>
     </header>
     <p class="demo-reel-notice form-error" role="alert" data-demo-settings-error${config.error ? "" : " hidden"}>${escape(config.error || "")}</p>
     <div class="demo-reel-content">
@@ -382,6 +385,14 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
   root.append(gallery, editor, transfer);
   let view = null, context = {}, settings = null, users = [], timer = null, loading = false, revision = 0, dragId = null, transferDraft = null;
   let thumbnails = null, paging = null, headerMarkup = "";
+  // The card size this browser chose for this dialog, held as a multiplier of that browser's
+  // Gallery scale. It is written to the dialog element itself, which outlives every render of the
+  // grid inside it, so a refresh or a reopen cannot lose it.
+  let thumbnailScale = 100;
+  const scaleStorageKey = "cif.demo-reel-thumbnail-scale.v1";
+  try { thumbnailScale = normalizeThumbnailScale(localStorage.getItem(scaleStorageKey)); } catch { /* The slider still works when browser storage is unavailable. */ }
+  const applyThumbnailScale = () => gallery.style.setProperty("--demo-reel-card-scale", String(thumbnailScale / 100));
+  applyThumbnailScale();
   const collapsed = new Set();
   const details = {};
   const items = () => (view?.entries || []).flatMap((entry) => entry.generation ? [entry.generation] : []);
@@ -420,13 +431,17 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
   function syncHeader() {
     const notice = gallery.querySelector("[data-demo-reel-notice]");
     if (notice) { notice.hidden = !view.message; notice.textContent = view.message || ""; }
-    const markup = demoReelHeaderMarkup(marked());
+    const markup = demoReelHeaderMarkup(marked(), thumbnailScale);
     const header = gallery.querySelector(".demo-reel-header");
     if (!header || markup === headerMarkup) { headerMarkup = markup; return; }
     const focused = header.contains(document.activeElement) ? document.activeElement.dataset.demoAction : null;
+    const sliding = header.contains(document.activeElement) && document.activeElement.matches("[data-demo-reel-scale]");
     headerMarkup = markup;
     header.outerHTML = markup;
     if (focused) gallery.querySelector(`.demo-reel-header [data-demo-action="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+    // A poll that lands between two keystrokes of someone setting the size must not hand the
+    // slider away; the replaced input is the same size, so focus simply goes back to it.
+    else if (sliding) gallery.querySelector(".demo-reel-header [data-demo-reel-scale]")?.focus({ preventScroll: true });
   }
   // The dialog keeps its shell, its scroller, and its thumbnail observers: a refresh
   // replaces the grid only when the fingerprint moved, and hands the hover state and
@@ -435,8 +450,8 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
     if (!view) return;
     const content = contentHost();
     if (!content) {
-      headerMarkup = demoReelHeaderMarkup(marked());
-      gallery.innerHTML = demoReelShellMarkup(marked());
+      headerMarkup = demoReelHeaderMarkup(marked(), thumbnailScale);
+      gallery.innerHTML = demoReelShellMarkup(marked(), thumbnailScale);
     } else {
       const scroll = content.scrollTop;
       preserveHover(() => { content.innerHTML = demoReelGroupsMarkup(marked()); });
@@ -548,6 +563,20 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
     timer = setInterval(() => { if (!document.hidden && !editor.open && !transfer.open) void refresh(); }, 5000);
   }
   function close() { gallery.close(); }
+  // Sizing the reel's cards is a grid change and nothing else. The cards keep their nodes, so
+  // their thumbnail observers, hover state, scroll position, and paging sentinel all stay put;
+  // only the dialog's own custom property and the control's read-out move. The header fingerprint
+  // is rewritten to match, so the five-second poll finds the header it already drew.
+  gallery.addEventListener("input", (event) => {
+    if (!event.target.matches("[data-demo-reel-scale]")) return;
+    thumbnailScale = normalizeThumbnailScale(event.target.value);
+    event.target.setAttribute("aria-valuetext", `${thumbnailScale}%`);
+    const readout = gallery.querySelector("[data-demo-reel-scale-value]");
+    if (readout) readout.value = `${thumbnailScale}%`;
+    applyThumbnailScale();
+    headerMarkup = demoReelHeaderMarkup(marked(), thumbnailScale);
+    try { localStorage.setItem(scaleStorageKey, String(thumbnailScale)); } catch { /* Keep the in-memory preference. */ }
+  });
   gallery.addEventListener("close", () => {
     revision += 1;
     clearInterval(timer);

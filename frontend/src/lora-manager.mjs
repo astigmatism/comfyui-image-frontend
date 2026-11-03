@@ -1,5 +1,6 @@
 import { loraDefaultPositiveStrength, loraStackError } from "./lora-stack.mjs";
-import { loraManagerMarkup, moveEnabledLora, normalizeLoraThumbnailScale, reconcileLoraDraft, subjectPreview } from "./lora-gallery.mjs";
+import { loraManagerMarkup, moveEnabledLora, reconcileLoraDraft, subjectPreview } from "./lora-gallery.mjs";
+import { normalizeThumbnailScale } from "./lib.mjs";
 export { loraManagerMarkup } from "./lora-gallery.mjs";
 
 const encoded = (value) => encodeURIComponent(value);
@@ -31,7 +32,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   let managementToken = 0;
   let thumbnailScale = 100;
   const scaleStorageKey = "cif.lora-thumbnail-scale.v1";
-  try { thumbnailScale = normalizeLoraThumbnailScale(localStorage.getItem(scaleStorageKey)); } catch { /* The slider still works when browser storage is unavailable. */ }
+  try { thumbnailScale = normalizeThumbnailScale(localStorage.getItem(scaleStorageKey)); } catch { /* The slider still works when browser storage is unavailable. */ }
   const dialog = () => root.querySelector("#lora-manager-dialog");
   // Image work outlives the selection draft, including Cancel and owner closure.
   const imageStores = new Map();
@@ -381,7 +382,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   root.addEventListener("input", (event) => {
     if (!draft) return;
     if (event.target.matches("[data-lora-thumbnail-scale]")) {
-      thumbnailScale = normalizeLoraThumbnailScale(event.target.value);
+      thumbnailScale = normalizeThumbnailScale(event.target.value);
       event.target.setAttribute("aria-valuetext", `${thumbnailScale}%`);
       const frame = dialog().querySelector(".lm-dialog-frame");
       frame.style.setProperty("--lm-card-size", `${260 * thumbnailScale / 100}px`);

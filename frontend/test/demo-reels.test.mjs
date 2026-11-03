@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { demoReelGalleryMarkup, demoReelPath, demoReelSettingsMarkup, expandDemoReelPrompt, moveDemoReelSlot } from "../src/demo-reels.mjs";
+import { demoReelGalleryMarkup, demoReelHeaderMarkup, demoReelPath, demoReelSettingsMarkup, expandDemoReelPrompt, moveDemoReelSlot } from "../src/demo-reels.mjs";
 import { createActivityReporter } from "../src/user-activity.mjs";
 
 test("slot prompts expand every subject placeholder literally and slots reorder without edits", () => {
@@ -104,6 +104,35 @@ test("the title area carries the reel's one control and paging follows the galle
   const collapsed = demoReelGalleryMarkup({ ...reelView(), collapsed: new Set(["s"]) });
   assert.match(collapsed, /class="prompt-group-collapse" data-demo-action="toggle-slot" data-demo-id="s" aria-expanded="false"/);
   assert.match(collapsed, /id="demo-reel-slot-s" hidden/);
+});
+
+test("the reel sizes its cards from inside the dialog, beside the title rather than among the actions", () => {
+  const header = (scale) => demoReelHeaderMarkup(reelView({ manage: true }), scale);
+  // The control is the LoRA library's own: same range, step, accessible name, value, and
+  // read-out, so the two dialogs cannot drift apart. 100% means this browser's Gallery scale.
+  assert.match(header(100), /<label class="lm-scale-control"><span>Thumbnail size<\/span><input type="range" min="50" max="150" step="5" value="100" data-demo-reel-scale aria-label="Demo Reel thumbnail size" aria-valuetext="100%" \/><output data-demo-reel-scale-value>100%<\/output><\/label>/);
+  assert.match(header(130), /value="130" data-demo-reel-scale aria-label="Demo Reel thumbnail size" aria-valuetext="130%" \/><output data-demo-reel-scale-value>130%<\/output>/);
+  // The slider is not an action: the cluster beside it stays the reel icon and Close, which is
+  // what the gallery's own header count asserts.
+  const markup = header(100);
+  assert.ok(markup.indexOf("data-demo-reel-scale") < markup.indexOf("lm-header-actions"));
+  const actions = markup.slice(markup.indexOf("lm-header-actions"));
+  assert.deepEqual([...actions.matchAll(/data-demo-action="([a-z-]+)"/g)].map((match) => match[1]), ["settings", "close"]);
+  // The default is the Gallery scale itself, so a reel nobody sized draws as it always did.
+  assert.match(demoReelHeaderMarkup(reelView()), /value="100"/);
+});
+
+test("a dialog closes with the application's glyph, not a multiplication sign", () => {
+  // Every dialog header this change touches draws the stroked close glyph the icons beside it
+  // use, sized and stroked by the same rule, instead of a text character at text size.
+  const close = (markup) => markup.slice(markup.indexOf("lm-close-button"), markup.indexOf("lm-close-button") + 400);
+  for (const markup of [demoReelGalleryMarkup(reelView()), demoReelGalleryMarkup(reelView({ manage: true }))]) {
+    assert.match(close(markup), /aria-label="Close Demo Reel" title="Close Demo Reel"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" \/><\/svg>/);
+    assert.doesNotMatch(close(markup), /×/);
+  }
+  const settings = demoReelSettingsMarkup({ slots: [], recipes: {}, strengths: {}, libraries: [] }, {}, {}, []);
+  assert.match(settings, /class="icon-button lm-close-button" data-demo-action="cancel-settings" aria-label="Close Demo Reel settings" title="Close Demo Reel settings"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" \/><\/svg>/);
+  assert.doesNotMatch(close(settings), /×/);
 });
 
 test("settings keep random seeds implicit and offer independent prompt save and cancel", () => {

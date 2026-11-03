@@ -38,6 +38,7 @@ import {
   formatTimelineMonth,
   formatGalleryView,
   normalizeGalleryScale,
+  normalizeThumbnailScale,
   parseGalleryView,
   generationSourceModelVariant,
   hasActiveGeneration,
@@ -667,6 +668,20 @@ test("a browser's own gallery view round-trips and refuses anything else", () =>
   assert.equal(formatGalleryView({ layout: "classic", scale: 4_000 }), JSON.stringify({ layout: "classic", scale: 100 }));
   assert.equal(normalizeGalleryScale(undefined), DEFAULT_GALLERY_SCALE);
   assert.equal(normalizeGalleryScale("62.4"), 62);
+});
+
+test("a dialog's thumbnail size stays on the five percent ladder both dialogs share", () => {
+  // The LoRA library and the Demo Reel clamp to the same helper, so a value a browser
+  // was left with — an edited one, or one from a wider slider — lands on a step.
+  assert.equal(normalizeThumbnailScale(null), 100);
+  assert.equal(normalizeThumbnailScale(""), 100);
+  assert.equal(normalizeThumbnailScale("anything"), 100);
+  assert.equal(normalizeThumbnailScale("130"), 130);
+  assert.equal(normalizeThumbnailScale(100), 100);
+  assert.equal(normalizeThumbnailScale(132), 130);
+  assert.equal(normalizeThumbnailScale(133), 135);
+  assert.equal(normalizeThumbnailScale(12), 50);
+  assert.equal(normalizeThumbnailScale(4000), 150);
 });
 
 test("slideshow selects only the newest fully completed image generation", () => {

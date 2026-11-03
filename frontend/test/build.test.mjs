@@ -75,7 +75,9 @@ test("production build emits one content-addressed frontend module graph", async
     // The sidebar tile carries the shared copy glyph, so the LoRA summary now draws
     // on the icon module the manager gallery and render already use.
     lora_stack: new Set([first.assets.icons]),
-    lora_manager: new Set([first.assets.lora_stack, first.assets.lora_gallery]),
+    // The manager reads the shared dialog thumbnail clamp, the same one the Demo Reel
+    // slider uses, straight from the module that keeps the gallery's own scale.
+    lora_manager: new Set([first.assets.lora_stack, first.assets.lora_gallery, first.assets.lib]),
     lora_gallery: new Set([first.assets.icons, first.assets.lora_stack, first.assets.lib, first.assets.admin_loras]),
     icons: new Set(),
     admin_loras: new Set(),

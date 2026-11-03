@@ -42,6 +42,9 @@ async function openDemoReel(picker, card) {
 }
 
 test("Demo Reel slots save independently, and caption browsing preserves the LoRA selection draft", async ({ page }, testInfo) => {
+  // This journey configures the reel, supplies images, browses it, sizes it, and reloads to
+  // prove the size is this browser's own.
+  test.setTimeout(90_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const session = await signIn(page);
@@ -162,10 +165,40 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await expect(reel.locator(".lm-header-actions [data-demo-action]")).toHaveCount(2);
   await expect(reel.getByRole("button", { name: "Edit Demo Reel", exact: true })).toBeVisible();
   await expect(reel.getByRole("button", { name: /Retry|background generation/ })).toHaveCount(0);
+  // Closing is drawn with the application's stroked glyph, the same treatment as the reel icon
+  // beside it, so the button carries no text and the glyph is exactly as large as its neighbours.
+  const closeSize = await reel.locator(".lm-header-actions .lm-close-button svg").evaluate((node) => [node.getBoundingClientRect().width, node.getBoundingClientRect().height]);
+  expect(closeSize).toEqual([18, 18]);
+  expect(await reel.locator(".lm-header-actions .lm-close-button").textContent()).toBe("");
+  expect(await picker.locator(".lm-close-button svg").evaluate((node) => node.querySelector("path")?.getAttribute("d"))).toBe("m6 6 12 12M18 6 6 18");
   await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-desktop.png"), animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
+  // The header gained a size control, so on a phone it wraps below the title instead of
+  // pushing the dialog wider than the screen.
+  expect(await reel.evaluate((dialog) => [dialog.scrollWidth <= dialog.clientWidth, dialog.querySelector(".demo-reel-header").scrollWidth <= dialog.querySelector(".demo-reel-header").clientWidth])).toEqual([true, true]);
   await reel.screenshot({ path: testInfo.outputPath("demo-reel-gallery-mobile.png"), animations: "disabled" });
   await page.setViewportSize({ width: 1440, height: 1000 });
+  // The dialog sizes its own cards, as a share of this browser's gallery card width: 100% is
+  // what the main viewport shows, and the wall reflows the moment the slider moves.
+  const scale = reel.getByRole("slider", { name: "Demo Reel thumbnail size" });
+  await expect(scale).toHaveValue("100");
+  await expect(reel.locator("[data-demo-reel-scale-value]")).toHaveText("100%");
+  const galleryCardWidth = () => firstCard.evaluate((card) => card.getBoundingClientRect().width);
+  const atDefault = await galleryCardWidth();
+  await scale.fill("150");
+  await expect(scale).toHaveAttribute("aria-valuetext", "150%");
+  await expect(reel.locator("[data-demo-reel-scale-value]")).toHaveText("150%");
+  await expect(reel).toHaveAttribute("style", /--demo-reel-card-scale: 1\.5/);
+  expect(await galleryCardWidth()).toBeGreaterThanOrEqual(atDefault * 1.4);
+  // The smallest step stops at the narrowest card the gallery itself draws, so a reel sized
+  // down inside a small gallery still shows a card the card design was built for.
+  await scale.fill("50");
+  expect(await galleryCardWidth()).toBeGreaterThanOrEqual(170);
+  // The keyboard drives it too, and the cards are still the same observed nodes.
+  await scale.press("ArrowRight");
+  await expect(reel.locator("[data-demo-reel-scale-value]")).toHaveText("55%");
+  await expect(firstCard.locator(".card-media img")).toBeVisible();
+  await scale.fill("100");
   // Favoriting travels to the reel's own action endpoint, and the card keeps the state.
   const favorited = page.waitForResponse((response) => response.url().endsWith("/actions") && response.request().method() === "POST");
   await firstCard.getByRole("button", { name: "Add to Favorites" }).click();
@@ -194,9 +227,23 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await expect(firstCard).toBeVisible();
   await expect.poll(() => firstCard.locator(".card-media img").getAttribute("data-thumbnail-state"), { timeout: 20_000 }).toBe("ready");
   expect(await firstCard.locator(".card-media img").getAttribute("src")).toMatch(/^blob:/);
+  // Left sized up on purpose: the size belongs to this browser and to nobody else, so it has to
+  // come back when the page reloads and the reel has to open on it without the account asked.
+  await scale.fill("150");
   await reel.getByRole("button", { name: "Close Demo Reel" }).click();
   await picker.getByRole("button", { name: "Cancel", exact: true }).click();
   expect((await (await page.request.get("/api/admin/demo-reels")).json()).slots).toEqual(config.slots);
+  expect(await page.evaluate(() => localStorage.getItem("cif.demo-reel-thumbnail-scale.v1"))).toBe("150");
+  await page.reload();
+  await expect(page.locator("#workflow-source")).toBeEnabled();
+  await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
+  await openDemoReel(picker, card);
+  await expect(reel.getByRole("slider", { name: "Demo Reel thumbnail size" })).toHaveValue("150");
+  await expect(reel).toHaveAttribute("style", /--demo-reel-card-scale: 1\.5/);
+  await reel.getByRole("button", { name: "Close Demo Reel" }).click();
+  await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+  // A chosen size that outlives the test would silently resize every later reel in this file.
+  await page.evaluate(() => localStorage.removeItem("cif.demo-reel-thumbnail-scale.v1"));
   expect(errors).toEqual([]);
 });
 

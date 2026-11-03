@@ -7,10 +7,16 @@ holds — the slot's own prompt stays available as a tooltip rather than as a li
 text. Inside each group sit the gallery's own cards, whose controls — details,
 download, favorite, recall, re-run, copy, move, regenerate, and delete — are
 revealed on hover and never written underneath the image. Paging follows the
-viewport too, so a long reel loads as it is scrolled. Beside the dialog's close
-button, an administrator is offered one icon: **Edit Demo Reel**. Retrying failed
-images and pausing the background worker are the business of the process that
-produces them, so neither is offered while browsing the results; pausing remains
+viewport too, so a long reel loads as it is scrolled. The header's **Thumbnail
+size** slider is the LoRA library's own control, and it scales the reel's cards
+between 50% and 150% of this browser's **Gallery scale** — 100% is exactly the
+width the main viewport shows, so the slider sizes the reel against the gallery
+rather than replacing the gallery's choice. That size belongs to the browser that
+chose it: it returns when the page reloads, and a second browser starts at the
+gallery's width. Beside the dialog's close button, an administrator is offered
+one icon: **Edit Demo Reel**. Retrying failed images and pausing the background
+worker are the business of the process that produces them, so neither is offered
+while browsing the results; pausing remains
 available where the reel is configured. Returning preserves uncommitted LoRA
 selections and scroll position. Images use the normal photo viewer. Reel
 collections stay outside normal navigation.

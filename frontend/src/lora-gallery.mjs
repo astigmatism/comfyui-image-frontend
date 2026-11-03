@@ -1,17 +1,12 @@
 import { icon } from "./icons.mjs";
 import { loraDefaultPositiveStrength, loraStackError, subjectLoraTrigger } from "./lora-stack.mjs";
-import { migrateInterfaceState, migrateLoraStrengthMemory } from "./lib.mjs";
+import { migrateInterfaceState, migrateLoraStrengthMemory, normalizeThumbnailScale } from "./lib.mjs";
 import { loraLibraryChipMarkup, loraLibraryFormMarkup, loraLibraryMenuId, loraLibraryNoticeMarkup, loraLibraryPopoverMarkup } from "./admin-loras.mjs";
 
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 export const uncategorized = { id: "uncategorized", name: "Uncategorized", system: true };
 const alphabetic = (a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
-
-export function normalizeLoraThumbnailScale(value) {
-  const scale = Number(value);
-  return value === null || value === "" || !Number.isFinite(scale) ? 100 : Math.max(50, Math.min(150, Math.round(scale / 5) * 5));
-}
 
 export function groupedLoras(items, grouping) {
   const groups = grouping?.groups || [uncategorized];
@@ -98,7 +93,7 @@ export function loraManagerMarkup(options) {
   const matchingLibrary = adminState?.library?.key === state.libraryKey;
   const pendingOperation = ["awaiting_upload", "running", "repair_required"].includes(adminController?.currentOperation()?.status);
   const sharedBusy = busy || state.groupsBusy || adminState?.busy;
-  const thumbnailScale = normalizeLoraThumbnailScale(state.thumbnailScale ?? 100);
+  const thumbnailScale = normalizeThumbnailScale(state.thumbnailScale ?? 100);
   const groups = groupedLoras(control.items, grouping);
   const grid = groups.map((group, groupIndex) => {
     const heading = escape(groupingError ? "Groups unavailable" : groupingLoading ? "Loading groups…" : group.name);
@@ -123,7 +118,7 @@ export function loraManagerMarkup(options) {
     const minimal = cards.filter((entry) => entry.minimal).map((entry) => entry.markup);
     return `<section class="lm-group" data-lora-group="${escape(group.id)}"><header class="lm-group-heading"><h3>${heading}</h3><span class="lm-group-rule" aria-hidden="true"></span><span class="lm-group-count">${group.items.length} LoRA${group.items.length === 1 ? "" : "s"}</span>${actions}</header>${visual.length ? `<ul class="lm-gallery-grid" aria-label="${escape(group.name)} LoRAs">${visual.join("")}</ul>` : ""}${minimal.length ? `<ul class="lm-minimal-list" aria-label="${escape(group.name)} without thumbnails">${minimal.join("")}</ul>` : ""}${!group.items.length ? '<p class="lm-group-empty muted">No LoRAs in this group.</p>' : ""}</section>`;
   }).join("");
-  return `<div class="dialog-frame lm-dialog-frame" style="--lm-card-size: ${260 * thumbnailScale / 100}px; --lm-mobile-card-size: ${160 * thumbnailScale / 100}px"><header class="dialog-header lm-dialog-header"><div><h2 id="lora-manager-title">${management ? "LoRA library" : "LoRAs"}</h2><p>${escape(sourceName)} · Shared LoRA library</p></div><label class="lm-scale-control"><span>Thumbnail size</span><input type="range" min="50" max="150" step="5" value="${thumbnailScale}" data-lora-thumbnail-scale aria-label="LoRA thumbnail size" aria-valuetext="${thumbnailScale}%" /><output data-lora-thumbnail-scale-value>${thumbnailScale}%</output></label>${management && adminState?.libraries.length > 1 ? `<label class="field lm-family-picker">Model family<select data-lora-library-family ${sharedBusy ? "disabled" : ""}>${adminState.libraries.map((entry) => `<option value="${escape(entry.key)}" ${entry.key === adminState.selectedLibraryKey ? "selected" : ""}>${escape(entry.label)}</option>`).join("")}</select></label>` : ""}<div class="lm-header-actions">${admin ? `${loraLibraryChipMarkup(adminController, { open: state.menuId === loraLibraryMenuId })}<button type="button" class="icon-button lm-header-button" data-lora-demo-settings aria-label="Demo Reel settings" title="Demo Reel settings">${icon("reel")}</button>` : ""}<button type="button" class="icon-button lm-close-button" data-lora-cancel aria-label="${management ? "Close LoRA library" : "Cancel and close LoRA manager"}">×</button></div></header>
+  return `<div class="dialog-frame lm-dialog-frame" style="--lm-card-size: ${260 * thumbnailScale / 100}px; --lm-mobile-card-size: ${160 * thumbnailScale / 100}px"><header class="dialog-header lm-dialog-header"><div><h2 id="lora-manager-title">${management ? "LoRA library" : "LoRAs"}</h2><p>${escape(sourceName)} · Shared LoRA library</p></div><label class="lm-scale-control"><span>Thumbnail size</span><input type="range" min="50" max="150" step="5" value="${thumbnailScale}" data-lora-thumbnail-scale aria-label="LoRA thumbnail size" aria-valuetext="${thumbnailScale}%" /><output data-lora-thumbnail-scale-value>${thumbnailScale}%</output></label>${management && adminState?.libraries.length > 1 ? `<label class="field lm-family-picker">Model family<select data-lora-library-family ${sharedBusy ? "disabled" : ""}>${adminState.libraries.map((entry) => `<option value="${escape(entry.key)}" ${entry.key === adminState.selectedLibraryKey ? "selected" : ""}>${escape(entry.label)}</option>`).join("")}</select></label>` : ""}<div class="lm-header-actions">${admin ? `${loraLibraryChipMarkup(adminController, { open: state.menuId === loraLibraryMenuId })}<button type="button" class="icon-button lm-header-button" data-lora-demo-settings aria-label="Demo Reel settings" title="Demo Reel settings">${icon("reel")}</button>` : ""}<button type="button" class="icon-button lm-close-button" data-lora-cancel aria-label="${management ? "Close LoRA library" : "Cancel and close LoRA manager"}" title="${management ? "Close LoRA library" : "Cancel and close LoRA manager"}">${icon("close")}</button></div></header>
     ${admin ? loraLibraryNoticeMarkup(adminController) : ""}
     ${!management ? `<div class="lm-order-bar"><div class="lm-order-label"><strong>${enabled.length} of ${values.length} enabled</strong><span>Application order · drag to reorder</span></div><ol class="lm-order-list" aria-label="LoRA application order">${enabled.map((entry, index) => `<li class="lm-order-chip" data-lora-order-id="${escape(entry.id)}"><button type="button" class="icon-button lm-drag-handle" data-lora-handle draggable="true" aria-label="Reorder ${escape(itemMap.get(entry.id)?.label)}" aria-description="Drag to reorder, or use arrow keys.">⠿</button><span>${index + 1}. ${escape(itemMap.get(entry.id)?.label || entry.id)}</span><button type="button" class="icon-button" data-lora-toggle="${escape(entry.id)}" aria-label="Disable ${escape(itemMap.get(entry.id)?.label)}">×</button></li>`).join("")}</ol><button type="button" class="button low" data-lora-all-off ${enabled.length ? "" : "disabled"}>All off</button></div>` : ""}
     <div class="lm-dialog-content">${groupingError ? `<p class="form-error" role="alert">${escape(groupingError)} <button type="button" class="button low" data-lora-groups-reload>Reload groups</button></p>` : ""}${imageError ? `<p class="form-error" role="alert">${escape(imageError)} <button type="button" class="button low" data-lora-images-reload>Reload images</button></p>` : ""}${panel ? panelMarkup(state) : grid}<p class="visually-hidden" data-lora-reorder-status role="status" aria-live="polite"></p></div>

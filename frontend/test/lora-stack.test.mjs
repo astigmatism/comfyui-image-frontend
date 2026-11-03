@@ -114,6 +114,10 @@ test("LoRA group headers reuse the gallery header pattern with icon-only control
   assert.doesNotMatch(markup, /data-lora-group-rename="uncategorized"|data-lora-group-delete="uncategorized"/);
   assert.doesNotMatch(markup, /class="button low" data-lora-group-(up|down|rename|delete)=|>Rename<|>Delete group</);
   assert.match(markup, /data-lora-demo-settings aria-label="Demo Reel settings" title="Demo Reel settings"><svg/);
+  // The close button in that same cluster draws the application's stroked glyph rather than a
+  // text character sized like a glyph, so one action keeps one picture across the dialogs.
+  assert.match(markup, /data-lora-cancel aria-label="Close LoRA library" title="Close LoRA library"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" \/><\/svg><\/button>/);
+  assert.doesNotMatch(markup, /lm-close-button[^>]*>×/);
 });
 
 test("LoRAs without a thumbnail are one line in a list of their own", () => {
