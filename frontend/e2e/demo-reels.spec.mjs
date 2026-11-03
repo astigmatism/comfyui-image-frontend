@@ -293,3 +293,70 @@ test("one checkpoint choice decides every LoRA picture, and the settings keep it
     }).catch(() => {});
   }
 });
+
+// Each prompt slot's header carries reorder and delete icon buttons. They are drawn from the
+// editor's own dispatch names, so a header emitting a name the click handler does not know
+// renders a button that does nothing when clicked and says nothing about it.
+test("a prompt slot's own buttons reorder it and delete it after asking", async ({ page }) => {
+  await signIn(page);
+  let detail;
+  for (const source of await (await page.request.get("/api/workflows")).json()) {
+    const candidate = await (await page.request.get(`/api/workflows/${source.source_key}`)).json();
+    if (candidate.interface.inputs.some((control) => control.type === "lora_stack")) { detail = candidate; break; }
+  }
+  expect(detail).toBeTruthy();
+  await page.locator("#workflow-source").click();
+  const sources = page.locator("#source-picker-dialog");
+  await sources.locator(`[data-source-workflow-choice][data-source-workflow-key="${detail.source_key}"]`).click();
+  await sources.getByRole("button", { name: "Apply", exact: true }).click();
+  await page.locator('[data-lora-open][data-lora-control-id="loras"]').click();
+  const picker = page.locator("#lora-manager-dialog");
+  await picker.getByRole("button", { name: "Demo Reel settings" }).click();
+  const editor = page.locator("#demo-reel-settings-dialog");
+  await expect(editor).toBeVisible();
+  const savedSlots = (await (await page.request.get("/api/admin/demo-reels")).json()).slots;
+
+  const addSlot = async (title) => {
+    await editor.getByRole("button", { name: "Add prompt slot" }).click();
+    const row = editor.locator("[data-demo-slot]").last();
+    await row.locator('[data-demo-slot-field="title"]').fill(title);
+    await row.locator('[data-demo-slot-field="prompt"]').fill(`a portrait of {subject} for ${title}`);
+    return row.getAttribute("data-demo-slot");
+  };
+  const rowOrder = () => editor.locator("[data-demo-slot]").evaluateAll((rows) => rows.map((row) => row.dataset.demoSlot));
+
+  const first = await addSlot("Button probe one");
+  const second = await addSlot("Button probe two");
+  const order = await rowOrder();
+  expect(order.indexOf(second) - order.indexOf(first)).toBe(1);
+  // Duplicating a slot was an option nobody used, so it is gone rather than merely unused.
+  await expect(editor.getByRole("button", { name: /Duplicate slot/ })).toHaveCount(0);
+
+  const secondRow = () => editor.locator(`[data-demo-slot="${second}"]`);
+  await secondRow().getByRole("button", { name: /Move slot \d+ up/ }).click();
+  const moved = await rowOrder();
+  expect(moved.indexOf(second)).toBe(moved.indexOf(first) - 1);
+
+  // A confirm blocks the page's own script, so the dialog is answered as it opens
+  // rather than awaited after the click.
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("Button probe two");
+    expect(dialog.message()).toContain("removed for everyone");
+    return dialog.dismiss();
+  });
+  await secondRow().getByRole("button", { name: /Delete slot \d+/ }).click();
+  expect(await rowOrder()).toEqual(moved);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await secondRow().getByRole("button", { name: /Delete slot \d+/ }).click();
+  await expect(editor.locator(`[data-demo-slot="${second}"]`)).toHaveCount(0);
+  expect(await rowOrder()).toEqual(moved.filter((id) => id !== second));
+  await expect(editor.locator(`[data-demo-slot="${first}"] [data-demo-slot-field="title"]`)).toHaveValue("Button probe one");
+  await expect(editor.locator(".demo-reel-section-count")).toHaveText(new RegExp(`^${moved.length - 1} slots?$`));
+
+  // Deleting is a draft until Save, and Cancel leaves the shared settings exactly as they were.
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(editor).not.toBeVisible();
+  expect((await (await page.request.get("/api/admin/demo-reels")).json()).slots).toEqual(savedSlots);
+  await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+});

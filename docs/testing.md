@@ -306,9 +306,13 @@ one shared row takes the merged choice of every reel of a LoRA. Migration covera
 without a backfill and lets a downgrade forget the preference without touching an image.
 
 `frontend/test/demo-reels.test.mjs` covers literal subject substitution, slot
-ordering, permitted image actions, editor controls, and activity coalescing.
+ordering, permitted image actions, editor controls, and activity coalescing, and
+pins that every `data-demo-action` the settings markup emits is one its click
+handler dispatches on, because a header drawn with a stray name renders a button
+that does nothing at all.
 `frontend/e2e/demo-reels.spec.mjs` saves settings through the real API, checks keyboard
-reordering and mobile layout, preserves picker drafts, and feeds retained-image
+reordering, the slot header's own reorder and delete buttons with a declined and an
+accepted confirmation, and mobile layout, preserves picker drafts, and feeds retained-image
 fixtures through the real photo viewer to verify ordered navigation without a
 five-minute wall-clock delay. The reel is then checked as a gallery: one group per
 prompt slot that collapses and expands, gallery cards whose entire control row -

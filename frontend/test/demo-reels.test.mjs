@@ -115,6 +115,27 @@ test("settings keep random seeds implicit and offer independent prompt save and 
   assert.match(markup, /data-demo-resolution="width"/);
 });
 
+test("every action the settings markup emits is one the editor dispatches", () => {
+  const config = {
+    slots: [{ id: "a", title: "Portrait", prompt: "{subject} portrait" }, { id: "b", title: "", prompt: "{subject} beside a lake" }],
+    recipes: {},
+    strengths: {},
+    libraries: [],
+  };
+  const markup = demoReelSettingsMarkup(config, {}, {}, []);
+  // The dispatcher in createDemoReels matches on the emitted name, so a header drawing
+  // data-demo-action="slot-slot-up" renders a button that does nothing when clicked.
+  const actions = [...new Set([...markup.matchAll(/data-demo-action="([a-z-]+)"/g)].map((match) => match[1]))].sort();
+  assert.deepEqual(actions, ["cancel-settings", "slot-add", "slot-delete", "slot-down", "slot-up"]);
+  // Each slot gets reorder buttons, disabled at the ends it cannot pass, and one delete.
+  assert.match(markup, /data-demo-action="slot-up" data-demo-id="a" aria-label="Move slot 1 up" title="Move slot 1 up" disabled>/);
+  assert.match(markup, /data-demo-action="slot-down" data-demo-id="a" aria-label="Move slot 1 down" title="Move slot 1 down">/);
+  assert.match(markup, /data-demo-action="slot-down" data-demo-id="b" aria-label="Move slot 2 down" title="Move slot 2 down" disabled>/);
+  assert.equal([...markup.matchAll(/data-demo-action="slot-delete"/g)].length, config.slots.length);
+  // Duplicating a slot was an option nobody used; it is gone rather than merely hidden.
+  assert.doesNotMatch(markup, /slot-slot-|data-demo-action="slot-duplicate"|Duplicate slot/);
+});
+
 test("settings pick one checkpoint for every LoRA picture and say what it does not change", () => {
   const details = { source: { interface: { inputs: [] } } };
   const config = (thumbnail_checkpoint_id) => ({

@@ -162,12 +162,14 @@ function resolutionRowMarkup(slot, config, details) {
 // out: inside a card the tinted band already says where the header ends.
 function slotMarkup(slot, index, config, details) {
   const total = config.slots.length;
-  const move = (kind, label, disabled, extraClass = "") => `<button type="button" class="icon-button${extraClass}" data-demo-action="slot-${kind}" data-demo-id="${escape(slot.id)}" aria-label="${escape(label)}" title="${escape(label)}"${disabled ? " disabled" : ""}>${icon(kind === "slot-up" ? "up" : kind === "slot-down" ? "down" : kind === "slot-duplicate" ? "duplicate" : "delete")}</button>`;
+  // The kind arrives without its prefix and the attribute adds it here: one prefix site is
+  // what keeps a header button from being drawn with a name the dispatcher never sees.
+  const move = (kind, label, disabled, extraClass = "") => `<button type="button" class="icon-button${extraClass}" data-demo-action="slot-${kind}" data-demo-id="${escape(slot.id)}" aria-label="${escape(label)}" title="${escape(label)}"${disabled ? " disabled" : ""}>${icon(kind === "up" ? "up" : kind === "down" ? "down" : "delete")}</button>`;
   return `<li class="demo-reel-slot-editor" data-demo-slot="${escape(slot.id)}">
     <header class="lm-group-heading demo-reel-slot-heading">
       <button type="button" class="icon-button demo-reel-slot-handle" draggable="true" tabindex="0" data-demo-slot-handle="${escape(slot.id)}" aria-label="Reorder slot ${index + 1}" title="Drag, or press arrow keys, to reorder">${icon("grip")}</button>
       <input class="demo-reel-slot-title" id="demo-reel-slot-title-${escape(slot.id)}" data-demo-slot-field="title" data-demo-id="${escape(slot.id)}" maxlength="120" value="${escape(slot.title)}" placeholder="Untitled slot" aria-label="Slot ${index + 1} title (optional)" />
-      <div class="lm-group-actions demo-reel-slot-actions">${move("slot-up", `Move slot ${index + 1} up`, index === 0)}${move("slot-down", `Move slot ${index + 1} down`, index === total - 1)}${move("slot-duplicate", `Duplicate slot ${index + 1}`, false)}${move("slot-delete", `Delete slot ${index + 1}`, false, " is-destructive")}</div>
+      <div class="lm-group-actions demo-reel-slot-actions">${move("up", `Move slot ${index + 1} up`, index === 0)}${move("down", `Move slot ${index + 1} down`, index === total - 1)}${move("delete", `Delete slot ${index + 1}`, false, " is-destructive")}</div>
     </header>
     <div class="demo-reel-slot-body">
       <label class="field demo-reel-prompt-field"><span>Prompt</span><textarea rows="3" maxlength="100000" required id="demo-reel-slot-prompt-${escape(slot.id)}" data-demo-slot-field="prompt" data-demo-id="${escape(slot.id)}" placeholder="Describe the image this slot should produce">${escape(slot.prompt)}</textarea></label>
@@ -548,13 +550,6 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
         settings.slots.push(slot);
         renderSettings({ focus: `demo-reel-slot-prompt-${slot.id}` });
       }
-      else if (kind === "slot-duplicate") {
-        const index = settings.slots.findIndex((slot) => slot.id === id);
-        const copy = { ...structuredClone(settings.slots[index]), id: crypto.randomUUID() };
-        copy.title = settings.slots[index].title ? `${settings.slots[index].title} copy` : "";
-        settings.slots.splice(index + 1, 0, copy);
-        renderSettings({ focus: `demo-reel-slot-title-${copy.id}` });
-      }
       else if (kind === "size-reset") {
         const slot = settings.slots.find((slot) => slot.id === id);
         delete slot.resolutions?.[button.dataset.demoFamily];
@@ -576,7 +571,15 @@ export function createDemoReels({ root, api, isAdmin, user, notify, onRerun = ()
         if (settings.strengths[context.libraryKey]) delete settings.strengths[context.libraryKey][context.identity];
         renderSettings();
       }
-      else if (kind === "slot-delete") { settings.slots = settings.slots.filter((slot) => slot.id !== id); renderSettings(); }
+      else if (kind === "slot-delete") {
+        const index = settings.slots.findIndex((slot) => slot.id === id);
+        if (index < 0) return;
+        // A slot is shared, so saving its removal takes every Demo Reel image made for it out of
+        // every account's gallery. That belongs on the click, not in a document nobody opens.
+        if (!window.confirm(`Delete prompt slot “${slotLabel(settings.slots[index], index)}”? On Save, every Demo Reel image made for this slot is removed for everyone. Your personal copies are kept.`)) return;
+        settings.slots = settings.slots.filter((slot) => slot.id !== id);
+        renderSettings();
+      }
       else if (["slot-up", "slot-down"].includes(kind)) {
         settings.slots = moveDemoReelSlot(settings.slots, id, settings.slots.findIndex((slot) => slot.id === id) + (kind === "slot-up" ? -1 : 1)); renderSettings();
       }

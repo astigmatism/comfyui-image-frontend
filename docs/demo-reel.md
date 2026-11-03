@@ -25,8 +25,9 @@ strength it replaces, named for the LoRA it applies to.
 1. Add shared prompt slots. A slot's optional title is its heading. Literal
    `{subject}` expands to each LoRA's published trigger phrase, falling back to its
    published title.
-2. Reorder slots with the heading's drag handle, arrow keys, or buttons; Duplicate
-   copies a slot in place.
+2. Reorder slots with the heading's drag handle, arrow keys, or up and down buttons.
+   **Delete slot** asks before removing it: on Save, every Demo Reel image made for
+   that slot is removed for everyone, and only personal copies survive.
 3. Leave a slot's **Image size** empty to inherit the family size, or give it its
    own width and height.
 4. Open **Model families** to enable a family and choose its workflow, LoRA
