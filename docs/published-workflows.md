@@ -347,6 +347,7 @@ All settings use the `CIF_` prefix:
 | `CIF_COMFYUI_API_MAX_BYTES` | `33554432` | Frozen API graph cap |
 | `CIF_COMFYUI_HISTORY_MAX_BYTES` | `33554432` | History response cap |
 | `CIF_COMFYUI_OUTPUT_MAX_BYTES` | `134217728` | One retrieved output cap |
+| `CIF_COMFYUI_PUSH_MAX_BYTES` | `67108864` | One gallery image sent into a service's input folder |
 
 See [`.env.example`](../.env.example) for the complete application configuration.
 

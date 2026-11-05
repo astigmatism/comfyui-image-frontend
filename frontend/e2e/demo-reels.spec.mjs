@@ -152,7 +152,7 @@ test("Demo Reel slots save independently, and caption browsing preserves the LoR
   await expect(firstCard.locator(".card-media img")).toBeVisible();
   expect(await firstCard.evaluate((card) => card.getBoundingClientRect().width)).toBeGreaterThanOrEqual(300);
   // Every action belongs to the card and appears on hover, never as text below it.
-  await expect(firstCard.locator(".demo-reel-card-actions > *")).toHaveCount(9);
+  await expect(firstCard.locator(".demo-reel-card-actions > *")).toHaveCount(10);
   // The pointer rests outside the dialog: nothing is revealed until it comes back.
   await page.mouse.move(4, 4);
   await expect(firstCard.locator(".card-actions")).toHaveCSS("opacity", "0");

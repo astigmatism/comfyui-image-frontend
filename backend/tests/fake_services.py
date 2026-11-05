@@ -89,6 +89,9 @@ class FakeServiceState:
     reject_prompts: bool = False
     fail_retrieval: bool = False
     fail_artifact_cleanup: bool = False
+    # A runtime that answers an input upload with this status instead of saving the file:
+    # 500 is an unwritable input folder, 415 is a file type that runtime will not take.
+    upload_status: int | None = None
     # The LoRA management companion installed in ComfyUI.  A companion that predates the
     # trigger-word limit reports no max_trigger_word, which the app reads as 120 characters.
     companion_version: int = 3
@@ -177,6 +180,8 @@ class FakeServiceState:
         self.reject_prompts = False
         self.fail_retrieval = False
         self.fail_artifact_cleanup = False
+        self.upload_status = None
+        self.upload_status = None
         self.retrieval_failure_substrings.clear()
         self.retrieval_failures_remaining = 0
         self.absent_source_substrings.clear()
@@ -869,12 +874,25 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         overwrite: str = Form("false"),
     ) -> dict[str, str]:
         require_comfy()
+        if state.upload_status is not None:
+            raise HTTPException(
+                status_code=state.upload_status, detail="input folder refused the file"
+            )
         if type != "input" or overwrite != "false":
             raise HTTPException(status_code=400)
         content = await image.read()
         if not content:
             raise HTTPException(status_code=400)
         name = image.filename or f"upload-{uuid.uuid4()}.png"
+        stem, separator, extension = name.rpartition(".")
+        if not separator:
+            stem, extension = name, ""
+        counter = 0
+        # With overwrite=false a real runtime never replaces a file: it hands back a
+        # counter-suffixed name, which is the name an input node then offers.
+        while (name, subfolder, "input") in state.output_files:
+            counter += 1
+            name = f"{stem}_{counter:05d}{separator}{extension}"
         locator = f"{subfolder}/{name}" if subfolder else name
         state.uploaded.append(locator)
         state.output_files[(name, subfolder, "input")] = content

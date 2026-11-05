@@ -774,8 +774,37 @@ Recall returns `available`, an unavailable reason when relevant, and—when exac
 | `GET` | `/api/uploads/{upload_id}/content` | Authorized source preview/original |
 | `GET` | `/api/artifacts/{artifact_id}/content` | Authorized retained output |
 | `GET` | `/api/artifacts/{artifact_id}/thumbnail` | Authorized WebP derivative |
+| `POST` | `/api/artifacts/{artifact_id}/push-to-comfyui` | Copy an owned image into an image service's input folder |
 
 Upload multipart field name is `file`. Uploads return opaque ID, kind, dimensions, SHA-256, MIME type, and `preview_url`. Published interface v1 currently has no public upload input type; these routes remain for historical records and unrelated application behavior.
+
+### Sending one image to ComfyUI
+
+`POST /api/artifacts/{artifact_id}/push-to-comfyui` is CSRF-guarded and takes an optional body
+`{"instance_id": "...", "filename": "..."}`; `{}` is a valid request. The application reads its own
+stored copy and hands it to ComfyUI's input upload, which is where a workflow's file-upload input
+looks, so no local file picker is involved.
+
+The receiving service is chosen by the server, never by the browser: an explicitly named instance
+must be configured and must execute images (`409 comfyui_input_instance_required` for the assigned
+prompt/dataset service, `404` when it is not configured), otherwise the image's own generating
+service is used when it is an image worker, and otherwise the default image service. The answer is
+`{artifact_id, instance_id, instance_label, name, subfolder, mime_type, byte_size,
+listed_in_input_node, warning}`. `name` is what ComfyUI actually wrote: a name clash is resolved by
+the runtime with a counter suffix rather than by replacing a file, and that returned name is the one
+an input node offers. `listed_in_input_node` is a read-only observation of the runtime's cached
+`/object_info` input choices (`null` when this process has not probed it); a `false` result adds a
+`warning` rather than failing a copy ComfyUI already accepted. The response carries no ComfyUI URL.
+
+Refusals stay distinguishable: `404` for another owner's or absent image, `413
+comfyui_push_too_large` above `CIF_COMFYUI_PUSH_MAX_BYTES` (checked against the stored size before
+the file is read, and again against its bytes), `502 comfyui_upload_failed` when the service answers
+4xx or returns a reference the application cannot trust, and `503 comfyui_unavailable` for a 5xx or
+an unreachable service.
+
+A pushed file belongs to ComfyUI from then on: it lives in that service's `input` folder, is never
+included in the companion `output`/`temp` cleanup, and is not removed when the gallery card is
+deleted. Each accepted copy writes one `comfyui_input_pushed` audit row.
 
 ComfyUI file references are never accepted from callers. The worker extracts only bounded `filename` / `subfolder` / `type` tuples from history, with type restricted to `input`, `output`, or `temp`, retrieves them through `/view`, and archives selected bytes before exposing application URLs. Once terminal result processing is durable, successfully transferred `output`/`temp` sources are removed through the installed companion route; `input` files are never included. This backend-to-ComfyUI route is not part of the browser API.
 

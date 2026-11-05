@@ -1567,8 +1567,12 @@ test("card overlay keeps viewing actions, selection, and individual delete", () 
   assert.doesNotMatch(html, /Jul 12|2026/);
   assert.match(html, /data-action="open-detail"/);
   assert.match(html, /href="\/api\/artifacts\/current\/content" download aria-label="Download current image"/);
-  assert.equal((html.match(/<button/g) || []).length, 5);
+  assert.equal((html.match(/<button/g) || []).length, 6);
   assert.match(html, /aria-label="Add to Favorites" aria-pressed="false"/);
+  // Sending a copy to ComfyUI belongs beside the download it follows, before the
+  // account-local favourites and recall controls.
+  assert.ok(html.indexOf('data-action="push-comfyui"') > html.indexOf('href="/api/artifacts/current/content"'));
+  assert.ok(html.indexOf('data-action="push-comfyui"') < html.indexOf('data-action="toggle-favorite"'));
   assert.ok(html.indexOf('data-action="toggle-favorite"') < html.indexOf('data-action="recall"'));
   assert.match(html, /data-action="recall"[^>]+aria-label="Recall settings"/);
   assert.doesNotMatch(html, /data-action="move-generation"/);

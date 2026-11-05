@@ -226,6 +226,10 @@ class Settings(BaseSettings):
     comfyui_api_max_bytes: int = 32 * 1024 * 1024
     comfyui_history_max_bytes: int = 32 * 1024 * 1024
     comfyui_output_max_bytes: int = 128 * 1024 * 1024
+    # Ceiling for one "send to ComfyUI input" push. Generated images are routinely bigger
+    # than the browser upload limit, so this is deliberately separate from upload_max_bytes:
+    # rejecting an oversized PNG with a clear message beats silently re-encoding it.
+    comfyui_push_max_bytes: int = 64 * 1024 * 1024
     # Budget for the cheap liveness probe and the companion cleanup call. A worker
     # that is busy generating still has to answer within this window, so it is
     # deliberately generous: a starved runtime answering slowly is not an outage,
@@ -497,6 +501,7 @@ class Settings(BaseSettings):
             "comfyui_api_max_bytes",
             "comfyui_history_max_bytes",
             "comfyui_output_max_bytes",
+            "comfyui_push_max_bytes",
             "speech_to_text_max_bytes",
         ):
             if getattr(self, field_name) < 1024:

@@ -17,6 +17,7 @@ import { api, getCsrfToken, isTransientError, setCsrfToken, upload } from "./api
 import { refreshGenerationEtaElements, updatePhotoViewerNextIn as refreshPhotoViewerNextIn } from "./generation-countdown.mjs";
 import { bindGalleryCardHover } from "./gallery-hover.mjs";
 import { bindGallerySelection } from "./gallery-selection.mjs";
+import { installComfyUIPush } from "./comfyui-push.mjs";
 import { createPromptRerun } from "./prompt-rerun.mjs";
 import { createPromptRerunProgress } from "./prompt-rerun-progress.mjs";
 import {
@@ -162,6 +163,9 @@ import {
 
 const root = document.querySelector("#app");
 const galleryHover = bindGalleryCardHover(root);
+// One control of its own, live for the page: it only ever talks to one endpoint and
+// needs no state the rest of the application has to know about.
+installComfyUIPush(root, { notify: toast });
 let disposeThumbnails = null;
 let loraManagerController = null;
 let demoReelController = null;

@@ -20,6 +20,8 @@ from ..errors import AppError
 from ..file_response import StoredFileResponse as FileResponse
 from ..models import Artifact, User
 from ..schemas import (
+    ComfyUIPushRequest,
+    ComfyUIPushResult,
     GalleryFilters,
     GenerationActivity,
     GenerationBatchCreate,
@@ -32,7 +34,7 @@ from ..schemas import (
     RecallResponse,
     ValidationResult,
 )
-from ..services import submissions
+from ..services import comfyui_push, submissions
 from ..services.generation_activity import activity_snapshot
 from .gallery_filters import gallery_filters
 
@@ -136,6 +138,28 @@ def move_generation(
         owner_id=context.user.id,
         generation_id=generation_id,
         payload=payload,
+    )
+
+
+@router.post("/artifacts/{artifact_id}/push-to-comfyui", response_model=ComfyUIPushResult)
+async def send_to_comfyui(
+    artifact_id: str,
+    payload: ComfyUIPushRequest,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> ComfyUIPushResult:
+    """Copy one stored image into an image service's input folder for its workflows."""
+
+    container = get_container(request)
+    return await comfyui_push.push_artifact_to_comfyui(
+        container.db.session_factory,
+        settings=container.settings,
+        assets=container.assets,
+        instances=container.comfyui_instances,
+        owner_id=context.user.id,
+        artifact_id=artifact_id,
+        instance_id=payload.instance_id,
+        filename=payload.filename,
     )
 
 

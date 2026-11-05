@@ -414,13 +414,39 @@ class ComfyUIAdapter:
         mime_type: str = "image/png",
         subfolder: str | None = None,
     ) -> str:
+        effective_subfolder = subfolder or ("frontend-masks" if kind == "mask" else None)
+        uploaded = await self.upload_input_image(
+            content,
+            filename,
+            mime_type=mime_type,
+            subfolder=effective_subfolder,
+            # Only a namespace the caller named is asserted on the way back; the mask
+            # default stays a hint so a runtime that files it elsewhere is not rejected.
+            expected_subfolder=subfolder,
+        )
+        prefix = uploaded["subfolder"]
+        return f"{prefix}/{uploaded['name']}" if prefix else uploaded["name"]
+
+    async def upload_input_image(
+        self,
+        content: bytes,
+        filename: str,
+        *,
+        mime_type: str = "image/png",
+        subfolder: str | None = None,
+        expected_subfolder: str | None = None,
+    ) -> dict[str, str]:
+        """Write one file into this instance's input folder and return its reference.
+
+        ``overwrite`` stays false on purpose: a name clash is resolved by ComfyUI with a
+        counter suffix, and that returned name is the one an input node actually lists.
+        """
+
         safe_name = PurePosixPath(filename).name
         files = {"image": (safe_name, content, mime_type)}
         data = {"type": "input", "overwrite": "false"}
         if subfolder:
             data["subfolder"] = subfolder
-        elif kind == "mask":
-            data["subfolder"] = "frontend-masks"
         response = await self._request_limited(
             "POST",
             "/upload/image",
@@ -452,9 +478,9 @@ class ComfyUIAdapter:
         ):
             raise AppError("upload_failed", "ComfyUI returned an invalid upload reference.")
         returned_subfolder = raw_subfolder.strip("/")
-        if subfolder is not None and returned_subfolder != subfolder:
+        if expected_subfolder is not None and returned_subfolder != expected_subfolder:
             raise AppError("upload_failed", "ComfyUI returned an unexpected upload namespace.")
-        return f"{returned_subfolder}/{raw_name}" if returned_subfolder else raw_name
+        return {"name": raw_name, "subfolder": returned_subfolder, "type": "input"}
 
     async def events(
         self,
@@ -491,6 +517,19 @@ class ComfyUIAdapter:
 
     def cached_object_info(self) -> Mapping[str, Any]:
         return self._runtime_object_info
+
+    def input_lists_file(self, filename: str) -> bool | None:
+        """Whether this runtime offers ``filename`` among its image-input choices.
+
+        ``None`` means this process has never probed the runtime, so nothing is known;
+        an accepted push must never be reported as doubtful for want of a probe.
+        """
+
+        if not self._runtime_object_info:
+            return None
+        choices = _extract_assets(self._runtime_object_info)
+        suffix = f"/{filename}"
+        return any(choice == filename or choice.endswith(suffix) for choice in choices)
 
     async def history(self, prompt_id: str) -> dict[str, Any] | None:
         safe_id = quote(prompt_id, safe="")

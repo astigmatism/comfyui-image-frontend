@@ -1267,6 +1267,40 @@ class UploadResponse(APIModel):
     preview_url: str
 
 
+class ComfyUIPushRequest(APIModel):
+    instance_id: str | None = None
+    filename: str | None = None
+
+    @field_validator("filename")
+    @classmethod
+    def normalized_filename(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        name = value.strip()
+        if any(character in name for character in "\r\n\t\\/"):
+            raise ValueError("Choose a file name without a folder or path.")
+        if not name or name in {".", ".."}:
+            raise ValueError("Choose a file name.")
+        return name[:200]
+
+
+class ComfyUIPushResult(APIModel):
+    """Where a gallery image landed inside one ComfyUI instance's input folder.
+
+    Only the ComfyUI file reference travels to the browser, never a ComfyUI URL.
+    """
+
+    artifact_id: str
+    instance_id: str
+    instance_label: str
+    name: str
+    subfolder: str
+    mime_type: str
+    byte_size: int
+    listed_in_input_node: bool | None
+    warning: str | None
+
+
 class AdminDiagnostic(APIModel):
     basename: str
     accepted: bool
