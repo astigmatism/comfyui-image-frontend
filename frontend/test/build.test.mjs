@@ -58,7 +58,7 @@ test("production build emits one content-addressed frontend module graph", async
     thumbnails: new Set([first.assets.api, first.assets.image_cleanup]),
     gallery_dom: new Set(),
     generation_submissions: new Set([first.assets.api]),
-    gallery_selection: new Set([first.assets.api, first.assets.lib, first.assets.gallery_view]),
+    gallery_selection: new Set([first.assets.api, first.assets.comfyui_push, first.assets.icons, first.assets.lib, first.assets.gallery_view]),
     // Sending one image into ComfyUI's input folder talks to exactly one endpoint, so
     // the control needs nothing beyond the request helper.
     comfyui_push: new Set([first.assets.api]),

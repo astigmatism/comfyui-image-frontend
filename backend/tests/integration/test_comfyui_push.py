@@ -42,8 +42,10 @@ def test_a_gallery_image_lands_in_the_input_folder_of_the_service_that_made_it(
         assert body["instance_label"] == "Primary"
         assert body["subfolder"] == ""
         assert body["name"].endswith(".png")
-        assert body["listed_in_input_node"] is False
-        assert "input" in str(body["warning"])
+        # The service wrote the file and serves it back out of its input folder, which is
+        # exactly what an image-input reads: no doubt is cast on a copy that worked.
+        assert body["readable_as_input"] is True
+        assert body["warning"] is None
         # The browser is told where inside ComfyUI the file is, never how to reach it.
         assert "http" not in json.dumps(body)
         assert fake_state.uploaded == [body["name"]]
@@ -186,3 +188,128 @@ def test_a_service_that_cannot_take_the_file_distinguishes_refusal_from_absence(
         assert offline.status_code == 503
         assert offline.json()["error"]["code"] == "comfyui_unavailable"
         assert fake_state.uploaded == []
+
+
+def _finished_generation(client: TestClient, prompt: str) -> dict[str, object]:
+    generation = create_generation(client, prompt)
+    return wait_for_status(client, str(generation["id"]), "succeeded")
+
+
+def _push_selection(client: TestClient, **body: object):
+    return client.post(
+        "/api/gallery/push-to-comfyui",
+        headers={"X-CSRF-Token": csrf(client)},
+        json=body,
+    )
+
+
+def _images(generation: dict[str, object]) -> list[dict[str, object]]:
+    return [item for item in generation["artifacts"] if item["kind"] == "image"]  # type: ignore[index]
+
+
+def test_a_selection_sends_every_image_it_holds_and_says_where(
+    settings_factory, fake_state
+) -> None:
+    with TestClient(create_app(settings_factory(enable_background_worker=True))) as client:
+        provision_user(client, username="batch.artist")
+        first = _finished_generation(client, "batch first")
+        second = _finished_generation(client, "batch second")
+        untouched = _finished_generation(client, "batch left alone")
+
+        pushed = _push_selection(client, generation_ids=[first["id"], second["id"]])
+
+        assert pushed.status_code == 200, pushed.text
+        expected = len(_images(first)) + len(_images(second))
+        assert pushed.json() == {
+            "requested": expected,
+            "sent": expected,
+            "instance_labels": ["Primary"],
+            "warning": None,
+            "failures": [],
+        }
+        assert len(fake_state.uploaded) == expected
+        for name in fake_state.uploaded:
+            assert (name, "", "input") in fake_state.output_files
+        assert len(fake_state.uploaded) < expected + len(_images(untouched))
+
+
+def test_a_folder_sends_the_images_inside_it_and_nothing_outside(
+    settings_factory, fake_state
+) -> None:
+    with TestClient(create_app(settings_factory(enable_background_worker=True))) as client:
+        provision_user(client, username="batch.folders")
+        inside = _finished_generation(client, "inside the folder")
+        _finished_generation(client, "outside the folder")
+        folder = client.post(
+            "/api/collections",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"name": "Video starts", "parent_id": None},
+        )
+        assert folder.status_code == 201, folder.text
+        moved = client.post(
+            "/api/gallery/transfer",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={
+                "operation": "move",
+                "generation_ids": [inside["id"]],
+                "collection_ids": [],
+                "collection_id": folder.json()["id"],
+            },
+        )
+        assert moved.status_code == 200, moved.text
+
+        pushed = _push_selection(client, collection_ids=[folder.json()["id"]])
+
+        assert pushed.status_code == 200, pushed.text
+        body = pushed.json()
+        assert body["requested"] == len(_images(inside))
+        assert body["sent"] == len(_images(inside))
+        # Only the folder's own images travelled; the card left in Home was untouched.
+        assert len(fake_state.uploaded) == len(_images(inside))
+
+
+def test_a_selection_is_refused_before_any_copy_when_it_has_no_images_or_too_many(
+    settings_factory, fake_state
+) -> None:
+    with TestClient(
+        create_app(settings_factory(enable_background_worker=True, comfyui_push_max_files=1))
+    ) as client:
+        provision_user(client, username="batch.limits")
+        empty_folder = client.post(
+            "/api/collections",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"name": "Nothing in here", "parent_id": None},
+        )
+        assert empty_folder.status_code == 201, empty_folder.text
+
+        nothing = _push_selection(client, collection_ids=[empty_folder.json()["id"]])
+        assert nothing.status_code == 409, nothing.text
+        assert nothing.json()["error"]["code"] == "comfyui_push_no_images"
+
+        first = _finished_generation(client, "limit first")
+        second = _finished_generation(client, "limit second")
+        too_many = _push_selection(client, generation_ids=[first["id"], second["id"]])
+        assert too_many.status_code == 422, too_many.text
+        assert too_many.json()["error"]["code"] == "comfyui_push_too_many"
+        assert fake_state.uploaded == []
+
+
+def test_an_unreachable_service_fails_only_the_images_it_could_not_take(
+    settings_factory, fake_state
+) -> None:
+    with TestClient(create_app(settings_factory(enable_background_worker=True))) as client:
+        provision_user(client, username="batch.offline")
+        generation = _finished_generation(client, "offline batch")
+        expected = len(_images(generation))
+        fake_state.upload_status = 500
+
+        pushed = _push_selection(client, generation_ids=[generation["id"]])
+
+        assert pushed.status_code == 200, pushed.text
+        body = pushed.json()
+        assert body["requested"] == expected
+        assert body["sent"] == 0
+        assert body["instance_labels"] == []
+        assert len(body["failures"]) == expected
+        assert {item["code"] for item in body["failures"]} == {"comfyui_unavailable"}
+        assert "could not be reached" in body["warning"] or "could not take" in body["warning"]

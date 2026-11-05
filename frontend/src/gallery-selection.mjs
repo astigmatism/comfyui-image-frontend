@@ -1,4 +1,6 @@
 import { api } from "./api.mjs";
+import { pushSelectionToComfyUI } from "./comfyui-push.mjs";
+import { icon } from "./icons.mjs";
 import { collectionSubtree, collectionTreeRows, escapeHtml } from "./lib.mjs";
 import { favoritesMode, galleryFilterActive, galleryFilterSignature, galleryGenerationMatches, galleryViewChecked, galleryViewKeys, galleryViewParameters, galleryViewScope } from "./gallery-view.mjs";
 
@@ -233,6 +235,7 @@ export function bindGallerySelection(root, { getState, refresh, notify, openReru
         <button type="button" class="button low selection-tool" data-bulk-action="all"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="14" height="14" rx="2" /><path d="M16 3H5a2 2 0 0 0-2 2v11m8-2 2 2 4-4" /></svg></button>
         <button type="button" class="button low selection-tool" data-bulk-action="favorite" aria-label="Add to Favorites"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" /></svg></button>
         <button type="button" class="button low selection-tool" data-bulk-action="download" aria-label="Download selection" title="Download all available images, including folder contents, as a ZIP"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5" /></svg></button>
+        <button type="button" class="button low selection-tool" data-bulk-action="push-comfyui" aria-label="Send to ComfyUI" title="Copy the selected images into the ComfyUI input folder, where a workflow's file input can pick them up">${icon("push")}</button>
         ${openRerun ? '<button type="button" class="button low selection-tool" data-bulk-action="rerun" aria-label="Prompt Re-run…"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /><path d="m10 9 5 3-5 3Z" /></svg></button>' : ""}
         <button type="button" class="button low selection-tool" data-bulk-action="transfer" aria-label="Move / Copy…" title="Move or copy selected items"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v11H3Z" /><path d="M13 17v-5m-3 3 3-3 3 3" /></svg></button>
         <button type="button" class="button low selection-tool" data-bulk-action="delete" aria-label="Delete…" title="Delete selected items"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg></button>
@@ -259,6 +262,7 @@ export function bindGallerySelection(root, { getState, refresh, notify, openReru
     button("favorite", !plan.favorites.count || plan.favorites.allFavorited || busy,
       plan.favorites.allFavorited ? "All selected items are already favorites" : "Add selected image and folder cards to Favorites");
     button("download", !plan.downloadable || busy);
+    button("push-comfyui", !plan.downloadable || busy);
     if (openRerun) {
       const tool = rerunToolState(plan, rerunBlocked(), busy);
       button("rerun", tool.disabled, tool.title);
@@ -399,6 +403,9 @@ export function bindGallerySelection(root, { getState, refresh, notify, openReru
         link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
         notify("Selection download started.", "success");
+      } else if (operation === "push-comfyui") {
+        const notice = await pushSelectionToComfyUI(body);
+        notify(notice.message, notice.kind);
       } else {
         const result = await api("/api/gallery/favorite", { method: "POST", body });
         for (const id of result.generation_ids) {
@@ -464,7 +471,7 @@ export function bindGallerySelection(root, { getState, refresh, notify, openReru
       returnFocusKey = "rerun";
       openRerun({ plan, body: requestBody(plan) });
     }
-    else if (action === "favorite" || action === "download") void performToolbarAction(action);
+    else if (action === "favorite" || action === "download" || action === "push-comfyui") void performToolbarAction(action);
     else if (action === "close") activeDialog()?.close();
     else void perform(action);
   }, true);

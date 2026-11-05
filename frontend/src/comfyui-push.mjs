@@ -1,16 +1,35 @@
-// One gallery image, copied into the input folder of the ComfyUI service that can
-// use it. The server decides which service that is and reports the name ComfyUI
-// actually wrote, so this module only locks the control, carries the intent, and
-// says plainly where the file ended up.
+// Gallery images copied into the input folder of the ComfyUI service that can use them.
+// The server decides which service that is and reports the name ComfyUI actually wrote,
+// so this module only carries the intent and then says plainly where the files landed.
 import { api } from "./api.mjs";
 
 const inFlight = new Set();
+const images = (count) => `${count} ${count === 1 ? "image" : "images"}`;
 
-// Two ComfyUI services can both be reachable, so the copy names the one it chose.
+// Two ComfyUI services can both be reachable, so the notice names the one it chose.
 export function pushNotice(result) {
   const place = result.subfolder ? `${result.subfolder}/` : "";
   const saved = `Sent ${result.name} to ${result.instance_label} → ${place}input`;
   return result.warning ? `${saved}. ${result.warning}` : saved;
+}
+
+// A selection can legitimately land in more than one service, and a batch whose copies
+// all failed is an error rather than a disappointing success.
+export function pushBatchNotice(result) {
+  const where = result.instance_labels.length === 1
+    ? result.instance_labels[0]
+    : `${result.instance_labels.length} ComfyUI services`;
+  if (!result.sent) return { message: result.warning || "The images could not be sent to ComfyUI.", kind: "error" };
+  const saved = result.sent === result.requested
+    ? `Sent ${images(result.sent)} to ${where} → input`
+    : `Sent ${images(result.sent)} of ${images(result.requested)} to ${where} → input`;
+  return result.warning
+    ? { message: `${saved}. ${result.warning}`, kind: "warning" }
+    : { message: saved, kind: "success" };
+}
+
+export async function pushSelectionToComfyUI(body) {
+  return pushBatchNotice(await api("/api/gallery/push-to-comfyui", { method: "POST", body }));
 }
 
 export function installComfyUIPush(root, { notify }) {

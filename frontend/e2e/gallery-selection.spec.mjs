@@ -301,6 +301,56 @@ test("an empty folder can be favorited but has nothing to download", async ({ pa
   await expect(page.getByRole("button", { name: "Add to Favorites", exact: true })).toBeEnabled();
 });
 
+test("the toolbar copies a selection into ComfyUI beside the download it mirrors", async ({ page }) => {
+  await mountSelection(page);
+  const toolbar = page.locator("#gallery-selection-toolbar");
+  const push = toolbar.locator('[data-bulk-action="push-comfyui"]');
+  const download = toolbar.locator('[data-bulk-action="download"]');
+
+  // An empty folder holds no image, so both image tools stand down together.
+  const empty = page.getByRole("checkbox", { name: "Select collection Archive" });
+  await empty.focus(); await empty.press("Space");
+  await expect(download).toBeDisabled();
+  await expect(push).toBeDisabled();
+  await empty.focus(); await empty.press("Space");
+
+  for (const id of ["g0", "g1"]) {
+    const checkbox = page.locator(`[data-generation-id="${id}"] .card-select-button`);
+    await checkbox.focus();
+    await checkbox.press("Space");
+  }
+  await expect(push).toBeEnabled();
+  // Drawn with the same stroke as its neighbours rather than as a filled shape.
+  const ink = (tool) => tool.locator("svg path").evaluate((path) => {
+    const style = getComputedStyle(path);
+    return [style.fill, style.stroke, style.strokeWidth, style.strokeLinecap].join("|");
+  });
+  expect(await ink(push)).toContain("none");
+  expect(await ink(push)).toBe(await ink(download));
+
+  let payload;
+  await page.route("**/api/gallery/push-to-comfyui", async (route) => {
+    payload = route.request().postDataJSON();
+    await route.fulfill({ json: { requested: 4, sent: 4, instance_labels: ["Primary"], warning: null, failures: [] } });
+  });
+  await push.click();
+  expect(payload).toEqual({ generation_ids: ["g0", "g1"], collection_ids: [] });
+  await expect.poll(() => page.evaluate(() => window.selectionNotices.at(-1))).toEqual({
+    message: "Sent 4 images to Primary → input",
+    kind: "success",
+  });
+
+  await page.route("**/api/gallery/push-to-comfyui", async (route) => {
+    await route.fulfill({ json: { requested: 4, sent: 0, instance_labels: [], warning: "The ComfyUI image service could not be reached.", failures: [{ artifact_id: "a0", code: "comfyui_unavailable", message: "The ComfyUI image service could not be reached." }] } });
+  });
+  await push.click();
+  await expect.poll(() => page.evaluate(() => window.selectionNotices.at(-1))).toEqual({
+    message: "The ComfyUI image service could not be reached.",
+    kind: "error",
+  });
+  await expect(push).toBeEnabled();
+});
+
 for (const width of [320, 390, 801, 850, 1000, 1024, 1201, 1440]) test(`selection toolbar and both destination buttons fit ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 844 });
   await mountSelection(page);

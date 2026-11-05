@@ -518,18 +518,26 @@ class ComfyUIAdapter:
     def cached_object_info(self) -> Mapping[str, Any]:
         return self._runtime_object_info
 
-    def input_lists_file(self, filename: str) -> bool | None:
-        """Whether this runtime offers ``filename`` among its image-input choices.
+    async def input_file_readable(self, filename: str, subfolder: str = "") -> bool | None:
+        """Whether this runtime can serve ``filename`` back out of its input folder.
 
-        ``None`` means this process has never probed the runtime, so nothing is known;
-        an accepted push must never be reported as doubtful for want of a probe.
+        The runtime wrote the file itself, so an accepted upload only leaves one question
+        worth asking: does the route an image-input actually reads - ``GET /view`` with
+        ``type=input`` - find it. ``None`` means the question could not be answered, and a
+        probe that failed must never cast doubt on a copy ComfyUI already accepted.
         """
 
-        if not self._runtime_object_info:
+        try:
+            async with self._client.stream(
+                "GET",
+                "/view",
+                params={"filename": filename, "subfolder": subfolder, "type": "input"},
+            ) as response:
+                if response.status_code == 404:
+                    return False
+                return True if response.is_success else None
+        except (AppError, httpx.HTTPError):
             return None
-        choices = _extract_assets(self._runtime_object_info)
-        suffix = f"/{filename}"
-        return any(choice == filename or choice.endswith(suffix) for choice in choices)
 
     async def history(self, prompt_id: str) -> dict[str, Any] | None:
         safe_id = quote(prompt_id, safe="")

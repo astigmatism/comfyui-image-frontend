@@ -443,6 +443,7 @@ them. They resolve only to current validated publications and do not restore leg
 | `POST` | `/api/gallery/delete` | Delete a mixed selection using the existing cancellation and cleanup lifecycle |
 | `POST` | `/api/gallery/favorite` | Add explicitly selected image and folder cards to Favorites |
 | `POST` | `/api/gallery/download` | Download selected images and recursive folder contents as one ZIP |
+| `POST` | `/api/gallery/push-to-comfyui` | Copy selected images and recursive folder contents into ComfyUI's input folder |
 | `POST` | `/api/gallery/prompt-rerun/preview` | Count and excerpt the retained prompts of a selection for Prompt Re-run |
 | `POST` | `/api/gallery/prompt-rerun` | Queue the selection's exact prompts again with new settings into a new folder |
 
@@ -559,6 +560,12 @@ generations they came from. The artifact ID prevents filename collisions. Cards 
 images contribute no files; a selection with no images returns 409 `download_empty`. Active
 generations contribute only images already available. An image whose stored file is missing is
 skipped; when nothing remains the response is 409 `download_empty`.
+
+`POST /api/gallery/push-to-comfyui` resolves the selection exactly like the download — one copy per
+image, folder contents included, overlapping selections counted once — and copies those images into
+ComfyUI's own `input` folder instead of packing them for the browser. See
+[Sending gallery images to ComfyUI](#sending-gallery-images-to-comfyui) for the destination rules,
+the per-image response, and the failure codes.
 
 ### Prompt Re-run
 
@@ -778,23 +785,35 @@ Recall returns `available`, an unavailable reason when relevant, and—when exac
 
 Upload multipart field name is `file`. Uploads return opaque ID, kind, dimensions, SHA-256, MIME type, and `preview_url`. Published interface v1 currently has no public upload input type; these routes remain for historical records and unrelated application behavior.
 
-### Sending one image to ComfyUI
+### Sending gallery images to ComfyUI
 
-`POST /api/artifacts/{artifact_id}/push-to-comfyui` is CSRF-guarded and takes an optional body
-`{"instance_id": "...", "filename": "..."}`; `{}` is a valid request. The application reads its own
-stored copy and hands it to ComfyUI's input upload, which is where a workflow's file-upload input
-looks, so no local file picker is involved.
+`POST /api/gallery/push-to-comfyui` is the gallery's selection action. It takes the same
+`GallerySelection` body as the bulk favourite, download, and transfer routes — explicit
+`generation_ids` and `collection_ids`, folders resolved to their contents — and copies every image
+it finds, one file at a time, into ComfyUI's `input` folder, which is where a workflow's
+file-upload widget looks. `POST /api/artifacts/{artifact_id}/push-to-comfyui` is the same copy for
+a single image, used by the full-screen viewer. Both are CSRF-guarded; the per-image body may be
+`{}`, `{"instance_id": "...", "filename": "..."}`.
 
 The receiving service is chosen by the server, never by the browser: an explicitly named instance
 must be configured and must execute images (`409 comfyui_input_instance_required` for the assigned
 prompt/dataset service, `404` when it is not configured), otherwise the image's own generating
-service is used when it is an image worker, and otherwise the default image service. The answer is
-`{artifact_id, instance_id, instance_label, name, subfolder, mime_type, byte_size,
-listed_in_input_node, warning}`. `name` is what ComfyUI actually wrote: a name clash is resolved by
-the runtime with a counter suffix rather than by replacing a file, and that returned name is the one
-an input node offers. `listed_in_input_node` is a read-only observation of the runtime's cached
-`/object_info` input choices (`null` when this process has not probed it); a `false` result adds a
-`warning` rather than failing a copy ComfyUI already accepted. The response carries no ComfyUI URL.
+service is used when it is an image worker, and otherwise the default image service. Two image
+services therefore mean two input folders, which is why a batch reports the labels it wrote to.
+
+A selection answers `{requested, sent, instance_labels, warning, failures}`. A batch that starts
+finishes: one unreachable service costs that image and not the rest, and each miss arrives in
+`failures` with its own `code` and `message`. `CIF_COMFYUI_PUSH_MAX_FILES` refuses a selection that
+is too large with `422 comfyui_push_too_many` before a single copy starts, and a selection whose
+items hold no image at all is refused with `409 comfyui_push_no_images`.
+
+The single-image answer is `{artifact_id, instance_id, instance_label, name, subfolder, mime_type,
+byte_size, readable_as_input, warning}`. `name` is what ComfyUI actually wrote: a name clash is
+resolved by the runtime with a counter suffix rather than by replacing a file, and that returned
+name is the one an input node offers. `readable_as_input` then re-reads the file exactly the way an
+image input does — `GET /view` with `type=input` — because the copy is only useful once the service
+will serve it back; a service that gives no clear answer yields `null`, and only a positive miss
+(`false`) adds a `warning`. The response carries no ComfyUI URL.
 
 Refusals stay distinguishable: `404` for another owner's or absent image, `413
 comfyui_push_too_large` above `CIF_COMFYUI_PUSH_MAX_BYTES` (checked against the stored size before

@@ -176,15 +176,33 @@ def test_an_unusable_reference_is_not_reported_as_a_saved_file(tmp_path: Path) -
     assert asyncio.run(scenario()) == "upload_failed"
 
 
-def test_input_choice_lookup_stays_silent_until_the_runtime_is_known(tmp_path: Path) -> None:
-    adapter = _adapter(tmp_path, lambda request: httpx.Response(200, json={}))
-    try:
-        assert adapter.input_lists_file("moonrise.png") is None
-        adapter._runtime_object_info = {
-            "LoadImage": {"input": {"required": {"image": [["moonrise.png", "sub/other.png"], {}]}}}
-        }
-        assert adapter.input_lists_file("moonrise.png") is True
-        assert adapter.input_lists_file("sub/other.png") is True
-        assert adapter.input_lists_file("not-listed.png") is False
-    finally:
-        asyncio.run(adapter.close())
+def test_the_input_probe_only_confirms_what_comfyui_actually_serves(tmp_path: Path) -> None:
+    asked: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        filename = request.url.params["filename"]
+        asked.append((filename, request.url.params["subfolder"], request.url.params["type"]))
+        if filename == "moonrise.png":
+            return httpx.Response(200, content=b"png")
+        if filename == "gone.png":
+            return httpx.Response(404)
+        if filename == "refused.png":
+            return httpx.Response(500)
+        raise httpx.ConnectError("no route", request=request)
+
+    async def scenario() -> tuple[bool | None, bool | None, bool | None, bool | None]:
+        adapter = _adapter(tmp_path, handler)
+        try:
+            return (
+                await adapter.input_file_readable("moonrise.png", "from-frontend"),
+                await adapter.input_file_readable("gone.png"),
+                await adapter.input_file_readable("refused.png"),
+                await adapter.input_file_readable("unreachable.png"),
+            )
+        finally:
+            await adapter.close()
+
+    # A service that answers 5xx says nothing about this particular file, and one that
+    # never answers must never cast doubt on a copy it already accepted.
+    assert asyncio.run(scenario()) == (True, False, None, None)
+    assert ("moonrise.png", "from-frontend", "input") in asked

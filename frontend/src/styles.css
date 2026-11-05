@@ -1356,21 +1356,21 @@ code {
 
 .card-actions {
   display: grid;
-  grid-template-columns: repeat(7, 30px);
+  grid-template-columns: repeat(6, 30px);
   justify-self: end;
   gap: 7px;
 }
 
-/* Pin select and delete into explicit slots so the seven controls stay on a
+/* Pin select and delete into explicit slots so the six controls stay on a
    single row (wide cards) instead of relying on auto-placement around the
    pinned checkbox. */
 .card-actions .card-select-button {
-  grid-column: 6;
+  grid-column: 5;
   grid-row: 1;
 }
 
 .card-actions .delete-generation-button {
-  grid-column: 7;
+  grid-column: 6;
   grid-row: 1;
 }
 
@@ -1447,23 +1447,23 @@ code {
   }
 
   .card-actions {
-    grid-template-columns: repeat(4, 30px);
+    grid-template-columns: repeat(3, 30px);
   }
 
-  /* Seven controls wrap to two rows of four: recall, select, delete. */
+  /* Six controls wrap to two rows of three: recall, select, delete. */
   .card-actions .card-select-button {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 2;
   }
 
   .card-actions .delete-generation-button {
-    grid-column: 4;
+    grid-column: 3;
     grid-row: 2;
   }
 }
 
 /* A Demo Reel card carries the gallery's controls plus the reel's own - re-run,
-   copy, move, and regenerate - so one row of them has to fit ten. The row is
+   copy, move, and regenerate - so one row of them has to fit nine. The row is
    measured by its own controls rather than by a fixed grid, and nothing is pinned
    into a column, so the same controls simply flow into rows on a narrow card. */
 .card-actions.demo-reel-card-actions {
@@ -1490,7 +1490,7 @@ code {
 
 @container gallery-card (max-width: 250px) {
   .card-media-frame:has(.demo-reel-card-actions) {
-    --card-actions-height: 141px;
+    --card-actions-height: 104px;
   }
 
   .card-actions.demo-reel-card-actions {
@@ -1519,7 +1519,7 @@ code {
 
   @container gallery-card (max-width: 330px) {
     .card-media-frame:has(.demo-reel-card-actions) {
-      --card-actions-height: 188px;
+      --card-actions-height: 140px;
     }
 
     .card-actions.demo-reel-card-actions {
@@ -1543,7 +1543,7 @@ code {
   }
 
   .card-actions {
-    grid-template-columns: repeat(7, 44px);
+    grid-template-columns: repeat(6, 44px);
     gap: 4px;
   }
 
@@ -1563,16 +1563,16 @@ code {
     }
 
     .card-actions {
-      grid-template-columns: repeat(4, 44px);
+      grid-template-columns: repeat(3, 44px);
     }
 
     .card-actions .card-select-button {
-      grid-column: 3;
+      grid-column: 2;
       grid-row: 2;
     }
 
     .card-actions .delete-generation-button {
-      grid-column: 4;
+      grid-column: 3;
       grid-row: 2;
     }
   }
@@ -1608,6 +1608,7 @@ code {
 
 .card-details-button svg,
 .download-button svg,
+.push-comfyui-button svg,
 .favorite-button svg,
 .recall-button svg,
 .move-generation-button svg,
@@ -1624,6 +1625,7 @@ code {
 .card-details-button circle,
 .card-details-button path,
 .download-button path,
+.push-comfyui-button path,
 .favorite-button path,
 .recall-button path,
 .move-generation-button path,

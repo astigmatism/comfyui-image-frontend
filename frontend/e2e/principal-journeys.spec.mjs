@@ -371,7 +371,9 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(detailDialog).not.toHaveAttribute("open", "");
 
   const actions = page.locator(".gallery-card .card-actions").first();
-  await expect(actions.locator("button")).toHaveCount(6);
+  await expect(actions.locator("button")).toHaveCount(5);
+  await expect(actions).not.toContainText("Send to ComfyUI");
+  await expect(actions.locator('[data-action="push-comfyui"]')).toHaveCount(0);
   await expect(actions.getByRole("link", { name: "Download current image" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Add to Favorites" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "Recall settings" })).toBeVisible();
@@ -381,10 +383,15 @@ test("bootstrap, user administration, generation, progressive card, recall, and 
   await expect(page.locator(".gallery-card .card-footer")).toHaveCount(0);
   await expect(actions).not.toContainText(/seed|Complete|Running|slow multi/i);
 
-  // A copy into the image service's own input folder, named by that service rather
-  // than by anything the browser chose.
-  await clickGalleryControl(actions.getByRole("button", { name: "Send to ComfyUI" }));
-  await expect(page.locator("#toast-region")).toContainText(/Sent \S+ to .+→ input/);
+  // The copy into ComfyUI's own input folder is a selection tool: the card is checked
+  // first and the toolbar above the gallery carries the action.
+  await clickGalleryControl(page.locator(".gallery-card .card-select-button").first());
+  const pushTool = page.locator('#gallery-selection-toolbar [data-bulk-action="push-comfyui"]');
+  await expect(pushTool).toBeEnabled();
+  await pushTool.click();
+  await expect(page.locator("#toast-region")).toContainText(/Sent \d+ images to .+→ input/);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#gallery-selection-toolbar")).toBeHidden();
 
   const downloadPromise = page.waitForEvent("download");
   await clickGalleryControl(actions.getByRole("link", { name: "Download current image" }));

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { setCsrfToken } from "../src/api.mjs";
-import { installComfyUIPush, pushNotice } from "../src/comfyui-push.mjs";
-import { galleryCardMarkup, pushToComfyUIControlMarkup } from "../src/render.mjs";
+import { installComfyUIPush, pushBatchNotice, pushNotice } from "../src/comfyui-push.mjs";
+import { icons } from "../src/icons.mjs";
+import { galleryCardMarkup, photoViewerMarkup, pushToComfyUIControlMarkup } from "../src/render.mjs";
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -21,8 +22,19 @@ function savedResult(overrides = {}) {
     subfolder: "",
     mime_type: "image/png",
     byte_size: 4096,
-    listed_in_input_node: true,
+    readable_as_input: true,
     warning: null,
+    ...overrides,
+  };
+}
+
+function batchResult(overrides = {}) {
+  return {
+    requested: 3,
+    sent: 3,
+    instance_labels: ["GPU Image Generator"],
+    warning: null,
+    failures: [],
     ...overrides,
   };
 }
@@ -105,7 +117,7 @@ test("an in-flight copy holds the control until the answer arrives", async (cont
   assert.equal(button.disabled, false);
 });
 
-test("a warning travels as a warning and a refusal as an error", async (context) => {
+test("a copy ComfyUI cannot serve back is a warning and a refusal is an error", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = originalFetch; setCsrfToken(null); });
   const notices = [];
@@ -115,8 +127,8 @@ test("a warning travels as a warning and a refusal as an error", async (context)
 
   globalThis.fetch = async () => jsonResponse(savedResult({
     subfolder: "from-frontend",
-    listed_in_input_node: false,
-    warning: "ComfyUI saved the file, but its asset library has not listed it yet.",
+    readable_as_input: false,
+    warning: "ComfyUI took the file into its input folder but did not give it back.",
   }));
   await root.click();
   globalThis.fetch = async () => jsonResponse({ error: { code: "comfyui_unavailable", message: "The ComfyUI image service could not be reached." } }, 503);
@@ -125,7 +137,7 @@ test("a warning travels as a warning and a refusal as an error", async (context)
   assert.deepEqual(notices.map((notice) => notice.kind), ["warning", "error"]);
   assert.equal(
     notices[0].message,
-    "Sent moonrise_00002.png to GPU Image Generator → from-frontend/input. ComfyUI saved the file, but its asset library has not listed it yet.",
+    "Sent moonrise_00002.png to GPU Image Generator → from-frontend/input. ComfyUI took the file into its input folder but did not give it back.",
   );
   assert.equal(notices[1].message, "The ComfyUI image service could not be reached.");
   assert.equal(button.disabled, false);
@@ -138,10 +150,44 @@ test("the notice names the service because two of them are reachable", () => {
   );
 });
 
-test("only an image can be sent, and the control carries the image it means", () => {
+test("a selection is counted, placed, and only doubted when a copy did not land", () => {
+  assert.deepEqual(
+    pushBatchNotice(batchResult()),
+    { message: "Sent 3 images to GPU Image Generator → input", kind: "success" },
+  );
+  assert.equal(
+    pushBatchNotice(batchResult({ requested: 1, sent: 1 })).message,
+    "Sent 1 image to GPU Image Generator → input",
+  );
+  // Two image services means the files went to two different input folders.
+  assert.equal(
+    pushBatchNotice(batchResult({ instance_labels: ["Primary", "Second GPU"] })).message,
+    "Sent 3 images to 2 ComfyUI services → input",
+  );
+  assert.deepEqual(
+    pushBatchNotice(batchResult({ requested: 4, sent: 3, warning: "The service was offline." })),
+    {
+      message: "Sent 3 images of 4 images to GPU Image Generator → input. The service was offline.",
+      kind: "warning",
+    },
+  );
+  // Nothing landed, so this is a failure and not a quiet success.
+  assert.deepEqual(
+    pushBatchNotice(batchResult({ sent: 0, warning: "The service was offline.", failures: [{ artifact_id: "a1", code: "comfyui_unavailable", message: "The service was offline." }] })),
+    { message: "The service was offline.", kind: "error" },
+  );
+  assert.deepEqual(
+    pushBatchNotice(batchResult({ sent: 0, warning: null })),
+    { message: "The images could not be sent to ComfyUI.", kind: "error" },
+  );
+});
+
+test("the card carries no ComfyUI control, the viewer and the helper do", () => {
   const markup = pushToComfyUIControlMarkup({ id: "a1", kind: "image" });
   assert.match(markup, /data-action="push-comfyui"/);
   assert.match(markup, /data-artifact-id="a1"/);
+  // One glyph for the action wherever it appears, including the selection toolbar.
+  assert.ok(markup.includes(icons.push));
   assert.match(pushToComfyUIControlMarkup(null), /disabled/);
   assert.doesNotMatch(pushToComfyUIControlMarkup(null), /data-action/);
   const card = galleryCardMarkup({
@@ -153,5 +199,16 @@ test("only an image can be sent, and the control carries the image it means", ()
       content_url: "/api/artifacts/image-1/content",
     },
   });
-  assert.match(card, /data-action="push-comfyui" data-artifact-id="image-1"/);
+  assert.doesNotMatch(card, /push-comfyui/);
+  const viewer = photoViewerMarkup({
+    id: "generation-1",
+    workflow_display_name: "Published source",
+    status: "succeeded",
+    display_artifact: {
+      id: "image-1",
+      kind: "image",
+      content_url: "/api/artifacts/image-1/content",
+    },
+  });
+  assert.match(viewer, /data-action="push-comfyui" data-artifact-id="image-1"/);
 });

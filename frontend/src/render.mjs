@@ -2115,7 +2115,7 @@ function galleryCardControlsMarkup(generation) {
   const recallTitle = generation.recall_warning
     || generation.recall_unavailable_reason
     || "Load this request into the generation panel";
-  return `<button type="button" class="card-details-button" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Generation details" title="Open generation details"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>${downloadButtonMarkup(artifact)}${pushToComfyUIControlMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
+  return `<button type="button" class="card-details-button" data-action="open-detail" data-generation-id="${escapeHtml(generation.id)}" aria-label="Generation details" title="Open generation details"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>${downloadButtonMarkup(artifact)}${favoriteButtonMarkup(generation)}<button type="button" class="recall-button" data-action="recall" data-generation-id="${escapeHtml(generation.id)}" ${generation.recall_available ? "" : "disabled"} aria-label="Recall settings" title="${escapeHtml(recallTitle)}">
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2" /></svg>
   </button>`;
 }
@@ -2174,10 +2174,12 @@ export function downloadButtonMarkup(artifact, extraClasses = "") {
 }
 
 // A copy of this image in the ComfyUI input folder, for workflows that start from a
-// picture. The server chooses which image service and reports the name ComfyUI wrote,
-// so the control carries no destination of its own. See comfyui-push.mjs.
+// picture: the full-screen viewer's single-image control. Many images at once go with
+// the selection toolbar's own tool in gallery-selection.mjs, which draws this same glyph.
+// The server chooses which image service and reports the name ComfyUI wrote, so neither
+// control carries a destination of its own. See comfyui-push.mjs.
 export function pushToComfyUIControlMarkup(artifact, extraClasses = "") {
-  const glyph = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5" /><path d="M4 16v2.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V16" /></svg>`;
+  const glyph = icon("push");
   const classes = `push-comfyui-button${extraClasses ? ` ${extraClasses}` : ""}`;
   return artifact?.kind === "image"
     ? `<button type="button" class="${classes}" data-action="push-comfyui" data-artifact-id="${escapeHtml(artifact.id)}" aria-label="Send to ComfyUI" title="Copy this image into the ComfyUI input folder">${glyph}</button>`

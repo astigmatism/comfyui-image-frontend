@@ -1297,8 +1297,30 @@ class ComfyUIPushResult(APIModel):
     subfolder: str
     mime_type: str
     byte_size: int
-    listed_in_input_node: bool | None
+    readable_as_input: bool | None
     warning: str | None
+
+
+class ComfyUIPushFailure(APIModel):
+    """One image of a batch that ComfyUI did not take, and why."""
+
+    artifact_id: str
+    code: str
+    message: str
+
+
+class ComfyUIPushBatchResult(APIModel):
+    """The outcome of sending a selection's images into ComfyUI's input folders.
+
+    Each image keeps the service that generated it, so a selection can legitimately
+    land in more than one container; the labels say where.
+    """
+
+    requested: int
+    sent: int
+    instance_labels: list[str]
+    warning: str | None
+    failures: list[ComfyUIPushFailure]
 
 
 class AdminDiagnostic(APIModel):

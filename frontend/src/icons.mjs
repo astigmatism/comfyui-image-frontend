@@ -22,6 +22,9 @@ export const icons = {
   retry: '<path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" />',
   rerun: '<path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /><path d="m10 9 5 3-5 3Z" />',
   folder: '<path d="M3 6.5h6l2 2H21v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 9h18" />',
+  // "Send to ComfyUI" mirrors the download glyph: a copy going up into the image
+  // service's input folder rather than a file coming down into the browser.
+  push: '<path d="M12 21V9m-4 4 4-4 4 4M4 8V3h16v5" />',
 };
 
 export function icon(name) {

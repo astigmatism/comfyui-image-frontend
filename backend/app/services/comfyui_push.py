@@ -22,9 +22,15 @@ from ..blocking import run_blocking
 from ..config import ComfyUIInstanceConfig, Settings
 from ..errors import AppError
 from ..models import Artifact, AuditLog, Generation
-from ..schemas import ComfyUIPushResult
+from ..schemas import (
+    ComfyUIPushBatchResult,
+    ComfyUIPushFailure,
+    ComfyUIPushResult,
+    GallerySelection,
+)
 from .assets import AssetStore
 from .comfyui_instances import ComfyUIInstances
+from .gallery import GalleryService
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +38,15 @@ logger = logging.getLogger(__name__)
 # outbound name always carries an extension matching the stored bytes.
 _EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f/\\<>:;\"'|?*=]")
-_NOT_LISTED = (
-    "ComfyUI saved the file in its input folder, but it is not in that service's image-input "
-    "choices yet. An asset-based input may need a refresh before the workflow can pick it."
+_NOT_READABLE = (
+    "ComfyUI took the file into its input folder but did not give it back when asked for it, "
+    "so a workflow may not offer it yet."
 )
+# A toast can carry a few reasons; a rejected batch of a hundred images is not a
+# hundred messages, so the rest is reported as a count.
+_REPORTED_FAILURES = 3
+# SQLite binds every ID of an `in_` clause, so selection lookups go out in chunks.
+_QUERY_CHUNK = 200
 
 
 @dataclass(frozen=True)
@@ -214,7 +225,7 @@ async def push_artifact_to_comfyui(
             status_code=503,
             details={"instance_id": config.id},
         ) from error
-    listed = adapter.input_lists_file(uploaded["name"])
+    readable = await adapter.input_file_readable(uploaded["name"], uploaded["subfolder"])
     await run_blocking(
         _record_push,
         session_factory,
@@ -237,6 +248,127 @@ async def push_artifact_to_comfyui(
         subfolder=uploaded["subfolder"],
         mime_type=record.mime_type,
         byte_size=len(content),
-        listed_in_input_node=listed,
-        warning=_NOT_LISTED if listed is False else None,
+        readable_as_input=readable,
+        warning=_NOT_READABLE if readable is False else None,
+    )
+
+
+def _selection_image_ids(
+    session_factory: sessionmaker[Session],
+    gallery: GalleryService,
+    *,
+    owner_id: str,
+    payload: GallerySelection,
+    maximum: int,
+) -> list[str]:
+    """Every stored image the selection holds, folders included, as the ZIP download lists them."""
+
+    with session_factory() as session:
+        chosen = gallery.selection(session, owner_id, payload)
+        generation_ids = {item.id for item in chosen.generations}
+        subtree = sorted(chosen.subtree_ids)
+        for start in range(0, len(subtree), _QUERY_CHUNK):
+            generation_ids |= set(
+                session.scalars(
+                    select(Generation.id).where(
+                        Generation.owner_id == owner_id,
+                        Generation.collection_id.in_(subtree[start : start + _QUERY_CHUNK]),
+                    )
+                )
+            )
+        if not generation_ids:
+            raise AppError(
+                "comfyui_push_no_images", "The selection holds no images to send.", status_code=409
+            )
+        ordered = sorted(generation_ids)
+        artifact_ids: list[str] = []
+        for start in range(0, len(ordered), _QUERY_CHUNK):
+            chunk = ordered[start : start + _QUERY_CHUNK]
+            artifact_ids.extend(
+                session.scalars(
+                    select(Artifact.id)
+                    .where(
+                        Artifact.owner_id == owner_id,
+                        Artifact.generation_id.in_(chunk),
+                        Artifact.kind == "image",
+                    )
+                    .order_by(Artifact.generation_id, Artifact.sequence, Artifact.batch_index)
+                )
+            )
+        if not artifact_ids:
+            raise AppError(
+                "comfyui_push_no_images", "The selection holds no images to send.", status_code=409
+            )
+        if len(artifact_ids) > maximum:
+            raise AppError(
+                "comfyui_push_too_many",
+                f"{len(artifact_ids)} images are selected, and at most {maximum} can be sent "
+                "to ComfyUI in one action.",
+                status_code=422,
+                details={"selected": len(artifact_ids), "limit": maximum},
+            )
+        return artifact_ids
+
+
+async def push_selection_to_comfyui(
+    session_factory: sessionmaker[Session],
+    *,
+    settings: Settings,
+    assets: AssetStore,
+    instances: ComfyUIInstances,
+    gallery: GalleryService,
+    owner_id: str,
+    payload: GallerySelection,
+    instance_id: str | None = None,
+) -> ComfyUIPushBatchResult:
+    """Send every image of a selection, one file at a time, and report what did not go.
+
+    A batch that starts must finish: one offline container makes one image fail while the
+    rest still land, which is what the gallery can show usefully.
+    """
+
+    artifact_ids = await run_blocking(
+        _selection_image_ids,
+        session_factory,
+        gallery,
+        owner_id=owner_id,
+        payload=payload,
+        maximum=settings.comfyui_push_max_files,
+    )
+    pushed: list[ComfyUIPushResult] = []
+    failures: list[ComfyUIPushFailure] = []
+    for artifact_id in artifact_ids:
+        try:
+            pushed.append(
+                await push_artifact_to_comfyui(
+                    session_factory,
+                    settings=settings,
+                    assets=assets,
+                    instances=instances,
+                    owner_id=owner_id,
+                    artifact_id=artifact_id,
+                    instance_id=instance_id,
+                )
+            )
+        except AppError as error:
+            failures.append(
+                ComfyUIPushFailure(artifact_id=artifact_id, code=error.code, message=error.message)
+            )
+    labels = list(dict.fromkeys(item.instance_label for item in pushed))
+    warnings = [item.warning for item in pushed if item.warning]
+    notice = warnings[0] if warnings else None
+    if failures:
+        reasons = " ".join({item.message for item in failures[:_REPORTED_FAILURES]})
+        rest = len(failures) - min(len(failures), _REPORTED_FAILURES)
+        notice = f"{notice + ' ' if notice else ''}{reasons}" + (
+            f" {rest} more image{'s' if rest != 1 else ''} failed for the same kind of reason."
+            if rest > 0
+            else ""
+        )
+    return ComfyUIPushBatchResult(
+        requested=len(artifact_ids),
+        sent=len(pushed),
+        instance_labels=labels,
+        warning=notice,
+        failures=failures,
     )

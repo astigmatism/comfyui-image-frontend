@@ -18,6 +18,7 @@ from ..dependencies import (
 )
 from ..models import PromptRerunRun
 from ..schemas import (
+    ComfyUIPushBatchResult,
     GalleryDeleteResult,
     GalleryFilters,
     GallerySelection,
@@ -33,7 +34,7 @@ from ..schemas import (
     PromptRerunPreview,
     PromptRerunResult,
 )
-from ..services import prompt_rerun
+from ..services import comfyui_push, prompt_rerun
 from ..services.gallery import GalleryService
 from ..services.prompt_groups import changes_for_group, lookup_groups, member_page
 from ..services.user_state import lock_user_state, notify_user
@@ -156,6 +157,30 @@ def transfer_selection(
     container = get_container(request)
     return GalleryService(container.generations, container.collections).transfer(
         session, owner_id=context.user.id, payload=payload
+    )
+
+
+@router.post("/push-to-comfyui", response_model=ComfyUIPushBatchResult)
+async def push_selection_to_comfyui(
+    payload: GallerySelection,
+    request: Request,
+    context: Annotated[AuthContext, Depends(require_ready_csrf)],
+) -> ComfyUIPushBatchResult:
+    """Copy the selected images into ComfyUI's input folders, one file at a time.
+
+    Asynchronous and connection-free on purpose: the copies run over the network while the
+    browser waits, and each one opens the short-lived session it needs by itself.
+    """
+
+    container = get_container(request)
+    return await comfyui_push.push_selection_to_comfyui(
+        container.db.session_factory,
+        settings=container.settings,
+        assets=container.assets,
+        instances=container.comfyui_instances,
+        gallery=GalleryService(container.generations, container.collections),
+        owner_id=context.user.id,
+        payload=payload,
     )
 
 

@@ -230,6 +230,10 @@ class Settings(BaseSettings):
     # than the browser upload limit, so this is deliberately separate from upload_max_bytes:
     # rejecting an oversized PNG with a clear message beats silently re-encoding it.
     comfyui_push_max_bytes: int = 64 * 1024 * 1024
+    # How many images one "send to ComfyUI" action may carry. The copies run one after
+    # another over the same request that is showing the progress state, so a whole folder
+    # is refused with a clear message instead of holding the browser for minutes.
+    comfyui_push_max_files: int = 24
     # Budget for the cheap liveness probe and the companion cleanup call. A worker
     # that is busy generating still has to answer within this window, so it is
     # deliberately generous: a starved runtime answering slowly is not an outage,
@@ -512,6 +516,8 @@ class Settings(BaseSettings):
             raise ValueError("speech_to_text_timeout_seconds must be positive")
         if self.comfyui_health_timeout_seconds <= 0:
             raise ValueError("comfyui_health_timeout_seconds must be positive")
+        if self.comfyui_push_max_files < 1:
+            raise ValueError("comfyui_push_max_files must be positive")
         if self.dispatch_poll_seconds <= 0:
             raise ValueError("dispatch_poll_seconds must be positive")
         minimum_heartbeat_window = max(15.0, self.dispatch_poll_seconds * 2)
