@@ -148,7 +148,9 @@ async def test_solo_configuration_uses_daytime_and_reports_the_fallback() -> Non
     assert status["fallback"] is True
     assert status["reason"] == "no_nsfw_model_available"
     assert status["configuration_id"] == "fake-solo"
-    assert status["notice"].startswith("No NSFW model is available")
+    assert status["notice"].startswith("No published model is attested for NSFW")
+    # §4: `nsfw` is an attestation, not a forecast — the notice names the gap and predicts nothing.
+    assert "decline" not in status["notice"]
 
 
 async def test_unhealthy_nsfw_model_falls_back_to_daytime() -> None:
@@ -911,18 +913,18 @@ def test_the_contract_is_vendored_verbatim_with_a_conformance_map_and_agent_rule
     text = (root / "docs" / "llm-router-contract.md").read_text(encoding="utf-8")
     header, _, rest = text.partition("\n\n")
     assert header.startswith(
-        "> **Vendored copy — do not edit.** LLM Router client contract, version 1"
+        "> **Vendored copy — do not edit.** LLM Router client contract, version 1.6"
     )
-    assert "d5edba88089070e82bb72600e860fd204df88481" in header
+    assert "54d9517fa51de39216573d8faae1c82818c32206" in header
     vendored, marker, conformance = rest.partition(
         "\n## How ComfyUI Image Frontend upholds this contract\n"
     )
     assert marker, "the conformance map must follow the vendored text"
-    # The contract text is byte-for-byte the router maintainer's version 1 at d5edba8.
+    # The contract text is byte-for-byte the router maintainer's version 1.6 at 54d9517.
     assert hashlib.sha256(vendored.encode("utf-8")).hexdigest() == (
-        "5314c4ac4ec09e3bbe51816883077c28cff2c4538a09a64fa71961cbb432121f"
+        "d0a8564711d23c1a5ebed094511c39bba7b7700c02f7bec8b68a5201b5e3eb91"
     )
-    for item in range(1, 12):
+    for item in range(1, 14):
         assert f"| {item} |" in conformance
     agents = (root / "AGENTS.md").read_text(encoding="utf-8")
     assert "must uphold [`docs/llm-router-contract.md`]" in agents

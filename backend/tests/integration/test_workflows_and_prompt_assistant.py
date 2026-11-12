@@ -25,7 +25,13 @@ from tests.publication_fixtures import (
     build_publication_bundle,
     generation_source_timeline_fixture,
 )
-from tests.router_fixtures import NIGHTTIME_ID, paired_document, solo_document
+from tests.router_fixtures import (
+    NIGHTTIME_ID,
+    paired_document,
+    router_document,
+    router_model,
+    solo_document,
+)
 
 
 def _cache_ollama_health(
@@ -1589,6 +1595,33 @@ def test_prompt_assistant_lists_the_published_catalog_and_keeps_the_chosen_model
     assert status["pinned_model"] is None
     assert status["router"]["pinned_service"] is None
     assert status["router"]["service"] == "daytime"  # the only model this catalog publishes
+
+
+def test_prompt_assistant_offers_no_model_without_a_service_id_and_never_the_opt_in_one(
+    app_client: TestClient,
+) -> None:
+    """§3, §5: the panel lists what a person may actually choose, and never adopts `trial`."""
+
+    provision_user(app_client, username="assistant.offers")
+    _publish_catalog(
+        app_client,
+        router_document(
+            [
+                router_model("trial", canonical="fake-trial", nsfw=True, score=95.0),
+                router_model("daytime"),
+                router_model("bare-27b", canonical="bare-27b", nsfw=True, score=90.0),
+            ],
+            configuration_id="fake-trial",
+        ),
+    )
+
+    status = app_client.get("/api/prompt-assistant/status").json()
+    # `trial` is published and would answer, but this application never adopts an opt-in service;
+    # `bare-27b` is the model the catalog gave no service ID, so it has no name a client may send.
+    # Neither is a choice here, and neither is what the application would choose.
+    assert [model["service"] for model in status["models"]] == ["daytime"]
+    assert status["router"]["service"] == "daytime"
+    assert status["router"]["automatic_service"] == "daytime"
 
 
 def test_cached_prompt_assistant_success_does_not_mask_runtime_compose_failure(

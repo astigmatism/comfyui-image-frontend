@@ -210,3 +210,59 @@ def test_every_feature_the_panel_labels_is_checked_from_the_catalog(features: tu
 
     assert entry_has_features(entry, features) is True
     assert entry_has_features(entry, ("vision", "tools", "reasoning")) is False
+
+
+def test_a_model_with_no_service_id_is_never_offered_and_never_selected() -> None:
+    """§3, §4: `service === id` has no addressable ID — not a choice, not a candidate."""
+
+    document = router_document(
+        [
+            router_model("daytime", canonical=DAYTIME_PAIRED_ID),
+            # The catalog gave this entry no service alias, so the router repeats its canonical ID.
+            router_model("bare-27b", canonical="bare-27b", nsfw=True, score=95.0),
+        ],
+        configuration_id="fake-bare-row",
+    )
+    catalog = _catalog(document)
+
+    # It is the highest-scoring model in the document and still neither a line nor a candidate.
+    assert _services(catalog) == ["daytime"]
+    assert json.dumps(catalog, sort_keys=True).count("bare-27b") == 0
+    assert pick_from_catalog(catalog, fallback_any=True) == "daytime"
+    assert pick_from_catalog(document, fallback_any=True) == "daytime"
+    assert pick_from_catalog(catalog, nsfw=True, fallback_any=True) == "daytime"
+    # Not even a name the operator configured selects it: it has no name a client may send.
+    assert resolve_from_catalog(catalog, "bare-27b") == UNAVAILABLE
+    assert resolve_from_catalog(document, "bare-27b") == UNAVAILABLE
+    assert find_catalog_entry(catalog, "bare-27b") is None
+    assert pin_status(catalog, "bare-27b") == PIN_ABSENT
+
+
+def test_the_opt_in_trial_service_is_never_a_capability_candidate_or_fallback() -> None:
+    """§3, §5: `trial` answers only when its operator names it — never as a fallback."""
+
+    document = router_document(
+        [
+            router_model("trial", canonical="fake-trial", nsfw=True, score=95.0),
+            router_model("daytime", canonical=DAYTIME_PAIRED_ID),
+        ],
+        configuration_id="fake-trial",
+    )
+    catalog = _catalog(document)
+
+    # Published, and still not in the pool a capability choice draws from, in either shape.
+    assert _services(catalog) == ["trial", "daytime"]
+    assert pick_from_catalog(catalog, fallback_any=True) == "daytime"
+    assert pick_from_catalog(document, fallback_any=True) == "daytime"
+    assert pick_from_catalog(catalog, nsfw=True, fallback_any=True) == "daytime"
+    # Naming it is the opt-in; a fallback list never acquires it, and a trial-only catalog names no
+    # model this application was told to use (§5: continuing on a model nobody selected is not
+    # recovery).
+    assert resolve_from_catalog(catalog, "trial") == "trial"
+    assert resolve_from_catalog(document, "trial") == "trial"
+    assert resolve_from_catalog(catalog, "daytime", ["trial"]) == "daytime"
+    trial_only = _catalog(
+        router_document([router_model("trial", canonical="fake-trial")], configuration_id="t")
+    )
+    assert pick_from_catalog(trial_only, fallback_any=True) == UNAVAILABLE
+    assert pick_from_catalog(trial_only, nsfw=True, fallback_any=True) == UNAVAILABLE

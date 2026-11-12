@@ -26,6 +26,7 @@ from ..schemas import (
     PromptComposeRequest,
     PromptComposeResponse,
 )
+from ..services.llm_router import is_opt_in_service
 from ..services.model_choice import pinned_assistant_service
 from ..services.prompt_assistant import compose_prompt
 from .generations import require_generation_protocol
@@ -90,7 +91,12 @@ def status(
 
 
 def _catalog_models(catalog: dict[str, object] | None) -> list[PromptAssistantModel]:
-    """The published catalog as the control panel's choices: service IDs and what each can do."""
+    """The published catalog as the control panel's choices: service IDs and what each can do.
+
+    An opt-in service such as `trial` is not offered: this application never adopts one, and a
+    choice a person made could not then fall back from it as §10 asks of an opt-in service. A model
+    the catalog gives no service ID never reaches here — the projection drops it (§3).
+    """
 
     if not isinstance(catalog, dict):
         return []
@@ -99,6 +105,8 @@ def _catalog_models(catalog: dict[str, object] | None) -> list[PromptAssistantMo
     published = catalog.get("models")
     for value in published if isinstance(published, list) else []:
         if not isinstance(value, dict) or not isinstance(value.get("service"), str):
+            continue
+        if is_opt_in_service(value["service"]):
             continue
         try:
             models.append(

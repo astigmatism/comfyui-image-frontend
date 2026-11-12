@@ -55,6 +55,12 @@ FETCH_TIMEOUT_SECONDS = 15.0
 FALLBACK_CODES = frozenset({"SERVICE_OFFLINE", "BACKEND_UNAVAILABLE", "MODEL_NOT_FOUND"})
 WAIT_CODES = frozenset({"BACKEND_DRAINING", "MAINTENANCE_MODE"})
 
+# Contract §3 and §5: services an operator opts into by naming them (`trial` today). They are never
+# in the pool a capability-based choice draws from and a name-based fallback list never acquires
+# them; falling back to a model nobody selected is not recovery. This application adopts none, so
+# it does not offer one as a choice either (see `api/prompt_assistant.py`).
+OPT_IN_SERVICES = frozenset({"trial"})
+
 FEATURES: Mapping[str, Callable[[Mapping[str, Any]], bool]] = {
     "vision": lambda model: "image" in _string_list(model.get("input_modalities")),
     "tools": lambda model: "tools" in _string_list(model.get("capabilities")),
@@ -128,6 +134,25 @@ def _identities(model: Mapping[str, Any]) -> set[str]:
     return {name for name in names if isinstance(name, str) and name}
 
 
+def has_service_id(model: Mapping[str, Any]) -> bool:
+    """Whether a catalog entry declares an ID a client may send (contract §3, §4).
+
+    The router never invents a service ID: an entry whose catalog row declares no service alias is
+    published with ``service`` set to its canonical ID, so ``service === id`` is how a model with no
+    addressable ID reads. Such a model is not selectable under the contract and MUST NOT be offered
+    as a model a person can choose.
+    """
+
+    service = model.get("service")
+    return bool(isinstance(service, str) and service) and service != model.get("id")
+
+
+def is_opt_in_service(service: Any) -> bool:
+    """Whether a service ID names a service the operator opts into by configuration (§3)."""
+
+    return isinstance(service, str) and service in OPT_IN_SERVICES
+
+
 def _has_features(model: Mapping[str, Any], require: Iterable[str]) -> bool:
     return all(FEATURES[feature](model) for feature in require)
 
@@ -158,14 +183,25 @@ def resolve(
 
     features = _check_features(require)
     excluded = set(exclude)
-    candidates = [name for name in (preferred, *fallbacks) if name and name not in excluded]
+    # An opt-in service is only ever reached by being named as the preferred service; a fallback
+    # list never acquires it (§5), and a model with no addressable ID is never selectable (§3).
+    candidates = [
+        name
+        for index, name in enumerate((preferred, *fallbacks))
+        if name and name not in excluded and (index == 0 or not is_opt_in_service(name))
+    ]
     if doc is None:
         return candidates[0] if candidates else UNAVAILABLE
     if not accepting_requests(doc):
         return WAIT
     for service in candidates:
         model = next((item for item in _models(doc) if service in _identities(item)), None)
-        if model is not None and model.get("available") and _has_features(model, features):
+        if (
+            model is not None
+            and model.get("available")
+            and has_service_id(model)
+            and _has_features(model, features)
+        ):
             return service
     return UNAVAILABLE
 
@@ -195,7 +231,9 @@ def pick_service(
     NSFW, None either. ``require`` lists features the request needs (``vision``, ``tools``,
     ``reasoning``); ``exclude`` holds service IDs that just failed. ``fallback_any`` uses the
     most capable usable model when none matches ``nsfw``. Models rank by ``capability_score``,
-    then ``context_window``. Returns the model's ``service``, :data:`WAIT` or :data:`UNAVAILABLE`.
+    then ``context_window``. A model with no addressable service ID and an opt-in service such as
+    ``trial`` are not candidates at all (§3, §5). Returns the model's ``service``, :data:`WAIT` or
+    :data:`UNAVAILABLE`.
     """
 
     if doc is None:
@@ -209,6 +247,8 @@ def pick_service(
         for model in _models(doc)
         if model.get("available")
         and isinstance(model.get("service"), str)
+        and has_service_id(model)
+        and not is_opt_in_service(model.get("service"))
         and model.get("service") not in excluded
         and model.get("id") not in excluded
         and _has_features(model, features)
@@ -495,7 +535,10 @@ def catalog_view(doc: Mapping[str, Any] | None) -> dict[str, Any] | None:
     groups: dict[str, list[dict[str, Any]]] = {}
     for model in _models(doc):
         service = model.get("service")
-        if not isinstance(service, str) or not service:
+        # A model the catalog gives no service alias is published under its canonical ID, and the
+        # panel must not offer it (§3): it is dropped from the projection, not carried with a label
+        # that is really a model ID.
+        if not isinstance(service, str) or not service or not has_service_id(model):
             continue
         groups.setdefault(service, []).append(_catalog_entry(model, offline))
     models: list[dict[str, Any]] = []
@@ -548,7 +591,7 @@ def catalog_models(source: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
     return [
         _catalog_entry(model, offline)
         for model in entries
-        if isinstance(model.get("service"), str) and model["service"]
+        if isinstance(model.get("service"), str) and model["service"] and has_service_id(model)
     ]
 
 
@@ -596,8 +639,10 @@ def resolve_from_catalog(
         return WAIT
     features = _check_features(require)
     excluded = set(exclude)
-    for name in (preferred, *fallbacks):
-        if not name or name in excluded:
+    for index, name in enumerate((preferred, *fallbacks)):
+        # Mirrors :func:`resolve`: an opt-in service is only ever the name the operator chose, and
+        # an entry with no addressable service ID is never selectable.
+        if not name or name in excluded or (index and is_opt_in_service(name)):
             continue
         entry = find_catalog_entry(source, name)
         if entry is None or not entry.get("available"):
@@ -629,6 +674,7 @@ def pick_from_catalog(
         entry
         for entry in catalog_models(source)
         if entry.get("available")
+        and not is_opt_in_service(entry.get("service"))
         and not _entry_identities(entry) & excluded
         and entry_has_features(entry, features)
     ]

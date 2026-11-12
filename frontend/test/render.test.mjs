@@ -732,13 +732,13 @@ test("Creative Direction says when the LLM Router serves it from a non-NSFW fall
       nsfw: false,
       fallback: true,
       configuration_id: "flash-next-solo-128k",
-      notice: "No NSFW model is available, so Prompt Assistant is using Daytime, which may decline some requests.",
+      notice: "No published model is attested for NSFW, so Prompt Assistant is using Daytime.",
     },
   };
   assert.equal(promptAssistantModelNotice(fallback), fallback.router.notice);
   assert.match(
     promptAssistantModelNoticeMarkup(fallback),
-    /<p class="prompt-assistant-model-notice" data-prompt-assistant-model role="status" >No NSFW model is available, so Prompt Assistant is using Daytime/,
+    /<p class="prompt-assistant-model-notice" data-prompt-assistant-model role="status" >No published model is attested for NSFW, so Prompt Assistant is using Daytime/,
   );
   const preferred = { available: true, router: { ...fallback.router, service: "nighttime", nsfw: true, fallback: false, notice: null } };
   assert.equal(promptAssistantModelNotice(preferred), "");
@@ -763,7 +763,7 @@ test("Creative Direction says when the LLM Router serves it from a non-NSFW fall
   const html = generationPanelMarkup(state, state.workflows[0], contract);
   const section = html.slice(html.indexOf('id="prompt-assistant"'));
   assert.ok(section.indexOf("data-prompt-assistant-model") < section.indexOf('data-action="compose-prompt"'));
-  assert.match(promptEditorMarkup("prompt.text", "Prompt", "", fallback), /data-prompt-assistant-model role="status" >No NSFW model/);
+  assert.match(promptEditorMarkup("prompt.text", "Prompt", "", fallback), /data-prompt-assistant-model role="status" >No published model/);
 });
 
 test("Creative Direction offers the LLM Router's current catalog as the model to choose", () => {
@@ -800,7 +800,7 @@ test("Creative Direction offers the LLM Router's current catalog as the model to
     options,
     /<option value="retired" disabled title="Not available on the LLM Router right now">Retired: Old Model \(unavailable\)<\/option>/,
   );
-  assert.match(options, /<option value="daisy" title="Text only · May decline NSFW directions · 128K context">/);
+  assert.match(options, /<option value="daisy" title="Text only · Not attested for NSFW · 128K context">/);
 
   // Choosing one marks it, and only it, selected.
   const chosen = promptAssistantModelOptionsMarkup({ ...assistant, pinnedModel: "daisy" });

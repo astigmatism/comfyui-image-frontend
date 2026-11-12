@@ -158,7 +158,7 @@ def test_subscriber_keeps_the_status_endpoint_current(settings_factory, fake_sta
         assert solo["router"]["fallback"] is True
         assert solo["router"]["nsfw"] is False
         assert solo["router"]["configuration_id"] == "fake-solo"
-        assert solo["router"]["notice"].startswith("No NSFW model is available")
+        assert solo["router"]["notice"].startswith("No published model is attested for NSFW")
 
         # Draining reports waiting; the return of Nighttime ends the fallback.
         fake_state.router_draining = True

@@ -1421,8 +1421,9 @@ function promptAssistantMarkup(state = {}, values = {}, contract = null) {
   </section>`;
 }
 
-// The LLM Router chooses the model per request. When no NSFW model is available the assistant
-// runs on a non-NSFW fallback that may decline some directions; say so where the user composes.
+// The LLM Router chooses the model per request. When nothing published is attested for NSFW the
+// assistant answers on a fallback; the backend words that as the attestation gap it is (§4), and
+// this shows it verbatim where the user composes.
 export function promptAssistantModelNotice(assistant = {}) {
   const router = assistant?.router;
   if (!router || typeof router !== "object") return "";
@@ -1444,8 +1445,10 @@ function assistantModelName(service) {
 
 function assistantModelHint(entry) {
   const hints = [entry?.vision ? "Reads images" : "Text only"];
-  if (entry?.nsfw === true) hints.push("Accepts NSFW directions");
-  else if (entry?.nsfw === false) hints.push("May decline NSFW directions");
+  // The router's `nsfw` is an attestation of abliteration, not a forecast of behaviour, so the
+  // hint says what has been attested rather than what the model is expected to do.
+  if (entry?.nsfw === true) hints.push("Attested for NSFW directions");
+  else if (entry?.nsfw === false) hints.push("Not attested for NSFW");
   if (typeof entry?.context_window === "number" && entry.context_window > 0) {
     hints.push(`${Math.round(entry.context_window / 1024)}K context`);
   }

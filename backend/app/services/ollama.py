@@ -749,13 +749,15 @@ class OllamaAdapter:
         if self.settings.ollama_selection == "named":
             preferred = _service_label(self.settings.ollama_named_models[0])
             return f"{preferred} is unavailable, so Prompt Assistant is using {name} instead."
+        # §4: `nsfw` is an attestation, not a forecast. Say what has not been attested and what is
+        # answering; do not predict a refusal from a `false`, and do not soften the fallback.
         lacking = (
-            "No NSFW model that can inspect images is available"
+            "No published model that can inspect images is attested for NSFW"
             if selection.reason == "no_nsfw_model_with_vision"
-            else "No NSFW model is available"
+            else "No published model is attested for NSFW"
         )
         purpose = "Image checks are" if vision else "Prompt Assistant is"
-        return f"{lacking}, so {purpose} using {name}, which may decline some requests."
+        return f"{lacking}, so {purpose} using {name}."
 
     def _pinned_notice(self, selection: RouterSelection, name: str, *, vision: bool) -> str:
         """Why the model an account chose did not answer, and what answered instead."""
