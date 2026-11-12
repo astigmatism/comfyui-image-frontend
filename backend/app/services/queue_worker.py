@@ -6,7 +6,7 @@ import logging
 import math
 import re
 import time
-from collections.abc import Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -141,6 +141,8 @@ class QueueWorker:
         self._last_exception_class: str | None = None
         self._consecutive_failures = 0
         self._restart_count = 0
+        # Per-monitor liveness for the tasks nothing waits on (health monitor, router subscriber).
+        self._monitor_state: dict[str, dict[str, Any]] = {}
 
     async def start(self) -> None:
         if self._main_task is not None:
@@ -151,12 +153,16 @@ class QueueWorker:
         self._dispatcher_started.clear()
         self._dispatcher_state = "recovering"
         self._dispatcher_done = False
-        self._health_task = asyncio.create_task(self._health_loop(), name="external-health-monitor")
+        self._health_task = asyncio.create_task(
+            self._supervise_monitor("external-health-monitor", self._health_loop),
+            name="external-health-monitor",
+        )
         if getattr(self.ollama, "watch_router", None) is not None:
             # One LLM Router subscription for the process lifetime: it reads the capabilities
             # document at startup and follows /v1/router/events (docs/llm-router-contract.md).
             self._router_task = asyncio.create_task(
-                self._router_watch_loop(), name="llm-router-subscriber"
+                self._supervise_monitor("llm-router-subscriber", self._router_watch_loop),
+                name="llm-router-subscriber",
             )
         self._main_task = asyncio.create_task(
             self._supervise_dispatcher(),
@@ -498,6 +504,100 @@ class QueueWorker:
         self._last_heartbeat_monotonic = time.monotonic()
         self._last_heartbeat_at = datetime.now(UTC)
 
+    def _monitor_record(self, name: str) -> dict[str, Any]:
+        """The liveness record of one process-lifetime monitor, created on first use."""
+
+        state: dict[str, dict[str, Any]] | None = getattr(self, "_monitor_state", None)
+        if state is None:
+            state = {}
+            self._monitor_state = state
+        return state.setdefault(
+            name,
+            {
+                "last_activity_at": None,
+                "consecutive_failures": 0,
+                "last_failure_at": None,
+                "last_exception_class": None,
+                "restart_count": 0,
+            },
+        )
+
+    def _mark_monitor_activity(self, name: str) -> None:
+        """Note that a monitor did its work; for the health monitor that is one finished pass."""
+
+        state = self._monitor_record(name)
+        state["last_activity_at"] = datetime.now(UTC).isoformat()
+        state["consecutive_failures"] = 0
+
+    def _record_monitor_failure(self, name: str, exc: BaseException) -> None:
+        state = self._monitor_record(name)
+        state["consecutive_failures"] = int(state["consecutive_failures"]) + 1
+        state["last_failure_at"] = datetime.now(UTC).isoformat()
+        state["last_exception_class"] = type(exc).__name__
+
+    def _monitor_backoff(self, consecutive_failures: int) -> float:
+        interval = float(max(getattr(self.settings, "external_health_interval_seconds", 10.0), 1.0))
+        exponent = max(0, min(consecutive_failures - 1, 4))
+        return float(min(interval * (2**exponent), 60.0))
+
+    async def _supervise_monitor(self, name: str, monitor: Callable[[], Awaitable[None]]) -> None:
+        """Run a monitor for the process lifetime, starting it again when it ends unexpectedly.
+
+        The external health monitor and the LLM Router subscriber are background tasks nothing waits
+        on, so when one ends nothing else notices: the health monitor leaving stops every cached
+        service-health row from being refreshed, which the Prompt Assistant reads as permanently
+        stale availability, and a stopped subscriber leaves the router document unrefreshed. An
+        unexpected end is therefore an event to log and back off from, in the shape the generation
+        dispatcher's supervisor uses.
+        """
+
+        while not self._stop.is_set():
+            unexpected: BaseException | None = None
+            try:
+                await monitor()
+                if not self._stop.is_set():
+                    unexpected = RuntimeError(f"{name} returned unexpectedly")
+            except asyncio.CancelledError as exc:
+                supervisor = asyncio.current_task()
+                if self._stop.is_set() or (supervisor is not None and supervisor.cancelling()):
+                    raise
+                unexpected = exc
+            except BaseException as exc:
+                unexpected = exc
+            if unexpected is None:
+                return
+            self._record_monitor_failure(name, unexpected)
+            state = self._monitor_record(name)
+            backoff = self._monitor_backoff(int(state["consecutive_failures"]))
+            state["restart_count"] = int(state["restart_count"]) + 1
+            logger.error(
+                "service_monitor_restarting",
+                extra={
+                    "monitor": name,
+                    "consecutive_failures": state["consecutive_failures"],
+                    "backoff_seconds": backoff,
+                    "exception_class": type(unexpected).__name__,
+                    "restart_count": state["restart_count"],
+                },
+                exc_info=(type(unexpected), unexpected, unexpected.__traceback__),
+            )
+            if await self._wait_for_stop_or_backoff(backoff):
+                return
+
+    def _monitor_snapshot(self, name: str, task: asyncio.Task[None] | None) -> dict[str, Any]:
+        """What a monitor last did and whether it is still there, for the health endpoint."""
+
+        state = self._monitor_record(name)
+        return {
+            "started": task is not None,
+            "running": bool(task is not None and not task.done()),
+            "last_activity_at": state["last_activity_at"],
+            "consecutive_failures": int(state["consecutive_failures"]),
+            "last_failure_at": state["last_failure_at"],
+            "last_exception_class": state["last_exception_class"],
+            "restart_count": int(state["restart_count"]),
+        }
+
     def health_snapshot(self) -> dict[str, Any]:
         enabled = self.settings.enable_background_worker
         supervisor_running = bool(self._main_task and not self._main_task.done())
@@ -537,6 +637,12 @@ class QueueWorker:
             "consecutive_failures": self._consecutive_failures,
             "last_exception_class": self._last_exception_class,
             "restart_count": self._restart_count,
+            "health_monitor": self._monitor_snapshot(
+                "external-health-monitor", getattr(self, "_health_task", None)
+            ),
+            "router_subscriber": self._monitor_snapshot(
+                "llm-router-subscriber", getattr(self, "_router_task", None)
+            ),
         }
 
     def _observe_supervisor_done(self, task: asyncio.Task[None]) -> None:
@@ -3454,82 +3560,113 @@ class QueueWorker:
             return tuple(notifications), tuple(prompt_jobs)
 
     async def _health_loop(self) -> None:
-        while not self._stop.is_set():
-            instances = getattr(self, "comfyui_instances", None)
-            if instances is None:
-                # Compatibility for the isolated health-loop unit test that constructs a worker
-                # without __init__. Production always follows the per-instance path below.
-                comfy_available, comfy_message = await self.comfyui.health()
-                ollama_available, ollama_message = await self.ollama.status()
-                await self._record_ollama_status(ollama_available, ollama_message)
-                catalog_loading, should_refresh_catalog = await _run_blocking(
-                    self._comfy_recovery_state,
-                    comfy_available,
-                )
-                catalog_refreshed = False
-                legacy_catalog_failure_message: str | None = None
-                if should_refresh_catalog:
-                    try:
-                        await self.generations.registry.refresh()
-                        catalog_refreshed = True
-                    except Exception:
-                        logger.exception("workflow_catalog_recovery_refresh_failed")
-                        legacy_catalog_failure_message = (
-                            "ComfyUI source discovery failed during recovery."
-                        )
-                if not catalog_refreshed and not catalog_loading:
-                    await _run_blocking(
-                        self._persist_service_health,
-                        "comfyui",
-                        False if legacy_catalog_failure_message else comfy_available,
-                        legacy_catalog_failure_message or comfy_message,
-                    )
-                if self._stop.is_set():
-                    return
-                try:
-                    await asyncio.wait_for(
-                        self._stop.wait(),
-                        timeout=self.settings.external_health_interval_seconds,
-                    )
-                except TimeoutError:
-                    continue
-                continue
+        """Probe the external services on a fixed interval for the lifetime of the worker.
 
-            health_results = await asyncio.gather(
-                self.ollama.status(),
-                *(self._adapter_for_instance(config.id).health() for config in instances.configs),
-            )
-            ollama_available, ollama_message = health_results[0]
-            await self._record_ollama_status(ollama_available, ollama_message)
-            comfy_health = {
-                config.id: health_results[index]
-                for index, config in enumerate(instances.configs, start=1)
-            }
-            for instance_id, (available, message) in comfy_health.items():
-                await _run_blocking(
-                    self._persist_instance_health,
-                    instance_id,
-                    available,
-                    message,
+        One pass that raises — the database locked by a longer transaction, an instance answering
+        something no client expected — is logged and retried on the next tick, the way the
+        dispatcher treats a failed iteration. The rows it was about to write keep their previous
+        values, which the API reports as stale, instead of freezing forever behind a task nobody is
+        watching; a monitor that ended for good is restarted by :meth:`_supervise_monitor`.
+        """
+
+        while not self._stop.is_set():
+            try:
+                await self._health_pass()
+                self._mark_monitor_activity("external-health-monitor")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._record_monitor_failure("external-health-monitor", exc)
+                logger.exception(
+                    "external_health_pass_failed",
+                    extra={
+                        "consecutive_failures": int(
+                            self._monitor_record("external-health-monitor")["consecutive_failures"]
+                        ),
+                        "exception_class": type(exc).__name__,
+                        "interval_seconds": self.settings.external_health_interval_seconds,
+                    },
                 )
-            for instance_id, (available, message) in comfy_health.items():
-                catalog_loading, should_refresh_catalog = await _run_blocking(
-                    self._comfy_recovery_state,
-                    available,
-                    instance_id,
-                )
-                if should_refresh_catalog:
-                    await self.generations.registry.refresh(instance_id)
-                elif not catalog_loading and not available:
-                    await _run_blocking(
-                        self.generations.registry.record_offline, instance_id, message
-                    )
+            if self._stop.is_set():
+                return
             try:
                 await asyncio.wait_for(
                     self._stop.wait(), timeout=self.settings.external_health_interval_seconds
                 )
             except TimeoutError:
                 continue
+
+    async def _health_pass(self) -> None:
+        """One round of external probes, each result persisted as soon as it is known."""
+
+        instances = getattr(self, "comfyui_instances", None)
+        if instances is None:
+            # Compatibility for the isolated health-loop unit test that constructs a worker
+            # without __init__. Production always follows the per-instance path below.
+            comfy_available, comfy_message = await self.comfyui.health()
+            ollama_available, ollama_message = await self.ollama.status()
+            await self._record_ollama_status(ollama_available, ollama_message)
+            catalog_loading, should_refresh_catalog = await _run_blocking(
+                self._comfy_recovery_state,
+                comfy_available,
+            )
+            catalog_refreshed = False
+            legacy_catalog_failure_message: str | None = None
+            if should_refresh_catalog:
+                try:
+                    await self.generations.registry.refresh()
+                    catalog_refreshed = True
+                except Exception:
+                    logger.exception("workflow_catalog_recovery_refresh_failed")
+                    legacy_catalog_failure_message = (
+                        "ComfyUI source discovery failed during recovery."
+                    )
+            if not catalog_refreshed and not catalog_loading:
+                await _run_blocking(
+                    self._persist_service_health,
+                    "comfyui",
+                    False if legacy_catalog_failure_message else comfy_available,
+                    legacy_catalog_failure_message or comfy_message,
+                )
+            return
+
+        health_results = await asyncio.gather(
+            self.ollama.status(),
+            *(self._adapter_for_instance(config.id).health() for config in instances.configs),
+        )
+        ollama_available, ollama_message = health_results[0]
+        await self._record_ollama_status(ollama_available, ollama_message)
+        comfy_health = {
+            config.id: health_results[index]
+            for index, config in enumerate(instances.configs, start=1)
+        }
+        for instance_id, (available, message) in comfy_health.items():
+            await _run_blocking(
+                self._persist_instance_health,
+                instance_id,
+                available,
+                message,
+            )
+        for instance_id, (available, message) in comfy_health.items():
+            catalog_loading, should_refresh_catalog = await _run_blocking(
+                self._comfy_recovery_state,
+                available,
+                instance_id,
+            )
+            if should_refresh_catalog:
+                try:
+                    await self.generations.registry.refresh(instance_id)
+                except Exception as exc:
+                    # The registry persists what it learned about the catalog on its own; the
+                    # execution probe above stays as measured, because a failed discovery is not a
+                    # failed runtime. Only the pass must survive it.
+                    self._record_monitor_failure("external-health-monitor", exc)
+                    logger.exception(
+                        "workflow_catalog_recovery_refresh_failed",
+                        extra={"instance_id": instance_id},
+                    )
+            elif not catalog_loading and not available:
+                await _run_blocking(self.generations.registry.record_offline, instance_id, message)
 
     def _comfy_recovery_state(
         self, comfy_available: bool, instance_id: str | None = None
@@ -3558,18 +3695,19 @@ class QueueWorker:
             return catalog_loading, should_refresh_catalog
 
     async def _router_watch_loop(self) -> None:
-        """Follow the LLM Router for the process lifetime; never fail application startup."""
+        """Follow the LLM Router for the process lifetime; never fail application startup.
 
-        try:
-            await self.ollama.watch_router(self._stop, on_change=self._on_router_change)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("llm_router_subscriber_failed")
+        A failure is reported rather than swallowed, because the supervisor is what starts the
+        subscription again. While it is away the request path still reads the document before each
+        request, so what dying silently costs is a catalog that never refreshes again.
+        """
+
+        await self.ollama.watch_router(self._stop, on_change=self._on_router_change)
 
     async def _on_router_change(self, _doc: dict[str, Any]) -> None:
         """Persist the Prompt Assistant row as soon as the router's document changes."""
 
+        self._mark_monitor_activity("llm-router-subscriber")
         await self._persist_ollama_status()
 
     async def _persist_ollama_status(self) -> None:

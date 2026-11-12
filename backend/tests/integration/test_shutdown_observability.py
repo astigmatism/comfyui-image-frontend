@@ -102,6 +102,15 @@ def test_health_and_structured_shutdown_logs_survive_migration_logging(
         payload = response.json()
         assert payload["status"] == "ok"
         assert payload["database"] is True
+        monitor_idle = {
+            "started": False,
+            "running": False,
+            "last_activity_at": None,
+            "consecutive_failures": 0,
+            "last_failure_at": None,
+            "last_exception_class": None,
+            "restart_count": 0,
+        }
         assert payload["worker"] == {
             "enabled": False,
             "ready": True,
@@ -114,6 +123,10 @@ def test_health_and_structured_shutdown_logs_survive_migration_logging(
             "consecutive_failures": 0,
             "last_exception_class": None,
             "restart_count": 0,
+            # Nothing was started with the background worker off, and the health answer says so
+            # about the two monitors nothing waits on, not just about the dispatcher.
+            "health_monitor": monitor_idle,
+            "router_subscriber": monitor_idle,
         }
 
     records: list[dict[str, Any]] = []

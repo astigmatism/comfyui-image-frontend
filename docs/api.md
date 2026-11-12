@@ -1090,7 +1090,12 @@ streaming. Large request bodies retain ASGI transport backpressure while waiting
 with a one-second response deadline. Database or worker readiness failure returns
 503. The `load` object exposes aggregate request activity, rejection and wait counts,
 connection checkout pressure and duration, and event-loop lag, with no credentials,
-request bodies, or SQL parameters. Browser safe reads and thumbnails make at most
+request bodies, or SQL parameters. The `worker` object additionally reports each
+process-lifetime monitor — `health_monitor`, the external service probes whose cached rows the
+Prompt Assistant reads, and `router_subscriber`, the LLM Router event subscription — as
+`{started, running, last_activity_at, consecutive_failures, last_failure_at, last_exception_class, restart_count}`.
+A monitor that ended leaves those rows frozen without making anything else in this answer look
+wrong, so `running: false` or an old `last_activity_at` is the signal to look for. Browser safe reads and thumbnails make at most
 four attempts, honoring `Retry-After` and their original overall deadline.
 
 

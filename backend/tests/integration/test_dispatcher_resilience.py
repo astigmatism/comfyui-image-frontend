@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -350,6 +351,153 @@ async def test_catalog_refresh_failure_does_not_mark_a_healthy_runtime_unavailab
     assert persisted_instances == [("primary", True, None)]
     assert persisted_services == [("ollama", True, None)]
     assert worker.generations.registry.available is False
+
+
+async def test_a_failing_health_pass_is_retried_and_the_monitor_stays_alive(
+    monkeypatch,
+) -> None:
+    """The rows the monitor writes may go stale; the monitor itself must not stop with them.
+
+    The production shape of this bug: one pass of the external health monitor raises — here a
+    workflow catalog refresh failing the way a locked database fails — and because nothing caught
+    it,
+    the task ended. Every cached health row kept its last value forever, and the Prompt Assistant
+    reported availability as stale for a day with nothing left to restart.
+    """
+
+    worker = object.__new__(queue_worker_module.QueueWorker)
+    worker._stop = asyncio.Event()
+    worker.settings = SimpleNamespace(external_health_interval_seconds=0.01)
+    started: list[str] = []
+    refreshes = 0
+
+    class ComfyProbe:
+        async def health(self):
+            return True, None
+
+    class OllamaProbe:
+        async def status(self):
+            return True, None
+
+    class FlakyRegistry:
+        async def refresh(self, instance_id):
+            nonlocal refreshes
+            refreshes += 1
+            started.append(instance_id)
+            if refreshes == 1:
+                raise RuntimeError("database is locked")
+
+    async def record_status(available: bool, message: str | None) -> None:
+        return None
+
+    worker.comfyui_instances = SimpleNamespace(
+        configs=(SimpleNamespace(id="primary"),),
+        default_id="primary",
+    )
+    worker.generations = SimpleNamespace(registry=FlakyRegistry())
+    worker.ollama = OllamaProbe()
+    monkeypatch.setattr(worker, "_adapter_for_instance", lambda _instance_id: ComfyProbe())
+    monkeypatch.setattr(worker, "_record_ollama_status", record_status)
+    monkeypatch.setattr(worker, "_persist_instance_health", lambda *args: None)
+    monkeypatch.setattr(
+        worker, "_comfy_recovery_state", lambda _available, _instance_id: (False, True)
+    )
+
+    loop = asyncio.create_task(worker._health_loop())
+    for _ in range(400):
+        if refreshes >= 2:
+            break
+        await asyncio.sleep(0.005)
+
+    # The pass that raised was the last thing that happened to the monitor, not the last
+    # thing it did.
+    assert refreshes >= 2
+    assert not loop.done()
+    state = worker._monitor_record("external-health-monitor")
+    assert state["last_exception_class"] == "RuntimeError"
+    assert state["consecutive_failures"] == 0  # the following pass healed it
+    assert state["last_activity_at"] is not None
+
+    worker._stop.set()
+    await asyncio.wait_for(loop, timeout=1)
+
+
+def test_the_health_endpoint_shows_when_the_health_monitor_stopped_reporting(
+    settings_factory, fake_state
+) -> None:
+    """What an operator needed and did not have: a monitor that is simply gone.
+
+    A frozen service-health row is healthy in every other way — the value it holds is correct, the
+    dispatcher is alive, the database answers — so the health endpoint names the monitor that writes
+    those rows, when it last finished a pass, and whether it is still running.
+    """
+
+    del fake_state
+    settings = settings_factory(enable_background_worker=False)
+    with TestClient(create_app(settings)) as client:
+        worker = _start_worker(client)
+        assert client.portal is not None
+
+        reporting, status = _wait_for_worker_health(
+            client,
+            lambda snapshot, code: (
+                code == 200
+                and snapshot["health_monitor"]["running"] is True
+                and snapshot["health_monitor"]["last_activity_at"] is not None
+            ),
+            timeout=15.0,
+        )
+        assert status == 200
+        assert reporting["health_monitor"]["consecutive_failures"] == 0
+        assert reporting["health_monitor"]["restart_count"] == 0
+        assert reporting["router_subscriber"]["started"] is True
+
+        async def kill_the_monitor() -> None:
+            worker._health_task.cancel()
+            await asyncio.sleep(0)
+
+        client.portal.call(kill_the_monitor)
+        stopped, _ = _wait_for_worker_health(
+            client, lambda snapshot, code: snapshot["health_monitor"]["running"] is False
+        )
+        # Gone, and saying so: the rows keep their last values, with a timestamp showing how old.
+        assert stopped["health_monitor"]["last_activity_at"] is not None
+        assert stopped["health_monitor"]["last_exception_class"] is None
+
+
+async def test_a_monitor_that_ends_is_started_again(caplog) -> None:
+    """Nothing waits on these tasks, so ending is an event to log and retry, not a silent exit."""
+
+    worker = object.__new__(queue_worker_module.QueueWorker)
+    worker._stop = asyncio.Event()
+    worker.settings = SimpleNamespace(external_health_interval_seconds=0.01)
+    starts = 0
+
+    async def monitor() -> None:
+        nonlocal starts
+        starts += 1
+        if starts < 3:
+            raise RuntimeError("database is locked")
+        worker._stop.set()
+
+    with caplog.at_level(logging.ERROR, logger="app.services.queue_worker"):
+        await asyncio.wait_for(
+            worker._supervise_monitor("external-health-monitor", monitor), timeout=20
+        )
+
+    assert starts == 3
+    state = worker._monitor_record("external-health-monitor")
+    assert state["restart_count"] == 2
+    assert state["last_exception_class"] == "RuntimeError"
+    events = [
+        record for record in caplog.records if record.getMessage() == "service_monitor_restarting"
+    ]
+    assert [record.monitor for record in events] == [
+        "external-health-monitor",
+        "external-health-monitor",
+    ]
+    assert [record.restart_count for record in events] == [1, 2]
+    assert [record.exception_class for record in events] == ["RuntimeError", "RuntimeError"]
 
 
 def test_transient_claim_failure_is_logged_and_later_generations_succeed(

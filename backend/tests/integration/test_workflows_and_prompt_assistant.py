@@ -1496,16 +1496,28 @@ def test_prompt_assistant_status_uses_bounded_cached_health_without_contacting_o
         "pinned_model": None,
     }
 
+    # Staleness is a verdict about availability, not about what exists. The published catalog and
+    # this account's choice stay in the answer, because a model control that empties itself reads to
+    # a person as "there is no model", which is not what an overdue probe says.
+    assert _choose_model(app_client, "nighttime").status_code == 200
     _cache_ollama_health(
         app_client,
         available=True,
         checked_at=datetime.now(UTC) - timedelta(seconds=31),
+        capabilities={
+            "vision": True,
+            "capabilities": ["completion", "thinking"],
+            "catalog": catalog_view(paired_document()),
+            "router": None,
+        },
     )
     stale = app_client.get("/api/prompt-assistant/status")
     assert stale.status_code == 200
     assert stale.json()["available"] is False
     assert stale.json()["vision_available"] is False
     assert "stale" in stale.json()["message"]
+    assert [model["service"] for model in stale.json()["models"]] == ["daytime", "nighttime"]
+    assert stale.json()["pinned_model"] == "nighttime"
 
 
 def _choose_model(client: TestClient, service: str) -> Any:

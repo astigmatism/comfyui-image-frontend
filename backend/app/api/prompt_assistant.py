@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
@@ -41,18 +41,46 @@ def status(
     session: Annotated[Session, Depends(get_db, scope="function")],
     context: Annotated[AuthContext, Depends(require_ready_user)],
 ) -> PromptAssistantStatus:
+    """Whether Creative Direction can answer, what it would use, and what may be chosen.
+
+    The catalog and this account's choice are answered from the stored health row whenever that row
+    carries them, including while availability itself is not known: a model list that vanishes
+    because a probe is overdue reads to a person as "there is no model", which is not what an
+    overdue probe says. Only the availability verdict waits for a fresh row.
+    """
+
     container = get_container(request)
-    if not container.settings.ollama_base_url:
+    configured = bool(container.settings.ollama_base_url)
+    health = session.get(ServiceHealth, "ollama") if configured else None
+    stored = health.capabilities_json if health is not None else None
+    capabilities: dict[str, Any] = stored if isinstance(stored, dict) else {}
+    catalog = capabilities.get("catalog") if isinstance(capabilities.get("catalog"), dict) else None
+    # The models this account may choose are the ones the router publishes now; the account's own
+    # choice is read from its saved settings and answered against that catalog, so the model named
+    # here is the model its next Creative Direction request uses.
+    pinned = pinned_assistant_service(session, context.user.id) if configured else None
+    account = container.ollama.model_status(catalog, pinned) if configured else None
+    models = _catalog_models(catalog)
+    router_status = (
+        _router_status(account if account is not None else capabilities.get("router"))
+        if configured
+        else None
+    )
+    if not configured:
         return PromptAssistantStatus(
             available=False,
             message="Prompt Assistant is not configured.",
+            router=router_status,
+            models=models,
+            pinned_model=pinned,
         )
-
-    health = session.get(ServiceHealth, "ollama")
     if health is None:
         return PromptAssistantStatus(
             available=False,
             message="Prompt Assistant availability is still being checked.",
+            router=router_status,
+            models=models,
+            pinned_model=pinned,
         )
 
     checked_at = health.checked_at
@@ -66,15 +94,11 @@ def status(
         return PromptAssistantStatus(
             available=False,
             message="Prompt Assistant health information is stale; availability is being checked.",
+            router=router_status,
+            models=models,
+            pinned_model=pinned,
         )
 
-    capabilities = health.capabilities_json or {}
-    catalog = capabilities.get("catalog") if isinstance(capabilities.get("catalog"), dict) else None
-    # The models this account may choose are the ones the router publishes now; the account's own
-    # choice is read from its saved settings and answered against that catalog, so the model named
-    # here is the model its next Creative Direction request uses.
-    pinned = pinned_assistant_service(session, context.user.id)
-    account = container.ollama.model_status(catalog, pinned)
     return PromptAssistantStatus(
         available=health.available,
         message=(
@@ -84,8 +108,8 @@ def status(
             or "Prompt Assistant is temporarily unavailable; manual prompting still works."
         ),
         vision_available=bool(health.available and capabilities.get("vision") is True),
-        router=_router_status(account if account is not None else capabilities.get("router")),
-        models=_catalog_models(catalog),
+        router=router_status,
+        models=models,
         pinned_model=pinned,
     )
 
