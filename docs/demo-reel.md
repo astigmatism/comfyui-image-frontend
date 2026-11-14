@@ -109,8 +109,11 @@ removed checkpoints, and checkpoints downgraded below B lose their results.
 Promotions into A/B add missing work. Slot titles/order, tier order, and A↔B moves
 preserve results.
 
-Compatible catalog additions and descriptive changes preserve images. Executable
-workflow changes invalidate affected results and require recipe review and Save.
+Compatible catalog additions and descriptive changes preserve images. So do LoRA defaults,
+widget ranges and steps, node labels, and the output file names ComfyUI stamps with the
+publication date: none of them can change a rendered pixel, and the last of them changes on
+every publication. A workflow change that reaches the picture — a binding, a connection, or
+an executable input — invalidates the family and requires recipe review and Save.
 If the rating account disappears, generation blocks and existing images remain
 available until an administrator chooses a replacement account.
 

@@ -71,15 +71,41 @@ def aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
+# Nodes that name their output files; ComfyUI derives the folder and timestamp from the
+# moment a workflow is published, so these inputs differ between publications of identical
+# pipelines.
+OUTPUT_NAMING_NODES = frozenset({"SaveImage", "SaveAnimatedWEBP", "SaveAnimatedPNG"})
+
+
 def render_revision(profile: WorkflowProfile) -> str:
-    """Ignore catalog growth and descriptive metadata; retain executable graph changes."""
+    """Ignore everything that cannot change the pixels a workflow renders.
+
+    Catalog growth, widget defaults, and validation ranges are this application's own
+    presentation and admission rules: the strength or value a picture is generated with
+    comes from the request, and a wider or narrower range admits or refuses that request
+    rather than drawing it differently. ComfyUI also stamps the publish date and time into
+    Save-node output names, so naming is excluded for the same reason it changes on every
+    publication and never changes an image. Bindings, wiring, and executable node inputs
+    stay in the digest.
+    """
+
     graph = copy.deepcopy(profile.source_api_json)
     for node in graph.values():
         node.pop("_meta", None)
         inputs = node.get("inputs", {})
         kind = node.get("class_type", "")
         if kind.startswith("CIF"):
-            for field in ("label", "description", "group", "order", "advanced"):
+            descriptive = (
+                "label",
+                "description",
+                "group",
+                "order",
+                "advanced",
+                "minimum",
+                "maximum",
+                "step",
+            )
+            for field in descriptive:
                 inputs.pop(field, None)
         if kind == "CIFLoraStack":
             inputs.pop("catalog_json", None)
@@ -87,6 +113,8 @@ def render_revision(profile: WorkflowProfile) -> str:
         elif kind.startswith("CIF") and kind.endswith("Parameter"):
             inputs.pop("value", None)
             inputs.pop("options_json", None)
+        if kind in OUTPUT_NAMING_NODES:
+            inputs.pop("filename_prefix", None)
     return digest(graph)
 
 
