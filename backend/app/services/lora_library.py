@@ -20,7 +20,7 @@ from ..domain.lora_identity import lora_identity_v1, stack_catalog
 from ..domain.publication import publication_kind
 from ..models import WorkflowProfile, WorkflowState
 
-CATALOG_KEYS = ("id", "label", "filename", "trigger_word", "description")
+CATALOG_KEYS = ("id", "label", "filename", "trigger_word", "description", "preferred_strength")
 LIBRARY_KEY = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 MAX_LIBRARY_ITEMS = 100
 

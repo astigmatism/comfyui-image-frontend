@@ -1,5 +1,5 @@
 import { icon } from "./icons.mjs";
-import { loraDefaultPositiveStrength, loraStackError, subjectLoraTrigger } from "./lora-stack.mjs";
+import { loraEnableStrength, loraStackError, subjectLoraTrigger } from "./lora-stack.mjs";
 import { migrateInterfaceState, migrateLoraStrengthMemory, normalizeThumbnailScale } from "./lib.mjs";
 import { loraLibraryChipMarkup, loraLibraryFormMarkup, loraLibraryMenuId, loraLibraryNoticeMarkup, loraLibraryPopoverMarkup } from "./admin-loras.mjs";
 
@@ -18,14 +18,16 @@ export function groupedLoras(items, grouping) {
 }
 
 // Gallery order never changes the execution array. Reordering the active strip
-// replaces only its positive slots, keeping every disabled entry exactly once.
+// replaces only its weighted slots, keeping every unloaded entry exactly once. A slot
+// is weighted in either direction: applying a LoRA and subtracting it both run the
+// loader, so both are ordered.
 export function moveEnabledLora(values, id, to) {
-  const enabled = values.filter((entry) => entry.strength > 0);
+  const enabled = values.filter((entry) => entry.strength !== 0);
   const from = enabled.findIndex((entry) => entry.id === id);
   if (from < 0 || to < 0 || to >= enabled.length) return values;
   enabled.splice(to, 0, enabled.splice(from, 1)[0]);
   let index = 0;
-  return values.map((entry) => ({ ...(entry.strength > 0 ? enabled[index++] : entry) }));
+  return values.map((entry) => ({ ...(entry.strength !== 0 ? enabled[index++] : entry) }));
 }
 
 export function reconcileLoraDraft(previous, current) {
@@ -43,7 +45,10 @@ export function reconcileLoraDraft(previous, current) {
 export function subjectPreview(control, values, subjectAvailable = true) {
   if (subjectAvailable === null) return "Selected prompts stay unchanged";
   const rows = Array.isArray(values) ? values : control.default || [];
-  if (!rows.some((entry) => entry?.strength > 0)) return "Subject unchanged · no LoRA enabled";
+  // "Enabled" here is any weight, so a LoRA pulled the other way still reads as being
+  // in use; whether it may name the Subject is the separate, deliberately positive-only
+  // decision inside subjectLoraTrigger.
+  if (!rows.some((entry) => entry?.strength !== 0)) return "Subject unchanged · no LoRA enabled";
   if (!subjectAvailable) return "Subject unchanged · Prompt Generation subject is unavailable";
   const { triggerWord } = subjectLoraTrigger(control, values);
   // A stylistic LoRA has no subject to name, so it is reported rather than filling the field with its title.
@@ -87,7 +92,7 @@ function menuMarkup(state) {
 export function loraManagerMarkup(options) {
   const state = { values: options.control.default, memory: {}, images: {}, sourceName: "Workflow", ...options };
   const { control, values, images, sourceName, subjectAvailable, management, admin, adminController, grouping, groupingError, groupingLoading, panel, busy, error, imageError } = state;
-  const enabled = values.filter((entry) => entry.strength > 0);
+  const enabled = values.filter((entry) => entry.strength !== 0);
   const itemMap = new Map(control.items.map((item) => [item.id, item]));
   const adminState = adminController?.state;
   const matchingLibrary = adminState?.library?.key === state.libraryKey;
@@ -103,7 +108,9 @@ export function loraManagerMarkup(options) {
       const id = escape(item.id), label = escape(item.label);
       const active = enabled.some((entry) => entry.id === item.id);
       const image = images[item.id]?.image_url;
-      const disabled = !management && loraDefaultPositiveStrength(control) === null ? " disabled" : "";
+      // A card can be switched on when this stack has any strength for it to start at,
+      // which the workflow may point below zero.
+      const disabled = !management && loraEnableStrength(control, item) === null ? " disabled" : "";
       const toggle = management ? `data-lora-details="${id}" aria-label="Details for ${label}"` : `data-lora-toggle="${id}" aria-label="Toggle ${label}" aria-pressed="${active}"`;
       const mark = management ? "" : `<span class="lm-selection-mark" aria-hidden="true">${active ? "✓" : ""}</span>`;
       const menu = `<button type="button" class="icon-button lm-menu-button" data-lora-menu="${id}" aria-label="Actions for ${label}" title="Actions for ${label}" aria-expanded="${state.menuId === item.id}">${icon("more")}</button>`;

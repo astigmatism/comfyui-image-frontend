@@ -9,14 +9,40 @@ from typing import Any
 MAX_TRIGGER_WORD = 1000
 
 
+def _finite(value: Any) -> bool:
+    """Exact type test: ``True`` is a valid ``int`` in Python but never a strength."""
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _step_remainder(value: Any, minimum: Any, step: Any) -> Decimal:
+    """How far ``value`` sits off the step grid that starts at ``minimum``.
+
+    Zero means aligned. A published stack defaults every entry to zero, so a
+    publishable ``minimum`` is always a whole multiple of ``step``: the zero default
+    has to clear the same check. That invariant is what lets the browser measure the
+    identical alignment from zero rather than from ``minimum``.
+    """
+    try:
+        return (Decimal(str(value)) - Decimal(str(minimum))) % Decimal(str(step))
+    except InvalidOperation as exc:
+        raise ValueError("Invalid LoRA strength or step.") from exc
+
+
 def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Validate a complete ordered permutation without coercion or mutation."""
+    """Validate a complete ordered permutation without coercion or mutation.
+
+    Strengths are signed. ``0`` means the LoRA is not loaded at all, a positive value
+    applies it, and a negative value subtracts its low-rank update, which is how one
+    control can mean "less of this LoRA" — the dry direction of a wetness slider
+    rather than the wet one. Because every published default is zero, ``0`` is the
+    universal off state and always stays inside the published range.
+    """
     items = declaration["items"]
     minimum, maximum, step = (declaration[key] for key in ("minimum", "maximum", "step"))
-    if any(type(n) not in (int, float) or not math.isfinite(n) for n in (minimum, maximum, step)):
+    if any(not _finite(n) for n in (minimum, maximum, step)):
         raise ValueError("LoRA constraints must be finite numbers.")
-    if minimum != 0 or maximum <= minimum or step <= 0:
-        raise ValueError("LoRA constraints must start at zero with positive maximum and step.")
+    if step <= 0 or not minimum <= 0 < maximum:
+        raise ValueError("LoRA constraints must span zero with a positive maximum and step.")
     if not isinstance(items, list) or len(items) > 100:
         raise ValueError("Publish at most 100 LoRAs.")
     ids = set()
@@ -24,10 +50,11 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
         if (
             not isinstance(item, dict)
             or not {"id", "label"} <= set(item)
-            or set(item) - {"id", "label", "description", "trigger_word"}
+            or set(item) - {"id", "label", "description", "trigger_word", "preferred_strength"}
         ):
             raise ValueError(
-                "LoRA items may contain only public IDs, labels, descriptions, and trigger words."
+                "LoRA items may contain only public IDs, labels, descriptions, "
+                "trigger words, and preferred strengths."
             )
         public_id, label = item["id"], item["label"]
         if not isinstance(public_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", public_id):
@@ -48,6 +75,18 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
             raise ValueError(
                 f"LoRA trigger words must be nonempty text up to {MAX_TRIGGER_WORD} characters."
             )
+        # A preferred strength is only a hint about the direction the author intends
+        # the LoRA to be applied in when a user enables it; it never changes what the
+        # stack defaults to, so it still has to be a strength this stack accepts.
+        if "preferred_strength" in item and (
+            not _finite(item["preferred_strength"])
+            or not minimum <= item["preferred_strength"] <= maximum
+            or _step_remainder(item["preferred_strength"], minimum, step)
+        ):
+            raise ValueError(
+                "Preferred LoRA strengths must be finite step-aligned values "
+                f"from {minimum} to {maximum}."
+            )
         ids.add(public_id)
     if not isinstance(value, list) or len(value) != len(items):
         raise ValueError("Include every published LoRA exactly once.")
@@ -60,15 +99,11 @@ def validate_lora_stack(value: Any, declaration: Mapping[str, Any]) -> list[dict
         if not isinstance(public_id, str) or public_id not in ids or public_id in seen:
             raise ValueError("Include every published LoRA exactly once; unknown or duplicate ID.")
         seen.add(public_id)
-        if type(strength) not in (int, float) or not math.isfinite(strength):
+        if not _finite(strength):
             raise ValueError("LoRA strength must be a finite number.")
         if not minimum <= strength <= maximum:
             raise ValueError(f"LoRA strength must be from {minimum} to {maximum}.")
-        try:
-            remainder = (Decimal(str(strength)) - Decimal(str(minimum))) % Decimal(str(step))
-        except InvalidOperation as exc:
-            raise ValueError("Invalid LoRA strength or step.") from exc
-        if remainder:
+        if _step_remainder(strength, minimum, step):
             raise ValueError(f"LoRA strength must use increments of {step}.")
         result.append({"id": public_id, "strength": strength})
     return result

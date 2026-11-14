@@ -5,6 +5,7 @@ import {
   loraStackError,
   loraStackMarkup,
   loraDefaultPositiveStrength,
+  loraEnableStrength,
   loraTriggerWord,
   subjectLoraTrigger,
   moveLora,
@@ -302,7 +303,11 @@ test("publisher rejects duplicate IDs, nonzero defaults, missing files and inval
   for (const mutate of [
     (api) => { api[2].inputs.value = '[{"id":"a","strength":0},{"id":"a","strength":0}]'; },
     (api) => { api[2].inputs.value = '[{"id":"a","strength":1},{"id":"b","strength":0}]'; },
-    (api) => { api[2].inputs.minimum = -1; },
+    // A minimum above zero would put the published all-zero defaults below the floor.
+    (api) => { api[2].inputs.minimum = 0.5; },
+    (api) => { api[2].inputs.maximum = 0; },
+    (api) => { api[2].inputs.step = 0; },
+    (api) => { api[2].inputs.minimum = "0"; },
     (api, defs) => { defs.LoraLoaderModelOnly.input.required.lora_name = [[]]; },
     ...[null, "", " ", 1, {}, "x".repeat(1001)].map((description) => (api) => {
       const catalog = JSON.parse(api[2].inputs.catalog_json);
@@ -314,6 +319,11 @@ test("publisher rejects duplicate IDs, nonzero defaults, missing files and inval
       catalog[0].trigger_word = trigger_word;
       api[2].inputs.catalog_json = JSON.stringify(catalog);
     }),
+    ...[null, "1", true, {}, Infinity].map((preferred_strength) => (api) => {
+      const catalog = JSON.parse(api[2].inputs.catalog_json);
+      catalog[0].preferred_strength = preferred_strength;
+      api[2].inputs.catalog_json = JSON.stringify(catalog);
+    }),
   ]) {
     const { api, workflow, defs } = fixture();
     mutate(api, defs);
@@ -321,9 +331,137 @@ test("publisher rejects duplicate IDs, nonzero defaults, missing files and inval
   }
 });
 
+test("publisher publishes a stack whose strengths may go below zero", () => {
+  const { api, workflow, defs } = fixture();
+  api[2].inputs.minimum = -1;
+  const validation = validatePublication(workflow, api, defs);
+  assert.deepEqual(validation.errors, []);
+  const stack = validation.inputs.find((input) => input.type === "lora_stack");
+  assert.equal(stack.minimum, -1);
+  // Zero is still what gets published as the default, whichever way the range goes.
+  assert.deepEqual(stack.default, control.default);
+});
+
+test("publisher carries a preferred strength into the contract and the inventory", () => {
+  const { api, workflow, defs } = fixture();
+  api[2].inputs.minimum = -1;
+  const catalog = JSON.parse(api[2].inputs.catalog_json);
+  catalog[0].preferred_strength = -1;
+  api[2].inputs.catalog_json = JSON.stringify(catalog);
+  const validation = validatePublication(workflow, api, defs);
+  assert.deepEqual(validation.errors, []);
+  const stack = validation.inputs.find((input) => input.type === "lora_stack");
+  assert.equal(stack.items[0].preferred_strength, -1);
+  assert.equal(Object.hasOwn(stack.items[1], "preferred_strength"), false);
+  assert.doesNotMatch(JSON.stringify(stack), /filename|catalog_json|private\//);
+  const metadata = derivePublishedMetadata(workflow, api, validation);
+  assert.equal(metadata.technical_inventory.loras[0].items[0].preferred_strength, -1);
+  assert.doesNotMatch(JSON.stringify(metadata.technical_inventory.loras), /private\//);
+});
+
 test("recalling records predating LoRA controls restores an all-zero stack", () => {
   const contract = { inputs: [control] };
   const state = { parameters: { loras: [{ id: "b", strength: 2 }, { id: "a", strength: 1 }] } };
   const recalled = overwriteWithRecall(state, { source_available: false, parameters: { prompt: "old" }, input_definitions: [] }, contract);
   assert.deepEqual(recalled.parameters.loras, control.default);
+});
+
+// A published stack may reach below zero: zero is the only value that leaves the model
+// alone, so a negative strength is a LoRA being applied, and everything that asks
+// "is this LoRA in use?" has to ask it the same way.
+const signed = { ...control, minimum: -1 };
+
+test("a negative strength validates on the same grid as a positive one", () => {
+  const at = (strength) => loraStackError(signed, [{ id: "a", strength }, { id: "b", strength: 0 }]);
+  for (const strength of [-1, -0.95, -0.75, -0.05, -0, 0, 0.05, 1, 2]) assert.equal(at(strength), null);
+  assert.equal(at(-0.73), "Use LoRA strength increments of 0.05.");
+  assert.equal(at(-0.775), "Use LoRA strength increments of 0.05.");
+  assert.equal(at(-1.05), "LoRA strength must be from -1 to 2.");
+  assert.equal(at(2.05), "LoRA strength must be from -1 to 2.");
+  assert.equal(at(3), "LoRA strength must be from -1 to 2.");
+  // The server measures alignment from the published minimum and the browser from zero.
+  // Those grids are only ever different for a contract that cannot be published: the
+  // all-zero defaults have to clear the server's own check against the minimum first.
+  assert.ok(loraStackError({ ...control, minimum: -1.02 }, [{ id: "a", strength: -1.02 }, { id: "b", strength: 0 }]));
+});
+
+test("a negatively weighted LoRA renders, reports and steps like a positive one", () => {
+  const rows = [{ id: "a", strength: -1 }, { id: "b", strength: 0 }];
+  assert.equal(formatLoraStrength(-1), "-1.00");
+  assert.equal(formatLoraStrength(-0.75), "-0.75");
+  const readOnly = loraStackMarkup(signed, rows);
+  assert.match(readOnly, /data-lora-summary-id="a"/);
+  assert.match(readOnly, /<span class="lm-summary-strength">-1\.00<\/span>/);
+  assert.doesNotMatch(readOnly, /No LoRAs enabled|data-lora-summary-id="b"/);
+  const editable = loraStackMarkup(signed, rows, {}, { editable: true });
+  assert.match(editable, /min="-1" max="2" step="0\.05"/);
+  assert.match(editable, /value="-1\.00"/);
+  assert.match(editable, /Disable Alpha/);
+  assert.doesNotMatch(editable, /Disable Beta/);
+  // At the published floor the fine and coarse steps down are spent, the steps up are not.
+  assert.match(editable, /Decrease Alpha strength" disabled/);
+  assert.doesNotMatch(editable, /Increase Alpha strength" disabled/);
+  assert.equal(steppedLoraStrength(signed, -1, -1), -1);
+  assert.equal(steppedLoraStrength(signed, -1, 1), -0.5);
+  assert.equal(steppedLoraStrength(signed, 0, -1), -0.5);
+  assert.equal(steppedLoraStrength(signed, -0.05, -1), -0.55);
+  assert.equal(steppedLoraStrength(signed, 1.85, 1), 2);
+});
+
+test("the gallery counts, orders and enables a negatively weighted LoRA", () => {
+  const rows = [{ id: "a", strength: -1 }, { id: "b", strength: 0 }];
+  const gallery = loraManagerMarkup({ control: signed, values: rows, memory: {} });
+  assert.match(gallery, /1 of 2 enabled/);
+  assert.match(gallery, /data-lora-order-id="a"/);
+  assert.match(gallery, /data-lora-toggle="a"[^>]*aria-pressed="true"/);
+  assert.match(gallery, /class="lm-card lm-card-minimal is-enabled" data-lora-id="a"/);
+  assert.match(gallery, /class="lm-card lm-card-minimal" data-lora-id="b"/);
+  assert.doesNotMatch(gallery, /no LoRA enabled/);
+  assert.deepEqual(
+    moveEnabledLora([{ id: "a", strength: 1 }, { id: "b", strength: -1 }], "b", 0),
+    [{ id: "b", strength: -1 }, { id: "a", strength: 1 }],
+  );
+  // An all-zero stack is still "no LoRA enabled" whichever bounds it publishes under.
+  assert.match(loraStackMarkup(signed, signed.default), /No LoRAs enabled/);
+});
+
+test("a negatively applied LoRA never names the Subject", () => {
+  const triggered = {
+    ...signed,
+    items: [{ id: "a", label: "Alpha", trigger_word: "AlphaCharacter" }, { id: "b", label: "Beta" }],
+  };
+  assert.equal(subjectLoraTrigger(triggered, [{ id: "a", strength: -1 }, { id: "b", strength: 0 }]).triggerWord, null);
+  assert.equal(subjectLoraTrigger(triggered, [{ id: "a", strength: 1 }, { id: "b", strength: 0 }]).triggerWord, "AlphaCharacter");
+  // Copying a trigger word reads the catalog, so it works whichever way it is applied.
+  assert.equal(loraTriggerWord(triggered.items[0]).text, "AlphaCharacter");
+});
+
+test("enabling a LoRA starts where the workflow says to pull it", () => {
+  const wet = { id: "wet", label: "Wetness", preferred_strength: -1 };
+  assert.equal(loraEnableStrength(signed, wet), -1);
+  // Absent, zero, or unusable for this stack, enabling keeps its long-standing answer.
+  assert.equal(loraEnableStrength(signed, { id: "a", label: "Alpha" }), 1);
+  assert.equal(loraEnableStrength(control, wet), 1);
+  assert.equal(loraEnableStrength(signed, { ...wet, preferred_strength: 0 }), 1);
+  assert.equal(loraEnableStrength(signed, { ...wet, preferred_strength: -3 }), 1);
+  assert.equal(loraEnableStrength(signed, { ...wet, preferred_strength: -0.73 }), 1);
+  assert.equal(loraEnableStrength(signed, { ...wet, preferred_strength: "1" }), 1);
+  assert.equal(loraEnableStrength(signed, undefined), 1);
+  // A stack with no positive strength left to offer still enables the LoRA it points below zero.
+  const sunken = { ...control, minimum: -1, maximum: 0.4, step: 1 };
+  assert.equal(loraDefaultPositiveStrength(sunken), null);
+  assert.equal(loraEnableStrength(sunken, wet), -1);
+});
+
+test("a negative strength survives request snapshots and exact recall", () => {
+  const rows = [{ id: "a", strength: -1 }, { id: "b", strength: 0.05 }];
+  const contract = { inputs: [signed] };
+  const requested = parametersForRequest(contract, { loras: rows });
+  rows[0].strength = 0;
+  assert.equal(requested.loras[0].strength, -1);
+  const recalled = overwriteWithRecall({}, { source_key: "source", parameters: requested });
+  assert.deepEqual(recalled.parameters.loras, [{ id: "a", strength: -1 }, { id: "b", strength: 0.05 }]);
+  assert.deepEqual(clientValidate(contract, requested), {});
+  // A stack that only publishes the positive side still rejects the negative one.
+  assert.match(clientValidate({ inputs: [control] }, { loras: [{ id: "a", strength: -1 }, { id: "b", strength: 0 }] }).loras, /must be from 0 to 2/);
 });

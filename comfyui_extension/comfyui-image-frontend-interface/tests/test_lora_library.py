@@ -43,8 +43,8 @@ class LibraryOperationTests(unittest.TestCase):
             self.mirror_user, self.models, model_writer=False, queue=EmptyQueue()
         )
 
-    def _publish(self, source: str, catalog: list[dict], *, node_id: int = 906) -> None:
-        publication(self.primary_user, catalog, node_id=node_id, source=source)
+    def _publish(self, source: str, catalog: list[dict], *, node_id: int = 906, **kwargs) -> None:
+        publication(self.primary_user, catalog, node_id=node_id, source=source, **kwargs)
         for name in _files(source):
             target = self.mirror_user / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +136,24 @@ class LibraryOperationTests(unittest.TestCase):
                 self.assertEqual(
                     [item["id"] for item in service.bundle(source)["loras"]], ["added"]
                 )
+
+    def test_an_edit_leaves_a_published_strength_direction_alone(self):
+        """Which way a LoRA is meant to be pulled belongs to the author, not to a rename."""
+        hinted = {**self.shared, "preferred_strength": -1.0}
+        for source in (ADVANCED, MINIMAL):
+            self._publish(source, [hinted], minimum=-1.0)
+        self._run(
+            str(uuid.uuid4()),
+            self._request(
+                {"action": "edit", "id": "shared", "label": "Renamed", "trigger_word": "word"}
+            ),
+        )
+        for service in (self.primary, self.mirror):
+            for source in (ADVANCED, MINIMAL):
+                item = service.bundle(source)["loras"][0]
+                self.assertEqual((item["label"], item["preferred_strength"]), ("Renamed", -1.0))
+                manifest = json.loads(service._bundle(source)["manifest"])
+                self.assertEqual(manifest["interface"]["inputs"][0]["minimum"], -1.0)
 
     def test_removal_still_blocked_by_a_publication_outside_the_operation(self):
         self._publish(OUTSIDE, [self.shared], node_id=7)

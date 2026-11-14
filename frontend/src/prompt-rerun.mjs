@@ -237,7 +237,7 @@ export function promptRerunMarkup(draft, preview, { parentName = "Home", loading
   });
   const loras = inputs.loras.map((control) => section(
     `lora-${control.id}`, control.label || "LoRAs",
-    `${(draft.values[control.id] || []).filter((entry) => entry.strength > 0).length} active`,
+    `${(draft.values[control.id] || []).filter((entry) => entry.strength !== 0).length} active`,
     loraStackMarkup(control, draft.values[control.id], draft.loraImages?.[control.id], { editable: true, disabled: loading }) + fieldError(errors, control.id),
     `<div class="control-section-actions"><button type="button" class="icon-button prompt-editor-launch" data-lora-open data-control-context="rerun" data-lora-control-id="${escapeHtml(control.id)}" aria-label="Open LoRA manager" title="Open LoRA manager" aria-haspopup="dialog" aria-controls="lora-manager-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg></button></div>`,
     Boolean(errors[control.id]),

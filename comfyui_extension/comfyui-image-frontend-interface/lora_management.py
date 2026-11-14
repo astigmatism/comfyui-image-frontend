@@ -17,6 +17,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shutil
@@ -310,10 +311,9 @@ def _stack(workflow: dict, api: dict, manifest: dict) -> tuple[dict, dict, dict,
         for item in catalog
     ):
         raise ManagementError("Invalid private CIFLoraStack catalog")
-    public = [
-        {key: item[key] for key in ("id", "label", "description", "trigger_word") if key in item}
-        for item in catalog
-    ]
+    # The published declaration repeats exactly the public half of the frozen catalog,
+    # which is what makes an author's strength direction travel with the LoRA.
+    public = _public_items(catalog)
     if declaration.get("items") != public or declaration.get("default") != defaults:
         raise ManagementError("Published and frozen CIFLoraStack values differ")
     inventory = manifest.get("technical_inventory")
@@ -406,7 +406,11 @@ def _active_editable_reference(
 
 def _public_items(catalog: list[dict]) -> list[dict]:
     return [
-        {key: item[key] for key in ("id", "label", "description", "trigger_word") if key in item}
+        {
+            key: item[key]
+            for key in ("id", "label", "description", "trigger_word", "preferred_strength")
+            if key in item
+        }
         for item in catalog
     ]
 
@@ -752,7 +756,14 @@ class LoraManagement:
         result: list[dict] = []
         ids: set[str] = set()
         filenames: set[str] = set()
-        allowed = {"id", "label", "filename", "trigger_word", "description"}
+        allowed = {
+            "id",
+            "label",
+            "filename",
+            "trigger_word",
+            "description",
+            "preferred_strength",
+        }
         for item in items:
             if (
                 not isinstance(item, dict)
@@ -785,6 +796,14 @@ class LoraManagement:
             description = _text(item.get("description"), limit=1000, required=False)
             if description:
                 entry["description"] = description
+            if "preferred_strength" in item:
+                # A sync carries the author's direction hint verbatim; whether the value is
+                # a strength this stack accepts belongs to the published contract, which
+                # checks it against the stack's own bounds and step.
+                preferred = item["preferred_strength"]
+                if type(preferred) not in (int, float) or not math.isfinite(preferred):
+                    raise ManagementError("Invalid preferred LoRA strength", 400)
+                entry["preferred_strength"] = preferred
             ids.add(lora_id)
             filenames.add(filename)
             result.append(entry)

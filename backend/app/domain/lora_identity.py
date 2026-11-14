@@ -109,7 +109,12 @@ def generation_lora_usage_v1(contract: Any, controls: Any, graph: Any) -> list[L
             if isinstance(strength, bool) or not isinstance(strength, int | float):
                 continue
             identity = identities.get(entry.get("id"))  # type: ignore[arg-type]
-            if strength <= 0 or not identity or identity in seen:
+            # Any non-zero weight is this LoRA having been used, whichever way it was
+            # applied: subtracting a LoRA changed the image exactly as much as adding
+            # one did. Only zero left the model untouched. Trigger phrases deliberately
+            # keep the opposite rule, because a LoRA pulling the subject the other way
+            # does not name the subject the prompt should be about.
+            if strength == 0 or not identity or identity in seen:
                 continue
             label = labels.get(entry.get("id"))
             seen.add(identity)

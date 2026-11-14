@@ -1,9 +1,13 @@
-import { loraDefaultPositiveStrength, loraStackError } from "./lora-stack.mjs";
+import { loraEnableStrength, loraStackError } from "./lora-stack.mjs";
 import { loraManagerMarkup, moveEnabledLora, reconcileLoraDraft, subjectPreview } from "./lora-gallery.mjs";
 import { normalizeThumbnailScale } from "./lib.mjs";
 export { loraManagerMarkup } from "./lora-gallery.mjs";
 
 const encoded = (value) => encodeURIComponent(value);
+
+// A LoRA is in the stack, and in the application order, whenever it carries any weight
+// at all: only zero leaves the model alone, in either direction.
+const loadedRows = (values) => values.filter((entry) => entry.strength !== 0);
 
 // The footer shows three lines of the Subject line; when a trigger phrase is
 // longer than that, the tooltip is the only way to reach the rest of it.
@@ -197,26 +201,31 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
   function updateStrength(id, strength) {
     if (!draft) return;
     draft.values = draft.values.map((entry) => entry.id === id ? { id, strength } : entry);
-    if (strength > 0) draft.memory[id] = strength;
+    if (strength !== 0) draft.memory[id] = strength;
     const preview = dialog()?.querySelector("[data-lora-subject-preview]");
     if (preview) preview.textContent = subjectPreview(draft.control, draft.values, draft.subjectAvailable);
     syncSubjectPreview(dialog());
   }
   function toggle(id) {
     if (!draft) return;
+    // Turning off means exactly zero, from whichever side the LoRA was loaded on; the
+    // weight the user had is what comes back on the next enable, so it is remembered
+    // before it is cleared. A fresh enable asks the workflow which way this LoRA is
+    // meant to be pulled, since a wetness slider that turns on wet is no help.
     const previous = draft.values.find((entry) => entry.id === id)?.strength || 0;
-    if (previous > 0) draft.memory[id] = previous;
-    let strength = previous > 0 ? 0 : draft.memory[id] || loraDefaultPositiveStrength(draft.control);
-    if (previous <= 0 && loraStackError(draft.control, draft.values.map((entry) => entry.id === id ? { id, strength } : entry))) strength = loraDefaultPositiveStrength(draft.control);
+    const start = loraEnableStrength(draft.control, draft.control.items.find((item) => item.id === id));
+    if (previous !== 0) draft.memory[id] = previous;
+    let strength = previous !== 0 ? 0 : draft.memory[id] || start;
+    if (previous === 0 && loraStackError(draft.control, draft.values.map((entry) => entry.id === id ? { id, strength } : entry))) strength = start;
     updateStrength(id, strength);
     render(`[data-lora-toggle="${CSS.escape(id)}"]`);
   }
   function move(id, to) {
-    if (!draft || to < 0 || to >= draft.values.filter((entry) => entry.strength > 0).length) return;
+    if (!draft || to < 0 || to >= loadedRows(draft.values).length) return;
     draft.values = moveEnabledLora(draft.values, id, to);
     render(`[data-lora-order-id="${CSS.escape(id)}"] [data-lora-handle]`);
     const label = draft.control.items.find((item) => item.id === id)?.label || id;
-    dialog()?.querySelector("[data-lora-reorder-status]")?.replaceChildren(document.createTextNode(`${label} moved to position ${to + 1} of ${draft.values.filter((entry) => entry.strength > 0).length}.`));
+    dialog()?.querySelector("[data-lora-reorder-status]")?.replaceChildren(document.createTextNode(`${label} moved to position ${to + 1} of ${loadedRows(draft.values).length}.`));
   }
   async function save() {
     if (!draft || draft.busy || draft.reconcileError || adminController?.state.busy || draft.management) return;
@@ -347,7 +356,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (event.target.closest("[data-lora-cancel]")) { if (!draft.busy && !draft.groupsBusy && !adminController?.state.busy) close(); return; }
     if (event.target.closest("[data-lora-apply]")) { void save(); return; }
     if (event.target.closest("[data-lora-all-off]")) {
-      for (const entry of draft.values) if (entry.strength > 0) draft.memory[entry.id] = entry.strength;
+      for (const entry of loadedRows(draft.values)) draft.memory[entry.id] = entry.strength;
       draft.values = draft.values.map((entry) => ({ id: entry.id, strength: 0 }));
       render(); return;
     }
@@ -409,7 +418,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     if (!draft || !handle || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     event.preventDefault();
     const id = handle.closest("[data-lora-order-id]").dataset.loraOrderId;
-    move(id, draft.values.filter((entry) => entry.strength > 0).findIndex((entry) => entry.id === id) + (["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1));
+    move(id, loadedRows(draft.values).findIndex((entry) => entry.id === id) + (["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1));
   });
   root.addEventListener("dragstart", (event) => {
     const handle = event.target.closest("#lora-manager-dialog [data-lora-handle]");
@@ -429,7 +438,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     const row = event.target.closest("#lora-manager-dialog [data-lora-order-id]");
     if (!row) return;
     event.preventDefault();
-    const index = draft.values.filter((entry) => entry.strength > 0).findIndex((entry) => entry.id === row.dataset.loraOrderId);
+    const index = loadedRows(draft.values).findIndex((entry) => entry.id === row.dataset.loraOrderId);
     move(dragId, index);
     dragId = null;
   });
@@ -452,7 +461,7 @@ export function installLoraManager(root, { api, context, apply, onImages, notify
     touchDrag = null;
     const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("#lora-manager-dialog [data-lora-order-id]");
     dialog()?.querySelectorAll(".is-drop-target").forEach((row) => row.classList.remove("is-drop-target"));
-    if (target) move(id, draft.values.filter((entry) => entry.strength > 0).findIndex((entry) => entry.id === target.dataset.loraOrderId));
+    if (target) move(id, loadedRows(draft.values).findIndex((entry) => entry.id === target.dataset.loraOrderId));
   });
   root.addEventListener("pointercancel", () => { touchDrag = null; });
   root.addEventListener("close", (event) => {

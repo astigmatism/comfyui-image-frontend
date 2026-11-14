@@ -752,6 +752,17 @@ def _lora_contract(
             key: copy.deepcopy(raw[key])
             for key in ("items", "minimum", "maximum", "step", "default")
         }
+        # A minimum above zero would put this contract's own all-zero defaults below
+        # its own floor. Checked here so the failure names the parameter instead of
+        # reading as one rejected strength, and so a stack that publishes no LoRAs at
+        # all — where no strength is ever looked at — cannot slip through.
+        minimum, maximum = stack["minimum"], stack["maximum"]
+        if not (
+            isinstance(minimum, int | float)
+            and isinstance(maximum, int | float)
+            and minimum <= 0 < maximum
+        ):
+            raise ValueError("LoRA strength constraints must span zero.")
         stack["default"] = validate_lora_stack(stack["default"], stack)
         if any(entry["strength"] != 0 for entry in stack["default"]):
             raise ValueError("Published LoRA defaults must all be zero.")
@@ -763,7 +774,8 @@ def _lora_contract(
             if not isinstance(catalog, list) or any(
                 not isinstance(item, dict)
                 or not {"id", "label", "filename"} <= set(item)
-                or set(item) - {"id", "label", "filename", "description", "trigger_word"}
+                or set(item)
+                - {"id", "label", "filename", "description", "trigger_word", "preferred_strength"}
                 or not isinstance(item["filename"], str)
                 or not item["filename"]
                 or len(item["filename"]) > 1000
@@ -773,7 +785,7 @@ def _lora_contract(
             public_items = [
                 {
                     key: item[key]
-                    for key in ("id", "label", "description", "trigger_word")
+                    for key in ("id", "label", "description", "trigger_word", "preferred_strength")
                     if key in item
                 }
                 for item in catalog

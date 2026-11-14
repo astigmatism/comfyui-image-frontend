@@ -294,7 +294,13 @@ def _public_interface(
                 {
                     **{
                         key: item[key]
-                        for key in ("id", "label", "description", "trigger_word")
+                        for key in (
+                            "id",
+                            "label",
+                            "description",
+                            "trigger_word",
+                            "preferred_strength",
+                        )
                         if key in item
                     },
                     **(

@@ -44,19 +44,30 @@ class EmptyQueue:
         return ([], [])
 
 
+def _public(item: dict) -> dict:
+    """The public half of one private catalog entry, as a publication must repeat it."""
+    return {
+        key: item[key]
+        for key in ("id", "label", "description", "trigger_word", "preferred_strength")
+        if key in item
+    }
+
+
 def publication(
-    userdata: Path, catalog: list[dict], *, node_id: int = 42, source: str = SOURCE
+    userdata: Path,
+    catalog: list[dict],
+    *,
+    node_id: int = 42,
+    source: str = SOURCE,
+    minimum: float = 0.0,
 ) -> None:
     names = management.WIDGETS
     defaults = [{"id": item["id"], "strength": 0} for item in catalog]
-    public = [
-        {key: item[key] for key in ("id", "label", "description", "trigger_word") if key in item}
-        for item in catalog
-    ]
+    public = [_public(item) for item in catalog]
     widgets = [
         json.dumps(catalog),
         json.dumps(defaults),
-        0.0,
+        minimum,
         2.0,
         0.05,
         "loras",
@@ -93,7 +104,7 @@ def publication(
         "bindings": [{"node_id": str(node_id), "input": "value"}],
         "items": public,
         "default": defaults,
-        "minimum": 0.0,
+        "minimum": minimum,
         "maximum": 2.0,
         "step": 0.05,
     }
@@ -110,7 +121,7 @@ def publication(
                     "parameter_id": "loras",
                     "items": public,
                     "default": defaults,
-                    "minimum": 0.0,
+                    "minimum": minimum,
                     "maximum": 2.0,
                     "step": 0.05,
                 }
@@ -161,8 +172,8 @@ class ManagementTests(unittest.TestCase):
             "published_at": "2026-09-26T12:00:00Z",
         }
 
-    def _publish_catalog(self, catalog):
-        publication(self.primary_user, catalog)
+    def _publish_catalog(self, catalog, **kwargs):
+        publication(self.primary_user, catalog, **kwargs)
         for name in ("test.json", "test.api.json", "test.interface.json"):
             path = Path("workflows/team") / name
             (self.mirror_user / path).write_bytes((self.primary_user / path).read_bytes())
@@ -339,6 +350,36 @@ class ManagementTests(unittest.TestCase):
             workflow = json.loads(service._bundle(SOURCE)["workflow"])
             catalog = json.loads(workflow["nodes"][0]["widgets_values"][0])
             self.assertEqual(catalog[0]["trigger_word"], phrase)
+            service.finalize(operation_id)
+
+    def test_a_range_below_zero_and_a_strength_direction_survive_an_edit(self):
+        """Management changes titles, never the published range or which way a LoRA pulls."""
+        original = {
+            "id": "wetness",
+            "label": "Wetness",
+            "filename": "wetness.safetensors",
+            "preferred_strength": -1.0,
+        }
+        self._publish_catalog([original], minimum=-1.0)
+        (self.models / original["filename"]).write_bytes(safetensors())
+
+        operation_id = str(uuid.uuid4())
+        change = {"action": "edit", "id": "wetness", "label": "Wetness slider", "trigger_word": ""}
+        request = self._request(self.primary, change, operation_id)
+        self.primary.prepare(operation_id, request)
+        self.mirror.prepare(operation_id, request)
+        for service in (self.primary, self.mirror):
+            self.assertEqual(service.commit(operation_id)["state"], "committed")
+            self.assertEqual(service.bundle(SOURCE)["loras"][0]["preferred_strength"], -1.0)
+            manifest = json.loads(service._bundle(SOURCE)["manifest"])
+            stack = manifest["interface"]["inputs"][0]
+            self.assertEqual(stack["minimum"], -1.0)
+            self.assertEqual(stack["items"][0]["preferred_strength"], -1.0)
+            self.assertEqual(manifest["technical_inventory"]["loras"][0]["minimum"], -1.0)
+            workflow = json.loads(service._bundle(SOURCE)["workflow"])
+            catalog = json.loads(workflow["nodes"][0]["widgets_values"][0])
+            self.assertEqual(catalog[0]["preferred_strength"], -1.0)
+            self.assertEqual(workflow["nodes"][0]["widgets_values"][2], -1.0)
             service.finalize(operation_id)
 
     def test_edit_rejects_invalid_values_duplicate_ids_and_noop(self):

@@ -1,16 +1,17 @@
 import { expect, test } from "@playwright/test";
 
-async function mount(page, { triggerWord = "AlphaCharacter", description = "Use AlphaCharacter in the prompt.", thumbnails = [] } = {}) {
+async function mount(page, { triggerWord = "AlphaCharacter", description = "Use AlphaCharacter in the prompt.", thumbnails = [], minimum = 0, preferredStrengths = {} } = {}) {
   await page.route("**/app.mjs", (route) => route.fulfill({ contentType: "text/javascript", body: "export {};" }));
   await page.goto("/");
-  await page.evaluate(async ({ triggerWord, description, thumbnails }) => {
+  await page.evaluate(async ({ triggerWord, description, thumbnails, minimum, preferredStrengths }) => {
     const base = document.querySelector('script[type="module"]').src;
     const { loraStackMarkup, installLoraStackControls, subjectLoraTrigger } = await import(new URL("./lora-stack.mjs", base));
     const { installLoraManager } = await import(new URL("./lora-manager.mjs", base));
     const control = { id: "loras", type: "lora_stack", label: "LoRAs", items: [
       { id: "a", label: "Alpha", trigger_word: triggerWord, description, lora_identity: `lr1_${"a".repeat(64)}` },
-      { id: "b", label: "Beta" }, { id: "c", label: "Gamma" },
-    ], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }], minimum: 0, maximum: 2, step: 0.05 };
+      { id: "b", label: "Beta", ...("b" in preferredStrengths ? { preferred_strength: preferredStrengths.b } : {}) },
+      { id: "c", label: "Gamma" },
+    ], default: [{ id: "a", strength: 0 }, { id: "b", strength: 0 }, { id: "c", strength: 0 }], minimum, maximum: 2, step: 0.05 };
     window.stack = structuredClone(control.default);
     window.memory = {};
     const thumb = "data:image/gif;base64,R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
@@ -58,7 +59,7 @@ async function mount(page, { triggerWord = "AlphaCharacter", description = "Use 
         window.renderLoras();
       },
     });
-  }, { triggerWord, description, thumbnails });
+  }, { triggerWord, description, thumbnails, minimum, preferredStrengths });
 }
 
 const dialog = (page) => page.locator("#lora-manager-dialog");
@@ -437,4 +438,73 @@ test("the application strip supports mouse, keyboard, and touch reordering indep
   await expect(order.nth(2)).toHaveAttribute("data-lora-order-id", "c");
   expect(await dialog(page).locator(".lm-card").evaluateAll((cards) => cards.map((card) => card.dataset.loraId))).toEqual(["a", "b", "c"]);
   await session.detach();
+});
+
+// Krea 2 paints water droplets on its own; the community cure is a wetness slider LoRA
+// loaded at a negative strength. One published stack carries both directions at once.
+test("a LoRA published below zero enables negative, refuses what is off the grid, and turns off at zero", async ({ page }) => {
+  await mount(page, { minimum: -1, preferredStrengths: { b: -1 } });
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  // The author published which way this LoRA pulls, so enabling it takes the wetness off
+  // rather than adding more of it.
+  await expect(dialog(page).getByRole("button", { name: "Toggle Beta" })).toHaveAttribute("aria-pressed", "true");
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  const beta = page.getByRole("spinbutton", { name: "Beta strength", exact: true });
+  await expect(beta).toHaveValue("-1.00");
+  await expect(page.locator(".lm-summary-item")).toHaveCount(1);
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(-1);
+
+  await beta.fill("-0.73");
+  await beta.press("Enter");
+  await expect(beta).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator(".lm-summary-error")).toHaveText("Use LoRA strength increments of 0.05.");
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(-1);
+  await beta.fill("-1.05");
+  await beta.press("Enter");
+  await expect(page.locator(".lm-summary-error")).toHaveText("LoRA strength must be from -1 to 2.");
+  await beta.fill("3");
+  await beta.press("Enter");
+  await expect(page.locator(".lm-summary-error")).toHaveText("LoRA strength must be from -1 to 2.");
+  await beta.press("Escape");
+  await expect(beta).toHaveValue("-1.00");
+
+  // The published floor is a floor, and the coarse step crosses zero like any other.
+  await expect(page.getByRole("button", { name: "Decrease Beta strength" })).toBeDisabled();
+  await beta.press("ArrowDown");
+  await expect(beta).toHaveValue("-1.00");
+  await beta.press("ArrowUp");
+  await expect(beta).toHaveValue("-0.50");
+  await beta.fill("-1");
+  await beta.press("Tab");
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(-1);
+  await expect(page.locator(".control-section-status")).toHaveText("1 active");
+
+  // Turning it off means zero, and the weight the user had is what comes back on.
+  await page.getByRole("button", { name: "Disable Beta" }).click();
+  await expect(page.locator(".lm-summary-item")).toHaveCount(0);
+  await expect(page.locator(".control-section-status")).toHaveText("0 active");
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(0);
+  expect(await page.evaluate(() => window.memory.b)).toBe(-1);
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("-1.00");
+});
+
+test("a stack that reaches below zero still enables an unhinted LoRA to a positive strength", async ({ page }) => {
+  await mount(page, { minimum: -1, preferredStrengths: { b: -1 } });
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Alpha" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Alpha strength", exact: true })).toHaveValue("1.00");
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "a").strength)).toBe(1);
+  // A negatively applied character LoRA is still the character of this picture: the tile
+  // beside it copies its trigger word, even though it never names the Subject itself.
+  const alpha = page.getByRole("spinbutton", { name: "Alpha strength", exact: true });
+  await alpha.fill("-1");
+  await alpha.press("Tab");
+  expect(await page.evaluate(() => window.memory.a)).toBe(-1);
+  await copyTile(page, "Alpha").click();
+  expect(await page.evaluate(() => window.copies)).toEqual(["AlphaCharacter"]);
 });

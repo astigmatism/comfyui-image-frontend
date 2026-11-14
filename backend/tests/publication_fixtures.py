@@ -963,11 +963,26 @@ def build_publication_files(*, include_generic: bool = True) -> dict[str, bytes]
     return files
 
 
-def add_lora_stack(manifest: JsonObject, workflow: JsonObject, api: JsonObject) -> None:
+def add_lora_stack(
+    manifest: JsonObject,
+    workflow: JsonObject,
+    api: JsonObject,
+    *,
+    minimum: float = 0,
+    preferred_strength: float | None = None,
+) -> None:
+    """The LoRA stack of the Moody fixture.
+
+    `minimum` reaches below zero for a stack whose LoRAs are also subtracted, and
+    `preferred_strength` marks which way the first one is meant to be pulled.
+    """
+
     catalog = [
         {"id": "a", "label": "Alpha", "filename": "private/a.safetensors"},
         {"id": "b", "label": "Beta", "filename": "private/b.safetensors"},
     ]
+    if preferred_strength is not None:
+        catalog[0]["preferred_strength"] = preferred_strength
     metadata = {
         "instance_uuid": "93cb0d2e-3d0f-4c3f-9ac6-f9a1ff289d62",
         "label": "LoRAs",
@@ -978,7 +993,7 @@ def add_lora_stack(manifest: JsonObject, workflow: JsonObject, api: JsonObject) 
         "group": "LoRAs",
         "order": 150,
     }
-    constraints = {"minimum": 0, "maximum": 2, "step": 0.05}
+    constraints = {"minimum": minimum, "maximum": 2, "step": 0.05}
     default = [{"id": item["id"], "strength": 0} for item in catalog]
     api["99"] = {
         "class_type": "CIFLoraStack",
@@ -1004,7 +1019,10 @@ def add_lora_stack(manifest: JsonObject, workflow: JsonObject, api: JsonObject) 
             "type": "lora_stack",
             **metadata,
             **constraints,
-            "items": [{"id": item["id"], "label": item["label"]} for item in catalog],
+            "items": [
+                {key: item[key] for key in ("id", "label", "preferred_strength") if key in item}
+                for item in catalog
+            ],
             "default": default,
             "bindings": [{"node_id": "99", "input": "value"}],
         }

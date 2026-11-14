@@ -406,3 +406,254 @@ def test_configurable_inventory_excludes_private_fields():
         malformed = copy.deepcopy(stack)
         mutate(malformed)
         assert not _public_choice_loras_are_safe({"loras": [malformed]})
+
+
+# A LoRA strength is signed. Zero is the only value that leaves the model alone, so a
+# published range may reach below zero: the Krea 2 wetness slider is loaded at -1.0 to
+# take the wetness off, not at 0 to leave it in.
+def wetness(public: dict, private: dict, *, preferred: bool = False) -> None:
+    public.update(minimum=-1.0)
+    private.update(minimum=-1.0)
+    if preferred:
+        public["items"][0]["preferred_strength"] = -1.0
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["preferred_strength"] = -1.0
+        private["catalog_json"] = json.dumps(catalog)
+
+
+def test_a_range_below_zero_publishes_and_reaches_the_compiled_prompt():
+    selected = source(lambda public, private: wetness(public, private))
+    for interface in (selected.public_interface, _public_interface(selected.private_contract)):
+        declaration = interface["inputs"][-1]
+        assert declaration["minimum"] == -1.0
+        # Zero stays the published default, so it stays the universal "not loaded".
+        assert declaration["default"] == [{"id": "a", "strength": 0}, {"id": "b", "strength": 0}]
+    requested = [{"id": "a", "strength": -1.0}, {"id": "b", "strength": 0}]
+    compiled = compile_stack(selected, loras=requested)
+    assert compiled.requested_controls["loras"] == requested
+    assert compiled.effective_controls["loras"] == requested
+    value = compiled.compiled_graph["99"]["inputs"]["value"]
+    assert json.loads(value) == requested
+    # The compiled graph carries compact JSON, which is what a prompt inspection sees.
+    assert '"id":"a","strength":-1.0' in value
+
+
+@pytest.mark.parametrize(
+    ("strength", "reason"),
+    [
+        (-1.05, "from -1.0 to 2"),
+        (-0.73, "increments of 0.05"),
+        (-0.02, "increments of 0.05"),
+        (3, "from -1.0 to 2"),
+    ],
+)
+def test_a_range_below_zero_still_rejects_what_it_always_rejected(strength, reason):
+    with pytest.raises(AppError) as exc:
+        compile_stack(
+            source(lambda public, private: wetness(public, private)),
+            loras=[{"id": "a", "strength": strength}, {"id": "b", "strength": 0}],
+        )
+    assert "loras" in exc.value.fields
+    assert reason in exc.value.fields["loras"]
+
+
+def test_negative_zero_is_as_off_as_zero_ever_was():
+    from app.domain.lora_stack import validate_lora_stack
+
+    declaration = {
+        "items": [{"id": "a", "label": "A"}],
+        "minimum": -1.0,
+        "maximum": 2.0,
+        "step": 0.05,
+    }
+    assert validate_lora_stack([{"id": "a", "strength": -0.0}], declaration) == [
+        {"id": "a", "strength": -0.0}
+    ]
+    compiled = compile_stack(
+        source(lambda public, private: wetness(public, private)),
+        loras=[{"id": "a", "strength": -0.0}, {"id": "b", "strength": 0}],
+    )
+    assert compiled.effective_controls["loras"] == [
+        {"id": "a", "strength": 0},
+        {"id": "b", "strength": 0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # A floor above zero would put this contract's own all-zero defaults out of range.
+        lambda public, private: (public.update(minimum=0.5), private.update(minimum=0.5)),
+        # A floor off the step grid fails for the same reason: zero is not on that grid.
+        lambda public, private: (public.update(minimum=-1.02), private.update(minimum=-1.02)),
+        lambda public, private: (public.update(maximum=0), private.update(maximum=0)),
+        lambda public, private: (
+            public.update(minimum=-1, maximum=-0.05),
+            private.update(minimum=-1, maximum=-0.05),
+        ),
+        lambda public, private: (public.update(step=0), private.update(step=0)),
+    ],
+)
+def test_constraints_must_span_zero(mutate):
+    with pytest.raises(ContractError):
+        source(mutate)
+
+
+def test_an_empty_catalog_still_needs_a_range_that_spans_zero():
+    def empty(public, private):
+        public["items"] = []
+        public["default"] = []
+        private["catalog_json"] = "[]"
+        private["value"] = "[]"
+        public.update(minimum=0.5)
+        private.update(minimum=0.5)
+
+    with pytest.raises(ContractError, match="span zero"):
+        source(empty)
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "step", "strength", "accepted"),
+    [
+        (0, 2, 0.05, 0, True),
+        (0, 2, 0.05, -0.05, False),
+        (-1, 2, 0.05, -1, True),
+        (-1, 2, 0.05, -0.05, True),
+        (-1, 2, 0.05, -0.75, True),
+        (-1, 2, 0.05, -1.05, False),
+        (-1, 2, 0.05, 2, True),
+        (-1, 2, 0.05, 2.05, False),
+        (-2.5, 2.5, 0.5, -2.5, True),
+        (-2.5, 2.5, 0.5, -2, True),
+        (-1, 1, 1, -1, True),
+        (-0.2, 0.2, 0.1, -0.2, True),
+        (-0.2, 0.2, 0.1, 0.3, False),
+    ],
+)
+def test_a_signed_strength_is_validated_on_the_published_grid(
+    minimum, maximum, step, strength, accepted
+):
+    from app.domain.lora_stack import validate_lora_stack
+
+    declaration = {
+        "items": [{"id": "a", "label": "A"}],
+        "minimum": minimum,
+        "maximum": maximum,
+        "step": step,
+    }
+    value = [{"id": "a", "strength": strength}]
+    if accepted:
+        assert validate_lora_stack(value, declaration) == value
+    else:
+        with pytest.raises(ValueError):
+            validate_lora_stack(value, declaration)
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "step"),
+    [
+        (0.5, 2, 0.05),  # zero, and so every published default, would be out of range
+        (1, 2, 0.05),
+        (0, 0, 0.05),  # nothing above zero left to apply
+        (-1, -0.05, 0.05),  # a range that is only ever pulling the other way
+        (0, 2, 0),
+        (0, 2, -0.05),
+        (0, float("nan"), 0.05),
+        (float("inf"), 2, 0.05),
+        (None, 2, 0.05),
+        ("0", 2, 0.05),
+        (True, 2, 0.05),
+    ],
+)
+def test_constraints_outside_the_rule_are_rejected(minimum, maximum, step):
+    from app.domain.lora_stack import validate_lora_stack
+
+    with pytest.raises(ValueError):
+        validate_lora_stack([], {"items": [], "minimum": minimum, "maximum": maximum, "step": step})
+
+
+def test_a_preferred_strength_is_public_and_changes_nothing():
+    selected = source(lambda public, private: wetness(public, private, preferred=True))
+    for interface in (selected.public_interface, _public_interface(selected.private_contract)):
+        declaration = interface["inputs"][-1]
+        assert declaration["minimum"] == -1.0
+        assert declaration["items"][0] == {"id": "a", "label": "Alpha", "preferred_strength": -1.0}
+        assert "filename" not in json.dumps(declaration["items"])
+        assert "catalog_json" not in json.dumps(declaration)
+    compiled = compile_stack(selected)
+    assert compiled.effective_controls["loras"] == [
+        {"id": "a", "strength": 0},
+        {"id": "b", "strength": 0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "preferred_strength",
+    [None, "", {}, "x", -1.05, 2.05, -0.73, 3, float("nan"), float("inf"), True],
+)
+def test_a_preferred_strength_must_be_one_this_stack_accepts(preferred_strength):
+    def update(public, private):
+        wetness(public, private)
+        public["items"][0]["preferred_strength"] = preferred_strength
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["preferred_strength"] = preferred_strength
+        private["catalog_json"] = json.dumps(catalog)
+
+    with pytest.raises(ContractError):
+        source(update)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ([{"id": "a", "strength": -1}, {"id": "b", "strength": 0}], [("a", -1)]),
+        ([{"id": "a", "strength": -1}, {"id": "b", "strength": 2}], [("a", -1), ("b", 2)]),
+        (
+            [{"id": "b", "strength": -0.05}, {"id": "a", "strength": 1.5}],
+            [("b", -0.05), ("a", 1.5)],
+        ),
+        ([{"id": "a", "strength": -0.0}, {"id": "b", "strength": 0}], []),
+    ],
+)
+def test_the_native_loader_subtracts_a_negative_strength(node_module, value, expected):
+    module, fake = node_module
+    creations = []
+
+    class Loader:
+        def __init__(self):
+            creations.append(self)
+
+        def load_lora_model_only(self, model, filename, strength):
+            return ([*model, (filename, strength)],)
+
+    fake.LoraLoaderModelOnly = Loader
+    inputs = copy.deepcopy(
+        source(lambda public, private: wetness(public, private)).api_document["99"]
+    )
+    inputs = {key: given for key, given in inputs["inputs"].items() if key != "model"}
+    inputs["catalog_json"] = json.dumps(
+        [{"id": key, "label": key, "filename": key} for key in ("a", "b")]
+    )
+    inputs["value"] = json.dumps(value)
+    model = []
+    node = module.CIFLoraStack()
+    for _ in range(2):
+        result = node.apply_stack(model, **inputs)[0]
+        # The loader is called in application order with the signed strength, and the
+        # model each entry returns is the one the next entry is handed.
+        assert result == [(key, strength) for key, strength in expected]
+        assert model == []
+    assert len(creations) == (2 if expected else 0)
+
+
+def test_a_preferred_strength_need_not_be_negative():
+    def update(public, private):
+        public["items"][0]["preferred_strength"] = 1.5
+        catalog = json.loads(private["catalog_json"])
+        catalog[0]["preferred_strength"] = 1.5
+        private["catalog_json"] = json.dumps(catalog)
+
+    selected = source(update)
+    declaration = selected.public_interface["inputs"][-1]
+    assert declaration["minimum"] == 0
+    assert declaration["items"][0]["preferred_strength"] == 1.5

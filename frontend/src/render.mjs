@@ -804,7 +804,7 @@ export function controlSectionKeysWithErrors(contract, errors = {}) {
 
 function controlSectionStatus(section, values) {
   if (section.kind === "lora") {
-    const active = (values[section.controls[0]?.id] || []).filter((entry) => entry.strength > 0).length;
+    const active = (values[section.controls[0]?.id] || []).filter((entry) => entry.strength !== 0).length;
     return `${active} active`;
   }
   if (section.kind === "resolution") {

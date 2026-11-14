@@ -580,12 +580,13 @@ function validateTypedParameter(
       if (!Array.isArray(catalog) || catalog.length > 100) throw new Error("Publish at most 100 LoRAs");
       const ids = new Set();
       for (const item of catalog) {
-        if (!isObject(item) || Object.keys(item).some((key) => !["id", "label", "filename", "description", "trigger_word"].includes(key)) ||
+        if (!isObject(item) || Object.keys(item).some((key) => !["id", "label", "filename", "description", "trigger_word", "preferred_strength"].includes(key)) ||
             typeof item.id !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(item.id) || ids.has(item.id) ||
             typeof item.label !== "string" || !item.label.trim() || item.label.length > 120 ||
             typeof item.filename !== "string" || !item.filename || item.filename.length > 1000 ||
             (Object.hasOwn(item, "description") && (typeof item.description !== "string" || !item.description.trim() || item.description.length > 1000)) ||
-            (Object.hasOwn(item, "trigger_word") && (typeof item.trigger_word !== "string" || !item.trigger_word.trim() || item.trigger_word.length > MAX_TRIGGER_WORD))) {
+            (Object.hasOwn(item, "trigger_word") && (typeof item.trigger_word !== "string" || !item.trigger_word.trim() || item.trigger_word.length > MAX_TRIGGER_WORD)) ||
+            (Object.hasOwn(item, "preferred_strength") && !(typeof item.preferred_strength === "number" && Number.isFinite(item.preferred_strength)))) {
           throw new Error("Invalid private LoRA catalog");
         }
         ids.add(item.id);
@@ -594,8 +595,11 @@ function validateTypedParameter(
       if (catalog.length && !Array.isArray(installed)) throw new Error("Native model-only LoRA loader inventory is unavailable");
       if (catalog.some((item) => !installed.includes(item.filename))) throw new Error("A catalog LoRA is not installed on this runtime");
       const { minimum, maximum, step } = inputs;
+      // A strength range that spans zero: zero is the published default and the only
+      // "this LoRA is not loaded" value, and the negative side is what makes a slider
+      // that asks for less of a LoRA representable.
       if (![minimum, maximum, step].every((n) => typeof n === "number" && Number.isFinite(n)) ||
-          minimum !== 0 || maximum <= 0 || step <= 0) throw new Error("Invalid LoRA strength constraints");
+          !(minimum <= 0) || !(maximum > 0) || !(step > 0)) throw new Error("Invalid LoRA strength constraints");
       const value = JSON.parse(inputs.value);
       if (!Array.isArray(value) || value.length !== catalog.length) throw new Error("Include every LoRA exactly once");
       const seen = new Set();
@@ -608,7 +612,7 @@ function validateTypedParameter(
       }
       if (semanticRole !== "lora" || inputs.required !== false) throw new Error("LoRA stacks must be optional with semantic role lora");
       Object.assign(parameter, {
-        items: catalog.map(({ id, label, description, trigger_word }) => ({ id, label, ...(description === undefined ? {} : { description }), ...(trigger_word === undefined ? {} : { trigger_word }) })),
+        items: catalog.map(({ id, label, description, trigger_word, preferred_strength }) => ({ id, label, ...(description === undefined ? {} : { description }), ...(trigger_word === undefined ? {} : { trigger_word }), ...(preferred_strength === undefined ? {} : { preferred_strength }) })),
         default: value, minimum, maximum, step,
       });
     } catch (error) {
@@ -1455,7 +1459,7 @@ export function derivePublishedMetadata(savedWorkflow, apiGraph, validation) {
       const stack = inputsByNode.get(nodeId);
       if (stack) loras.push({
         usage: "public_stack", parameter_id: stack.id,
-        items: stack.items.map(({ id, label, description, trigger_word }) => ({ id, label, ...(description === undefined ? {} : { description }), ...(trigger_word === undefined ? {} : { trigger_word }) })),
+        items: stack.items.map(({ id, label, description, trigger_word, preferred_strength }) => ({ id, label, ...(description === undefined ? {} : { description }), ...(trigger_word === undefined ? {} : { trigger_word }), ...(preferred_strength === undefined ? {} : { preferred_strength }) })),
         default: stack.default.map(({ id, strength }) => ({ id, strength })),
         minimum: stack.minimum, maximum: stack.maximum, step: stack.step,
       });

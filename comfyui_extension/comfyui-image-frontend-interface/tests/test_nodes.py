@@ -187,6 +187,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(required["value"][1]["control_after_generate"])
         self.assertEqual(required["default_mode"][0][0], "random")
 
+    def test_lora_stack_declares_the_bounds_a_signed_strength_needs(self):
+        """ComfyUI clamps a FLOAT widget to its declared range, so an author typing a
+        minimum below zero needs the widget itself to reach there."""
+        required = nodes.CIFLoraStack.INPUT_TYPES()["required"]
+        for name, default in (("minimum", 0.0), ("maximum", 2.0), ("step", 0.05)):
+            self.assertEqual(required[name][0], "FLOAT")
+            self.assertEqual(required[name][1]["default"], default)
+        self.assertLess(required["minimum"][1]["min"], 0)
+        self.assertGreater(required["minimum"][1]["max"], 0)
+        self.assertGreater(required["maximum"][1]["max"], 2)
+        self.assertLess(required["maximum"][1]["min"], 0)
+        self.assertGreater(required["step"][1]["min"], 0)
+
     def test_choice_parameter_maps_public_id_to_private_combo_binding(self):
         result = nodes.CIFChoiceParameter().expose(
             "knp_v3_1",

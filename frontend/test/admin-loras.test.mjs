@@ -502,8 +502,13 @@ test("sync adds missing library LoRAs to drifted workflows in one operation", as
 });
 
 test("reconciliation removes strengths for unpublished LoRAs", () => {
-  const contract = { inputs: [{ id: "loras", type: "lora_stack", items: [{ id: "remaining" }] }] };
-  assert.deepEqual(reconcileLoraStrengthMemory(contract, { loras: { remaining: 0.7, removed: 0.4 }, other: { old: 1 } }), { loras: { remaining: 0.7 } });
+  const contract = { inputs: [{ id: "loras", type: "lora_stack", items: [{ id: "remaining" }, { id: "off" }] }] };
+  // A remembered strength is remembered whichever way it pulls; only an unloaded LoRA
+  // and one this workflow no longer publishes are dropped.
+  assert.deepEqual(
+    reconcileLoraStrengthMemory(contract, { loras: { remaining: -1, removed: 0.4, off: 0 }, other: { old: 1 } }),
+    { loras: { remaining: -1 } },
+  );
 });
 
 async function waitFor(check) {

@@ -3,6 +3,9 @@ import { icon } from "./icons.mjs";
 const escape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 function decimalParts(value) {
+  // Exact decimal as [numerator, denominator] so step alignment never rides binary
+  // floating point. A negative value keeps its sign on the whole part, which is the
+  // sign of the joined mantissa too: "-1.05" is exactly -105/100.
   const [mantissa, exponent = "0"] = String(value).split(/[eE]/);
   const [whole, fraction = ""] = mantissa.split(".");
   const scale = fraction.length - Number(exponent);
@@ -19,6 +22,10 @@ export function loraStackError(control, value) {
     const strength = entry.strength;
     if (typeof strength !== "number" || !Number.isFinite(strength)) return "Enter a finite LoRA strength.";
     if (strength < control.minimum || strength > control.maximum) return `LoRA strength must be from ${control.minimum} to ${control.maximum}.`;
+    // Alignment is measured from zero here while the server measures it from the
+    // published minimum. Those are the same grid: a published stack defaults every
+    // entry to zero, so the server has already required `minimum` to be a whole
+    // multiple of `step` before this ever sees the contract.
     const [numerator, denominator] = decimalParts(strength);
     const [stepNumerator, stepDenominator] = decimalParts(control.step);
     if ((numerator * stepDenominator) % (denominator * stepNumerator) !== 0n) return `Use LoRA strength increments of ${control.step}.`;
@@ -49,6 +56,17 @@ export function loraDefaultPositiveStrength(control) {
   return value > 0 && allowsStrength(control, value) ? value : null;
 }
 
+// The strength a LoRA starts at when a user enables it. A workflow author knows which
+// way one of their LoRAs is meant to be pulled — a wetness slider is loaded negative
+// to take the wetness off — so a catalog entry may publish `preferred_strength` to say
+// so. Absent, zero, or unusable for this stack, enabling behaves as it always did:
+// the remembered strength if the user has one, otherwise a positive value.
+export function loraEnableStrength(control, item) {
+  const preferred = item?.preferred_strength;
+  if (typeof preferred === "number" && preferred !== 0 && allowsStrength(control, preferred)) return preferred;
+  return loraDefaultPositiveStrength(control);
+}
+
 // A catalog entry offers its phrase as `trigger_word`, and where none was
 // published the published title stands in for it. Subject name only ever takes
 // a verified trigger word, because a stylistic LoRA has no subject to name;
@@ -63,6 +81,9 @@ export function loraTriggerWord(item) {
 // the manager numbers and the sidebar lists — that publishes a trigger word. A LoRA
 // with no published trigger word is stylistic, so it is passed over rather than
 // named, and a stronger one further down the stack never outranks it.
+// Deliberately positive-only, unlike every other "is this LoRA on" test: a LoRA being
+// pulled backwards is not naming the subject the prompt is about. A negatively applied
+// character LoRA still has its trigger word copied by the tile beside it.
 export function subjectLoraTrigger(control, value) {
   const entries = Array.isArray(value) ? value : control.default;
   const items = new Map((control.items || []).map((item) => [item.id, item]));
@@ -92,7 +113,7 @@ export function steppedLoraStrength(control, value, direction) {
 export function loraStackMarkup(control, value, images = {}, { editable = false, disabled = false } = {}) {
   const rows = Array.isArray(value) ? value : control.default;
   const items = new Map(control.items.map((item) => [item.id, item]));
-  const active = rows.filter((entry) => entry.strength > 0);
+  const active = rows.filter((entry) => entry.strength !== 0);
   const summary = active.length
     ? `<ul class="lm-summary-list">${active.map((entry) => {
       const label = items.get(entry.id)?.label || entry.id;
@@ -149,7 +170,10 @@ export function installLoraStackControls(root, {
     if (!ctx) return;
     const { control, values, memory, id, input, row } = ctx;
     const previous = values.find((entry) => entry.id === id)?.strength;
-    if (!(previous > 0)) return;
+    // A row exists for any LoRA that is loaded, whichever way it is loaded, and for a
+    // row the user is still typing in. Only a row that is no longer part of the stack
+    // at all — removed from under a pending edit — has nothing to commit.
+    if (typeof previous !== "number" || !Number.isFinite(previous)) return;
     clearError(input);
     let strength = input.value === "" ? NaN : Number(input.value);
     if (action === "disable") strength = 0;
@@ -172,11 +196,11 @@ export function installLoraStackControls(root, {
     const position = [...row.parentElement.children].indexOf(row);
     committing = true;
     try {
-      apply(control.id, candidate(strength), { ...memory, [id]: strength > 0 ? strength : previous }, ctx.sourceKey);
+      apply(control.id, candidate(strength), { ...memory, [id]: strength !== 0 ? strength : previous }, ctx.sourceKey);
       // Keep the existing controls in place so blur/Tab and pointer clicks can
       // finish on their original targets. Only disabling removes a row.
       const stack = row.closest("[data-lora-editable]");
-      if (strength > 0) {
+      if (strength !== 0) {
         input.value = formatLoraStrength(strength);
         updateArrows(ctx, strength);
       } else {
@@ -188,7 +212,7 @@ export function installLoraStackControls(root, {
         else if (leavingForRemovedControl) queueMicrotask(focusNext);
       }
       const status = stack.closest(".control-section")?.querySelector(".control-section-status");
-      if (status) status.textContent = `${candidate(strength).filter((entry) => entry.strength > 0).length} active`;
+      if (status) status.textContent = `${candidate(strength).filter((entry) => entry.strength !== 0).length} active`;
     } finally { committing = false; }
   }
   const copyTimers = new WeakMap();

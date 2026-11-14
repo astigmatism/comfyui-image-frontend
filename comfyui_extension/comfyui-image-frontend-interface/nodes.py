@@ -904,9 +904,12 @@ class CIFLoraStack:
                 "model": ("MODEL",),
                 "catalog_json": ("STRING", {"default": "[]", "multiline": True}),
                 "value": ("STRING", {"default": "[]", "multiline": True}),
-                "minimum": ("FLOAT", {"default": 0.0}),
-                "maximum": ("FLOAT", {"default": 2.0}),
-                "step": ("FLOAT", {"default": 0.05}),
+                # Declared bounds, like the other numeric parameters: an author must be
+                # able to publish a minimum below zero, because a negative strength is
+                # how a stack asks for less of a LoRA instead of more.
+                "minimum": ("FLOAT", {"default": 0.0, "min": -1.0e12, "max": 1.0e12}),
+                "maximum": ("FLOAT", {"default": 2.0, "min": -1.0e12, "max": 1.0e12}),
+                "step": ("FLOAT", {"default": 0.05, "min": 1.0e-12, "max": 1.0e12}),
                 **_common_parameter_inputs(),
             }
         }
@@ -924,7 +927,8 @@ class CIFLoraStack:
             if (
                 not isinstance(item, dict)
                 or not {"id", "label", "filename"} <= set(item)
-                or set(item) - {"id", "label", "filename", "description", "trigger_word"}
+                or set(item)
+                - {"id", "label", "filename", "description", "trigger_word", "preferred_strength"}
             ):
                 raise ValueError("Invalid private LoRA catalog entry.")
             filename = item["filename"]
@@ -934,7 +938,7 @@ class CIFLoraStack:
             "items": [
                 {
                     key: item[key]
-                    for key in ("id", "label", "description", "trigger_word")
+                    for key in ("id", "label", "description", "trigger_word", "preferred_strength")
                     if key in item
                 }
                 for item in catalog
@@ -947,6 +951,9 @@ class CIFLoraStack:
         filenames = {item["id"]: item["filename"] for item in catalog}
         # The loader and model clones belong to this invocation. Zero entries never
         # touch disk, and a subsequent request cannot inherit this request's patches.
+        # The native loader takes a signed strength: a negative entry subtracts the
+        # low-rank update instead of adding it, which is the whole mechanism behind a
+        # strength below zero.
         loader = None
         for entry in configuration:
             if entry["strength"] == 0:

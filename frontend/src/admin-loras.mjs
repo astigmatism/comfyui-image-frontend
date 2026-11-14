@@ -39,7 +39,7 @@ export function validateLoraEdit({ item, displayName, triggerWord }) {
 
 export function reconcileLoraStrengthMemory(contract, memory) {
   const controls = new Map((contract?.inputs || contract?.controls || []).filter((input) => input.type === "lora_stack").map((input) => [input.id, new Set((input.items || []).map((item) => item.id))]));
-  return Object.fromEntries(Object.entries(memory || {}).filter(([id]) => controls.has(id)).map(([id, strengths]) => [id, Object.fromEntries(Object.entries(strengths || {}).filter(([itemId, strength]) => controls.get(id).has(itemId) && typeof strength === "number" && Number.isFinite(strength) && strength > 0))]));
+  return Object.fromEntries(Object.entries(memory || {}).filter(([id]) => controls.has(id)).map(([id, strengths]) => [id, Object.fromEntries(Object.entries(strengths || {}).filter(([itemId, strength]) => controls.get(id).has(itemId) && typeof strength === "number" && Number.isFinite(strength) && strength !== 0))]));
 }
 
 const libraryKeyPattern = /^[a-z0-9][a-z0-9_.-]{0,63}$/;

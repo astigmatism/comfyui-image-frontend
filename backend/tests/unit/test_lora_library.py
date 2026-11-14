@@ -100,3 +100,34 @@ def test_generation_usage_keeps_enabled_loras_in_application_order():
         (1, "Beta", 1.0),
     ]
     assert usage[0].lora_identity == lora_identity_v1(C["filename"])
+
+
+def test_a_lora_subtracted_from_the_model_was_still_used():
+    """A negative weight changed this image exactly as a positive one did."""
+
+    profile = _profile("workflows/advanced.json", [A, B, C])
+    usage = generation_lora_usage_v1(
+        profile.resolved_contract_json,
+        {
+            "loras": [
+                {"id": "a", "strength": 0},
+                {"id": "b", "strength": -1.0},
+                {"id": "c", "strength": -0.5},
+            ]
+        },
+        profile.source_api_json,
+    )
+    assert [(u.position, u.label, u.strength) for u in usage] == [
+        (0, "Beta", -1.0),
+        (1, "Gamma", -0.5),
+    ]
+    assert usage[0].lora_identity == lora_identity_v1(B["filename"])
+
+
+def test_the_newest_publication_supplies_a_strength_direction():
+    wetness = {**A, "label": "Wetness", "preferred_strength": -1.0}
+    older = _profile("workflows/a.json", [A], published_at="2026-09-01T00:00:00Z")
+    newer = _profile("workflows/b.json", [wetness], published_at="2026-10-01T00:00:00Z")
+    canonical, conflicts = _canonical(_members(older, newer))
+    assert conflicts == []
+    assert canonical == [wetness]
