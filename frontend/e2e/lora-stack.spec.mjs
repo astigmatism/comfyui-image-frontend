@@ -492,6 +492,47 @@ test("a LoRA published below zero enables negative, refuses what is off the grid
   await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("-1.00");
 });
 
+test("the increment arrow walks a LoRA across zero instead of dropping the row on it", async ({ page }) => {
+  await mount(page, { minimum: -1, preferredStrengths: { b: -1 } });
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  const beta = page.getByRole("spinbutton", { name: "Beta strength", exact: true });
+  const up = page.getByRole("button", { name: "Increase Beta strength" });
+  const down = page.getByRole("button", { name: "Decrease Beta strength" });
+  await expect(beta).toHaveValue("-1.00");
+
+  // Walking the wetness slider up: the row is there to walk, so it stays there. An arrow
+  // that landed on zero used to remove the row — and the arrow with it — leaving the LoRA
+  // neither subtracted nor addable without going back through the manager.
+  await up.click();
+  await expect(beta).toHaveValue("-0.50");
+  await up.click();
+  await expect(beta).toHaveValue("0.50");
+  await expect(page.locator(".lm-summary-item")).toHaveCount(1);
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(0.5);
+  await expect(page.locator(".control-section-status")).toHaveText("1 active");
+  await expect(up).toBeEnabled();
+  await expect(down).toBeEnabled();
+
+  // And back down into subtraction, from the arrow rather than by typing.
+  await down.click();
+  await expect(beta).toHaveValue("-0.50");
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(-0.5);
+
+  // Zero is off, which is what the × button and a typed zero are for; the weight the
+  // visitor had — not the one the author published — is what comes back on.
+  await beta.fill("0");
+  await beta.press("Enter");
+  await expect(page.locator(".lm-summary-item")).toHaveCount(0);
+  expect(await page.evaluate(() => window.stack.find((entry) => entry.id === "b").strength)).toBe(0);
+  expect(await page.evaluate(() => window.memory.b)).toBe(-0.5);
+  await open(page);
+  await dialog(page).getByRole("button", { name: "Toggle Beta" }).click();
+  await dialog(page).getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Beta strength", exact: true })).toHaveValue("-0.50");
+});
+
 test("a stack that reaches below zero still enables an unhinted LoRA to a positive strength", async ({ page }) => {
   await mount(page, { minimum: -1, preferredStrengths: { b: -1 } });
   await open(page);

@@ -107,7 +107,20 @@ export function steppedLoraStrength(control, value, direction) {
   const increment = (half * stepScale) % (halfScale * step) === 0n ? 0.5 : Number(control.step);
   const minimum = Math.ceil(control.minimum / control.step) * control.step;
   const maximum = Math.floor((control.maximum + Number.EPSILON * 8) / control.step) * control.step;
-  return Number(Math.max(minimum, Math.min(maximum, value + direction * increment)).toPrecision(12));
+  const clamp = (next) => Number(Math.max(minimum, Math.min(maximum, next)).toPrecision(12));
+  const target = clamp(value + direction * increment);
+  // A stack that reaches below zero is stepped *across* zero, never onto it. Zero is not a
+  // loaded strength in either direction — it is the LoRA being off, which is what the ×
+  // button beside the field is for — and a row whose list only holds loaded LoRAs would
+  // vanish the instant the arrow landed on it, leaving nothing to step back with. So on a
+  // stack that can subtract a LoRA, a step that would read 0.00 continues to the same size
+  // on the other side of zero. Where the published range stops at zero the floor is the off
+  // switch and stepping onto it still turns the LoRA off, exactly as it always did.
+  if (target !== 0 || minimum >= 0) return target;
+  // And when the published ceiling is smaller than one step past zero, there is no loaded
+  // strength to land on over there: the arrow says so by staying put.
+  const beyond = direction * increment;
+  return beyond > maximum || beyond < minimum ? value : Number(beyond.toPrecision(12));
 }
 
 export function loraStackMarkup(control, value, images = {}, { editable = false, disabled = false } = {}) {

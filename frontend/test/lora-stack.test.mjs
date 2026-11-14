@@ -408,6 +408,28 @@ test("a negatively weighted LoRA renders, reports and steps like a positive one"
   assert.equal(steppedLoraStrength(signed, 1.85, 1), 2);
 });
 
+test("the stepper on a stack that subtracts crosses zero instead of stopping on it", () => {
+  // Zero is not a loaded strength in either direction, so the sidebar lists no row for it:
+  // an arrow that landed on 0.00 took the row — and the arrow — away with it, and the only
+  // way back was the manager. A step that would read zero continues to the same size on the
+  // other side, which is what walking a slider from subtracting to adding wants.
+  assert.equal(steppedLoraStrength(signed, -0.5, 1), 0.5);
+  assert.equal(steppedLoraStrength(signed, 0.5, -1), -0.5);
+  assert.equal(steppedLoraStrength(signed, 0, 1), 0.5);
+  assert.equal(steppedLoraStrength(signed, 0, -1), -0.5);
+  // Fine offsets ride through the crossing untouched, and a fine step crosses on its own size.
+  assert.equal(steppedLoraStrength(signed, -0.05, 1), 0.45);
+  assert.equal(steppedLoraStrength(signed, 0.05, -1), -0.45);
+  assert.equal(steppedLoraStrength({ ...signed, step: 0.3 }, 0.3, -1), -0.3);
+  // A stack whose range stops at zero keeps its old behaviour, because there zero is the
+  // floor: reaching it is how the visitor turns the LoRA off.
+  assert.equal(steppedLoraStrength(control, 0.15, -1), 0);
+  // Past zero there has to be a strength to land on. A ceiling below one whole step leaves
+  // the arrow where it was rather than putting the field off the published grid.
+  assert.equal(steppedLoraStrength({ ...signed, maximum: 0.5 }, -0.5, 1), 0.5);
+  assert.equal(steppedLoraStrength({ ...signed, maximum: 0.2 }, -0.5, 1), -0.5);
+});
+
 test("the gallery counts, orders and enables a negatively weighted LoRA", () => {
   const rows = [{ id: "a", strength: -1 }, { id: "b", strength: 0 }];
   const gallery = loraManagerMarkup({ control: signed, values: rows, memory: {} });
