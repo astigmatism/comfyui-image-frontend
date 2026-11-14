@@ -149,6 +149,26 @@ def require_csrf(
     return context
 
 
+PASSIVE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Lookup is a passive POST used by gallery rendering, not user activity.
+PASSIVE_PATHS = frozenset({"/api/gallery/prompt-groups/lookup"})
+
+
+def marks_user_activity(request: Request) -> bool:
+    """Whether this request is the user doing work, which idle generation must yield to.
+
+    Reading never is: the interface polls several endpoints every second, loads images, and
+    streams events, and per [docs/demo-reel.md](../docs/demo-reel.md) none of that may keep
+    the server awake. The browser reports genuine input through `POST /api/activity`
+    instead, so only state-changing requests count as work on top of that report.
+    """
+
+    if request.method in PASSIVE_METHODS:
+        return False
+    return request.url.path not in PASSIVE_PATHS
+
+
 async def require_ready_csrf(
     request: Request,
     context: Annotated[AuthContext, Depends(require_csrf)],
@@ -160,8 +180,7 @@ async def require_ready_csrf(
             status_code=403,
         )
     service = get_container(request).demo_reels
-    # Lookup is a passive POST used by gallery rendering, not user activity.
-    passive = request.url.path == "/api/gallery/prompt-groups/lookup"
+    passive = not marks_user_activity(request)
     if not passive:
         service.foreground_requests += 1
     try:

@@ -405,6 +405,35 @@ def test_foreground_work_requires_five_new_quiet_minutes_and_pause_is_revision_c
     assert len(jobs(client)) == 1
 
 
+def test_polling_reads_leave_the_quiet_period_alone_and_reported_input_restarts_it(reel_client):
+    client, detail, _, _ = reel_client
+    _, path = configure(client, detail)
+    container = client.app.state.container
+    service = container.demo_reels
+    headers = {"X-CSRF-Token": csrf(client)}
+
+    def stamp():
+        with container.db.session_factory() as session:
+            return session.get(DemoReelConfig, 1).last_activity_at
+
+    # The interface polls several of these every second, and reading cannot extend the quiet
+    # period: only the browser's report of real input, or work that holds the GPU, can.
+    quiet = stamp()
+    for _ in range(3):
+        assert client.get("/api/preferences").status_code == 200
+        assert client.get("/api/generation-activity").status_code == 200
+        assert client.get(path).status_code == 200
+    assert stamp() == quiet
+
+    tick(client, quiet=True)
+    assert len(jobs(client)) == 1
+
+    assert client.post("/api/activity", headers=headers).status_code == 204
+    assert stamp() > quiet
+    service.step()
+    assert len(jobs(client)) == 1
+
+
 def test_three_failures_have_persisted_backoff_then_allow_other_work_and_manual_retry(reel_client):
     client, detail, _, _ = reel_client
     _, path = configure(client, detail)
