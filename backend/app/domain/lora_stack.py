@@ -113,11 +113,33 @@ def validate_lora_runtime(api_document: Mapping[str, Any], object_info: Mapping[
     """Require the companion and full private catalog on the execution runtime."""
     import json
 
+    def declared_floor() -> Any:
+        """The lowest strength this companion lets an author enter for a stack.
+
+        ``None`` when it declares no bound at all, which is what a companion predating
+        signed strengths looks like: ComfyUI clamps that FLOAT widget at zero, so the
+        range it can publish starts at zero.
+        """
+        widget = object_info["CIFLoraStack"].get("input", {}).get("required", {}).get("minimum")
+        if not isinstance(widget, list) or len(widget) < 2 or not isinstance(widget[1], Mapping):
+            return None
+        return widget[1].get("min")
+
     stacks = [node for node in api_document.values() if node.get("class_type") == "CIFLoraStack"]
     if not stacks:
         return
     if "CIFLoraStack" not in object_info:
         raise ValueError("The assigned runtime needs the Image Frontend LoRA Stack node.")
+    # A stack that reaches below zero can only run where an author could publish it.
+    # Checked before the catalog, because an empty catalog still declares a range.
+    floors = [floor for node in stacks if _finite(floor := node.get("inputs", {}).get("minimum"))]
+    if floors and min(floors) < 0:
+        limit = declared_floor()
+        if not _finite(limit) or limit > min(floors):
+            raise ValueError(
+                "The assigned runtime's Image Frontend LoRA Stack node cannot express a strength "
+                "below zero. Update that runtime's companion package and restart it."
+            )
     filenames = [
         item["filename"] for node in stacks for item in json.loads(node["inputs"]["catalog_json"])
     ]

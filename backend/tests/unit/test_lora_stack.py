@@ -385,6 +385,36 @@ def test_selected_runtime_requires_node_and_every_catalog_file():
     validate_lora_runtime({}, {})  # Existing publications have no new prerequisite.
 
 
+def test_a_range_below_zero_needs_a_companion_that_can_enter_it():
+    from app.domain.lora_stack import validate_lora_runtime
+
+    graph = source(lambda public, private: wetness(public, private)).api_document
+    info = object_info_fixture()
+    validate_lora_runtime(graph, info)
+
+    def declare(value):
+        given = copy.deepcopy(info)
+        given["CIFLoraStack"]["input"]["required"]["minimum"] = value
+        return given
+
+    # A companion predating the declared bounds clamps its minimum widget at zero, so
+    # this stack was never publishable on it — the same holds for a secondary runtime
+    # that has not reloaded the companion package yet.
+    clamped = declare(["FLOAT", {"default": 0}])
+    with pytest.raises(ValueError, match="below zero"):
+        validate_lora_runtime(graph, clamped)
+    # The guard is about the floor the author would have to enter, not about the age of
+    # the companion: a floor as low as the published one is enough, and a stack that
+    # starts at zero still runs everywhere it always did.
+    validate_lora_runtime(graph, declare(["FLOAT", {"default": 0.0, "min": -1.0, "max": 1e12}]))
+    validate_lora_runtime(source().api_document, clamped)
+    # An empty catalog still declares a range, so it is refused just the same.
+    empty = copy.deepcopy(graph)
+    empty["99"]["inputs"]["catalog_json"] = "[]"
+    with pytest.raises(ValueError, match="below zero"):
+        validate_lora_runtime(empty, clamped)
+
+
 def test_configurable_inventory_excludes_private_fields():
     from app.domain.source_metadata import _public_choice_loras_are_safe
 

@@ -92,7 +92,16 @@ class PublicationBundle:
 
 def object_info_fixture() -> JsonObject:
     return {
-        "CIFLoraStack": {"input": {"required": {"value": ["STRING"]}}},
+        "CIFLoraStack": {
+            "input": {
+                "required": {
+                    "value": ["STRING"],
+                    # The companion declares its widget bounds, so a runtime running it
+                    # can publish a range that reaches below zero.
+                    "minimum": ["FLOAT", {"default": 0.0, "min": -1e12, "max": 1e12}],
+                }
+            }
+        },
         "LoraLoaderModelOnly": {
             "input": {
                 "required": {"lora_name": [["private/a.safetensors", "private/b.safetensors"]]}
