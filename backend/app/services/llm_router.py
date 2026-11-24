@@ -18,6 +18,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -68,8 +69,18 @@ FEATURES: Mapping[str, Callable[[Mapping[str, Any]], bool]] = {
 }
 
 # Reasoning efforts in increasing order (contract section 6) and the router's accepted aliases.
+# ``off`` and ``default`` are deliberately not on this axis: ``off`` is the absence of reasoning
+# and ``default`` is whatever the serving model publishes as its own default effort, so neither
+# is ever a reasonable answer to "the closest listed effort to another request".
 EFFORT_ORDER = ("low", "medium", "xhigh")
 EFFORT_ALIASES = {"none": "off", "minimal": "low", "high": "xhigh", "max": "xhigh"}
+# The two off-axis efforts, named here so no caller has to spell them out.
+REASONING_OFF = "off"
+REASONING_DEFAULT = "default"
+# ``metadata.reasoning.boolean_true_behavior.mode`` values that mean a bare ``true`` is accepted.
+# Anything else (including a document that says nothing) leaves the boolean as the portable
+# spelling rather than assuming it was refused.
+BOOLEAN_TRUE_MODES = frozenset({"map", "boolean", "level"})
 
 ChangeListener = Callable[[dict[str, Any]], Awaitable[None] | None]
 Sleeper = Callable[[float], Awaitable[None]]
@@ -302,23 +313,114 @@ def classify_error(status: int | None, body: Any = None) -> str:
     return FAIL
 
 
+def _string_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if isinstance(key, str) and key and isinstance(item, str) and item
+    }
+
+
+@dataclass(frozen=True)
+class ReasoningProfile:
+    """One published model's reasoning facts, as its ``metadata.reasoning`` gives them.
+
+    ``efforts`` maps a canonical effort name to **the value to send on the wire** for it: the
+    resident of 2026-11-24 publishes ``{"default": "default", "off": "none", "low": "low",
+    "medium": "medium", "xhigh": "xhigh"}``, so asking for ``off`` means sending ``"none"`` and
+    asking for the default effort means sending ``"default"``. The value is read from the
+    document; no effort name this client invents is ever sent on the assumption the router will
+    recognise it. ``default`` is the canonical name of the model's own default effort,
+    ``boolean_level`` the effort a bare ``true`` maps to when the document says so, and
+    ``has_effort_list`` separates "this model lists no such effort" from "this model says
+    nothing about reasoning at all", which decide different fallbacks.
+    """
+
+    supported: bool | None
+    efforts: Mapping[str, str] = field(default_factory=dict)
+    has_effort_list: bool = False
+    default: str | None = None
+    aliases: Mapping[str, str] = field(default_factory=lambda: EFFORT_ALIASES)
+    boolean_true: bool = True
+    boolean_level: str | None = None
+
+    def canonical(self, requested: str) -> str:
+        """The effort name ``requested`` stands for, resolved through this model's aliases."""
+
+        name = requested.strip()
+        return self.aliases.get(name, name)
+
+    def wire_value(self, effort: str) -> str | None:
+        """The value to send for a canonical effort name, or None when it is not published."""
+
+        return self.efforts.get(effort)
+
+
+def reasoning_profile(model: Mapping[str, Any] | None) -> ReasoningProfile:
+    """The reasoning facts of one model in a capabilities document, ignoring unknown fields."""
+
+    metadata = model.get("metadata") if isinstance(model, Mapping) else None
+    published_metadata = metadata if isinstance(metadata, Mapping) else {}
+    published = published_metadata.get("reasoning")
+    reasoning = published if isinstance(published, Mapping) else {}
+    aliases = {**EFFORT_ALIASES, **_string_map(reasoning.get("aliases"))}
+
+    def canonical(name: str) -> str:
+        stripped = name.strip()
+        return aliases.get(stripped, stripped)
+
+    published_efforts = reasoning.get("efforts")
+    efforts: dict[str, str] = {}
+    has_effort_list = isinstance(published_efforts, Mapping | list)
+    if isinstance(published_efforts, Mapping):
+        for name, value in published_efforts.items():
+            if isinstance(name, str) and name.strip():
+                wire = value if isinstance(value, str) and value else name
+                efforts[canonical(name)] = wire
+    elif isinstance(published_efforts, list):
+        for name in _string_list(published_efforts):
+            efforts[canonical(name)] = name
+
+    behaviour = reasoning.get("boolean_true_behavior")
+    behaviour_map = behaviour if isinstance(behaviour, Mapping) else {}
+    boolean_level_value = behaviour_map.get("level")
+    boolean_level = canonical(boolean_level_value) if isinstance(boolean_level_value, str) else None
+    supported = reasoning.get("supported")
+    default_value = reasoning.get("default")
+    default_effort = canonical(default_value) if isinstance(default_value, str) else None
+    if default_effort is None:
+        default_effort = boolean_level
+    if default_effort is not None and default_effort not in efforts:
+        # A default the model does not actually list cannot be asked for by name.
+        default_effort = None
+    return ReasoningProfile(
+        # ``capabilities`` containing "thinking" is the stronger statement, so it decides for a
+        # document whose metadata.reasoning is missing or partial.
+        supported=supported if isinstance(supported, bool) else supports_thinking(model),
+        efforts=efforts,
+        has_effort_list=has_effort_list,
+        default=default_effort,
+        aliases=aliases,
+        boolean_true=not behaviour_map or behaviour_map.get("mode") in BOOLEAN_TRUE_MODES,
+        boolean_level=boolean_level,
+    )
+
+
 def supported_efforts(model: Mapping[str, Any] | None) -> set[str] | None:
     """Reasoning efforts the model publishes in ``metadata.reasoning.efforts``, or None.
 
     The router publishes ``efforts`` as an object keyed by effort name (for example
     ``{"default": "default", "off": "none", "xhigh": "xhigh"}``); a plain list is accepted too.
+    The names are canonical (``none`` is reported as ``off``); the values it maps them to are
+    what :func:`thinking_value` sends.
     """
 
-    metadata = model.get("metadata") if isinstance(model, Mapping) else None
-    reasoning = metadata.get("reasoning") if isinstance(metadata, Mapping) else None
-    efforts = reasoning.get("efforts") if isinstance(reasoning, Mapping) else None
-    if isinstance(efforts, Mapping):
-        names = [name for name in efforts if isinstance(name, str)]
-    elif isinstance(efforts, list):
-        names = _string_list(efforts)
-    else:
+    profile = reasoning_profile(model)
+    if not profile.has_effort_list:
         return None
-    return {EFFORT_ALIASES.get(name, name) for name in names}
+    return set(profile.efforts)
 
 
 def supports_thinking(model: Mapping[str, Any] | None) -> bool | None:
@@ -339,36 +441,63 @@ def supports_thinking(model: Mapping[str, Any] | None) -> bool | None:
 
 
 def thinking_value(model: Mapping[str, Any] | None, requested: Any) -> bool | str:
-    """The ``think`` value to send to ``model`` for a requested effort, boolean or ``False``.
+    """The ``think`` value to send to ``model`` for a requested reasoning effort.
 
-    An effort is sent only when the model lists it in ``metadata.reasoning.efforts``; otherwise
-    the closest listed effort is used, or ``True`` (the model's default effort) when it lists
-    none. A model that cannot think receives ``False``. Without any model facts (named selection
-    before the first capabilities document) only ``True`` is sent, never an unlisted effort.
+    ``requested`` is an effort name (optionally one of the router's aliases), the boolean
+    ``True`` for the model's default effort, or ``False``/None for no reasoning at all. The
+    result is the **value the document publishes** for that effort — ``"xhigh"``, ``"default"``,
+    ``"none"`` on today's resident — because the published name and the wire value are not the
+    same thing (``off`` is sent as ``none``), and only ``False`` remains for a model that
+    publishes no value to send.
+
+    Three rules keep the choice data-driven (contract section 6):
+
+    * an effort is sent only when the model lists it, and never one invented from a model name;
+    * an unlisted effort on the low/medium/xhigh axis becomes the closest listed one, resolved to
+      its published value; a model that lists nothing on that axis gets a bare ``True``, the
+      spelling every thinking model has always accepted;
+    * a model that cannot think gets ``False`` whatever was requested.
+
+    ``default`` is not an escalation target: when a model publishes no default effort name the
+    request falls back to the bare ``True`` the document advertises (
+    ``boolean_true_behavior: {mode: "map", level: "default"}``), never to an effort of our own.
     """
 
-    if requested is False or requested is None:
+    profile = reasoning_profile(model)
+    if requested is None or requested is False:
+        effort: str | None = REASONING_OFF
+    elif requested is True:
+        effort = REASONING_DEFAULT
+    elif isinstance(requested, str) and requested.strip():
+        effort = profile.canonical(requested)
+    else:
+        effort = REASONING_DEFAULT
+    if profile.supported is False:
         return False
-    thinking = supports_thinking(model)
-    if thinking is False:
-        return False
-    if requested is True or not isinstance(requested, str) or thinking is None:
+    if effort is None:
+        # A request the model publishes no name for (an alias to nothing, or an effort this
+        # contract does not define): ask for reasoning without naming an effort of our own.
         return True
-    effort: str = EFFORT_ALIASES.get(requested, requested)
-    if effort == "off":
-        return False
-    efforts = supported_efforts(model)
-    if efforts is None:
+    if effort == REASONING_OFF:
+        # A genuine "no reasoning" request: the value published for the off effort ("none"
+        # today), or the portable boolean for a model that publishes no off value.
+        return profile.wire_value(REASONING_OFF) or False
+    if profile.supported is None and not profile.efforts:
+        # Named selection before the first capabilities document: only a boolean is safe.
         return True
-    if effort in efforts:
-        return effort
-    listed = [name for name in EFFORT_ORDER if name in efforts]
+    if effort == REASONING_DEFAULT:
+        return profile.wire_value(REASONING_DEFAULT) or True
+    wire_value = profile.wire_value(effort)
+    if wire_value is not None:
+        return wire_value
+    listed = [name for name in EFFORT_ORDER if name in profile.efforts]
     if not listed:
         return True
     target = EFFORT_ORDER.index(effort) if effort in EFFORT_ORDER else len(EFFORT_ORDER) - 1
-    return min(
+    closest = min(
         listed, key=lambda name: (abs(EFFORT_ORDER.index(name) - target), -EFFORT_ORDER.index(name))
     )
+    return profile.wire_value(closest) or closest
 
 
 def validate_document(doc: Any) -> dict[str, Any]:

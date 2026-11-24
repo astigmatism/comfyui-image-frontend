@@ -2176,6 +2176,64 @@ test("focused prompt editor isolates canceled drafts and applies composed prompt
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
+test("a composition recovered without reasoning says which effort gave up", async ({ page }) => {
+  await page.goto("/");
+  await signInAdminWithCurrentFixturePassword(page);
+  await selectPublishedSource(page, "Generic Landscape");
+  await ensureControlSectionExpanded(page, "Creative Direction");
+
+  // The backend recovered the prompt at its no-reasoning effort after the requested one could
+  // not finish; the panel has to say that in plain words, in both prompt surfaces.
+  const recoveryNotice =
+    "Reasoning at the xhigh effort ran out of room before it reached the end of the prompt, " +
+    "so this prompt was composed without reasoning.";
+  let compositionNotice = recoveryNotice;
+  await page.route("**/api/prompt-assistant/compose", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        composition_id: "recovered-composition",
+        prompt: "a lake at dawn, written without reasoning",
+        model: "fake-model",
+        notice: compositionNotice,
+      }),
+    });
+  });
+
+  const assistantNotice = page.locator("#prompt-assistant-notice");
+  const columnDirection = page
+    .locator("#prompt-assistant")
+    .getByRole("textbox", { name: "Creative Direction", exact: true });
+  await columnDirection.fill("a lake at dawn");
+  await page.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(
+    "a lake at dawn, written without reasoning",
+  );
+  await expect(assistantNotice).toBeVisible();
+  await expect(assistantNotice).toContainText("composed without reasoning");
+
+  // A composition that got what it asked for leaves nothing to explain.
+  compositionNotice = null;
+  await columnDirection.fill("a lake at dusk");
+  await page.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(assistantNotice).toBeHidden();
+
+  await page.getByRole("button", { name: "Open focused prompt editor" }).click();
+  const dialog = page.locator("#prompt-editor-dialog");
+  const dialogNotice = dialog.locator("#prompt-editor-assistant-notice");
+  await expect(dialogNotice).toBeHidden();
+  compositionNotice = recoveryNotice;
+  await dialog
+    .getByRole("textbox", { name: "Creative Direction", exact: true })
+    .fill("a lake at midnight");
+  await dialog.getByRole("button", { name: "Apply Creative Direction" }).click();
+  await expect(dialogNotice).toBeVisible();
+  await expect(dialogNotice).toContainText("ran out of room");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.unroute("**/api/prompt-assistant/compose");
+});
+
 test("clipboard paste replaces the prompt text in both prompt surfaces", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");

@@ -762,7 +762,7 @@ def test_prompt_assistant_persists_safe_bounded_output_budget_exhaustion(
         [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
     ) * 3
     assert [call["think"] for call in fake_state.ollama_calls] == (
-        ["xhigh"] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+        ["xhigh"] * len(OUTPUT_TOKEN_BUDGETS) + ["none"]
     ) * 3
 
     container = app_client.app.state.container
@@ -809,7 +809,7 @@ def test_prompt_assistant_completes_via_no_thinking_fallback_after_thinking_over
     body = response.json()
     assert body["prompt"] == "a portrait, warm window light"
     assert [call["think"] for call in fake_state.ollama_calls] == (
-        ["xhigh"] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+        ["xhigh"] * len(OUTPUT_TOKEN_BUDGETS) + ["none"]
     )
     assert [call["options"]["num_predict"] for call in fake_state.ollama_calls] == (
         [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
@@ -1068,7 +1068,9 @@ def test_successful_refinement_overrides_the_caller_prompt_sent_to_comfyui(
         assert fake_state.submitted[-1]["prompt"] != "original prompt"
 
 
-def test_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_state) -> None:
+def test_prompt_assistant_unchecked_thinking_asks_for_the_default_effort(
+    app_client: TestClient, fake_state
+) -> None:
     provision_user(app_client, username="thinking.disabled")
     _cache_ollama_health(app_client, available=True)
 
@@ -1085,17 +1087,23 @@ def test_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_stat
 
     assert response.status_code == 200, response.text
     assert response.json()["prompt"] == "a portrait in cool light, make the light warmer"
-    assert fake_state.ollama_calls[-1]["think"] is False
+    # Unchecked is the model's default effort — sent as the value the model publishes for it, and
+    # recorded as `"default"`, never as the `false` that used to mean "no reasoning at all".
+    assert fake_state.ollama_calls[-1]["think"] == "default"
     container = app_client.app.state.container
     from app.models import PromptAssistantRun
 
     with container.db.session_factory() as session:
         run = session.get(PromptAssistantRun, response.json()["composition_id"])
         assert run is not None
+        # The run row keeps what the checkbox said; the effort that answered is in the record.
         assert run.thinking_enabled is False
+        assert run.raw_response_json["router"]["thinking_effort"] == "default"
 
 
-def test_create_prompt_assistant_can_disable_thinking(app_client: TestClient, fake_state) -> None:
+def test_create_prompt_assistant_unchecked_thinking_asks_for_the_default_effort(
+    app_client: TestClient, fake_state
+) -> None:
     provision_user(app_client, username="create.thinking.disabled")
     _cache_ollama_health(app_client, available=True)
 
@@ -1115,7 +1123,7 @@ def test_create_prompt_assistant_can_disable_thinking(app_client: TestClient, fa
         "a fox beneath moonlit pines, detailed photographic rendering, soft natural light, "
         "shallow depth of field, high detail"
     )
-    assert fake_state.ollama_calls[-1]["think"] is False
+    assert fake_state.ollama_calls[-1]["think"] == "default"
     container = app_client.app.state.container
     from app.models import PromptAssistantRun
 
@@ -1181,7 +1189,9 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
         "operation": "generate",
         "failure_kind": "http_status",
         "attempts": 1,
-        "thinking_enabled": False,
+        # Unchecked Thinking mode is reasoning at the model's default effort.
+        "thinking_enabled": True,
+        "thinking_effort": "default",
         "upstream_status": 400,
         "model": None,
         "status": 400,
@@ -1196,7 +1206,7 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
             "fallback": False,
             "reason": "most_capable_nsfw",
             "configuration_id": "fake-paired",
-            "thinking_effort": False,
+            "thinking_effort": "default",
         },
     }
     assert len(fake_state.ollama_calls) == 1
@@ -1233,7 +1243,8 @@ def test_prompt_assistant_records_a_rejected_generate_request_precisely(
         "service": "ollama",
         "operation": "generate",
         "assistant_mode": "refine",
-        "thinking_enabled": False,
+        "thinking_enabled": True,
+        "thinking_effort": "default",
         "attempt": 1,
         "max_attempts": 3,
         "failure_kind": "http_status",
@@ -1275,6 +1286,7 @@ def test_prompt_assistant_reports_exhausted_transient_generate_failures(
         "failure_kind": "http_status",
         "attempts": 3,
         "thinking_enabled": True,
+        "thinking_effort": "xhigh",
         "upstream_status": 503,
         "model": None,
         "status": 503,

@@ -17,6 +17,8 @@ from app.services.llm_router import (
     CLIENT_NAME_HEADER,
     FAIL,
     FALLBACK,
+    REASONING_DEFAULT,
+    REASONING_OFF,
     RETRY,
     STREAM_IDLE_SECONDS,
     UNAVAILABLE,
@@ -195,23 +197,53 @@ def test_error_code_reads_the_object_form_only() -> None:
 def test_thinking_effort_is_sent_only_when_the_model_lists_it() -> None:
     full = router_model("nighttime")
     assert supported_efforts(full) == {"default", "off", "low", "medium", "xhigh"}
+    # The value sent is the one the document publishes for the effort, never an effort name
+    # guessed at: this resident maps `off` to `none`, so `none` is what goes on the wire.
     assert thinking_value(full, "xhigh") == "xhigh"
     assert thinking_value(full, "max") == "xhigh"  # alias
-    assert thinking_value(full, False) is False
+    assert thinking_value(full, REASONING_DEFAULT) == "default"
+    assert thinking_value(full, True) == "default"  # a bare true is the document's default effort
+    assert thinking_value(full, REASONING_OFF) == "none"
+    assert thinking_value(full, False) == "none"
     no_xhigh = router_model("daytime", efforts={"default": "default", "low": "low", "medium": "m"})
-    assert thinking_value(no_xhigh, "xhigh") == "medium"  # the closest listed effort
+    # The closest listed effort, resolved to the value that model publishes for it.
+    assert thinking_value(no_xhigh, "xhigh") == "m"
     only_low = router_model("daytime", efforts=["default", "low"])
     assert thinking_value(only_low, "xhigh") == "low"
     only_default = router_model("daytime", efforts={"default": "default", "off": "none"})
     assert thinking_value(only_default, "xhigh") is True
+    assert thinking_value(only_default, REASONING_DEFAULT) == "default"
     no_thinking = router_model("daytime", thinking=False)
     assert thinking_value(no_thinking, "xhigh") is False
     assert thinking_value(no_thinking, True) is False
+    assert thinking_value(no_thinking, REASONING_DEFAULT) is False
     # Without model facts only the router's default effort is requested, never an unlisted one.
     assert thinking_value(None, "xhigh") is True
+    assert thinking_value(None, REASONING_DEFAULT) is True
+    assert thinking_value(None, REASONING_OFF) is False
     unpublished = router_model("daytime")
     del unpublished["metadata"]["reasoning"]
     assert thinking_value(unpublished, "xhigh") is True
+    # A model that publishes no value for its off effort still gets the portable boolean.
+    no_off = router_model("daytime", efforts={"default": "default", "xhigh": "xhigh"})
+    assert thinking_value(no_off, REASONING_OFF) is False
+
+
+def test_effort_resolution_reads_the_document_and_never_a_model_name() -> None:
+    """Nothing about an effort is inferred from a service or model name."""
+
+    renamed = router_model(
+        "nighttime",
+        efforts={"default": "the-usual", "off": "asleep", "xhigh": "very-hard-indeed"},
+    )
+    assert thinking_value(renamed, "xhigh") == "very-hard-indeed"
+    assert thinking_value(renamed, REASONING_DEFAULT) == "the-usual"
+    assert thinking_value(renamed, REASONING_OFF) == "asleep"
+    # The document's own aliases are honoured next to the contract's.
+    aliased = router_model("nighttime", efforts={"default": "default", "high": "xhigh"})
+    aliased["metadata"]["reasoning"]["aliases"] = {"high": "xhigh", "ultimate": "xhigh"}
+    assert thinking_value(aliased, "ultimate") == "xhigh"
+    assert thinking_value(aliased, "high") == "xhigh"
 
 
 # ---------- the subscriber (RouterWatch) ----------

@@ -13,17 +13,26 @@ from app.errors import AppError
 from app.main import JsonFormatter
 from app.services.ollama import (
     OUTPUT_TOKEN_BUDGETS,
+    RECOVERY_EFFORT,
     REFINE_RETRY_FEEDBACK,
     THINKING_EFFORT,
+    UNCHECKED_EFFORT,
     OllamaAdapter,
+    _allowance_ladder,
     _create_excluded_prompts,
     _extract_prompt,
     _generate_payload,
     _has_thinking_output,
     _instruction,
     _is_direction_echo,
+    requested_effort,
 )
-from tests.router_fixtures import CAPABILITIES_PATH, capabilities_response
+from tests.router_fixtures import (
+    CAPABILITIES_PATH,
+    RECOVERY_EFFORT_WIRE,
+    UNCHECKED_EFFORT_WIRE,
+    capabilities_response,
+)
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -138,14 +147,43 @@ def test_refine_correction_is_appended_only_when_supplied() -> None:
     )
 
 
-def test_thinking_can_be_disabled_per_request() -> None:
-    payload = _generate_payload(
+def test_thinking_mode_selects_an_effort_and_never_switches_reasoning_off() -> None:
+    """The Creative Direction checkbox chooses how much the model reasons, not whether."""
+
+    checked = _generate_payload(
+        mode="refine", instruction="refine this", effort=requested_effort(True)
+    )
+    unchecked = _generate_payload(
+        mode="refine", instruction="refine this", effort=requested_effort(False)
+    )
+    recovery = _generate_payload(mode="refine", instruction="refine this", effort=RECOVERY_EFFORT)
+
+    assert requested_effort(True) == THINKING_EFFORT == "xhigh"
+    assert requested_effort(False) == UNCHECKED_EFFORT == "default"
+    assert checked["think"] == THINKING_EFFORT
+    # Unchecked is the model's default effort, never the absence of reasoning: only the
+    # application's own recovery steps ask for that.
+    assert unchecked["think"] == UNCHECKED_EFFORT
+    assert unchecked["think"] != RECOVERY_EFFORT
+    assert recovery["think"] == RECOVERY_EFFORT
+
+
+def test_allowance_ladder_starts_where_the_instruction_needs_it() -> None:
+    """A short instruction keeps the cheap ladder; a production one needs the ceiling."""
+
+    short = _instruction(mode="refine", prompt="a portrait", direction="warmer light")
+    long_instruction = _instruction(
         mode="refine",
-        instruction="refine this",
-        think=False,
+        prompt="a portrait " * 60,
+        direction="Keep the subject's face consistent. " * 300,
     )
 
-    assert payload["think"] is False
+    assert _allowance_ladder(short, THINKING_EFFORT) == OUTPUT_TOKEN_BUDGETS
+    # The production instruction measured 20,180 generated tokens of trace on 2026-11-24, so a
+    # ladder for it starts at the ceiling instead of burning four allowances that must overflow.
+    assert _allowance_ladder(long_instruction, THINKING_EFFORT) == (OUTPUT_TOKEN_BUDGETS[-1],)
+    # A recovery attempt needs room for the answer only, never the ladder.
+    assert _allowance_ladder(long_instruction, RECOVERY_EFFORT) == (OUTPUT_TOKEN_BUDGETS[0],)
 
 
 def test_response_only_structured_output_is_accepted_with_a_capability_warning(
@@ -505,7 +543,7 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
             return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
-            if payloads[-1]["think"] is False:
+            if payloads[-1]["think"] == RECOVERY_EFFORT_WIRE:
                 # The no-thinking fallback still fits the shared allowance.
                 return httpx.Response(
                     200,
@@ -593,7 +631,7 @@ def test_repeated_length_exhaustion_is_bounded_and_privacy_safe(
     ]
     assert [payload["think"] for payload in payloads] == [THINKING_EFFORT] * len(
         OUTPUT_TOKEN_BUDGETS
-    ) + [False]
+    ) + [RECOVERY_EFFORT_WIRE]
     # The fallback reuses the candidate's seed and temperature.
     assert payloads[-1]["options"]["seed"] == payloads[0]["options"]["seed"]
     assert payloads[-1]["options"]["temperature"] == payloads[0]["options"]["temperature"]
@@ -610,7 +648,7 @@ def test_thinking_overflow_falls_back_to_no_thinking_on_first_candidate(
             return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
-            if payloads[-1]["think"] is False:
+            if payloads[-1]["think"] == RECOVERY_EFFORT_WIRE:
                 return httpx.Response(
                     200,
                     json={
@@ -667,7 +705,7 @@ def test_thinking_overflow_falls_back_to_no_thinking_on_first_candidate(
     ]
     assert [payload["think"] for payload in payloads] == [THINKING_EFFORT] * len(
         OUTPUT_TOKEN_BUDGETS
-    ) + [False]
+    ) + [RECOVERY_EFFORT_WIRE]
     # No candidate was skipped: every attempt kept candidate 1's seed,
     # temperature, and instruction.
     assert all(payload["options"]["seed"] == 90210 for payload in payloads)
@@ -676,6 +714,20 @@ def test_thinking_overflow_falls_back_to_no_thinking_on_first_candidate(
         payload["messages"][0]["content"] == payloads[0]["messages"][0]["content"]
         for payload in payloads
     )
+
+
+def _attempts_by_candidate(
+    payloads: list[dict[str, object]],
+) -> list[tuple[object, list[dict[str, object]]]]:
+    """The requests grouped by the candidate (seed) that sent them, in order."""
+
+    groups: list[tuple[object, list[dict[str, object]]]] = []
+    for payload in payloads:
+        seed = payload["options"]["seed"]  # type: ignore[index]
+        if not groups or groups[-1][0] != seed:
+            groups.append((seed, []))
+        groups[-1][1].append(payload)
+    return groups
 
 
 def test_budget_exhaustion_advances_candidates_before_raising(
@@ -757,11 +809,12 @@ def test_budget_exhaustion_advances_candidates_before_raising(
         *OUTPUT_TOKEN_BUDGETS,
         OUTPUT_TOKEN_BUDGETS[0],
     ] * 3
+    attempts = len(OUTPUT_TOKEN_BUDGETS) + 1
     assert [payload["options"]["seed"] for payload in payloads] == (
-        [700] * 4 + [701] * 4 + [702] * 4
+        [700] * attempts + [701] * attempts + [702] * attempts
     )
     assert [payload["options"]["temperature"] for payload in payloads] == (
-        [0.1] * 4 + [0.7] * 4 + [1.0] * 4
+        [0.1] * attempts + [0.7] * attempts + [1.0] * attempts
     )
     # Budget exhaustion is not a distinctness rejection, so no correction is added.
     assert all(
@@ -782,7 +835,7 @@ def test_no_thinking_fallback_prompt_still_passes_distinctness_validation(
             return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
-            if payloads[-1]["think"] is False:
+            if payloads[-1]["think"] == RECOVERY_EFFORT_WIRE:
                 # Candidate 1's fallback echoes the direction; candidate 2's
                 # fallback expands it.
                 candidate = direction if payloads[-1]["options"]["seed"] == 700 else expansion
@@ -835,11 +888,12 @@ def test_no_thinking_fallback_prompt_still_passes_distinctness_validation(
     asyncio.run(scenario())
 
     assert len(payloads) == 2 * (len(OUTPUT_TOKEN_BUDGETS) + 1)
-    assert [payload["options"]["seed"] for payload in payloads] == [
-        700,
-    ] * 4 + [701] * 4
+    attempts = len(OUTPUT_TOKEN_BUDGETS) + 1
+    assert [payload["options"]["seed"] for payload in payloads] == (
+        [700] * attempts + [701] * attempts
+    )
     assert [payload["think"] for payload in payloads] == (
-        [THINKING_EFFORT] * len(OUTPUT_TOKEN_BUDGETS) + [False]
+        [THINKING_EFFORT] * len(OUTPUT_TOKEN_BUDGETS) + [RECOVERY_EFFORT_WIRE]
     ) * 2
 
 
@@ -853,7 +907,7 @@ def test_no_thinking_fallback_unchanged_refine_advances_to_next_candidate(
             return capabilities_response(request)
         if request.url.path == "/api/chat":
             payloads.append(json.loads(request.content))
-            if payloads[-1]["think"] is False:
+            if payloads[-1]["think"] == RECOVERY_EFFORT_WIRE:
                 # Candidate 1's fallback is a case-insensitive unchanged repeat;
                 # candidate 2's fallback actually refines the prompt.
                 candidate = (
@@ -906,18 +960,28 @@ def test_no_thinking_fallback_unchanged_refine_advances_to_next_candidate(
 
     asyncio.run(scenario())
 
-    assert len(payloads) == 2 * (len(OUTPUT_TOKEN_BUDGETS) + 1)
-    assert [payload["options"]["seed"] for payload in payloads] == [
-        500,
-    ] * 4 + [501] * 4
-    assert [payload["think"] for payload in payloads] == (
-        [THINKING_EFFORT] * len(OUTPUT_TOKEN_BUDGETS) + [False]
-    ) * 2
+    groups = _attempts_by_candidate(payloads)
+    assert [seed for seed, _ in groups] == [500, 501]
+    for _, attempts in groups:
+        # Every rung keeps the requested effort; only the last one is the recovery effort.
+        assert [attempt["think"] for attempt in attempts] == (
+            [THINKING_EFFORT] * (len(attempts) - 1) + [RECOVERY_EFFORT_WIRE]
+        )
+        allowances = [attempt["options"]["num_predict"] for attempt in attempts]
+        assert allowances[-1] == OUTPUT_TOKEN_BUDGETS[0]
+        assert allowances[:-1] == sorted(set(allowances[:-1]))
+    first, second = (attempts for _, attempts in groups)
+    # The second candidate's instruction carries the "your previous answer repeated the prompt"
+    # correction, so its sized allowance ladder starts higher: it is a suffix of the first
+    # candidate's, and both end in the same recovery allowance.
+    first_allowances = [attempt["options"]["num_predict"] for attempt in first]
+    second_allowances = [attempt["options"]["num_predict"] for attempt in second]
+    assert second_allowances == first_allowances[len(first_allowances) - len(second_allowances) :]
 
 
-def test_disabled_thinking_exhaustion_advances_candidates_without_fallback(
-    tmp_path: Path,
-) -> None:
+def test_unchecked_thinking_exhaustion_names_the_effort_that_ran_out(tmp_path: Path) -> None:
+    """Unchecked is the model's default effort, so it escalates and recovers like any effort."""
+
     payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -957,17 +1021,26 @@ def test_disabled_thinking_exhaustion_advances_candidates_without_fallback(
         error = raised.value
         assert error.code == "ollama_output_budget_exhausted"
         assert error.status_code == 503
-        assert error.details["attempted_no_thinking_fallback"] is False
-        assert error.details["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS)
-        assert error.details["output_budgets"] == list(OUTPUT_TOKEN_BUDGETS)
+        # The message says which effort ran out, how long it was given, and what to do about it.
+        assert "default effort" in error.message
+        assert "Untick Thinking mode" in error.message
+        assert error.details["thinking_effort"] == "default"
+        assert error.details["thinking_enabled"] is True
+        assert error.details["attempted_no_thinking_fallback"] is True
+        assert error.details["output_budget_attempts"] == len(OUTPUT_TOKEN_BUDGETS) + 1
+        assert error.details["output_budgets"] == [*OUTPUT_TOKEN_BUDGETS, OUTPUT_TOKEN_BUDGETS[0]]
         assert len(error.details["candidate_budget_diagnostics"]) == 3
 
     asyncio.run(scenario())
 
-    assert len(payloads) == 3 * len(OUTPUT_TOKEN_BUDGETS)
-    assert [payload["think"] for payload in payloads] == [False] * len(payloads)
+    attempts = len(OUTPUT_TOKEN_BUDGETS) + 1
+    assert len(payloads) == 3 * attempts
+    # The default effort across the ladder, then the recovery effort once.
+    assert [payload["think"] for payload in payloads] == (
+        [UNCHECKED_EFFORT_WIRE] * len(OUTPUT_TOKEN_BUDGETS) + [RECOVERY_EFFORT_WIRE]
+    ) * 3
     assert [payload["options"]["seed"] for payload in payloads] == (
-        [400] * 3 + [401] * 3 + [402] * 3
+        [400] * attempts + [401] * attempts + [402] * attempts
     )
 
 
@@ -1024,6 +1097,7 @@ def test_malformed_or_empty_structured_output_is_rejected_with_safe_diagnostics(
             "validation_stage": "structured_prompt",
             "output_budget": OUTPUT_TOKEN_BUDGETS[0],
             "output_budget_attempt": 1,
+            "thinking_effort": THINKING_EFFORT,
             "output_budget_attempts": 1,
             "output_budgets": [OUTPUT_TOKEN_BUDGETS[0]],
         }
@@ -1299,6 +1373,7 @@ def test_create_retries_a_direction_echo_and_returns_the_expansion(
     assert formatted["operation"] == "generate"
     assert formatted["assistant_mode"] == "create"
     assert formatted["thinking_enabled"] is True
+    assert formatted["thinking_effort"] == "xhigh"
     assert formatted["candidate_attempt"] == 1
     assert formatted["max_candidate_attempts"] == 3
     assert formatted["rejection_reason"] == "direction_echo"
@@ -1585,7 +1660,10 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
                 "operation": "generate",
                 "failure_kind": "invalid_json",
                 "attempts": 3,
-                "thinking_enabled": False,
+                # An unchecked Thinking mode is reasoning at the model's default effort, so the
+                # run record says "default" and never the "false" that meant "no reasoning".
+                "thinking_enabled": True,
+                "thinking_effort": "default",
                 "upstream_status": 200,
                 "model": None,
                 "status": 200,
@@ -1600,7 +1678,7 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
                     "fallback": False,
                     "reason": "most_capable_nsfw",
                     "configuration_id": "fake-paired",
-                    "thinking_effort": False,
+                    "thinking_effort": "default",
                 },
             }
         finally:
@@ -1609,3 +1687,61 @@ def test_malformed_generate_json_is_retried_and_classified(tmp_path: Path) -> No
     asyncio.run(scenario())
     assert generate_calls == 3
     assert retry_delays == [0.25, 0.5]
+
+
+def test_the_allowance_ladder_stops_at_its_wall_clock_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Minutes of overflow at ever-larger allowances stop, they do not double.
+
+    The router publishes no output ceiling of its own and its reasoning budget is uncapped, so
+    the only honest bound on how long one composition may escalate is time.
+    """
+
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == CAPABILITIES_PATH:
+            return capabilities_response(request)
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "thinking-model",
+                "response": "",
+                "thinking": "a trace that never reaches the end of the prompt",
+                "done": True,
+                "done_reason": "length",
+                "eval_count": payloads[-1]["options"]["num_predict"],
+            },
+        )
+
+    monkeypatch.setattr("app.services.ollama.OUTPUT_BUDGET_WALL_CLOCK_SECONDS", 0.0)
+
+    async def scenario() -> AppError:
+        adapter = OllamaAdapter(_settings(tmp_path), transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(AppError) as raised:
+                await adapter.compose(
+                    mode="refine",
+                    prompt="a portrait",
+                    direction="warm light",
+                )
+        finally:
+            await adapter.close()
+        return raised.value
+
+    error = asyncio.run(scenario())
+
+    assert error.code == "ollama_output_budget_exhausted"
+    assert error.details["wall_clock_exhausted"] is True
+    # One allowance was sent; the next rung was reached and deliberately not sent.
+    assert error.details["output_budgets"] == [OUTPUT_TOKEN_BUDGETS[0]]
+    assert len(payloads) == 1
+    stopped = error.details["candidate_budget_diagnostics"][0]["output_budget_attempt_diagnostics"][
+        -1
+    ]
+    assert stopped["validation_stage"] == "wall_clock_exhausted"
+    assert stopped["thinking_effort"] == THINKING_EFFORT
+    assert stopped["output_budget_stopped_before"] == OUTPUT_TOKEN_BUDGETS[1]
+    assert "Untick Thinking mode" in error.message

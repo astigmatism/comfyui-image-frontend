@@ -141,6 +141,7 @@ async def compose_prompt(
         fallback=result.fallback,
         selection_reason=result.selection_reason,
         pinned_service=result.pinned_service,
+        notice=result.notice,
     )
 
 

@@ -18,15 +18,24 @@ from app.domain.expectations import (
     parse_expectations,
     score_results,
     validate_evaluation,
+    vision_instruction,
 )
+from app.domain.prompt_instructions import DEFAULT_VISION_CHECK_INSTRUCTIONS
 from app.errors import AppError
 from app.schemas import ExpectationCheckCreate, SharedSettings
 from app.services.expectation_checks import encode_for_vision
-from app.services.ollama import OllamaAdapter
+from app.services.ollama import (
+    OUTPUT_TOKEN_BUDGETS,
+    THINKING_EFFORT,
+    OllamaAdapter,
+    _allowance_ladder,
+)
 from PIL import Image
 from pydantic import ValidationError
 from tests.router_fixtures import (
     CAPABILITIES_PATH,
+    CHECKED_EFFORT_WIRE,
+    RECOVERY_EFFORT_WIRE,
     capabilities_response,
     paired_document,
     router_document,
@@ -232,7 +241,10 @@ async def test_evaluate_image_sends_inline_image_schema_and_never_the_prompt(thi
     assert "1. The keeper wears a red raincoat\n2. A lit lighthouse beam" in message["content"]
     assert payload["format"] == evaluation_schema(2)
     assert payload["model"] == "nighttime"
-    assert payload["think"] == ("xhigh" if think else False)
+    # Checked asks for the extra-high effort. An image check is not the Creative Direction
+    # checkbox: unchecked asks for the application's no-reasoning effort, because a bounded score
+    # sheet inside a compose-generate-score loop must not spend minutes of reasoning per score.
+    assert payload["think"] == (CHECKED_EFFORT_WIRE if think else RECOVERY_EFFORT_WIRE)
     assert payload["options"]["temperature"] == 0.1
     assert payload["options"]["seed"] == payload["seed"] == 41
     assert "looked carefully" not in json.dumps(result.diagnostics)
@@ -264,7 +276,22 @@ async def test_evaluate_image_escalates_budget_redraws_invalid_sheets_and_reads_
     finally:
         await adapter.close()
     assert result.evaluation.passed is True
-    assert [call["options"]["num_predict"] for call in calls] == [2048, 4096, 2048]
+    # The ladder is sized from the instruction, so it starts at the rung this request computes
+    # for itself; the redraw for the second candidate starts it over from the same rung.
+    ladder = _allowance_ladder(
+        vision_instruction(DEFAULT_VISION_CHECK_INSTRUCTIONS, EXPECTATIONS), THINKING_EFFORT
+    )
+    assert [call["options"]["num_predict"] for call in calls] == [
+        ladder[0],
+        ladder[1],
+        ladder[0],
+    ]
+    assert ladder[0] != OUTPUT_TOKEN_BUDGETS[0], "the sized start must not be the smallest rung"
+    assert [call["think"] for call in calls] == [
+        CHECKED_EFFORT_WIRE,
+        CHECKED_EFFORT_WIRE,
+        CHECKED_EFFORT_WIRE,
+    ]
     # The structurally invalid sheet (one score for two expectations) redraws with a new seed.
     assert [call["seed"] for call in calls] == [41, 41, 42]
     attempts = result.diagnostics["attempts"]

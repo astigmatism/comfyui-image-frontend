@@ -667,6 +667,23 @@ class FakeServiceState:
         self.running_prompt_ids.discard(prompt_id)
 
 
+def _reasoning_requested(payload: dict[str, Any]) -> bool:
+    """Whether a chat request asks the model to reason, in any spelling a client may send.
+
+    Thinking is requested by *effort*, and the router forwards the value the serving model
+    publishes for that effort, so the no-reasoning effort reaches a model as `"none"` in these
+    fixtures (`tests/router_fixtures.py` publishes `off: "none"`), with the portable `False` and
+    `"off"` as the other spellings. An omitted `think` is the model's default effort, which reasons.
+    """
+
+    think = payload.get("think")
+    if think is None or think is True:
+        return True
+    if think is False:
+        return False
+    return isinstance(think, str) and think.lower() not in {"off", "none"}
+
+
 def create_fake_services_app(state: FakeServiceState) -> FastAPI:
     app = FastAPI(title="Deterministic fake ComfyUI and Ollama")
 
@@ -1129,9 +1146,9 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 "done": True,
                 "done_reason": "stop",
             }
-        if state.ollama_thinking_overflows and payload.get("think") is not False:
-            # Thinking responses outgrow every token allowance; the
-            # no-thinking pass still completes within the base allowance.
+        if state.ollama_thinking_overflows and _reasoning_requested(payload):
+            # A reasoning effort outgrows every token allowance; the application's
+            # no-reasoning recovery still completes within the base allowance.
             effective_model = state.ollama_effective_model or canonical
             return {
                 "model": str(effective_model or ""),
@@ -1178,7 +1195,7 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
         effective_model = state.ollama_effective_model or canonical
         response_text = json.dumps({"prompt": composed})
         thinking_text = ""
-        if state.ollama_include_thinking and payload.get("think") is not False:
+        if state.ollama_include_thinking and _reasoning_requested(payload):
             thinking_text = (
                 response_text
                 if state.ollama_response_in_thinking

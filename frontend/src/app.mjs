@@ -4530,6 +4530,25 @@ function syncPromptAssistantError() {
   else thinkingMode?.removeAttribute("aria-describedby");
 }
 
+// The assistant answers with a plain notice when it had to give up what was asked for — today
+// that a requested reasoning effort could not finish and the prompt was recovered without it.
+// It is a recovery and not a failure, so it is a status the user reads, never an alert.
+function setPromptAssistantNotice(message) {
+  const region = document.querySelector("#prompt-assistant-notice");
+  if (!region) return;
+  const text = message || "";
+  region.textContent = text;
+  region.hidden = !text;
+}
+
+function setPromptEditorAssistantNotice(dialog, message) {
+  const region = dialog?.querySelector("#prompt-editor-assistant-notice");
+  if (!region) return;
+  const text = message || "";
+  region.textContent = text;
+  region.hidden = !text;
+}
+
 function setPromptEditorAssistantError(dialog, message) {
   const region = dialog?.querySelector("#prompt-editor-assistant-error");
   if (!region) return;
@@ -5364,6 +5383,7 @@ async function composePrompt(
   const requestInstructions = promptInstructionsForMode(state.promptAssistant);
   promptCompositionRequests += 1;
   setPromptAssistantError(null);
+  setPromptAssistantNotice(null);
   syncPromptAssistantAction();
   setPromptDirectionSignal("composing");
   const requestSignal = state.promptDirectionSignal;
@@ -5403,6 +5423,7 @@ async function composePrompt(
     setPromptDirectionSignal("applied", result.prompt);
     syncParameterValidation(promptInput.id);
     prompt?.focus();
+    setPromptAssistantNotice(result.notice);
     toast(compositionAppliedMessage(result), "success");
     return true;
   } catch (error) {
@@ -5640,6 +5661,7 @@ async function composePromptEditor(button) {
   button.disabled = true;
   button.textContent = "Applying…";
   setPromptEditorAssistantError(dialog, null);
+  setPromptEditorAssistantNotice(dialog, null);
   setPromptEditorDirectionSignal("composing");
   let directionOutcome = "idle";
   let directionAppliedValue = null;
@@ -5677,6 +5699,7 @@ async function composePromptEditor(button) {
     directionAppliedValue = result.prompt;
     dialog.dataset.promptAssistantCompositionId = result.composition_id;
     dialog.dataset.promptAssistantModel = result.model;
+    setPromptEditorAssistantNotice(dialog, result.notice);
     editor.focus();
     toast("Creative direction applied in the focused editor. Apply to keep it.", "success");
   } catch (error) {

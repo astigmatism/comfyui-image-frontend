@@ -19,11 +19,15 @@ import pytest
 from app.config import Settings
 from app.errors import AppError
 from app.services.llm_router import CLIENT_NAME
-from app.services.ollama import OllamaAdapter
+from app.services.ollama import OUTPUT_TOKEN_BUDGETS, THINKING_EFFORT, OllamaAdapter
 from tests.router_fixtures import (
     CAPABILITIES_PATH,
     DAYTIME_PAIRED_ID,
+    RECOVERY_EFFORT_WIRE,
     capabilities_response,
+    incomplete_rejection,
+    over_length_answer,
+    over_length_rejection,
     paired_document,
     router_document,
     router_error,
@@ -786,9 +790,13 @@ async def test_the_nsfw_model_is_not_second_guessed_for_refusal_wording() -> Non
     ("efforts", "think", "expected"),
     [
         (None, True, "xhigh"),
+        # Unchecked is the model's default effort, sent as the value the document publishes for
+        # it — never the bare false, which is the router's "no reasoning at all".
+        (None, False, "default"),
+        ({"default": "default", "off": "none"}, False, "default"),
+        ({"off": "none", "xhigh": "xhigh"}, False, True),
         ({"default": "default", "low": "low", "medium": "medium"}, True, "medium"),
         ({"default": "default", "off": "none"}, True, True),
-        (None, False, False),
     ],
 )
 async def test_thinking_effort_is_checked_against_the_chosen_model(
@@ -929,3 +937,118 @@ def test_the_contract_is_vendored_verbatim_with_a_conformance_map_and_agent_rule
     agents = (root / "AGENTS.md").read_text(encoding="utf-8")
     assert "must uphold [`docs/llm-router-contract.md`]" in agents
     assert "Never edit the vendored contract text" in agents
+
+
+# ---------- output allowance escalation (docs/llm-router-contract.md §9, §10) ----------
+
+
+async def test_an_over_length_rejection_escalates_the_allowance_and_never_repeats_it() -> None:
+    """The resident rejects an over-length answer; escalating the allowance is the only fix.
+
+    This is the failure production hit on 2026-11-24: the same request was re-sent at the same
+    allowance three times, so three minutes bought the same rejection three times.
+    """
+
+    router = Router(router_document([router_model("nighttime", nsfw=True)]))
+    router.responses = [lambda _: over_length_rejection()] * len(OUTPUT_TOKEN_BUDGETS) + [
+        lambda _: _ok(content='{"prompt":"a moonlit lake at four in the morning"}')
+    ]
+    adapter, retry_waits, _ = _adapter(router)
+    try:
+        result = await _compose(adapter)
+    finally:
+        await adapter.close()
+
+    # One request per allowance, in increasing order, then the recovery effort at the base.
+    assert [call["options"]["num_predict"] for call in router.chat] == [
+        *OUTPUT_TOKEN_BUDGETS,
+        OUTPUT_TOKEN_BUDGETS[0],
+    ]
+    assert [call["think"] for call in router.chat] == (
+        [THINKING_EFFORT] * len(OUTPUT_TOKEN_BUDGETS) + [RECOVERY_EFFORT_WIRE]
+    )
+    # No two requests are identical: a rejected payload is never re-sent unchanged.
+    signatures = [
+        (call["think"], call["options"]["num_predict"], call["messages"][0]["content"])
+        for call in router.chat
+    ]
+    assert len(set(signatures)) == len(signatures)
+    # And no transport retry: the rejection is deterministic, so waiting changes nothing.
+    assert retry_waits == []
+    assert result.prompt == "a moonlit lake at four in the morning"
+    assert result.raw_response["used_no_thinking_fallback"] is True
+    assert result.notice is not None and "without reasoning" in result.notice
+    assert result.raw_response["output_budgets"] == [
+        *OUTPUT_TOKEN_BUDGETS,
+        OUTPUT_TOKEN_BUDGETS[0],
+    ]
+    rejected = result.raw_response["output_budget_attempt_diagnostics"][0]
+    assert rejected["upstream_rejection_code"] == "UPSTREAM_REQUEST_FAILED"
+
+
+async def test_an_incomplete_answer_without_length_evidence_stays_transient() -> None:
+    """`x_router.status: incomplete` marks every incomplete answer, so it is not over-length."""
+
+    router = Router(router_document([router_model("nighttime", nsfw=True)]))
+    router.responses = [lambda _: incomplete_rejection()] * 3
+    adapter, retry_waits, _ = _adapter(router)
+    try:
+        with pytest.raises(AppError) as raised:
+            await _compose(adapter)
+    finally:
+        await adapter.close()
+
+    assert raised.value.code == "ollama_generate_unavailable"
+    # A transient fault keeps the bounded retry it already had, at a fixed allowance.
+    assert len(router.chat) == 3
+    assert {call["options"]["num_predict"] for call in router.chat} == {OUTPUT_TOKEN_BUDGETS[0]}
+    assert retry_waits
+
+
+async def test_a_model_that_publishes_no_effort_list_still_composes() -> None:
+    """A model that only says reasoning is supported gets the portable boolean."""
+
+    for published in ({"supported": True}, {"supported": True, "efforts": {}}):
+        model = router_model("nighttime", nsfw=True)
+        model["metadata"]["reasoning"] = published
+        router = Router(router_document([model]))
+        adapter, _, _ = _adapter(router)
+        try:
+            result = await _compose(adapter)
+            unchecked = await _compose(adapter, think=False)
+        finally:
+            await adapter.close()
+        assert router.chat[0]["think"] is True, published
+        assert router.chat[1]["think"] is True, published
+        assert result.prompt and unchecked.prompt
+
+
+async def test_the_run_record_names_the_effective_effort_and_every_allowance_tried() -> None:
+    """What lands in `prompt_assistant_runs.raw_response_json` after an escalation."""
+
+    router = Router(router_document([router_model("nighttime", nsfw=True)]))
+    router.responses = [
+        over_length_answer(),
+        over_length_answer(),
+        _ok(content='{"prompt":"a moonlit lake under a low moon"}'),
+    ]
+    adapter, _, _ = _adapter(router)
+    try:
+        result = await _compose(adapter, think=False)
+    finally:
+        await adapter.close()
+
+    record = result.raw_response
+    # The effective effort is the default one — recorded as "default", never as the `false` that
+    # used to mean "reasoning was switched off".
+    assert record["router"]["thinking_effort"] == "default"
+    assert json.dumps(record)
+    assert record["output_budgets"] == [
+        OUTPUT_TOKEN_BUDGETS[0],
+        OUTPUT_TOKEN_BUDGETS[1],
+        OUTPUT_TOKEN_BUDGETS[2],
+    ]
+    assert record["output_budget_attempts"] == 3
+    assert record["selected_output_budget"] == OUTPUT_TOKEN_BUDGETS[2]
+    assert record["output_budget_attempt_diagnostics"][0]["thinking_effort"] == "default"
+    assert record["output_budget_attempt_diagnostics"][0]["done_reason"] == "length"

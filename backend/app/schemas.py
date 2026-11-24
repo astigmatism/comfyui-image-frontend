@@ -1077,6 +1077,9 @@ class PromptComposeResponse(APIModel):
     # answered instead of it while the chosen one could not.
     selection_reason: str | None = None
     pinned_service: str | None = None
+    # A plain sentence when the prompt did not arrive the way it was asked for — today that the
+    # requested reasoning effort could not finish and the prompt was recovered without reasoning.
+    notice: str | None = None
 
 
 EXPECTATION_CHECK_MAX_ITEMS = 256

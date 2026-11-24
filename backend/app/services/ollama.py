@@ -36,6 +36,8 @@ from .llm_router import (
     PIN_OFFLINE,
     PIN_OK,
     PIN_UNSUPPORTED,
+    REASONING_DEFAULT,
+    REASONING_OFF,
     RETRY,
     UNAVAILABLE,
     WAIT,
@@ -81,13 +83,47 @@ RETRYABLE_GENERATE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 # for at least Settings.ollama_router_wait_seconds (ten minutes), then choose the model again.
 ROUTER_WAIT_INITIAL_SECONDS = 2.0
 ROUTER_WAIT_MAX_SECONDS = 30.0
-# The effort requested when thinking is enabled. It is sent only to a model that lists it in
-# metadata.reasoning.efforts; otherwise the closest listed effort, or true, is sent instead.
+# The reasoning effort the Creative Direction panel's Thinking mode checkbox asks for when it is
+# **checked**. It is sent only to a model that lists it in metadata.reasoning.efforts; otherwise
+# the closest listed effort, or true, is sent instead (llm_router.thinking_value).
 THINKING_EFFORT = "xhigh"
+# The effort it asks for when it is **unchecked**: the model's own default reasoning effort, not
+# "no reasoning". A user who leaves the box unticked has expressed no opinion about reasoning, so
+# they get whatever the served model gives by default; only the application's own recovery steps
+# below switch reasoning off. The checkbox has never been an on/off switch for reasoning, and
+# sending False for it asked for something the user never chose (docs/llm-router-contract.md,
+# "Thinking mode is an effort choice").
+UNCHECKED_EFFORT = REASONING_DEFAULT
+# The effort of the application's deliberate no-thinking recovery steps: the composition ladder's
+# final fallback and the vision scorer's redraws. These are internal recovery, not a user choice,
+# and they are the only requests that resolve to a genuine "no reasoning".
+RECOVERY_EFFORT = REASONING_OFF
 # Ollama's generated-token allowance is shared by thinking and final output. Creative prompt
 # composition therefore starts with enough room for reasoning and escalates deterministically if
-# the upstream response reports that it exhausted the allowance before completing the schema.
-OUTPUT_TOKEN_BUDGETS = (2_048, 4_096, 8_192)
+# the upstream answer reports that it exhausted the allowance before completing the schema.
+#
+# The ceiling comes from measurement on the live router (2026-11-24): with a realistic
+# ~9,800-character instruction the default effort spent 20,180 generated tokens and xhigh 16,818
+# before emitting the constrained object, so nothing below 32,768 can serve that request at any
+# effort, and the router's output_limit_policy "reject" answers an over-length structured output
+# with an HTTP 502 instead of a truncated success.
+OUTPUT_TOKEN_BUDGETS = (2_048, 4_096, 8_192, 16_384, 32_768)
+# Estimated input tokens per allowance token to start a thinking ladder with. Measured traces ran
+# 4.5-6.8 estimated input tokens per rung on 2026-11-24 (a 9,819-character instruction needed
+# 32,768), and the estimate is deliberately generous because a rung that is too small burns its
+# whole allowance before failing: starting one rung high costs nothing on a request that would
+# have completed anyway, starting one rung low costs the full failing allowance.
+REASONING_ALLOWANCE_MULTIPLIER = 10
+# Wall-clock ceiling for one composition's allowance escalation, counted across every candidate
+# and rung rather than per request (the socket timeout is far longer, at 900 s read). Measured on
+# 2026-11-24 a completing composition costs 159-166 s at 32,768 tokens, and a rung that overflows
+# costs allowance ÷ ~120 tokens/s, so this bounds a request at "one full ladder at the ceiling,
+# plus the no-thinking fallback" instead of letting three candidates stack up a quarter of an
+# hour of router time on one user click.
+OUTPUT_BUDGET_WALL_CLOCK_SECONDS = 420.0
+# Fields an upstream answer can report a reached output limit in: the Ollama route's
+# ``done_reason``, and the router's ``finish_reason`` / ``x_router.stop_reason``.
+_LENGTH_FIELDS: tuple[str, ...] = ("done_reason", "finish_reason", "stop_reason")
 # Vision scoring is a judgement, not a creative draw: sample conservatively and redraw a
 # structurally invalid score sheet with the next seed.
 MAX_VISION_CANDIDATES = 3
@@ -187,6 +223,10 @@ class ComposeResult:
     # instead of it. ``pinned_service`` is set whenever the account had chosen one.
     selection_reason: str | None = None
     pinned_service: str | None = None
+    # A plain sentence for the user when what they asked for is not what they got: today only
+    # that the requested reasoning effort could not finish and the prompt was recovered without
+    # reasoning. None when the request was served as asked.
+    notice: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +250,12 @@ class GenerateResult:
     # The router marked the answer incomplete because it reached the requested output limit
     # (x_router.status "incomplete", done_reason "length"). It is never accepted as complete.
     incomplete: bool = False
+    # The effort this application asked for, kept next to the value actually sent so "xhigh was
+    # requested and medium was served" is visible in the diagnostics of a successful run.
+    requested_effort: str | None = None
+    # The router's error code when it rejected the request outright instead of answering, for the
+    # attempts this client escalates rather than retries (an over-length structured output).
+    rejection_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +290,36 @@ class _RouterWaitBudget:
     @property
     def exhausted(self) -> bool:
         return self.waited >= self.limit
+
+
+@dataclass
+class _OutputBudgetClock:
+    """Wall-clock ceiling for one request's allowance escalation, shared by its candidates.
+
+    Every rung of a thinking ladder costs the router real time — a rung that overflows costs its
+    whole allowance — and the composition candidates repeat the ladder, so without a ceiling one
+    user click can spend a quarter of an hour of a single-slot router. The clock spans the whole
+    request, so a candidate that starts after the ceiling is reached reports the exhaustion
+    instead of starting another multi-minute allowance.
+    """
+
+    limit: float = OUTPUT_BUDGET_WALL_CLOCK_SECONDS
+    monotonic: Callable[[], float] = time.monotonic
+    started: float = dataclass_field(default_factory=time.monotonic)
+    attempts: int = 0
+
+    def record_attempt(self) -> None:
+        self.attempts += 1
+
+    @property
+    def elapsed(self) -> float:
+        return max(0.0, self.monotonic() - self.started)
+
+    @property
+    def exhausted(self) -> bool:
+        # The first allowance of a request is always tried: the ceiling bounds *escalation*,
+        # never the attempt the user asked for.
+        return self.attempts >= 1 and self.elapsed >= self.limit
 
 
 class _ServiceSlots:
@@ -935,6 +1011,11 @@ class OllamaAdapter:
         # The model is chosen per request inside _generate, from the current capabilities
         # document; an unavailable router fails there before any generation is sent.
         started = time.monotonic()
+        # One user choice, resolved to an effort here and nowhere else: checked is the extra-high
+        # effort, unchecked is the model's default effort (see requested_effort).
+        effort = requested_effort(think)
+        budget_clock = _OutputBudgetClock(limit=OUTPUT_BUDGET_WALL_CLOCK_SECONDS)
+        budget_clock_exhausted = False
         response_diagnostics: list[dict[str, Any]] = []
         candidate_budget_failures: list[dict[str, Any]] = []
         excluded = (
@@ -971,20 +1052,28 @@ class OllamaAdapter:
             candidate, budget_failure = await self._compose_candidate(
                 mode=mode,
                 instruction=instruction,
-                think=think,
+                effort=effort,
                 attempt=attempt,
                 seed=candidate_seed + attempt,
                 chained=chained,
                 pinned_service=pinned_service,
+                budget_clock=budget_clock,
             )
             if candidate is None:
                 # The candidate produced no usable structured prompt after its
                 # bounded escalation (and, with thinking enabled, its no-thinking
                 # fallback). Budget exhaustion is recoverable: advance to the
-                # next candidate instead of terminating the composition.
+                # next candidate instead of terminating the composition, unless the
+                # whole request has already spent its wall-clock allowance.
                 if budget_failure is None:
                     raise RuntimeError("Ollama candidate failure returned no budget diagnostics")
                 candidate_budget_failures.append(budget_failure)
+                if budget_clock.exhausted:
+                    # Every rung this candidate tried cost the router its whole allowance.
+                    # Another candidate would repeat the ladder and spend minutes more on the
+                    # same answer, so report the exhaustion instead of trying again.
+                    budget_clock_exhausted = True
+                    break
                 continue
             final, selected_field, data, received_status = (
                 candidate.final,
@@ -1073,6 +1162,7 @@ class OllamaAdapter:
                         "operation": "generate",
                         "assistant_mode": mode,
                         "thinking_enabled": think,
+                        "thinking_effort": effort,
                         **diagnostics,
                     },
                 )
@@ -1090,7 +1180,7 @@ class OllamaAdapter:
                 refine_rejections += 1
                 self._log_candidate_rejected(
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     maximum_attempts=maximum_attempts,
                     reason="unchanged_prompt",
@@ -1105,7 +1195,7 @@ class OllamaAdapter:
                 refine_rejections += 1
                 self._log_candidate_rejected(
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     maximum_attempts=maximum_attempts,
                     reason="repeated_prompt",
@@ -1120,7 +1210,7 @@ class OllamaAdapter:
                 response_diagnostics.append(diagnostics)
                 self._log_candidate_rejected(
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     maximum_attempts=maximum_attempts,
                     reason="direction_echo",
@@ -1151,24 +1241,33 @@ class OllamaAdapter:
                     nsfw=served.nsfw if served else None,
                     selection_reason=served.reason if served else None,
                     pinned_service=served.pinned_service if served else None,
+                    notice=self._recovery_notice(effort)
+                    if candidate.used_no_thinking_fallback
+                    else None,
                 )
             self._log_candidate_rejected(
                 mode=mode,
-                think=think,
+                effort=effort,
                 attempt=attempt,
                 maximum_attempts=maximum_attempts,
                 reason="excluded_prompt",
             )
             excluded.setdefault(normalized_final, final.strip())
-        if len(candidate_budget_failures) == maximum_attempts:
-            # Every candidate overflowed its thinking schedule (with thinking
-            # enabled, each also failed its no-thinking fallback). Only a
-            # genuinely broken router/model reaches this point, so the terminal
-            # budget error is finally appropriate.
+        if candidate_budget_failures and (
+            budget_clock_exhausted or len(candidate_budget_failures) == maximum_attempts
+        ):
+            # Every candidate overflowed its allowance schedule (with thinking requested, each
+            # also failed its no-thinking fallback). Only a genuinely broken router/model reaches
+            # this point, so the terminal budget error is finally appropriate. Say which effort
+            # and which allowances were tried and for how long: the router's reasoning budget is
+            # uncapped, so the honest answer is that the trace outgrew the ceiling we measure.
             last_failure = candidate_budget_failures[-1]
+            spent = round(budget_clock.elapsed)
             exhausted = {
                 **last_failure["output_budget_attempt_diagnostics"][-1],
                 "validation_stage": "output_budget_exhausted",
+                "thinking_effort": effort,
+                "thinking_enabled": effort != RECOVERY_EFFORT,
                 "output_budget_attempts": last_failure["output_budget_attempts"],
                 "output_budgets": last_failure["output_budgets"],
                 "attempted_no_thinking_fallback": last_failure["attempted_no_thinking_fallback"],
@@ -1176,11 +1275,24 @@ class OllamaAdapter:
                     last_failure["output_budget_attempt_diagnostics"]
                 ),
                 "candidate_budget_diagnostics": candidate_budget_failures,
+                "wall_clock_seconds": spent,
+                "wall_clock_limit_seconds": round(budget_clock.limit),
+                "wall_clock_exhausted": budget_clock_exhausted,
             }
             raise AppError(
                 "ollama_output_budget_exhausted",
-                "Prompt Assistant exhausted its output-token budget before completing "
-                "a structured prompt after bounded retries.",
+                (
+                    f"The model spent its whole generated-token allowance on reasoning at the "
+                    f"{effort} effort without reaching the end of the prompt "
+                    f"(largest allowance tried: {max(last_failure['output_budgets']):,} tokens "
+                    f"in {_format_duration(spent)}). Untick Thinking mode, or shorten the "
+                    "Creative Direction."
+                )
+                if effort != RECOVERY_EFFORT
+                else (
+                    "Prompt Assistant exhausted its output-token budget before completing "
+                    "a structured prompt after bounded retries."
+                ),
                 status_code=503,
                 details=exhausted,
             )
@@ -1234,9 +1346,12 @@ class OllamaAdapter:
         The image travels as an inline ``data:`` URL in ``messages[].images``; the
         router forwards that form unchanged to llama.cpp. The evaluator never sees
         the prompt that produced the image. Output-budget escalation and the
-        no-thinking fallback mirror composition; a structurally invalid score sheet
-        is redrawn with the next seed. ``pinned_service`` is the account's chosen model: an image
-        check uses it when it can inspect images, and the best vision-capable model otherwise.
+        no-thinking recovery mirror composition (the requested effort across the sized
+        allowance ladder, then :data:`RECOVERY_EFFORT` at the base allowance). An unchecked
+        image check asks for :data:`RECOVERY_EFFORT` outright -- a score sheet is not a
+        reasoning-quality task. A structurally invalid score sheet is redrawn with the next
+        seed. ``pinned_service`` is the account's chosen model: an image check uses it when it
+        can inspect images, and the best vision-capable model otherwise.
         """
 
         if not self._client:
@@ -1259,17 +1374,30 @@ class OllamaAdapter:
             raise RuntimeError("candidate seed resolver returned an out-of-range value")
         diagnostics: list[dict[str, Any]] = []
         last_generated: GenerateResult | None = None
-        plan: list[tuple[bool, int]] = [(think, budget) for budget in OUTPUT_TOKEN_BUDGETS]
-        if think:
-            plan.append((False, OUTPUT_TOKEN_BUDGETS[0]))
+        # The same two-step recovery as composition: the effort the user asked for across the
+        # allowance ladder sized for this instruction, then the recovery effort (no reasoning) at
+        # the base allowance. A score sheet is short; only the trace can outgrow the allowance.
+        # An image check is not the Creative Direction checkbox: its job is a bounded score
+        # sheet, and it runs inside a compose-generate-score loop, so minutes of reasoning per
+        # score multiplies a wait that buys nothing. An unrequested effort here is the
+        # application's own no-reasoning effort, not the model's default one.
+        effort = THINKING_EFFORT if think else RECOVERY_EFFORT
+        budget_clock = _OutputBudgetClock(limit=OUTPUT_BUDGET_WALL_CLOCK_SECONDS)
+        plan: list[tuple[str, int]] = [
+            (effort, budget) for budget in _allowance_ladder(instruction, effort)
+        ]
+        if effort != RECOVERY_EFFORT:
+            plan.append((RECOVERY_EFFORT, OUTPUT_TOKEN_BUDGETS[0]))
         for candidate in range(MAX_VISION_CANDIDATES):
-            for request_think, budget in plan:
+            for request_effort, budget in plan:
+                if budget_clock.exhausted:
+                    break
                 payload: dict[str, Any] = {
                     "messages": [
                         {"role": "user", "content": instruction, "images": [image_data_url]}
                     ],
                     "stream": False,
-                    "think": THINKING_EFFORT if request_think else False,
+                    "think": request_effort,
                     "format": schema,
                     "options": {
                         "temperature": VISION_TEMPERATURE,
@@ -1282,10 +1410,11 @@ class OllamaAdapter:
                     received = await self._generate(
                         payload,
                         mode="vision",
-                        think=request_think,
+                        effort=request_effort,
                         vision=True,
                         pinned_service=pinned_service,
                     )
+                    budget_clock.record_attempt()
                 except AppError as exc:
                     if exc.code == "ollama_generate_rejected":
                         raise AppError(
@@ -1304,7 +1433,8 @@ class OllamaAdapter:
                 diagnostic.update(
                     candidate_attempt=candidate + 1,
                     output_budget=budget,
-                    thinking_enabled=request_think,
+                    thinking_enabled=request_effort != RECOVERY_EFFORT,
+                    thinking_effort=request_effort,
                     image_bytes=len(image_data_url),
                 )
                 parsed, selected_field = (
@@ -1406,59 +1536,87 @@ class OllamaAdapter:
         *,
         mode: str,
         instruction: str,
-        think: bool,
+        effort: str,
         attempt: int,
         seed: int,
         chained: bool = False,
         pinned_service: str | None = None,
+        budget_clock: _OutputBudgetClock | None = None,
     ) -> tuple[_CandidateCompose | None, dict[str, Any] | None]:
         """Run one candidate's bounded output-budget escalation.
 
-        The user's thinking effort is preserved across the ``OUTPUT_TOKEN_BUDGETS``
-        schedule. Thinking length is unbounded, so a thinking trace can always
-        outgrow any fixed allowance; when thinking is enabled and every level
-        ends in a schema-incomplete ``done_reason: "length"``, one extra attempt
-        runs with thinking disabled at the base allowance, because the
-        deliverable is the short structured prompt (the reasoning trace is not
-        submitted to ComfyUI) and a composition without a trace fits far below
-        the shared allowance. Returns ``(candidate, None)`` when a usable
-        structured prompt was produced, otherwise ``(None,
-        candidate_budget_diagnostics)`` so the caller can advance to the next
-        candidate instead of terminating the composition.
+        The requested effort is preserved across the whole allowance ladder, which starts at the
+        rung sized for this instruction (see :func:`_allowance_ladder`) and ends at
+        ``OUTPUT_TOKEN_BUDGETS[-1]``. A reasoning trace is unbounded on a resident with
+        ``reasoning_budget_tokens: -1``, so it can always outgrow that ceiling; when every rung
+        ends over-length -- reported either as an accepted ``done_reason: "length"`` or as a
+        rejected over-length structured output (:func:`_over_length_output`) -- one extra attempt
+        runs at :data:`RECOVERY_EFFORT` with the base allowance, because the deliverable is the
+        short structured prompt (the reasoning trace is never submitted to ComfyUI) and a
+        composition without a trace fits far below the shared allowance. Returns
+        ``(candidate, None)`` when a usable structured prompt was produced, otherwise
+        ``(None, candidate_budget_diagnostics)`` so the caller can advance to the next candidate
+        instead of terminating the composition.
         """
-        plan: list[tuple[bool, int, str]] = [
-            (think, budget, "structured_prompt") for budget in OUTPUT_TOKEN_BUDGETS
+        ladder = _allowance_ladder(instruction, effort)
+        plan: list[tuple[str, int, str]] = [
+            (effort, budget, "structured_prompt") for budget in ladder
         ]
-        if think:
-            plan.append((False, OUTPUT_TOKEN_BUDGETS[0], "no_thinking_fallback"))
+        if effort != RECOVERY_EFFORT:
+            plan.append((RECOVERY_EFFORT, OUTPUT_TOKEN_BUDGETS[0], "no_thinking_fallback"))
         budget_diagnostics: list[dict[str, Any]] = []
+        allowances_tried: list[int] = []
         attempted_no_thinking_fallback = False
 
         def _failure_diagnostics() -> dict[str, Any]:
+            sent = [
+                entry["output_budget"] for entry in budget_diagnostics if "output_budget" in entry
+            ]
             return {
                 "candidate_attempt": attempt + 1,
                 "attempted_no_thinking_fallback": attempted_no_thinking_fallback,
-                "output_budget_attempts": len(budget_diagnostics),
-                "output_budgets": [entry["output_budget"] for entry in budget_diagnostics],
+                "output_budget_attempts": len(sent),
+                "output_budgets": sent,
                 "output_budget_attempt_diagnostics": list(budget_diagnostics),
             }
 
-        for plan_index, (request_think, output_budget, stage) in enumerate(plan):
+        for plan_index, (request_effort, output_budget, stage) in enumerate(plan):
             if stage == "no_thinking_fallback":
                 attempted_no_thinking_fallback = True
-            output_budget_attempt = plan_index + 1
+            output_budget_attempt = len(allowances_tried) + 1
+            if budget_clock is not None and budget_clock.exhausted:
+                # The router has spent this request's whole wall-clock allowance on rungs that
+                # overflowed. Another allowance of any size is minutes more of the same answer,
+                # so stop escalating and let the caller report what was tried.
+                exhausted = _response_diagnostics(
+                    {}, status=None, validation_stage="wall_clock_exhausted"
+                )
+                exhausted.update(
+                    # No allowance is claimed here: this rung was reached and deliberately not
+                    # sent, which is exactly what `output_budgets` next to it must not claim.
+                    output_budget_stopped_before=output_budget,
+                    output_budget_attempt=output_budget_attempt,
+                    thinking_effort=request_effort,
+                    wall_clock_seconds=round(budget_clock.elapsed),
+                    wall_clock_limit_seconds=round(budget_clock.limit),
+                )
+                budget_diagnostics.append(exhausted)
+                return None, _failure_diagnostics()
+            allowances_tried.append(output_budget)
             payload = _generate_payload(
                 mode=mode,
                 instruction=instruction,
-                think=request_think,
+                effort=request_effort,
                 attempt=attempt,
                 seed=seed,
                 output_budget=output_budget,
                 chained=chained,
             )
             received = await self._generate(
-                payload, mode=mode, think=request_think, pinned_service=pinned_service
+                payload, mode=mode, effort=request_effort, pinned_service=pinned_service
             )
+            if budget_clock is not None:
+                budget_clock.record_attempt()
             if not isinstance(received.data, dict):
                 diagnostics = _with_output_budget_diagnostics(
                     _response_diagnostics(
@@ -1467,7 +1625,7 @@ class OllamaAdapter:
                         validation_stage="response_envelope",
                     ),
                     attempts=output_budget_attempt,
-                    allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
+                    allowances=allowances_tried,
                 )
                 raise AppError(
                     "ollama_invalid_response",
@@ -1502,6 +1660,11 @@ class OllamaAdapter:
             )
             diagnostics["output_budget"] = output_budget
             diagnostics["output_budget_attempt"] = output_budget_attempt
+            diagnostics["thinking_effort"] = request_effort
+            if received.rejection_code is not None:
+                # The answer arrived as a rejection (an over-length structured output on a
+                # resident with output_limit_policy "reject") rather than a truncated success.
+                diagnostics["upstream_rejection_code"] = received.rejection_code
             budget_diagnostics.append(diagnostics)
             if stage == "no_thinking_fallback":
                 # The single no-thinking attempt produced no usable prompt
@@ -1512,7 +1675,12 @@ class OllamaAdapter:
             if diagnostics["done_reason"] == "length":
                 if plan_index + 1 < len(plan):
                     if plan[plan_index + 1][2] == "no_thinking_fallback":
-                        self._log_no_thinking_fallback(mode=mode, attempt=attempt)
+                        self._log_no_thinking_fallback(
+                            mode=mode,
+                            effort=effort,
+                            attempt=attempt,
+                            output_budget_attempt=output_budget_attempt,
+                        )
                     else:
                         logger.info(
                             "ollama_output_budget_retry",
@@ -1520,12 +1688,14 @@ class OllamaAdapter:
                                 "service": "ollama",
                                 "operation": "generate",
                                 "assistant_mode": mode,
-                                "thinking_enabled": think,
+                                "thinking_enabled": effort != RECOVERY_EFFORT,
+                                "thinking_effort": request_effort,
                                 "candidate_attempt": attempt + 1,
                                 "output_budget_attempt": output_budget_attempt,
                                 "output_budget": output_budget,
                                 "next_output_budget": plan[plan_index + 1][1],
                                 "done_reason": "length",
+                                "upstream_rejection_code": received.rejection_code,
                             },
                         )
                     continue
@@ -1539,7 +1709,7 @@ class OllamaAdapter:
             invalid = _with_output_budget_diagnostics(
                 diagnostics,
                 attempts=output_budget_attempt,
-                allowances=OUTPUT_TOKEN_BUDGETS[:output_budget_attempt],
+                allowances=allowances_tried,
             )
             if _may_decline(received):
                 # A non-NSFW model that answers without a structured prompt most likely
@@ -1557,8 +1727,10 @@ class OllamaAdapter:
         raise RuntimeError("Ollama output-budget retry loop exited unexpectedly")
 
     @staticmethod
-    def _log_no_thinking_fallback(*, mode: str, attempt: int) -> None:
-        # Metadata only: which candidate drops thinking and at which allowance.
+    def _log_no_thinking_fallback(
+        *, mode: str, effort: str, attempt: int, output_budget_attempt: int
+    ) -> None:
+        # Metadata only: which candidate drops reasoning and at which allowance.
         # No prompt, Creative Direction, or reasoning text is ever logged.
         logger.info(
             "ollama_output_budget_no_thinking_fallback",
@@ -1566,13 +1738,32 @@ class OllamaAdapter:
                 "service": "ollama",
                 "operation": "generate",
                 "assistant_mode": mode,
-                "thinking_enabled": True,
+                "thinking_enabled": effort != RECOVERY_EFFORT,
+                "thinking_effort": effort,
                 "fallback_thinking_enabled": False,
+                "fallback_thinking_effort": RECOVERY_EFFORT,
                 "candidate_attempt": attempt + 1,
-                "output_budget_attempt": len(OUTPUT_TOKEN_BUDGETS) + 1,
+                "output_budget_attempt": output_budget_attempt + 1,
                 "output_budget": OUTPUT_TOKEN_BUDGETS[0],
                 "done_reason": "length",
             },
+        )
+
+    @staticmethod
+    def _recovery_notice(effort: str) -> str:
+        """The plain sentence for a prompt that arrived without the reasoning it was asked for.
+
+        The recovery is deliberate — a prompt composed at :data:`RECOVERY_EFFORT` is worth more
+        to the user than a failed request — but it is not what the checkbox asked for, and the
+        wait they just spent is the reason, so it is said out loud rather than only recorded in
+        the run's diagnostics.
+        """
+
+        return (
+            f"Reasoning at the {effort} effort ran out of room before it reached the end of the "
+            "prompt, so this prompt was composed without reasoning. A long Creative Direction "
+            "can take several minutes with Thinking mode on; untick it to answer without "
+            "reasoning instead."
         )
 
     async def _generate(
@@ -1580,20 +1771,26 @@ class OllamaAdapter:
         payload: dict[str, Any],
         *,
         mode: str,
-        think: bool,
+        effort: str,
         vision: bool = False,
         pinned_service: str | None = None,
     ) -> GenerateResult:
         """Send one ``/api/chat`` request to the service chosen for it, per the contract.
 
-        The model is chosen from the current capabilities document for this request and its
-        ``think`` value adapted to that model's published efforts. Errors are classified by the
-        router's ``error.code`` first (contract section 10): SERVICE_OFFLINE,
-        BACKEND_UNAVAILABLE and MODEL_NOT_FOUND choose again at once without the failed service
-        and consume no retries; BACKEND_DRAINING and MAINTENANCE_MODE wait with backoff, then
-        choose again; other 5xx, 408, 429 and connection failures retry the same service; other
-        4xx fail. A read timeout is not resubmitted, because that would lose the request's place
-        in the router's queue.
+        The model is chosen from the current capabilities document for this request and the
+        requested ``effort`` is resolved to that model's published wire value (never an effort it
+        does not list). Errors are classified by the router's ``error.code`` first (contract
+        section 10): SERVICE_OFFLINE, BACKEND_UNAVAILABLE and MODEL_NOT_FOUND choose again at
+        once without the failed service and consume no retries; BACKEND_DRAINING and
+        MAINTENANCE_MODE wait with backoff, then choose again; other 5xx, 408, 429 and connection
+        failures retry the same service; other 4xx fail. A read timeout is not resubmitted,
+        because that would lose the request's place in the router's queue.
+
+        One 5xx is not transient: a resident with ``output_limit_policy: "reject"`` answers an
+        over-length structured output with 502 ``UPSTREAM_REQUEST_FAILED``. Retrying that
+        unchanged can only fail identically, minutes later, so it is returned to the caller as an
+        incomplete answer with ``done_reason: "length"`` -- the shape its allowance ladder
+        escalates on (see :func:`_over_length_output`).
         """
 
         if not self._client:
@@ -1629,6 +1826,38 @@ class OllamaAdapter:
                 upstream_status = exc.response.status_code
                 response_data = _safe_json_object(exc.response)
                 router_code = error_code(response_data)
+                if _over_length_output(response_data):
+                    # The router rejected the request because generation reached the output limit
+                    # before the answer was complete. This is the answer for this payload at this
+                    # allowance, not a transient fault: hand it to the caller as an incomplete
+                    # ``done_reason: "length"`` result so the allowance escalates instead of the
+                    # identical request going out again.
+                    logger.warning(
+                        "ollama_output_budget_rejected",
+                        extra={
+                            "service": "ollama",
+                            "operation": "generate",
+                            "assistant_mode": mode,
+                            "thinking_enabled": effort != RECOVERY_EFFORT,
+                            "thinking_effort": effort,
+                            "sent_thinking_effort": sent_think,
+                            "attempt": attempt,
+                            "failure_kind": "over_length_output",
+                            "upstream_status": upstream_status,
+                            "router_service": service,
+                            "router_code": router_code,
+                            "output_budget": (payload.get("options") or {}).get("num_predict"),
+                        },
+                    )
+                    return GenerateResult(
+                        data=_over_length_as_incomplete(response_data),
+                        status=upstream_status,
+                        selection=selection,
+                        think=sent_think,
+                        incomplete=True,
+                        requested_effort=effort,
+                        rejection_code=router_code,
+                    )
                 action = classify_error(upstream_status, response_data)
                 if action == FALLBACK:
                     alternative = self.select_model(
@@ -1645,7 +1874,7 @@ class OllamaAdapter:
                 self._log_generate_failure(
                     exc,
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     failure_kind="http_status",
                     retryable=retryable or action in {FALLBACK, WAIT},
@@ -1690,7 +1919,7 @@ class OllamaAdapter:
                 details = _generate_error_details(
                     attempt=attempt,
                     failure_kind="http_status",
-                    think=think,
+                    effort=effort,
                     upstream_status=upstream_status,
                     response_data=response_data,
                     router_code=router_code,
@@ -1737,7 +1966,7 @@ class OllamaAdapter:
                 self._log_generate_failure(
                     exc,
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     failure_kind="timeout",
                     retryable=retryable,
@@ -1754,7 +1983,7 @@ class OllamaAdapter:
                     details=_generate_error_details(
                         attempt=attempt,
                         failure_kind="timeout",
-                        think=think,
+                        effort=effort,
                         selection=selection,
                         sent_think=sent_think,
                     ),
@@ -1763,7 +1992,7 @@ class OllamaAdapter:
                 self._log_generate_failure(
                     exc,
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     failure_kind="transport",
                     retryable=True,
@@ -1780,7 +2009,7 @@ class OllamaAdapter:
                     details=_generate_error_details(
                         attempt=attempt,
                         failure_kind="transport",
-                        think=think,
+                        effort=effort,
                         selection=selection,
                         sent_think=sent_think,
                     ),
@@ -1791,7 +2020,7 @@ class OllamaAdapter:
                 self._log_generate_failure(
                     exc,
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     failure_kind="invalid_json",
                     retryable=True,
@@ -1809,7 +2038,7 @@ class OllamaAdapter:
                     details=_generate_error_details(
                         attempt=attempt,
                         failure_kind="invalid_json",
-                        think=think,
+                        effort=effort,
                         upstream_status=response.status_code,
                         selection=selection,
                         sent_think=sent_think,
@@ -1829,7 +2058,7 @@ class OllamaAdapter:
                     details=_generate_error_details(
                         attempt=attempt,
                         failure_kind="incomplete",
-                        think=think,
+                        effort=effort,
                         upstream_status=response.status_code,
                         response_data=received if isinstance(received, dict) else None,
                         router_code=incomplete_code,
@@ -1840,7 +2069,7 @@ class OllamaAdapter:
                 self._log_generate_failure(
                     failure,
                     mode=mode,
-                    think=think,
+                    effort=effort,
                     attempt=attempt,
                     failure_kind="incomplete",
                     retryable=True,
@@ -1869,7 +2098,8 @@ class OllamaAdapter:
                         "service": "ollama",
                         "operation": "generate",
                         "assistant_mode": mode,
-                        "thinking_enabled": think,
+                        "thinking_enabled": effort != RECOVERY_EFFORT,
+                        "thinking_effort": effort,
                         "attempt": attempt,
                         "max_attempts": MAX_GENERATE_ATTEMPTS,
                     },
@@ -1880,6 +2110,7 @@ class OllamaAdapter:
                 selection=selection,
                 think=sent_think,
                 incomplete=incomplete,
+                requested_effort=effort,
             )
 
     async def _refresh_after_router_error(self) -> None:
@@ -1962,7 +2193,7 @@ class OllamaAdapter:
     def _log_candidate_rejected(
         *,
         mode: str,
-        think: bool,
+        effort: str,
         attempt: int,
         maximum_attempts: int,
         reason: str,
@@ -1975,7 +2206,8 @@ class OllamaAdapter:
                 "service": "ollama",
                 "operation": "generate",
                 "assistant_mode": mode,
-                "thinking_enabled": think,
+                "thinking_enabled": effort != RECOVERY_EFFORT,
+                "thinking_effort": effort,
                 "candidate_attempt": attempt + 1,
                 "max_candidate_attempts": maximum_attempts,
                 "rejection_reason": reason,
@@ -1987,7 +2219,7 @@ class OllamaAdapter:
         exc: Exception,
         *,
         mode: str,
-        think: bool,
+        effort: str,
         attempt: int,
         failure_kind: str,
         retryable: bool,
@@ -2002,7 +2234,8 @@ class OllamaAdapter:
                 "service": "ollama",
                 "operation": "generate",
                 "assistant_mode": mode,
-                "thinking_enabled": think,
+                "thinking_enabled": effort != RECOVERY_EFFORT,
+                "thinking_effort": effort,
                 "attempt": attempt,
                 "max_attempts": MAX_GENERATE_ATTEMPTS,
                 "failure_kind": failure_kind,
@@ -2100,6 +2333,93 @@ def _estimated_input_tokens(payload: Mapping[str, Any]) -> int:
     if schema is not None:
         total += -(-len(json.dumps(schema)) // 3)
     return total
+
+
+def _format_duration(seconds: float) -> str:
+    """A wall-clock duration in the unit a user reads it in."""
+
+    return f"{max(1, round(seconds))} seconds" if seconds < 90 else f"{round(seconds / 60)} minutes"
+
+
+def requested_effort(think: bool) -> str:
+    """The reasoning effort the Creative Direction checkbox asks for, in either state.
+
+    Checked asks for the extra-high effort. Unchecked asks for the model's **default** effort:
+    the checkbox chooses how much the model reasons, not whether it reasons at all, so leaving
+    it unticked is not a request for no reasoning. Only :data:`RECOVERY_EFFORT` — the
+    composition ladder's final fallback and the vision scorer's redraws — means "no reasoning",
+    and those are the application's own recovery steps rather than a user's choice.
+    """
+
+    return THINKING_EFFORT if think else UNCHECKED_EFFORT
+
+
+def _allowance_ladder(instruction: str, effort: str) -> tuple[int, ...]:
+    """Generated-token allowances to try for one candidate, from a sized start to the ceiling.
+
+    Thinking shares one generated-token allowance with the final object, and on a resident whose
+    ``reasoning_budget_tokens`` is ``-1`` nothing this client can read bounds how long the trace
+    runs. The first rung is therefore sized from the request
+    (:data:`REASONING_ALLOWANCE_MULTIPLIER`) instead of always starting at the smallest
+    allowance: a rung that overflows costs its whole
+    allowance, so starting small only makes the failure expensive, while a generous allowance
+    costs nothing on a request that would have completed anyway. A no-thinking request needs room
+    for the answer alone, so it keeps the base allowance.
+    """
+
+    if effort == RECOVERY_EFFORT:
+        return (OUTPUT_TOKEN_BUDGETS[0],)
+    estimated = _estimated_input_tokens({"messages": [{"role": "user", "content": instruction}]})
+    needed = estimated * REASONING_ALLOWANCE_MULTIPLIER
+    for index, allowance in enumerate(OUTPUT_TOKEN_BUDGETS):
+        if allowance >= needed or index == len(OUTPUT_TOKEN_BUDGETS) - 1:
+            return OUTPUT_TOKEN_BUDGETS[index:]
+    return (OUTPUT_TOKEN_BUDGETS[-1],)
+
+
+def _over_length_output(data: Any) -> bool:
+    """Whether an upstream answer says generation ran out of allowance before it was complete.
+
+    A resident with ``metadata.reasoning.output_limit_policy: "reject"`` does not return the
+    truncated success contract section 9 describes (``done_reason: "length"``); it fails the
+    request with HTTP 502 ``UPSTREAM_REQUEST_FAILED``, which :func:`classify_error` cannot tell
+    from a transient upstream fault. The only length evidence that answer carries is
+    ``finish_reason=length`` — in a field, or in the English message until the router publishes
+    a code of its own (asked of its maintainer 2026-11-24) — because ``x_router.status:
+    "incomplete"`` on its own marks every incomplete answer, including the malformed and empty
+    ones this client must not escalate.
+
+    Whatever the wording, the answer is permanent for the payload that produced it: resubmitting
+    it unchanged can only fail the same way, so the allowance has to grow first.
+    """
+
+    if not isinstance(data, Mapping):
+        return False
+    body: Mapping[str, Any] = data
+    router_value: Any = body.get("x_router")
+    router: Mapping[str, Any] = router_value if isinstance(router_value, Mapping) else {}
+    if any(source.get(key) == "length" for source in (body, router) for key in _LENGTH_FIELDS):
+        return True
+    error_value: Any = body.get("error")
+    message = error_value.get("message") if isinstance(error_value, Mapping) else None
+    return isinstance(message, str) and "finish_reason=length" in message.replace(" ", "")
+
+
+def _over_length_as_incomplete(data: Any) -> dict[str, Any]:
+    """An over-length rejection in the shape the escalation ladder already understands.
+
+    The ladder escalates on an accepted answer that reported ``done_reason: "length"``. A
+    rejection with the same meaning is reported to it the same way, so one code path grows the
+    allowance for both, and the reason it was rejected stays visible in the diagnostics.
+    """
+
+    result = dict(data) if isinstance(data, Mapping) else {}
+    router = dict(result["x_router"]) if isinstance(result.get("x_router"), Mapping) else {}
+    router.setdefault("status", "incomplete")
+    router.setdefault("stop_reason", "length")
+    result["x_router"] = router
+    result["done_reason"] = "length"
+    return result
 
 
 def _fit_output_limit(
@@ -2209,7 +2529,7 @@ def _generate_error_details(
     *,
     attempt: int,
     failure_kind: str,
-    think: bool,
+    effort: str,
     upstream_status: int | None = None,
     response_data: dict[str, Any] | None = None,
     router_code: str | None = None,
@@ -2220,7 +2540,8 @@ def _generate_error_details(
         "operation": "generate",
         "failure_kind": failure_kind,
         "attempts": attempt,
-        "thinking_enabled": think,
+        "thinking_enabled": effort != RECOVERY_EFFORT,
+        "thinking_effort": effort,
     }
     if upstream_status is not None:
         details["upstream_status"] = upstream_status
@@ -2387,7 +2708,7 @@ def _generate_payload(
     *,
     mode: str,
     instruction: str,
-    think: bool = True,
+    effort: str = THINKING_EFFORT,
     attempt: int = 0,
     seed: int | None = 0,
     output_budget: int = OUTPUT_TOKEN_BUDGETS[0],
@@ -2407,7 +2728,10 @@ def _generate_payload(
     return {
         "messages": [{"role": "user", "content": instruction}],
         "stream": False,
-        "think": THINKING_EFFORT if think else False,
+        # The requested effort, resolved to the wire value of the model that serves it by
+        # _generate. "off" here means the application's own recovery step, never the Creative
+        # Direction checkbox's unchecked state: that is "default" (see requested_effort).
+        "think": effort,
         "format": {
             "type": "object",
             "properties": {"prompt": {"type": "string"}},

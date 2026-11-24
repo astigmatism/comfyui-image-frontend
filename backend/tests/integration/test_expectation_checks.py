@@ -228,7 +228,9 @@ def test_apply_check_passes_on_first_attempt_with_provenance(app_client, fake_st
     vision = fake_state.ollama_vision_calls[-1]
     assert vision["messages"][0]["images"][0].startswith("data:image/jpeg;base64,")
     assert prompt not in vision["messages"][0]["content"]
-    assert vision["think"] is False
+    # An unchecked image check asks for the application's no-reasoning effort, which this router
+    # publishes as the value "none" for the `off` effort.
+    assert vision["think"] == "none"
     assert len(rows(app_client, Generation)) == 1
 
     recall = app_client.get(f"/api/generations/{generation_id}/recall").json()

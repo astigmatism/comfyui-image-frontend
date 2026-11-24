@@ -33,6 +33,14 @@ ALL_EFFORTS = {
     "xhigh": "xhigh",
 }
 
+# The values a test should see on the wire for the three efforts this application can ask for:
+# the Thinking mode checkbox's checked state (extra high), its unchecked state (the model's
+# default effort — NOT "no reasoning"), and the application's own no-reasoning recovery. They are
+# read from the published map rather than spelled out, exactly as the client resolves them.
+CHECKED_EFFORT_WIRE = ALL_EFFORTS["xhigh"]
+UNCHECKED_EFFORT_WIRE = ALL_EFFORTS["default"]
+RECOVERY_EFFORT_WIRE = ALL_EFFORTS["off"]
+
 
 def router_model(
     service: str,
@@ -59,8 +67,20 @@ def router_model(
     if vision:
         capabilities.append("vision")
     published = copy.deepcopy(ALL_EFFORTS if efforts is None else efforts)
+    # Shaped like the resident of 2026-11-24, including the two fields the client reads to
+    # resolve an effort to a wire value (`aliases`, `boolean_true_behavior`) and the one that
+    # explains why an over-length structured output arrives as a 502 instead of a truncated
+    # success (`output_limit_policy: "reject"`).
     reasoning: dict[str, Any] = (
-        {"supported": True, "efforts": published, "default": "default"}
+        {
+            "supported": True,
+            "efforts": published,
+            "aliases": {"none": "off", "minimal": "low", "high": "xhigh", "max": "xhigh"},
+            "default": "default",
+            "boolean_true_behavior": {"mode": "map", "level": "default"},
+            "output_limit_policy": "reject",
+            "absolute_max_output_tokens": None,
+        }
         if thinking
         else {"supported": False, "efforts": {}}
     )
@@ -251,3 +271,73 @@ def router_error(code: str, status: int, message: str | None = None) -> httpx.Re
     return httpx.Response(
         status, json={"error": {"code": code, "message": message or f"fake {code}"}}
     )
+
+
+def over_length_rejection(
+    record_id: str = "29dad995-b665-441d-a4b0-5db3e736fc81",
+) -> httpx.Response:
+    """The 502 the resident answers when a structured output reaches the output limit.
+
+    Shaped from production Prompt Assistant runs on 2026-11-24. Under
+    ``output_limit_policy: "reject"`` an over-length answer is a rejected request and not a
+    truncated success, and the rejection carries no top-level ``done_reason``: the only length
+    evidence in it is ``finish_reason=length`` inside the message.
+    """
+
+    return httpx.Response(
+        502,
+        json={
+            "error": {
+                "code": "UPSTREAM_REQUEST_FAILED",
+                "message": (
+                    "upstream request failed: the structured output was incomplete "
+                    "(finish_reason=length); increase the output budget"
+                ),
+            },
+            "x_router": {"status": "incomplete", "record_id": record_id},
+            "partial_response": {"content": "", "reasoning_content": "", "tool_calls": []},
+        },
+    )
+
+
+def incomplete_rejection(code: str = "EMPTY_UPSTREAM_RESPONSE") -> httpx.Response:
+    """An incomplete answer that carries no length evidence at all.
+
+    ``x_router.status == "incomplete"`` marks *any* incomplete answer (contract §9), including an
+    empty upstream response, so it is not proof of an over-length request on its own.
+    """
+
+    return httpx.Response(
+        502,
+        json={
+            "error": {"code": code, "message": f"upstream answer was incomplete ({code})"},
+            "x_router": {
+                "status": "incomplete",
+                "record_id": "0f0c00a1-0000-4000-8000-000000000001",
+            },
+            "partial_response": {"content": "", "reasoning_content": "", "tool_calls": []},
+        },
+    )
+
+
+def over_length_answer(
+    num_predict_key: str = "num_predict",
+) -> Callable[[dict[str, Any]], httpx.Response]:
+    """A 200 answer whose reasoning trace ran into the generated-token allowance."""
+
+    def answer(payload: dict[str, Any]) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "canonical-model",
+                "message": {
+                    "content": "",
+                    "thinking": "reasoning that never reaches an answer. " * 40,
+                },
+                "done": True,
+                "done_reason": "length",
+                "eval_count": payload["options"][num_predict_key],
+            },
+        )
+
+    return answer

@@ -2888,6 +2888,22 @@ code {
   display: none;
 }
 
+/* What the assistant did differently than asked — a recovery, not a failure. */
+.prompt-assistant-notice {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid #3f5566;
+  border-radius: var(--radius-sm);
+  background: #17222b;
+  color: #b9d2e2;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.prompt-assistant-notice[hidden] {
+  display: none;
+}
+
 /* The LLM Router is serving Creative Direction from a non-NSFW fallback, or is switching. */
 .prompt-assistant-model-notice {
   margin: 0;

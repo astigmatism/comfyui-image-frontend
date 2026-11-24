@@ -1416,6 +1416,7 @@ function promptAssistantMarkup(state = {}, values = {}, contract = null) {
       ${promptAssistantModelNoticeMarkup(state.promptAssistant)}
       <button type="button" class="button secondary" data-action="compose-prompt" ${composeDisabled ? "disabled" : ""}>${escapeHtml(expectations.composeLabel)}</button>
       ${expectationStatusMarkup(check, { dismissed: Boolean(check?.id) && state.expectationStatusDismissedId === check.id, currentPrompt: promptInput ? values?.[promptInput.id] ?? null : null })}
+      <p id="prompt-assistant-notice" class="prompt-assistant-notice" role="status" hidden></p>
       <p id="prompt-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
     </div>
   </section>`;
@@ -1591,6 +1592,7 @@ export function promptEditorMarkup(controlId, label, value, promptAssistant = {}
           ${promptAssistantModelNoticeMarkup(promptAssistant)}
           <div class="prompt-editor-compose-actions"><button type="button" class="button secondary" data-action="compose-prompt-editor" ${assistantAvailable && !promptAssistant.composeDisabled ? "" : "disabled"}>${escapeHtml(promptAssistant.composeLabel || "Apply Creative Direction")}</button></div>
           <p id="prompt-editor-assistant-error" class="prompt-assistant-error" role="alert" hidden></p>
+          <p id="prompt-editor-assistant-notice" class="prompt-assistant-notice" role="status" hidden></p>
         </div>
       </section>
       <p class="prompt-editor-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> applies the draft.</p>
