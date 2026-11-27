@@ -1032,6 +1032,92 @@ export function applyChoiceStrengthDefaults(
   return result;
 }
 
+// One account's known-good value for one control of one checkpoint, applied as a prefill
+// when that checkpoint is chosen. It is never a lock: a control the person has set for this
+// generation is skipped, which is why the explicit ids travel with the call.
+//
+// The numeric rule mirrors `_clamp_number` in backend/app/domain/control_defaults.py —
+// clamp to the published bounds, snap to the step grid measured from the minimum, then round
+// back to the step's own precision. The server clamps once on save against the widest
+// published contract and this clamps on every read against the one contract being rendered,
+// so both implementations have to agree or a stored default drifts each time it is read.
+export function applyCheckpointControlDefaults({
+  contract,
+  values = {},
+  explicitInputIds = [],
+  optionValue,
+  defaults = {},
+} = {}) {
+  const result = structuredClone(values || {});
+  const applied = [];
+  const published = defaults?.[optionValue];
+  if (!published || typeof published !== "object" || Array.isArray(published)) {
+    return { values: result, applied };
+  }
+  const explicit = new Set(explicitInputIds || []);
+  for (const [id, value] of Object.entries(published)) {
+    if (explicit.has(id)) continue;
+    const control = interfaceInputs(contract).find((input) => input.id === id);
+    if (!control) continue;
+    const next = checkpointControlValue(control, value);
+    if (next === null) continue;
+    applied.push({ id, value: next, previous: result[id] });
+    result[id] = next;
+  }
+  return { values: result, applied };
+}
+
+// null means the control cannot express this value, so the default is skipped rather than
+// rounded into the field behind the person.
+function checkpointControlValue(control, value) {
+  switch (control.type) {
+    case "number":
+    case "integer": {
+      const bounds = controlNumberBounds(control);
+      if (!bounds) return null;
+      const clamped = clampControlNumber(value, bounds);
+      if (clamped === null) return null;
+      // A fractional grid on an integer control leaves a value it can never submit.
+      if (control.type === "integer" && !Number.isInteger(clamped)) return null;
+      return clamped;
+    }
+    case "boolean":
+      return typeof value === "boolean" ? value : null;
+    case "choice":
+      return choiceOptions(control).some((option) => option.value === value) ? value : null;
+    default:
+      // A seed, a string, an image and a LoRA stack carry no known-good value per checkpoint.
+      return null;
+  }
+}
+
+function controlNumberBounds(control) {
+  const minimum = Number(inputConstraint(control, "minimum"));
+  const maximum = Number(inputConstraint(control, "maximum"));
+  const step = Number(inputConstraint(control, "step"));
+  if (![minimum, maximum, step].every((value) => Number.isFinite(value))) return null;
+  if (step <= 0 || minimum > maximum) return null;
+  return { minimum, maximum, step };
+}
+
+function clampControlNumber(value, { minimum, maximum, step }) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const clamped = Math.min(Math.max(value, minimum), maximum);
+  const steps = (clamped - minimum) / step;
+  // Rounding half away from zero keeps a 0.5 on a 0.1 grid at 0.5 instead of drifting down.
+  const rounded = steps >= 0 ? Math.floor(steps + 0.5) : Math.ceil(steps - 0.5);
+  const snapped = Math.min(Math.max(minimum + rounded * step, minimum), maximum);
+  // A float grid is a display contract, not a binary one: never hand back 0.30000000000000004.
+  return Number(snapped.toFixed(controlStepDecimals(step)));
+}
+
+function controlStepDecimals(step) {
+  const text = String(Number(step.toPrecision(10)));
+  if (!text.includes(".")) return 0;
+  const fraction = (text.split(".")[1] || "").split("e")[0];
+  return Math.max(0, fraction.length);
+}
+
 function wellFormedLoraStack(value) {
   if (!Array.isArray(value)) return false;
   const seen = new Set();

@@ -56,6 +56,7 @@ import {
   GALLERY_VIEW_STORAGE_KEY,
   activeSourceStorageKey,
   applyChoiceStrengthDefaults,
+  applyCheckpointControlDefaults,
   applyCollectionOrder,
   applyRecallSeedMode,
   clampGenerationQuantity,
@@ -212,6 +213,11 @@ const state = {
   sourcePickerDialogOpen: false,
   sourcePickerDraft: null,
   checkpointTiers: {},
+  // One account's known-good control values per checkpoint option ID, from the account map.
+  controlDefaults: {},
+  // Which control values in the panel are holding a checkpoint default, per source, so the
+  // panel can say where a value came from. Cleared per control the moment it is edited.
+  checkpointControlDefaults: new Map(),
   modelSelectionsBySourceRevision: new Map(),
   selectedGenerationTargetCount: 0,
   generationQuantity: MIN_GENERATION_QUANTITY,
@@ -863,6 +869,8 @@ async function handleClick(event) {
     else if (action === "apply-generation-source-dialog") await applySourcePickerDialog();
     else if (action === "select-all-checkpoints") updateAllSourcePickerCheckpoints(true);
     else if (action === "clear-all-checkpoints") updateAllSourcePickerCheckpoints(false);
+    else if (action === "use-checkpoint-control-default-reset") resetCheckpointControlDefault(target);
+    else if (action === "save-checkpoint-control-defaults") saveCheckpointControlDefaults(target);
     else if (action === "logout") await logout();
     else if (action === "change-password") {
       state.changingPasswordFromApp = true;
@@ -1092,16 +1100,16 @@ async function handleClick(event) {
     const control = updateControlFromElement(element);
     syncNumberControlPair(element);
     syncChoiceStrengthControl(control);
+    // A checkpoint change already re-renders below; anything else that moved a control's
+    // value (including clearing one) only needs the fields the checkpoint filled in resynced.
+    if (!(control?.type === "choice" && isCheckpointChoiceControl(control.id))) {
+      syncCheckpointControlDefaults(checkpointControlDefaultIds());
+    }
     persistActiveParameterState();
     syncParameterValidation(element.dataset.controlId);
     const companion = choiceStrengthCompanion(sourceInterface(state.activeSource), control);
     if (control?.type === "choice" && companion) syncParameterValidation(companion.id);
-    if (
-      control?.type === "choice" &&
-      sourceModelSelectors(state.activeSource).some(
-        (selector) => selector.parameter_id === control.id,
-      )
-    ) {
+    if (control?.type === "choice" && isCheckpointChoiceControl(control.id)) {
       renderPanel();
     }
   }
@@ -1171,6 +1179,7 @@ function renderSourcePickerDialog() {
     sourceKey: draft.sourceKey,
     modelSelectionsBySource: draft.modelSelectionsBySource,
     checkpointTiers: draft.checkpointTiers,
+    controlDefaults: state.controlDefaults,
     searchQuery: draft.searchQuery,
   });
   if (draft.busy) dialog.querySelector(".source-picker-dialog-content")?.setAttribute("inert", "");
@@ -1467,6 +1476,11 @@ async function applySourcePickerDialog() {
     await selectSource(draft.sourceKey, { summary: selectedSource, carryModelSelections: false });
   }
   applyStoredModelSelectionsToActiveParameters();
+  // Applying this dialog is how a checkpoint is chosen in this app, so the known-good control
+  // values the chosen checkpoint carries are offered exactly as they are when the panel's own
+  // checkpoint control changes. Not when the workflow changed too: selectSource above has
+  // already filled the untouched controls from the checkpoint that resolved.
+  if (!sourceChanged) applyCheckpointControlDefaultsToPanel(checkpointChoiceValue());
   renderPanel();
   await saveCheckpointTierPreferences();
   await flushDeferredSourcePickerUpdates({ panelAlreadyRendered: true });
@@ -2753,6 +2767,9 @@ function updateControlFromElement(element) {
   } else {
     state.explicitParameterIds.add(id);
   }
+  // The person owns this control from now on, whatever the edit was — including clearing a
+  // number, which drops the id from the explicit set again.
+  forgetCheckpointControlDefault(id);
   if (control.type === "choice") {
     const contract = sourceInterface(state.activeSource);
     const companion = choiceStrengthCompanion(contract, control);
@@ -2766,6 +2783,11 @@ function updateControlFromElement(element) {
       delete state.serverFieldErrors[companion.id];
     }
     collapseActiveModelSelection(control.id, state.parameters[id]);
+    // A checkpoint change is the one moment the person has asked for this checkpoint, so the
+    // known-good values it carries are offered for every control still unset.
+    if (isCheckpointChoiceControl(control.id)) {
+      applyCheckpointControlDefaultsToPanel(state.parameters[control.id]);
+    }
   }
   delete state.serverFieldErrors[id];
   state.formError = null;
@@ -2785,6 +2807,153 @@ function syncChoiceStrengthControl(control) {
   const slider = block.querySelector("[data-number-slider]");
   if (entry) entry.value = value;
   if (slider) slider.value = value;
+}
+
+// Which control the panel treats as the checkpoint chooser, in one place: the checkpoint
+// defaults and the panel re-render that follows a checkpoint change hang off this test.
+function isCheckpointChoiceControl(controlId) {
+  return sourceModelSelectors(state.activeSource).some(
+    (selector) => selector.parameter_id === controlId,
+  );
+}
+
+// The checkpoint this panel is pointed at, as the bundle names its option.
+function checkpointChoiceValue() {
+  const selector = sourceModelSelectors(state.activeSource)[0];
+  const value = selector ? state.parameters?.[selector.parameter_id] : null;
+  return typeof value === "string" && value ? value : null;
+}
+
+// The one rule for when a checkpoint's known-good values may take a field over, and it is a
+// prefill and never a lock. Choosing the checkpoint outright is asking for it, so every
+// control this generation has not set takes the checkpoint's value. Merely opening a source
+// that happens to resolve to that checkpoint is not asking: there the panel may be holding
+// the value the person last typed, so only a control still sitting on exactly the interface's
+// published default counts as untouched and may be filled.
+function applyCheckpointControlDefaultsToPanel(optionValue, { onlyUntouched = false } = {}) {
+  const published = state.controlDefaults?.[optionValue];
+  if (!published || typeof published !== "object" || Array.isArray(published)) return [];
+  const contract = sourceInterface(state.activeSource);
+  let candidates = published;
+  if (onlyUntouched) {
+    candidates = {};
+    for (const [id, value] of Object.entries(published)) {
+      const control = interfaceInputs(contract).find((input) => input.id === id);
+      if (!control) continue;
+      const current = state.parameters[id];
+      // A control the panel holds no value for has never been set, so it is untouched too.
+      if (current === undefined || settingsEqual(current, control.default)) candidates[id] = value;
+    }
+  }
+  const { values, applied } = applyCheckpointControlDefaults({
+    contract,
+    values: state.parameters,
+    explicitInputIds: state.explicitParameterIds,
+    optionValue,
+    defaults: { [optionValue]: candidates },
+  });
+  if (!applied.length) return [];
+  state.parameters = values;
+  const provenance = checkpointControlDefaultsFor(state.activeSourceKey);
+  for (const entry of applied) {
+    provenance.set(entry.id, optionValue);
+    delete state.serverFieldErrors[entry.id];
+  }
+  return applied.map((entry) => entry.id);
+}
+
+function checkpointControlDefaultsFor(sourceKey) {
+  let provenance = state.checkpointControlDefaults.get(sourceKey);
+  if (!provenance) {
+    provenance = new Map();
+    state.checkpointControlDefaults.set(sourceKey, provenance);
+  }
+  return provenance;
+}
+
+// An edited control stops being the checkpoint's suggestion, and the note under it goes with
+// the value it described.
+function forgetCheckpointControlDefault(controlId) {
+  state.checkpointControlDefaults.get(state.activeSourceKey)?.delete(controlId);
+}
+
+function checkpointControlDefaultIds() {
+  return [...(state.checkpointControlDefaults.get(state.activeSourceKey)?.keys() || [])];
+}
+
+// Writes the controls a checkpoint just filled in back into the DOM the way the LoRA
+// companion strength does, so no field shows a value the panel has already replaced. The note
+// naming the checkpoint arrives with the checkpoint change's own panel re-render.
+function syncCheckpointControlDefaults(controlIds) {
+  for (const id of controlIds) {
+    const block = document.querySelector(`[data-control-block="${CSS.escape(id)}"]`);
+    if (!block) continue;
+    const value = state.parameters[id] ?? "";
+    for (const field of block.querySelectorAll(`[data-control-id="${CSS.escape(id)}"]`)) {
+      if (field.type === "checkbox") field.checked = Boolean(state.parameters[id]);
+      else field.value = value;
+    }
+  }
+}
+
+function resetCheckpointControlDefault(button) {
+  const id = button.dataset.controlId;
+  const control = interfaceInputs(sourceInterface(state.activeSource)).find((item) => item.id === id);
+  forgetCheckpointControlDefault(id);
+  if (!control) return;
+  // Going back to the workflow's own value is a decision about this generation, so the
+  // control is marked explicit and no later checkpoint change quietly reinstates the default.
+  if (Object.hasOwn(control, "default")) state.parameters[id] = structuredClone(control.default);
+  else delete state.parameters[id];
+  state.explicitParameterIds.add(id);
+  delete state.serverFieldErrors[id];
+  state.formError = null;
+  persistActiveParameterState();
+  settingsSync?.schedule();
+  renderPanel();
+}
+
+// The card knows the checkpoint and the panel knows the values. Exactly the controls this
+// checkpoint's defaults already name become the checkpoint's known-good set — or, for a
+// checkpoint with none yet, the controls whose value differs from the published default.
+// Saving only what is already named is what keeps a value typed for another workflow from
+// being pinned to this checkpoint on the way past it.
+function saveCheckpointControlDefaults(button) {
+  const optionValue = button.dataset.checkpointValue;
+  if (!optionValue) return;
+  const contract = sourceInterface(state.activeSource);
+  const named = Object.keys(state.controlDefaults?.[optionValue] || {});
+  const candidates = Object.fromEntries(
+    (named.length
+      ? named
+      : interfaceInputs(contract)
+          .filter(
+            (control) =>
+              control.default !== undefined &&
+              !settingsEqual(state.parameters[control.id], control.default),
+          )
+          .map((control) => control.id)
+    ).map((id) => [id, state.parameters[id]]),
+  );
+  // The same helper the panel uses decides which of these the control can express and clamps
+  // it to the published bounds, so what is stored here is what the account would store.
+  const { applied } = applyCheckpointControlDefaults({
+    contract,
+    values: {},
+    optionValue,
+    defaults: { [optionValue]: candidates },
+  });
+  if (!applied.length) {
+    toast("None of these panel values are a control this checkpoint can carry.", "error");
+    return;
+  }
+  state.controlDefaults = {
+    ...state.controlDefaults,
+    [optionValue]: Object.fromEntries(applied.map(({ id, value }) => [id, value])),
+  };
+  settingsSync?.schedule();
+  renderSourcePickerDialog();
+  toast(`Saved this checkpoint's defaults for ${applied.length} control${applied.length === 1 ? "" : "s"}.`);
 }
 
 function syncNumberControlPair(element) {
@@ -2950,6 +3119,8 @@ async function logout() {
   state.sourcePickerDialogOpen = false;
   state.sourcePickerDraft = null;
   state.checkpointTiers = {};
+  state.controlDefaults = {};
+  state.checkpointControlDefaults = new Map();
   state.excludedCheckpointRanks = [];
   checkpointRankChange = null;
   state.modelSelectionsBySourceRevision = new Map();
@@ -3069,6 +3240,8 @@ async function enterApplication() {
   state.generationQuantity = loadGenerationQuantity();
   clearAutoGeneratePin();
   state.checkpointTiers = {};
+  state.controlDefaults = {};
+  state.checkpointControlDefaults = new Map();
   checkpointRankChange = null;
   checkpointTiersRevision += 1;
   state.parameterStateBySource = normalizeStoredParameterState(
@@ -3283,6 +3456,28 @@ async function loadStartupPreferences(signal = applicationStartupController?.sig
 
 function normalizedCheckpointTiers(value) {
   return normalizeCheckpointRanks(value);
+}
+
+// The keys are a checkpoint option ID and a published control ID and the value is the
+// person's own, so normalising this map means dropping what cannot be a default instead of
+// inventing a replacement; a dropped entry travels back to the account as a deletion, exactly
+// like one the person made by hand.
+function normalizedControlDefaults(value) {
+  const sources = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const result = {};
+  for (const [option, controls] of Object.entries(sources)) {
+    if (!option || !controls || typeof controls !== "object" || Array.isArray(controls)) continue;
+    const entry = {};
+    for (const [id, controlValue] of Object.entries(controls)) {
+      if (
+        typeof controlValue === "boolean"
+        || (typeof controlValue === "number" && Number.isFinite(controlValue))
+        || (typeof controlValue === "string" && controlValue !== "")
+      ) entry[id] = controlValue;
+    }
+    if (Object.keys(entry).length) result[option] = entry;
+  }
+  return result;
 }
 
 async function loadStartupServices(signal = applicationStartupController?.signal) {
@@ -4252,6 +4447,10 @@ async function selectSource(key, { summary = null, signal, diagnostic = false, c
     }
     state.pendingSourceMigration = null;
     state.sourceDetailError = null;
+    // The source resolved to a checkpoint that may carry known-good values; opening a source
+    // is not asking for them, so only untouched controls are filled (see
+    // applyCheckpointControlDefaultsToPanel for that rule).
+    applyCheckpointControlDefaultsToPanel(checkpointChoiceValue(), { onlyUntouched: true });
     persistActiveParameterState();
     void loadLoraImages(key, contract, token);
   } catch (error) {
@@ -6580,6 +6779,9 @@ async function recall(id) {
     return false;
   }
   const preRecallParameters = structuredClone(state.parameters);
+  // A recalled generation carries its own value for every control it touched, so nothing in
+  // the panel may go on claiming that a checkpoint suggested it.
+  state.checkpointControlDefaults = new Map();
   state.promptEditorDirty = true;
   persistBrowserDraft();
   syncServerControls();
@@ -7976,7 +8178,7 @@ function captureSharedSettings() {
       recent[key] ||= loadRecentResolutions(readStoredItem(recentResolutionKey(sessionStorageUserId(), key)));
     }
   }
-  return { gallery_scale: accountGalleryView.scale, checkpoint_tiers: structuredClone(state.checkpointTiers), settings: {
+  return { gallery_scale: accountGalleryView.scale, checkpoint_tiers: structuredClone(state.checkpointTiers), control_defaults: structuredClone(state.controlDefaults), settings: {
     gallery_layout: accountGalleryView.layout,
     prompt_generation: structuredClone(state.promptGeneration),
     active_source: state.activeSourceKey,
@@ -8010,6 +8212,9 @@ async function applySharedSettings(preferences) {
   if (!storedView) storeGalleryView();
   const ranksChanged = !settingsEqual(state.checkpointTiers, normalizedCheckpointTiers(preferences.checkpoint_tiers));
   state.checkpointTiers = normalizedCheckpointTiers(preferences.checkpoint_tiers);
+  // Known-good checkpoint values are account knowledge rather than browser state, so this
+  // browser adopts whatever arrived; values already in the panel keep whatever got them there.
+  state.controlDefaults = normalizedControlDefaults(preferences.control_defaults);
   if (ranksChanged) {
     checkpointTiersRevision += 1; renderGallery(); renderPhotoViewer();
     if (excludedCheckpointRanks(state).length) void reloadGalleryFilters();
@@ -8283,6 +8488,7 @@ function normalizePanelSettings(value) {
   if (!value?.settings) return value;
   const normalized = structuredClone(value);
   normalized.checkpoint_tiers = normalizeCheckpointRanks(normalized.checkpoint_tiers);
+  normalized.control_defaults = normalizedControlDefaults(normalized.control_defaults);
   delete normalized.settings.runtime_id;
   if (normalized.settings.prompt_generation) delete normalized.settings.prompt_generation.runtime_id;
   normalized.settings.gallery_layout = normalized.settings.gallery_layout === "classic" ? "classic" : "grouped";

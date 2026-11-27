@@ -3405,3 +3405,104 @@ test("a running expectation check holds Generate and Apply and shows its status 
   assert.match(promptPipelineMarkup(state), /data-pipeline-stage="image" class="pipeline-stage is-active"/);
   assert.match(shellMarkup({ session: { app_title: "Test", user: { username: "u", role: "user" } }, collections: [] }), /<dialog id="expectation-check-dialog" class="expectation-check-dialog" aria-labelledby="expectation-check-title"><\/dialog>/);
 });
+
+const checkpointDefaultSource = {
+  source_key: "intorealism",
+  display_name: "INT8 Portrait",
+  available: true,
+  model_selectors: [
+    {
+      parameter_id: "checkpoint",
+      label: "Model checkpoint",
+      default: "intorealism_krea2_flash_v3_int8",
+      choices: [
+        { value: "intorealism_krea2_flash_v3_int8", label: "Intorealism Krea2 Flash v3 (INT8)" },
+        { value: "soft_checkpoint", label: "Soft Checkpoint (FP8)" },
+      ],
+    },
+  ],
+};
+
+const checkpointDefaultContract = {
+  inputs: [
+    {
+      id: "checkpoint",
+      label: "Model checkpoint",
+      type: "choice",
+      semantic_role: "checkpoint",
+      default: "intorealism_krea2_flash_v3_int8",
+      choices: checkpointDefaultSource.model_selectors[0].choices,
+    },
+    { id: "refine_denoise", label: "Refinement denoise", type: "number", default: 0.39, minimum: 0, maximum: 1, step: 0.01 },
+    { id: "cfg", label: "Guidance", type: "number", default: 4.5, minimum: 1, maximum: 12, step: 0.5 },
+  ],
+  presets: [],
+  capability_states: {},
+};
+
+function checkpointDefaultPanelState(overrides = {}) {
+  return {
+    sources: [checkpointDefaultSource],
+    activeSourceKey: "intorealism",
+    parameters: { checkpoint: "intorealism_krea2_flash_v3_int8", refine_denoise: 0, cfg: 4.5 },
+    fieldErrors: {},
+    controlSectionOpen: {},
+    checkpointControlDefaults: new Map([
+      ["intorealism", new Map([["refine_denoise", "intorealism_krea2_flash_v3_int8"]])],
+    ]),
+    ...overrides,
+  };
+}
+
+test("a control holding a checkpoint default says which checkpoint and offers the workflow value back", () => {
+  const html = generationPanelMarkup(
+    checkpointDefaultPanelState(),
+    checkpointDefaultSource,
+    checkpointDefaultContract,
+  );
+  const note = html.match(/<p class="control-default-note"[^>]*data-control-default-note="refine_denoise"[\s\S]*?<\/p>/)?.[0] || "";
+  assert.match(note, /Checkpoint default from <strong>Intorealism Krea2 Flash v3 \(INT8\)<\/strong>/);
+  assert.match(note, /data-action="use-checkpoint-control-default-reset" data-control-id="refine_denoise"/);
+  assert.match(note, /Use workflow default/);
+  // Only the control that carries a default is annotated.
+  assert.doesNotMatch(html, /data-control-default-note="cfg"/);
+  assert.equal((html.match(/class="control-default-note"/g) || []).length, 1);
+  // A control the person has since set is not somebody else's suggestion any more.
+  const edited = generationPanelMarkup(
+    checkpointDefaultPanelState({ explicitParameterIds: new Set(["refine_denoise"]) }),
+    checkpointDefaultSource,
+    checkpointDefaultContract,
+  );
+  assert.doesNotMatch(edited, /data-control-default-note="refine_denoise"/);
+});
+
+test("a plain object provenance map names the checkpoint as well as a Map does", () => {
+  const html = controlMarkup(
+    checkpointDefaultContract.inputs[1],
+    { refine_denoise: 0 },
+    checkpointDefaultContract,
+    {},
+    { checkpointControlDefaults: { refine_denoise: "Intorealism Krea2 Flash v3 (INT8)" } },
+  );
+  assert.match(html, /Checkpoint default from <strong>Intorealism Krea2 Flash v3 \(INT8\)<\/strong>/);
+  assert.doesNotMatch(controlMarkup(checkpointDefaultContract.inputs[1], { refine_denoise: 0.39 }, checkpointDefaultContract), /control-default-note/);
+});
+
+test("a checkpoint card badges the values it is known to need and can record new ones", () => {
+  const html = sourcePickerDialogMarkup([checkpointDefaultSource], {
+    sourceKey: "intorealism",
+    controlDefaults: {
+      intorealism_krea2_flash_v3_int8: { refine_denoise: 0, cfg: 2, face_fix: true, sampler: "dpmpp_2m" },
+    },
+  });
+  const card = html.match(/<article class="checkpoint-card[^>]*intorealism_krea2_flash_v3_int8[\s\S]*?<\/article>/)?.[0] || "";
+  assert.match(card, /class="checkpoint-default-badge"/);
+  assert.match(card, />refine_denoise 0\.00 · cfg 2\.00 \+2<\/small>/);
+  assert.match(card, /title="Checkpoint defaults: refine_denoise 0\.00, cfg 2\.00, face_fix on, sampler dpmpp_2m"/);
+  assert.match(card, /data-action="save-checkpoint-control-defaults"[^>]*data-checkpoint-value="intorealism_krea2_flash_v3_int8"/);
+  assert.match(card, />Save current values as this checkpoint's defaults<\/button>/);
+  // A checkpoint nobody has written anything about carries no badge, but can still be recorded.
+  const plain = html.match(/<article class="checkpoint-card[^>]*value="soft_checkpoint"[\s\S]*?<\/article>/)?.[0] || "";
+  assert.doesNotMatch(plain, /checkpoint-default-badge/);
+  assert.match(plain, /data-action="save-checkpoint-control-defaults"[^>]*data-checkpoint-value="soft_checkpoint"/);
+});
