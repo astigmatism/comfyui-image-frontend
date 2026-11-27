@@ -125,6 +125,7 @@ without changing main.
 | Persistent data | `/data`, including SQLite and application-owned files; default volume `comfyui-image-frontend-data` |
 | Private configuration | Gitignored `.env`; preserve existing values |
 | TLS identity | `CIF_TLS_CERT_DIR`, default `./data/certificates`; preserve the existing root CA and keys |
+| Stage retention | `CIF_RETAIN_STAGES`, default off, read by the `custom_nodes` companion from the ComfyUI runtime's own process environment: that runtime then keeps a generation's stage images instead of deleting them. It is per runtime and survives an app update untouched; the Workflow health tab shows the value each runtime reports |
 | Database changes | Alembic upgrades to `head` automatically during app startup |
 
 Preserve accounts, sessions, gallery content, uploads, favorites, folders, and

@@ -94,6 +94,10 @@ class ComfyUIAdapter:
     GET_ROUTE = "/userdata/{path}"
     ARTIFACT_DELETE_ROUTE = "/comfyui-image-frontend/artifacts/delete"
     ARTIFACT_DELETE_BATCH_SIZE = 1024
+    ARTIFACT_RETENTION_ROUTE = "/comfyui-image-frontend/artifacts/retention"
+    # The retention report is a handful of counters, so it has its own tiny budget: accepting a
+    # companion-sized listing response for it would hide an endpoint change behind wasted memory.
+    ARTIFACT_RETENTION_REPORT_MAX_BYTES = 65_536
 
     def __init__(self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
@@ -689,6 +693,38 @@ class ComfyUIAdapter:
                 context="ComfyUI artifact cleanup response",
             )
             response.raise_for_status()
+
+    async def retention_status(self) -> dict[str, Any] | None:
+        """Return the companion's stage-artefact retention report, or ``None``.
+
+        A debug switch, so it never decides anything: an old companion has no route, an offline
+        one has no answer, and in both cases the catalog refresh simply records no diagnostic.
+        Every failure — HTTP status, timeout, oversized or malformed body — is swallowed here
+        rather than raised, because nothing about readiness depends on it.
+        """
+
+        try:
+            response = await self._request_limited(
+                "GET",
+                self.ARTIFACT_RETENTION_ROUTE,
+                timeout=self.settings.comfyui_health_timeout_seconds,
+                maximum_bytes=self.ARTIFACT_RETENTION_REPORT_MAX_BYTES,
+                context="ComfyUI artifact retention report",
+            )
+            response.raise_for_status()
+            report = _response_json_object(
+                response,
+                maximum_bytes=self.ARTIFACT_RETENTION_REPORT_MAX_BYTES,
+                context="ComfyUI artifact retention report",
+            )
+        except (AppError, httpx.HTTPError, TimeoutError):
+            return None
+        mode = report.get("mode")
+        # Only the shape is checked; a report without a mode string is treated as no report so a
+        # future companion build cannot push an unparsable value into the health tab.
+        if not isinstance(mode, str) or not mode:
+            return None
+        return report
 
     async def health(self) -> tuple[bool, str | None]:
         """Report whether this runtime can accept work.
