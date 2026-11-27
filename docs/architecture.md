@@ -89,6 +89,26 @@ At startup and administrator refresh, `WorkflowRegistry` discovers every configu
 6. Match all declared class types against `/object_info`.
 7. Recognize additive generation-source/technical-inventory v1 metadata losslessly, checking inventory arithmetic diagnostically without converting metadata into executable selectors.
 8. Atomically publish each complete accepted revision and safe diagnostic.
+9. Report, as warnings and never as a rejection, a constant inside the published graph that no published control can reach.
+
+A constant a control cannot reach is the one defect validation used to miss, because the bundle is
+structurally perfect: `publication_lint.py` walks the observed API graph of every candidate and
+reports a sampler whose re-draw amount is a bare constant above 0.25 and below a full pass with no
+published control bound to that input, since such a node re-draws part of the latent on every
+generation and nothing in the app can change it or show it. A full pass of 1.0 is the ordinary
+shape of a generation graph and an amount at or below 0.25 is a resample rather than a re-draw, so
+neither is reported; that window is a decision, recorded here so changing it is deliberate. The same
+node with a constant `steps` below 4 is reported separately, because the measured defect moved with
+the re-draw amount and not with the step count. A `SamplerCustomAdvanced` that delegates its
+schedule is decided once, at the node owning the constant, and a control whose label or group names
+a stage its bound value never reaches is reported as a stage mismatch — judged only when that stage
+exists in the graph at all, with the walk stopping at the first stage boundary the value arrives at
+so a refine-bound control is not blamed for the upscale further downstream. A checked-in exemption
+list keyed on bundle, node and field, each with a reason, downgrades a finding to an accepted
+diagnostic: the difference between a decision and something forgotten. Warnings follow the existing
+path into `WorkflowProfile.warnings_json` and the Workflow health tab and change no readiness,
+because a lint is an opinion about somebody's published graph and a rejected bundle would put a
+debugging aid in the submission path.
 
 Each instance may configure its own optional `Comfy-User` value, which is applied consistently to that adapter's relevant HTTP and WebSocket traffic. Listing, manifest, workflow, API, object-info, history, and output responses have separate global byte caps.
 
@@ -192,6 +212,8 @@ The gallery selects the authored final image for compact display when available.
 
 Once all successfully archived references for a terminal job are safe locally, the adapter batches their `output`/`temp` locators to the companion `POST /comfyui-image-frontend/artifacts/delete` route. The route resolves only beneath ComfyUI's configured output/temp roots and treats missing files idempotently. Cleanup failure never sacrifices the local result: it is recorded as a visible warning and retried during startup recovery. Historical terminal rows are compacted and offered for source cleanup when the new policy first starts. Because the frontend owns and removes those files, ComfyUI's execution cache can answer a byte-identical repeat submission with filenames that no longer exist: a run reported as successful whose every declared source is absent and which archived nothing is therefore released to the queue once, after that runtime's cached executions are discarded, rather than failed. The release drops the abandoned attempt's persistence records and archived-source references, and the single retry is durable, so a genuinely missing output still fails on the second attempt.
 
+Every stage image of a generation lives in its own subfolder (`first_pass`, `color_matched`, `sd_upscaled`, `final`) and is deleted seconds after the run finished, which makes "which stage produced this defect?" unanswerable after the fact. `CIF_RETAIN_STAGES` on the ComfyUI process is the debug switch for that: `off` (the default) keeps today's deletion, `last` keeps the newest generation, and `1`–`32` keep the newest N. One delete request is one generation, so the files it would have removed are moved — same-filesystem `os.replace`, copy-and-remove only on `EXDEV` — into one directory named `<UTC-YYYYMMDDTHHMMSSZ>-<8 hex>` under `<output root>/comfyui-image-frontend-retention/`, preserving each file's relative subfolder path. The switch is count-bounded because one such PNG is ~20 MB and a generation writes four: after each move only the newest N generation directories survive, ranked by the timestamp in their name and never by mtime, and the directory just written is never the one pruned. Neither pruning nor reporting follows a symlink out of the retention root. The companion exposes the switch read-only at `GET /comfyui-image-frontend/artifacts/retention`, and a catalog refresh turns a non-`off` answer into one informational `artifact_retention` diagnostic per instance so the operator can see how much the worker is keeping and where; because retained files are never deleted by the application, that row is the only standing reminder that they are the operator's to purge. An old companion with no such route, or one that is unreachable, produces no diagnostic and cannot change any source's readiness.
+
 The one route that carries a file the other way is the gallery's "send to ComfyUI", a selection tool in the toolbar that appears once cards are checked, plus the same action in the full-screen viewer for a single image. It is initiated by the backend, which reads its own stored artifact and posts it to `/upload/image` with `type=input`: ComfyUI and the application share no filesystem, and the browser is never given a ComfyUI address to post to. The receiving service is resolved server-side from the generation's own worker and the environment's stage assignments, so a copy can only ever land on an image service and never on the CPU prompt/dataset service; a selection that spans two image services fills two input folders. ComfyUI resolves a name clash by writing a counter-suffixed file rather than overwriting, so the returned name, not the requested one, is reported back and is what an input node will offer. Each copy is then read back the way an image input reads - `GET /view` with `type=input` - because that, and not the runtime's cached `/object_info` snapshot taken during publication discovery, decides whether a workflow can actually open the file; a positive miss becomes a warning on an otherwise successful copy. A selection is copied one file at a time within one request, and `CIF_COMFYUI_PUSH_MAX_FILES` refuses an over-large selection before it starts rather than holding the browser for minutes. Files placed in `input` are the runtime's from then on — they are outside the `output`/`temp` cleanup above and outside gallery retention.
 
 Generation summary/detail returns the pinned execution ID and label together with source revision, prompt ID, requested/effective parameters, resolved seed strings, ordered declared outputs, untouched node-keyed unmapped outputs, graph-envelope-safe raw history, warnings/errors, ComfyUI status, artifacts, and durable events.
@@ -269,6 +291,21 @@ as a width, so sizing a reel never overwrites the size chosen for the gallery. T
 filter's five toggles are withdrawn from the header in this release —
 `RANK_FILTER_CONTROLS_VISIBLE` in `gallery-view.mjs` puts them back beside Favorites — while rank
 filtering keeps applying to reads, counts, group membership, and scoped bulk operations.
+
+One account's knowledge about a checkpoint has nowhere else to live. A published bundle carries one
+default per control and it has to serve every checkpoint the bundle can be pointed at, so a value
+that is invisible on a soft checkpoint can render skin as faceted patches on an INT8 quant.
+`control_defaults` on the preferences record is that account's known-good value per checkpoint,
+keyed on the checkpoint choice value rather than the `cp1_` file identity — the same lesson the
+checkpoint grades learned, that a file identity orphans on every checkpoint upgrade and turns a
+recorded preference into a silently missing one. The client applies the map when the checkpoint
+choice changes, and otherwise only to a control still sitting at the interface's published default,
+so a value the person typed is never overwritten; a control the person has set for this generation
+is skipped outright. What made the value appear is said out loud under the control, with an action
+to drop it and restore the published default, because a prefill nobody can identify is how a hidden
+constant ends up looking like the app's own opinion. The values are saved from the checkpoint card
+in the source picker, next to where a checkpoint is chosen, and travel with the rest of the shared
+settings under the same revision-conflict flow.
 
 The toolbar's generation activity indicator sits between Gallery scale and the account menu.
 It displays Current and All remaining times, mirrored in the photo viewer and browser title.

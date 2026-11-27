@@ -96,6 +96,9 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 - passive successful-run ETA learning, profile persistence/reload, matching-cohort reuse,
   terminal clearing, and idle-only legacy audit behavior;
 - complete multiple-node/multiple-publisher history with compact final-batch retention, ordinary publisher-image mirror de-duplication, untouched unmapped outputs, optional retrieval warnings, one-best partial/failure/interruption retention, and terminal ComfyUI source cleanup/retry;
+- stage-artefact retention (`CIF_RETAIN_STAGES`): `off` deleting exactly as before, `last`/`N` moving a whole generation into its bounded retention directory with relative subfolder path and bytes preserved, name-ranked pruning that keeps at most N directories and never the one just written, invalid values reported as `off` instead of raised, the read-only report route and its adapter fallback, and the one informational health diagnostic a non-`off` switch produces (`backend/tests/unit/test_artifact_retention_companion.py`, `backend/tests/unit/test_comfyui_adapter.py`, `backend/tests/unit/test_workflow_registry.py`);
+- publication lint: a hidden re-draw constant named by node, a bound control silencing it and a derived math link counting as controlled, 1.0/0.25/0.0 not reported, the short-re-draw step warning kept separate, a `SamplerCustomAdvanced` charged once at the node owning the constant, a stage mismatch reported against the stage node that is actually reached and stayed silent when the graph has no such stage, an unpublished control, an exemption downgrading a finding to a diagnostic and being ignored by another bundle, the finding cap and its suppression tail, and a republished bundle reaching the health tab as `ready_with_warnings` (`backend/tests/unit/test_publication_lint.py`);
+- per-checkpoint control defaults: a stored value applied as a prefill and never over an explicit one, clamping to the published bounds with the step grid mirrored between `backend/app/domain/control_defaults.py` and `frontend/src/lib.mjs`, a choice value the bundle does not publish skipped, an unknown control refused so a default nobody can apply is never stored, an empty catalog judging nothing, the option-ID key surviving a checkpoint upgrade, and the settings round-trip, revision conflict, and per-account isolation (`backend/tests/unit/test_control_defaults.py`, `backend/tests/integration/test_gallery_recall_preferences.py`, `frontend/test/control-defaults.test.mjs`);
 - restart/outage recovery and cached source availability;
 - automatic full catalog refresh on offline-to-online recovery, including empty-cache startup, without continuous online refetch;
 - last-valid cached catalogs queue only on their assigned service during outages and resume on recovery;
@@ -116,7 +119,8 @@ Integration tests run the real FastAPI lifespan against temporary SQLite/data di
 
 The fake ComfyUI service implements both userdata listings/retrieval, object info, prompt
 accept/reject, queue/interrupt, realistic non-replayed WebSocket `progress_state`/legacy/terminal
-events, history timing/status, `/view`, bounded output/temp deletion, retrieval/cleanup failure,
+events, history timing/status, `/view`, bounded output/temp deletion, the configurable
+`CIF_RETAIN_STAGES` retention report (no route, off, or a chosen mode), retrieval/cleanup failure,
 and outage modes. Production code never
 silently uses the fake service.
 
@@ -251,6 +255,13 @@ a local Git repository, and real SQLite archives to cover installation, restored
 image tags, external TLS paths, source ancestry, app-only Compose operations,
 preparation failures, stopped-backup ordering, database rollback, lock contention,
 and the portal's verified-result/exit-code contract. No production host is contacted.
+
+- `scripts/tests/test_texture_regression.py` covers the published-bundle texture fixture with tiny
+  ImageMagick fixtures: both blessed recipes and the block grid they derive, the band arithmetic
+  that has to catch the recorded 3.16 → 3.94 patchiness shift while absorbing a few per cent of
+  checkpoint drift, bless/check round-trips, a patched variant failing with the metric named, the
+  crop and block parameters, rejected images and crops, and the distinct exit code for a bundle
+  stage that has never been blessed. It skips itself when `convert` is not installed.
 
 With a local Docker daemon, opt in to the runner/entrypoint and isolated image
 startup regressions:
