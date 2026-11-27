@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -16,6 +17,13 @@ from pydantic import (
 
 from .config import COMFYUI_INSTANCE_ID_PATTERN
 from .domain import expectations as expectation_rules
+from .domain.control_defaults import (
+    CHECKPOINT_OPTION_RE,
+    CONTROL_DEFAULT_MAX_CHECKPOINTS,
+    CONTROL_DEFAULT_MAX_CONTROLS,
+    CONTROL_DEFAULT_MAX_VALUE_CHARS,
+    CONTROL_ID_RE,
+)
 from .domain.lora_stack import MAX_TRIGGER_WORD
 from .domain.model_choice import normalize_assistant_model
 from .domain.prompt_instructions import DEFAULT_PROMPT_INSTRUCTIONS
@@ -158,6 +166,7 @@ class PreferenceResponse(APIModel):
     source_ratings: dict[str, int] = Field(default_factory=dict)
     source_colors: dict[str, str] = Field(default_factory=dict)
     checkpoint_tiers: dict[str, list[str]] = Field(default_factory=dict)
+    control_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class PreferenceUpdate(APIModel):
@@ -168,6 +177,7 @@ class PreferenceUpdate(APIModel):
     source_ratings: dict[str, StrictInt] | None = None
     source_colors: dict[str, str] | None = None
     checkpoint_tiers: dict[StrictStr, list[StrictStr]] | None = None
+    control_defaults: dict[StrictStr, dict[StrictStr, Any]] | None = None
 
     @field_validator("source_ratings")
     @classmethod
@@ -223,6 +233,49 @@ class PreferenceUpdate(APIModel):
             raise ValueError("checkpoint_tiers cannot contain more than 25000 checkpoints")
         return value
 
+    @field_validator("control_defaults")
+    @classmethod
+    def validate_control_defaults(
+        cls, value: dict[str, dict[str, Any]] | None
+    ) -> dict[str, dict[str, Any]] | None:
+        """Shape only; whether a control ID exists is a catalog question for the route."""
+
+        if value is None:
+            return None
+        if len(value) > CONTROL_DEFAULT_MAX_CHECKPOINTS:
+            raise ValueError(
+                f"control_defaults may name at most {CONTROL_DEFAULT_MAX_CHECKPOINTS} checkpoints"
+            )
+        for checkpoint, controls in value.items():
+            if CHECKPOINT_OPTION_RE.fullmatch(checkpoint) is None:
+                raise ValueError("control defaults must be keyed on a checkpoint option ID")
+            if len(controls) > CONTROL_DEFAULT_MAX_CONTROLS:
+                raise ValueError(
+                    f"a checkpoint may carry at most {CONTROL_DEFAULT_MAX_CONTROLS} controls"
+                )
+            for control_id, control_value in controls.items():
+                if CONTROL_ID_RE.fullmatch(control_id) is None:
+                    raise ValueError("control defaults must be keyed on a published control ID")
+                if isinstance(control_value, bool):
+                    continue
+                if isinstance(control_value, int):
+                    if abs(control_value) > 2**53 - 1:
+                        raise ValueError("control defaults must stay within browser-safe integers")
+                    continue
+                if isinstance(control_value, str):
+                    if not control_value or len(control_value) > CONTROL_DEFAULT_MAX_VALUE_CHARS:
+                        raise ValueError(
+                            "control default strings must be "
+                            f"1 to {CONTROL_DEFAULT_MAX_VALUE_CHARS} characters"
+                        )
+                    continue
+                if isinstance(control_value, float) and math.isfinite(control_value):
+                    continue
+                raise ValueError(
+                    "control defaults must be numbers, booleans or published choice values"
+                )
+        return value
+
     @model_validator(mode="after")
     def validate_update_fields(self) -> PreferenceUpdate:
         if (
@@ -230,6 +283,7 @@ class PreferenceUpdate(APIModel):
             and self.source_ratings is None
             and self.source_colors is None
             and self.checkpoint_tiers is None
+            and self.control_defaults is None
             and self.settings is None
         ):
             raise ValueError("at least one preference field is required")

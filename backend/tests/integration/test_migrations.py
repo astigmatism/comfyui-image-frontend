@@ -28,7 +28,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 LEGACY_REVISION = "7c9b2d4e6f81"
-HEAD_REVISION = "b5d1e8a3c092"
+HEAD_REVISION = "4c7a1d8b6e25"
+# The revision immediately before per-checkpoint control defaults, used to prove a
+# downgrade forgets the preference and nothing else.
+CONTROL_DEFAULTS_PARENT_REVISION = "b5d1e8a3c092"
 DERIVATION_REVISION = "c43d89e12a70"
 THUMBNAIL_REVISION = "7d1a4c8e5b32"
 OPT_OUT_REVISION = "3f9c2a7d5b14"
@@ -674,6 +677,9 @@ def test_migration_up_down_up_cycle(settings_factory) -> None:
     assert "checkpoint_tiers_json" in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }
+    assert "control_defaults_json" in {
+        column["name"] for column in inspect(engine).get_columns("user_preferences")
+    }
     assert "collection_previews_enabled" not in {
         column["name"] for column in inspect(engine).get_columns("user_preferences")
     }
@@ -1310,3 +1316,86 @@ def test_collection_order_migration_numbers_existing_folders_per_parent(tmp_path
     with engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM collections")).scalar_one() == 5
     engine.dispose()
+
+
+def test_per_checkpoint_control_defaults_survive_a_re_upgrade_and_a_forgotten_downgrade(
+    tmp_path,
+):
+    """A downgrade may forget which values a checkpoint wants, and nothing else.
+
+    The preference is per-account and keyed on a checkpoint option ID, so it is stored in
+    its own column rather than inside `settings_json`: the panel autosaves that blob on
+    every control edit, and a value an autosave could overwrite is not a default anyone
+    can rely on. The upgrade therefore writes `{}` into the new column and does not touch
+    `revision`, so an account signed in on another device during the deploy keeps working
+    instead of colliding with itself.
+    """
+
+    path = tmp_path / "control-defaults.db"
+    config = _config(path)
+    command.upgrade(config, CONTROL_DEFAULTS_PARENT_REVISION)
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, username_normalized, password_hash, role, state, "
+                "must_change_password, is_bootstrap, is_system, session_epoch, created_at, "
+                "updated_at) VALUES ('owner-1', 'admin', 'admin', 'hash', 'ADMIN', 'ACTIVE', 0, 0, "
+                "1, 0, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO user_preferences (user_id, gallery_scale, source_ratings_json, "
+                "source_colors_json, checkpoint_tiers_json, settings_json, settings_initialized, "
+                "revision, updated_at) VALUES ('owner-1', 45, '{}', :colors, :tiers, '{}', 1, 7, "
+                "'2026-01-01 00:00:00+00')"
+            ),
+            {
+                "colors": '{"source-alpha": "#ff0000"}',
+                "tiers": '{"A": ["cp1_' + "a" * 64 + '"]}',
+            },
+        )
+
+    def preference() -> tuple[int, str]:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT revision, checkpoint_tiers_json FROM user_preferences")
+            ).one()
+        return int(row[0]), str(row[1])
+
+    command.upgrade(config, "head")
+    columns = {column["name"] for column in inspect(engine).get_columns("user_preferences")}
+    assert "control_defaults_json" in columns
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT control_defaults_json FROM user_preferences")
+            ).scalar_one()
+            == "{}"
+        )
+    # No backfill and no revision bump: an account that existed before the column simply has
+    # no defaults, and a second device is not punished for the deployment.
+    assert preference() == (7, '{"A": ["cp1_' + "a" * 64 + '"]}')
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE user_preferences SET control_defaults_json = :defaults, revision = 8 "
+                "WHERE user_id = 'owner-1'"
+            ),
+            {"defaults": '{"v4_int8": {"refine_denoise": 0.0}}'},
+        )
+    command.downgrade(config, CONTROL_DEFAULTS_PARENT_REVISION)
+    columns = {column["name"] for column in inspect(engine).get_columns("user_preferences")}
+    assert "control_defaults_json" not in columns
+    assert preference() == (8, '{"A": ["cp1_' + "a" * 64 + '"]}')
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT control_defaults_json FROM user_preferences")
+            ).scalar_one()
+            == "{}"
+        )

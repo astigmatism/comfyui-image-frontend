@@ -947,8 +947,8 @@ The transcription request is multipart with one `file` field whose media type is
 | `DELETE` | `/api/generations/{id}/favorite` | Remove bookmark without deleting history |
 | `PUT` | `/api/collections/{id}/favorite` | Idempotently bookmark an owned collection; returns updated `Collection` |
 | `DELETE` | `/api/collections/{id}/favorite` | Remove collection bookmark; returns `204` |
-| `GET` | `/api/preferences` | Read owner gallery scale/layout and checkpoint tiers; legacy source rating/color fields remain for stored-data compatibility |
-| `PUT` | `/api/preferences` | Persist a scale from 0 through 100, a grouped/classic layout, and/or account-wide checkpoint ranks; legacy source rating/color updates remain accepted |
+| `GET` | `/api/preferences` | Read owner gallery scale/layout, checkpoint tiers and per-checkpoint control defaults; legacy source rating/color fields remain for stored-data compatibility |
+| `PUT` | `/api/preferences` | Persist a scale from 0 through 100, a grouped/classic layout, account-wide checkpoint ranks, and/or per-checkpoint control defaults; legacy source rating/color updates remain accepted |
 
 `gallery_scale` and `settings.gallery_layout` are the account's copy of the gallery view, which
 seeds a browser that has never chosen one; while it holds no view of its own a browser echoes those
@@ -973,6 +973,19 @@ have rank C. Each identity may occur only once across all five arrays. Writes re
 `expected_revision`; stale or missing revisions return 409. The rank is private to the
 signed-in account and shared across workflows. Concurrent rank-board changes use the
 existing settings conflict flow rather than merging individual tier arrays.
+
+`control_defaults` maps a checkpoint **choice value** (the same stable option ID the selection
+`last_selections` use, never a `cp1_` file identity, because a checkpoint upgrade renames the file
+and would orphan every value an owner had recorded) to a map of published control ID to value.
+It is one account's known-good value for a control of a checkpoint — the first real case is a
+re-draw amount a published bundle has to set for every checkpoint and which one INT8 quant shows
+as faceted skin. Writes require `expected_revision` like ranks, replace the whole map, and are
+validated against what is published now: a control ID no published bundle declares is refused with
+422 `control_defaults_unknown_control` rather than stored where nobody could ever apply it, a
+number outside the control's published bounds is clamped to them instead of refused, and a
+seed/string/image control is refused because it carries no such value. A stored default is a
+prefill the client applies when that checkpoint is chosen, never a lock: an explicit value for the
+generation always wins, and neither the API nor the panel treats it as a limit.
 
 Model selector choices and generation summaries expose `checkpoint_id`. The server derives
 it from normalized private model bindings, independent of public labels, choice aliases,
