@@ -31,13 +31,6 @@ const editable = (response) => ({
   settings: response.settings,
   gallery_scale: response.gallery_scale,
   checkpoint_tiers: response.checkpoint_tiers,
-  // Unlike the tier board, which is one ordering that a second browser's move can invalidate,
-  // this map is a set of independent notes about independent checkpoints, so the default
-  // per-key merge is right: two browsers recording a default for two different checkpoints,
-  // or two different controls of one checkpoint, keep both facts. A deletion propagates as
-  // any other local change — local differs from base while remote still equals base, so local
-  // wins and the key stays gone — which is what lets the map stay a whole-map replace.
-  control_defaults: response.control_defaults,
 });
 
 export function createSettingsSync({ api, read, apply, status: reportStatus, signal, storage = null, storageKey = null, normalize = (value) => value, prepareMerge = async () => {} }) {

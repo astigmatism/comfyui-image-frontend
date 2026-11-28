@@ -133,18 +133,6 @@ Artifact values are inert basenames for display/diagnostics. Neither artifact na
 
 Publication v1 supports `string`, `integer`, `number`, `boolean`, `seed`, `choice`, and `image`. Every input has a valid public `id`, label, description, semantic role, required/advanced flags, group, order, and one or more trusted bindings. Scalar and choice inputs have defaults; an image input is required and deliberately has no default. Numeric inputs also have `minimum`, `maximum`, and `step`. A seed additionally declares `default_mode` as `fixed` or `random`.
 
-Three of those fields mean something the publisher may not expect, and one of them cannot be fixed
-later. The `id`, the bound node's `instance_uuid`, and a numeric `default` are the keys of stored
-data — `generations.effective_controls_json` and a browser's saved selection both name the control by
-`id` — so renaming an id orphans history, and a republished default silently reinterprets every
-generation made before it. `order` only sorts within the panel; it moves nothing between sections, so
-it is not how a control becomes an Advanced control. `group` is the heading the field is rendered
-under, except that `basic` is never a heading, so a control grouped as `basic` is renamed by its label
-alone: giving a control a label that says which stage it belongs to is the fix when the old label was
-ambiguous, and it changes no id and no stored value. `semantic_role` is a shared descriptor, not a
-unique key: two controls may legitimately declare `denoise` when one is the refine amount and one is
-the upscale amount, and nothing in the app routes a value by role.
-
 An `image` input has semantic role `reference_image`, binds only to `CIFImageParameter.image`, and declares trusted media metadata: `/upload/image`, storage type `input`, a nonempty subset of PNG/JPEG/WebP MIME types, positive byte/width/height limits, `animated: false`, and a Boolean `returns_mask`. Its limits must match the frozen CIF node. The public request carries only an application-owned opaque asset ID.
 
 A choice declares 1–100 entries containing a unique safe public `value`, nonblank public `label`, and optional finite `default_strength`; its string default must name exactly one entry. Ordinary choice controls are scalar single selects. The first recognized model-checkpoint choice is instead promoted out of Advanced into a checkbox group immediately beneath **Generation source** and mirrored in the source picker. Those checkboxes are client-side fan-out over the unchanged scalar request contract. The manifest and public API never expose the frozen choice node's `options_json`, installed filename, downstream binding, or node ID. Omitted or `null` optional choices resolve to the manifest default; empty strings and unknown values fail before ComfyUI submission.
@@ -253,24 +241,6 @@ Both adjacent artifacts remain required, path-checked, size-bounded, and parsed 
 
 Candidates are independent: one failure does not hide other valid sources. Warnings are preserved but do not become errors. An accepted source with workflow/API drift is diagnosed as `ready_with_warnings`; administrator details contain both recorded and observed hashes plus metadata diagnostic codes. Other administrative diagnostic codes include `server_unreachable`, `listing_failed`, `manifest_fetch_failed`, `workflow_fetch_failed`, `api_fetch_failed`, `manifest_invalid`, `dependency_missing`, and `ready`.
 
-After the hard checks, `publication_lint.py` reads the frozen API graph for the thing a schema cannot
-see: a sampler re-drawing part of the latent on every generation at an amount nobody can change. A
-`KSampler`, `KSamplerAdvanced`, `UltimateSDUpscale` (and their custom/`BasicScheduler` variants)
-whose `denoise` is a bare constant above 0.25 and below a full pass, with no published control bound
-to that input, produces the warning `Hidden re-draw` naming the node, the amount, and the fact that
-the app cannot reach it; the same node with a constant `steps` below 4 adds `Short re-draw`, because
-the measured skin/jewellery faceting defect moved with the amount and not with the step count. A full
-1.0 pass is what a generation graph normally is and an amount at or below 0.25 is a resample, so
-neither is reported and a republish of a bundle that only wants a knob gets exactly one warning that
-names the node to bind. A control whose label or group promises a stage its bound value never reaches
-(`Enable … upscale` feeding a refine sampler with the upscale elsewhere) is reported as
-`Stage mismatch`, and nothing is claimed when the graph contains no such stage or the binding
-resolves to no node. A control the manifest declares but binds nowhere is reported as
-`Unpublished control`. `SAMPLER_CONSTANT_EXEMPTIONS` is the checked-in exemption list: an entry names
-the bundle, node and field with a reason and downgrades that finding to an accepted diagnostic, which
-is how a deliberate constant stays deliberate. Every finding is a warning — readiness, revisions and
-submissions are untouched — and they surface in the same Workflow health tab as hash drift.
-
 ## Source identity, revisions, and refresh behavior
 
 `source_key` is an opaque stable SHA-256 derived from `CIF_COMFYUI_INSTANCE_ID` and manifest `source_id`. Keep the configured instance ID stable even if the server URL changes. A revision is the immutable tuple:
@@ -356,56 +326,6 @@ CIF publisher metadata is read from the top-level list-shaped `comfyui_image_fro
 The gallery uses the authored `final` result as its primary image when available. Every retained final-batch sibling remains independently inspectable and downloadable. Earlier stages and native results remain inspectable as JSON history metadata but are not kept as downloadable binary duplicates.
 
 The public JSON/history boundary removes submitted graph envelopes, not result metadata. Arbitrary JSON-safe custom UI fields, publisher declarations, output-node keys, batches, raw status/error detail, and execution metadata remain available. ComfyUI URLs, credentials, userdata discovery paths, executable graphs, and private manifest bindings stay server-side. Original owner-scoped artifact bytes may contain native ComfyUI prompt/workflow metadata; users should strip it before sharing files outside the appliance if that server-side metadata is sensitive.
-
-## Texture regression baselines
-
-A stage image can change texture without changing anything a hash or a graph diff can see. In the published Moody Krea 2 Advanced v1 bundle a 1.5x refine `KSampler` with a hard-coded `denoise 0.39` rendered skin and jewellery as faceted patches on high-micro-contrast checkpoints; the graph, the published controls and the final file all looked ordinary, and the defect was found by looking at a picture. Two ImageMagick measurements of a matched-scale crop separate those renders — block patchiness moved 3.16 → 3.94 between the base pass and that hidden refine pass, while the upscale that followed added none — and `scripts/texture_regression.py` records them as a blessed band per bundle stage so the same defect costs a red build instead of a memory.
-
-### Giving a bundle a baseline
-
-The fixture measures a PNG and never submits a generation: on the production host a generation must originate from the application's own authenticated API, so submission stays with the application and the fixture stays a pure measurement of a file. Whoever republishes a bundle generates that bundle's fixed seed and prompt through the application, retrieves the stage image whose texture matters, chooses the matched-scale crop once, and blesses it:
-
-```sh
-scripts/texture_regression.py bless \
-  --bundle moody-krea2-advanced-v1 --stage refine \
-  --image refine.png --crop 1160x1160+0+0 --block 8 \
-  --seed 1125899906842624 --prompt-file prompt.txt
-```
-
-That writes `scripts/texture-baselines/<bundle>__<stage>.json` holding the metrics, the derived bands, the crop, block size and sigmas, the derived patch grid, the seed, the sha256 of the measured image and of the prompt file, the ImageMagick version string, and an ISO timestamp. The patch grid is derived rather than typed — `ceil(crop width / block) x ceil(crop height / block)`, one sample per block, upscaled back to exactly the crop size — so a baseline declares the geometry it was measured on instead of leaving it implicit in a shell line. For the 1160x1160 crop above and 8-pixel blocks the grid is 145x145, which is the command the recorded numbers came from.
-
-### When `check` runs
-
-On every republish of a bundle that has baselines, by the person who republishes it, against the stage images of the same seed and prompt rendered from the republished revision:
-
-```sh
-scripts/texture_regression.py check \
-  --bundle moody-krea2-advanced-v1 --stage refine --image refine.png
-```
-
-`check` re-measures with the crop, block size and sigmas stored in the baseline, prints one line per metric with the blessed value, the band and the delta, and exits non-zero naming each metric that left its band. Its exit codes keep the cases a reader must not conflate apart: 1 is a metric outside its band, 2 is that the bundle/stage has no baseline yet, 3 is an unreadable image or a bad argument.
-
-### Metrics
-
-Both metrics run on the grayscale version of the measured region and report on the 0–255 scale. Detail energy is the mean absolute difference between the crop and its own blur; block patchiness is that difference after the crop has been reduced to one sample per block and enlarged back, which leaves only structure living on the block grid — the mosaic signature. `<image>` carries the crop stage `-crop <WxH+X+Y> +repage` first when the baseline declares a crop.
-
-```sh
-# detail energy at blur scale $sigma (0.6, 1.2, 2.5 unless the baseline says otherwise)
-convert "$img" -colorspace gray \( +clone -blur 0x$sigma \) \
-  -compose difference -composite -format '%[fx:mean*255]' info:
-
-# block-scale patchiness: 8-pixel blocks over the 1160x1160 matched crop
-convert "$img" -colorspace gray -resize 145x145! -resize 1160x1160! \
-  \( +clone -blur 0x6 \) -compose difference -composite -format '%[fx:mean*255]' info:
-```
-
-Each stored band is the blessed value ± `max(0.15 * value, 0.05)`, both knobs overridable at bless time. The recorded defect moved detail energy at sigma 0.6 from 0.40 to 0.75 and patchiness from 3.16 to 3.94, so a band has to be far inside a 25% relative move to be worth running, while the absolute floor keeps a near-zero metric — a soft-focus stage, a flat-lay prompt — from failing on the last decimal of `%[fx:mean*255]`. A checkpoint quantisation or VAE float change moves these numbers by a few per cent, which the band absorbs.
-
-Both resizes carry `!`. On the square matched crop that is the resize the recorded command performed; on a non-square crop it is what keeps one sample per block instead of ImageMagick preserving the aspect and silently measuring a different grid.
-
-### A baseline is reviewed like a screenshot
-
-A blessed number is a human statement that this render's texture is the one we want. It changes only when a person looks at the new render and re-blesses it, in a commit that says why; `check` never rewrites a baseline, and a failing `check` is never resolved by widening a tolerance or updating a band from the very image that broke it. Baselines for production bundles are therefore committed together with the seed, prompt and crop they came from, and a synthetic number is never committed as one. See [the baselines directory](../scripts/texture-baselines/README.md).
 
 ## Configuration
 

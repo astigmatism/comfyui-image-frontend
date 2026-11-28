@@ -47,7 +47,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {},
             "source_colors": {},
             "checkpoint_tiers": {},
-            "control_defaults": {},
         }
 
         saved = first.put(
@@ -64,7 +63,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {},
             "source_colors": {},
             "checkpoint_tiers": {},
-            "control_defaults": {},
         }
         ratings_saved = first.put(
             "/api/preferences",
@@ -80,7 +78,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
             "checkpoint_tiers": {},
-            "control_defaults": {},
         }
         checkpoint_tiers = {
             "A": ["cp1_" + "a" * 64],
@@ -165,7 +162,6 @@ def test_cursor_pagination_is_newest_first_and_preference_persists(
             "source_ratings": {"source-alpha": 3, "source-beta": 5},
             "source_colors": {},
             "checkpoint_tiers": checkpoint_tiers,
-            "control_defaults": {},
         }
 
 
@@ -341,102 +337,3 @@ def test_favorites_filter_inputs_are_flagged_on_list_endpoints(
             for item in client.get("/api/generations", params={"collection_id": ""}).json()["items"]
         ]
         assert generations[0]["id"] not in remaining
-
-
-def test_per_checkpoint_control_defaults_round_trip_and_conflict(
-    settings_factory, fake_state
-) -> None:
-    """A checkpoint default is a prefilled value, stored per account and keyed on option ID.
-
-    The published catalog decides what may be stored: an unknown control ID is refused,
-    because a default no bundle declares could never be applied and would sit in the row
-    forever. A number outside a control's published bounds is clamped instead of refused,
-    because "as little re-draw as this bundle allows" is the intent behind the value.
-    """
-
-    settings = settings_factory(enable_background_worker=False)
-    with TestClient(create_app(settings)) as client:
-        _, cookie = provision_user(client, username="defaults.user")
-        headers = {"X-CSRF-Token": csrf(client)}
-        assert client.get("/api/preferences").json()["control_defaults"] == {}
-
-        saved = client.put(
-            "/api/preferences",
-            headers=headers,
-            json={
-                "expected_revision": 0,
-                "control_defaults": {
-                    # The checkpoint this account knows re-draws too hard.
-                    "v4_int8": {"lora_strength": 0.0, "enable_seedvr2_upscale": False},
-                    # A value the published control cannot express is clamped, not refused.
-                    "soft_checkpoint": {"width": 4000, "lora_strength": 0.33},
-                },
-            },
-        )
-        assert saved.status_code == 200
-        assert saved.json()["control_defaults"] == {
-            "v4_int8": {"lora_strength": 0.0, "enable_seedvr2_upscale": False},
-            "soft_checkpoint": {"width": 2048, "lora_strength": 0.35},
-        }
-        assert saved.json()["revision"] == 1
-        assert (
-            client.get("/api/preferences").json()["control_defaults"]
-            == (saved.json()["control_defaults"])
-        )
-
-        def reject(body: object, code: str) -> None:
-            response = client.put(
-                "/api/preferences",
-                headers=headers,
-                json={"expected_revision": 1, **body},  # type: ignore[dict-item]
-            )
-            assert response.status_code == 422, body
-            assert response.json()["error"]["code"] == code, response.json()
-
-        reject(
-            {"control_defaults": {"v4_int8": {"refine_denoise": 0.0}}},
-            "control_defaults_unknown_control",
-        )
-        reject(
-            {"control_defaults": {"v4_int8": {"lora": "not_a_lora"}}}, "control_defaults_invalid"
-        )
-        # A seed or a prompt is not a value a checkpoint wants; it is refused by name, not
-        # silently dropped, so the owner learns the map cannot express it.
-        reject(
-            {"control_defaults": {"v4_int8": {"prompt": "hello"}}},
-            "control_defaults_unknown_control",
-        )
-        # The rejected writes left the stored map exactly as it was.
-        assert (
-            client.get("/api/preferences").json()["control_defaults"]
-            == (saved.json()["control_defaults"])
-        )
-
-        conflict = client.put(
-            "/api/preferences",
-            headers=headers,
-            json={"control_defaults": {"v4_int8": {"lora_strength": 0.5}}},
-        )
-        assert conflict.status_code == 409
-        assert conflict.json()["error"]["code"] == "revision_required"
-        stale = client.put(
-            "/api/preferences",
-            headers=headers,
-            json={"expected_revision": 0, "control_defaults": {"v4_int8": {"lora_strength": 0.5}}},
-        )
-        assert stale.status_code == 409
-        assert stale.json()["error"]["code"] == "settings_conflict"
-        assert (
-            client.get("/api/preferences").json()["control_defaults"]
-            == (saved.json()["control_defaults"])
-        )
-
-        # Another account keeps its own map, and an account that never wrote one has none.
-        client.cookies.clear()
-        login(client, "admin", ADMIN_PASSWORD)
-        assert client.get("/api/preferences").json()["control_defaults"] == {}
-        restore_cookie(client, cookie, name=settings.session_cookie_name)
-        assert (
-            client.get("/api/preferences").json()["control_defaults"]
-            == (saved.json()["control_defaults"])
-        )

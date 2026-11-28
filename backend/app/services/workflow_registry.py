@@ -449,13 +449,6 @@ class WorkflowRegistry:
                 )
             )
 
-        # One instance-wide diagnostic for the companion's stage-artefact retention switch. It is
-        # appended to the same list, so it is written in the same transaction as the catalog rows
-        # and retired by the same delete-then-insert refresh.
-        retention = await self._retention_diagnostic(now)
-        if retention is not None:
-            diagnostics.append(retention)
-
         return await _run_blocking(
             self._commit_refresh,
             now=now,
@@ -463,63 +456,6 @@ class WorkflowRegistry:
             validated=validated,
             diagnostics=diagnostics,
             object_info=capabilities.object_info,
-        )
-
-    async def _retention_diagnostic(self, now: datetime) -> WorkflowDiagnostic | None:
-        """Report the companion's ``CIF_RETAIN_STAGES`` switch while it is not off.
-
-        Why it is worth a row: a retained stage artefact is a file the app will never delete, and
-        the Workflow health tab is the only place per-instance companion state is shown. Without
-        this line an operator who leaves ``CIF_RETAIN_STAGES=8`` set on one worker cannot tell why
-        its output volume is filling up.
-
-        It changes nothing else. The read sits outside the catalog path, so an old companion
-        without the route, an offline one, or a stub adapter in a test simply produces no
-        diagnostic; readiness of every published source is decided by the rows above, and a
-        retention report can never reject one.
-        """
-
-        # Why the getattr: the catalog path also runs against execution-only and test adapters
-        # that predate this route, and a missing capability is not an error worth recording.
-        read = getattr(self.adapter, "retention_status", None)
-        if read is None:
-            return None
-        try:
-            report = await read()
-        # Why so broad: a debug read must never fail a catalog refresh, and the shapes that can
-        # go wrong here (transport, parse, an unexpected client double) are not worth enumerating.
-        except Exception:
-            return None
-        if not isinstance(report, dict):
-            return None
-        mode = report.get("mode")
-        if not isinstance(mode, str) or not mode or mode == "off":
-            return None
-        directory = report.get("directory")
-        return self._diagnostic(
-            now=now,
-            # basename is what the health tab groups by; this row belongs to the instance, not to
-            # a published source, so it carries the switch's own name.
-            basename="artifact-retention",
-            accepted=True,
-            code="artifact_retention",
-            message=(
-                f"Artifact retention is {mode}: keeping {report.get('retained_generations', 0)} "
-                f"generation(s), {report.get('retained_files', 0)} file(s), "
-                f"{report.get('retained_bytes', 0)} bytes in {directory}. These files are not "
-                "deleted by the app."
-            ),
-            details={
-                "retention_mode": mode,
-                "limit": report.get("limit"),
-                "retained_generations": report.get("retained_generations"),
-                "retained_files": report.get("retained_files"),
-                "retained_bytes": report.get("retained_bytes"),
-                "directory": directory,
-                # An invalid value falls back to off on the companion, so it can only be reported
-                # when the mode is off and this row is absent; keep it for future-proofing.
-                "invalid_value": report.get("invalid_value"),
-            },
         )
 
     def _commit_refresh(
@@ -590,12 +526,7 @@ class WorkflowRegistry:
                     "workflow_userdata": True,
                     "catalog_state": "ready",
                     "ready_sources": ready_sources,
-                    # Counted as rejected rows rather than "diagnostics minus validated sources",
-                    # so an instance-wide diagnostic (artifact retention) is never reported as a
-                    # candidate publication that failed to load.
-                    "rejected_candidates": sum(
-                        1 for diagnostic in diagnostics if not diagnostic.accepted
-                    ),
+                    "rejected_candidates": len(diagnostics) - len(validated),
                     "dependency_unavailable_source_keys": sorted(
                         dependency_unavailable_source_keys
                     ),

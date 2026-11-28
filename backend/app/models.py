@@ -173,12 +173,6 @@ class UserPreference(Base):
     checkpoint_tiers_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
-    # checkpoint option ID -> control ID -> value. Its own column rather than a key inside
-    # settings_json so it can be backed up, diffed and migrated like the grades, and never
-    # clobbered by a panel autosave of unrelated controls.
-    control_defaults_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
-    )
     settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     settings_initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

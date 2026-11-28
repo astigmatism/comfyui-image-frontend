@@ -52,7 +52,7 @@ TESTS = {
     "QUEUE": "`backend/tests/integration/test_queue_and_recovery.py`; rapid-submission lifecycle test",
     "EXEC": "compiler/result unit tests; lifecycle, queue/recovery, event broker/SSE, and artifact persistence integration tests",
     "UI": "`frontend/test/render.test.mjs`; `frontend/test/lib.test.mjs`; Playwright principal journeys",
-    "GAL": "gallery/recall/preferences (including per-checkpoint control defaults), collection, query-performance, migration, and lifecycle integration tests; frontend render tests; Playwright",
+    "GAL": "gallery/recall/preferences, collection, query-performance, migration, and lifecycle integration tests; frontend render tests; Playwright",
     "RECALL": "lifecycle exact recall; unavailable source; Prompt Assistant provenance; frontend overwrite test; Playwright",
     "DEL": "generation lifecycle deletion and user cascade deletion integration tests",
     "FAIL": "Ollama outage, ComfyUI outage/recovery, failure/cancel, persistence failure integration tests",
@@ -98,8 +98,6 @@ PUBLICATION_ROWS = [
     ("30", "Recorded/observed artifact drift warns without hiding an otherwise valid runtime", "warning-only workflow/API hash comparison and observed API identity in `domain/publication.py` plus refresh metadata in `services/workflow_registry.py`", "contract and registry tests for workflow/API drift, warning details, and immutable observed graph revisions"),
     ("33", "Shared LoRA groups and their display order organize scalable thumbnails independently of executable catalogs and selection order", "`services/lora_groups.py`, `api/lora_groups.py`, grouping/order migrations, and `frontend/src/lora-gallery.mjs` / `lora-manager.mjs`", "group CRUD/order/auth/CSRF/isolation/concurrency integration tests; migration round trips; gallery scale/reflow, thumbnail, admin-refresh, and rerun browser journeys"),
     ("31", "Compiled generation-source metadata is recognized losslessly without becoming executable input", "open typed metadata models in `domain/source_metadata.py`, manifest retention, and source API projection", "contract/API tests for legacy absence, unknown values/fields/warnings/entries, six counts, both LoRA forms, and hash/history isolation"),
-    ("32", "A constant no published control can reach is reported at publication time, as a warning", "`domain/publication_lint.py` wired into `validate_publication`, with `SAMPLER_CONSTANT_EXEMPTIONS` and the diagnostics it accepts", "`backend/tests/unit/test_publication_lint.py` and the `ready_with_warnings` republish fixture"),
-    ("33", "One account's known-good control values for one checkpoint are validated against what is published", "`domain/control_defaults.py`, `api/preferences.py`, and the shared-settings map in `frontend/src/lib.mjs` / `frontend/src/app.mjs`", "`backend/tests/unit/test_control_defaults.py`, the preferences integration round-trip, and `frontend/test/control-defaults.test.mjs`"),
 ]
 
 
@@ -228,13 +226,7 @@ def render() -> str:
             "history metadata remains available without keeping every binary. After local "
             "processing is durable, the adapter requests deletion of transferred ComfyUI "
             "`output`/`temp` files through the included bounded companion route; failures remain "
-            "visible and retry on startup. `CIF_RETAIN_STAGES` on the ComfyUI process is the "
-            "debug switch for that deletion: `off` (default) deletes as above, `last` or `1`-`32` "
-            "move one delete request's files into a count-bounded retention directory instead, and "
-            "a catalog refresh reports a non-`off` value as one informational diagnostic per "
-            "instance. Implemented in `comfyui_extension/cif_artifact_cleanup/`, "
-            "`backend/app/services/comfyui.py`, and `backend/app/services/workflow_registry.py`, "
-            "with `backend/tests/unit/test_artifact_retention_companion.py`.",
+            "visible and retry on startup.",
             "",
             "## Published-workflow acceptance mapping",
             "",

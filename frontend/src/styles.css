@@ -2108,29 +2108,6 @@ code {
   font-size: 0.78rem;
 }
 
-/* Where a value came from, in one line under the control, with the way back to the value the
-   workflow published. Muted on purpose: it explains the field, it does not compete with it. */
-.control-default-note {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  align-items: baseline;
-  margin: 6px 0 0;
-  color: #93a7bd;
-  font-size: 0.72rem;
-}
-
-.control-default-note strong {
-  color: #c2d3e4;
-  font-weight: 650;
-}
-
-.button.control-default-reset {
-  margin-left: auto;
-  padding: 2px 7px;
-  font-size: 0.64rem;
-}
-
 .form-error {
   min-height: 1.2em;
   margin: 0;
@@ -4405,46 +4382,6 @@ dialog::backdrop {
   font-size: 0.56rem;
   font-weight: 750;
   letter-spacing: 0.025em;
-}
-
-/* The row under a checkpoint where what this checkpoint is known to need is listed next to
-   the one action that records it, so the knowledge stays with the checkpoint it describes. */
-.checkpoint-card-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  justify-content: space-between;
-  grid-column: 1 / -1;
-  padding-left: 32px;
-}
-
-.checkpoint-default-badge {
-  padding: 2px 5px;
-  border: 1px solid #3c5f52;
-  border-radius: 4px;
-  background: #0c1a15;
-  color: #8ec6ac;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.56rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-}
-
-.checkpoint-default-save {
-  padding: 2px 7px;
-  border: 1px solid #2f4257;
-  border-radius: 5px;
-  background: #0d1520;
-  color: #8fa6bd;
-  font-size: 0.58rem;
-  font-weight: 650;
-}
-
-.checkpoint-default-save:hover:not(:disabled) {
-  border-color: #48617d;
-  color: #cddced;
 }
 
 .checkpoint-tier-empty,

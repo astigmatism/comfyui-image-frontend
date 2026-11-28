@@ -16,7 +16,6 @@ import orjson
 
 from ..errors import ContractError
 from .lora_stack import validate_lora_stack
-from .publication_lint import lint_publication_graph
 from .source_metadata import recognize_source_metadata
 
 PUBLICATION_SCHEMA = "comfyui-image-frontend.publication/v1"
@@ -416,16 +415,6 @@ def validate_publication(
         sorted(value for value in dependencies if value not in object_info)
     )
     warnings = _validate_warnings(manifest.get("warnings", []))
-    lint_warnings, lint_accepted = lint_publication_graph(
-        source_id=source_id,
-        api_document=api_document,
-        private_inputs=[
-            item for item in private_contract.get("inputs", []) if isinstance(item, Mapping)
-        ],
-    )
-    for lint_warning in lint_warnings:
-        if lint_warning not in warnings and len(warnings) < MAX_WARNINGS:
-            warnings = (*warnings, lint_warning)
     if editable_workflow_drifted and EDITABLE_WORKFLOW_DRIFT_WARNING not in warnings:
         warnings = (*warnings, EDITABLE_WORKFLOW_DRIFT_WARNING)
     if api_drifted and FROZEN_API_DRIFT_WARNING not in warnings:
@@ -487,7 +476,7 @@ def validate_publication(
         dependencies=dependencies,
         missing_dependencies=missing_dependencies,
         warnings=warnings,
-        metadata_diagnostics=(*source_metadata.diagnostics, *lint_accepted),
+        metadata_diagnostics=source_metadata.diagnostics,
         generation_source=source_metadata.generation_source,
         technical_inventory=source_metadata.technical_inventory,
         runtime=runtime,

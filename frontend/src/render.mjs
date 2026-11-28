@@ -174,7 +174,6 @@ export function generationPanelMarkup(state, profile, contract) {
   const basic = inputs.filter((item) => !isAdvancedInput(item) || item.type === "lora_stack");
   const advanced = inputs.filter((item) => isAdvancedInput(item) && item.type !== "lora_stack");
   const advancedHasError = advanced.some((item) => clientErrors[item.id]);
-  const checkpointControlDefaults = checkpointDefaultProvenance(state, modelSource);
   const disabled = generationSubmissionDisabled(state, profile, contract, clientErrors);
   const presets = contract?.presets || [];
   const sourceSelectorDisabled =
@@ -183,7 +182,7 @@ export function generationPanelMarkup(state, profile, contract) {
     ? controlSectionMarkup({
         key: "advanced",
         title: "Advanced",
-        content: `<div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors, { omitGroupHeadings: true, checkpointControlDefaults })}</div>`,
+        content: `<div class="advanced-controls">${groupedControlsMarkup(advanced, values, contract, clientErrors, { omitGroupHeadings: true })}</div>`,
         open: advancedHasError || controlSectionIsOpen(state.controlSectionOpen, "advanced", false),
         className: "advanced-group",
       })
@@ -219,7 +218,7 @@ export function generationPanelMarkup(state, profile, contract) {
         ${state.formError ? `<div class="form-error summary" role="alert">${escapeHtml(state.formError)}</div>` : ""}
       </div>
       <div class="panel-scroll" id="panel-scroll">
-        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions, state, advancedMarkup, checkpointControlDefaults)}
+        ${collapsibleControlsMarkup(basic, values, contract, clientErrors, state.controlSectionOpen, state.recentResolutions, state, advancedMarkup)}
         ${controlEmptyStateMarkup(state, profile, contract)}
       </div>
       <div id="shared-settings-status-host" class="panel-footer">${sharedSettingsStatusMarkup(state)}</div>
@@ -351,7 +350,6 @@ export function sourcePickerDialogMarkup(
     primaryKey,
     modelSelectionsBySource = {},
     checkpointTiers = {},
-    controlDefaults = {},
     searchQuery = "",
   } = {},
 ) {
@@ -398,7 +396,6 @@ export function sourcePickerDialogMarkup(
           sourceKey: activeSourceKey,
           parameterId: selector.parameter_id,
           query,
-          controlDefaults,
         }),
       ).join("")
     : '<div class="checkpoint-picker-empty">This workflow has no checkpoint choices.</div>';
@@ -442,7 +439,6 @@ function checkpointTierMarkup({
   sourceKey: activeSourceKey,
   parameterId,
   query,
-  controlDefaults = {},
 }) {
   const choices = values.map((value) => choiceByValue.get(value)).filter(Boolean);
   const visibleChoices = choices.filter((choice) => {
@@ -462,7 +458,6 @@ function checkpointTierMarkup({
         parameterId,
         tierId: tier.id,
         reorderDisabled: Boolean(query),
-        controlDefaults,
       }),
     )
     .join("");
@@ -488,7 +483,6 @@ function checkpointCardMarkup({
   parameterId,
   tierId,
   reorderDisabled,
-  controlDefaults = {},
 }) {
   const presentation = checkpointChoicePresentation(choice);
   const dragTitle = reorderDisabled
@@ -497,30 +491,7 @@ function checkpointCardMarkup({
   return `<article class="checkpoint-card${selected ? " is-selected" : ""}" data-checkpoint-card data-checkpoint-value="${escapeHtml(choice.value)}" role="listitem">
     <button type="button" class="checkpoint-drag-handle" data-checkpoint-drag-handle aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight" data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" data-checkpoint-tier-id="${escapeHtml(tierId)}" data-checkpoint-value="${escapeHtml(choice.value)}" draggable="${reorderDisabled ? "false" : "true"}" aria-label="${escapeHtml(dragTitle)}" title="${escapeHtml(dragTitle)}" ${reorderDisabled ? "disabled" : ""}><span aria-hidden="true"></span></button>
     <label class="checkpoint-choice-body"><input type="checkbox" data-source-model-choice data-source-model-source-key="${escapeHtml(activeSourceKey)}" data-source-model-parameter-id="${escapeHtml(parameterId)}" data-source-model-value="${escapeHtml(choice.value)}" aria-label="${escapeHtml(choice.label)}" ${selected ? "checked" : ""} /><span aria-hidden="true"></span><strong title="${escapeHtml(choice.label)}">${escapeHtml(presentation.label)}</strong>${presentation.badge ? `<small>${escapeHtml(presentation.badge)}</small>` : ""}</label>
-    <div class="checkpoint-card-footer">${checkpointDefaultBadgeMarkup(controlDefaults?.[choice.value])}<button type="button" class="checkpoint-default-save" data-action="save-checkpoint-control-defaults" data-checkpoint-source-key="${escapeHtml(activeSourceKey)}" data-checkpoint-parameter-id="${escapeHtml(parameterId)}" data-checkpoint-value="${escapeHtml(choice.value)}">Save current values as this checkpoint's defaults</button></div>
   </article>`;
-}
-
-// What this checkpoint is known to need, kept next to the checkpoint it belongs to: the
-// board is where a person decides which checkpoint to use, and "this one wants its
-// refinement switched off" is the fact that decides it. Two values fit the card; the rest
-// are counted, and the whole list rides along in the title.
-function checkpointDefaultBadgeMarkup(controls) {
-  const entries = controls && typeof controls === "object" && !Array.isArray(controls)
-    ? Object.entries(controls)
-    : [];
-  if (!entries.length) return "";
-  const values = entries.map(([id, value]) => `${id} ${checkpointDefaultLabel(value)}`);
-  const overflow = values.length - 2;
-  return `<small class="checkpoint-default-badge" title="${escapeHtml(`Checkpoint defaults: ${values.join(", ")}`)}">${escapeHtml(values.slice(0, 2).join(" · "))}${overflow > 0 ? ` +${overflow}` : ""}</small>`;
-}
-
-// Two decimals is how a strength reads; a published choice value or a switch is shown as
-// the person would say it.
-function checkpointDefaultLabel(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value.toFixed(2);
-  if (typeof value === "boolean") return value ? "on" : "off";
-  return String(value ?? "");
 }
 
 function checkpointChoicePresentation(choice) {
@@ -647,7 +618,7 @@ function controlEmptyStateMarkup(state, source, contract) {
   return '<p class="empty-copy">Choose an available generation source to load its controls.</p>';
 }
 
-function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = [], state = {}, advancedMarkup = "", checkpointControlDefaults = {}) {
+function collapsibleControlsMarkup(inputs, values, contract, errors, openState = {}, recentResolutions = [], state = {}, advancedMarkup = "") {
   const resolutionPair = pairedResolutionInputs(inputs, values, contract);
   const firstResolutionInput = resolutionPair
     ? inputs.find((input) => input === resolutionPair.width || input === resolutionPair.height)
@@ -735,7 +706,6 @@ function collapsibleControlsMarkup(inputs, values, contract, errors, openState =
                     hideSeedSwitch: section.kind === "seed" && input === first,
                     recentResolutions,
                     loraImages: state.loraImages?.[input.id] || {},
-                    checkpointControlDefaults,
                   }),
                 )
                 .join("");
@@ -1033,7 +1003,7 @@ function groupedControlsMarkup(inputs, values, contract, errors, options = {}) {
     markup +=
       resolutionPair && input === firstResolutionInput
         ? pairedResolutionMarkup(resolutionPair.width, resolutionPair.height, values, contract, errors)
-        : controlMarkup(input, values, contract, errors, options);
+        : controlMarkup(input, values, contract, errors);
   }
   if (currentGroup !== null) markup += "</section>";
   return markup;
@@ -1180,43 +1150,7 @@ export function controlMarkup(control, values, contract, errors = {}, options = 
   return `<div class="control-block ${disabled ? "is-disabled" : ""}" data-control-block="${escapeHtml(control.id)}" data-control-group="${escapeHtml(control.group || "")}">
     ${field}
     ${errorId ? `<p class="field-error" id="${errorId}" data-control-error="${escapeHtml(control.id)}" role="alert">${escapeHtml(error || "")}</p>` : ""}
-    ${checkpointControlDefaultNoteMarkup(control, options.checkpointControlDefaults?.[control.id])}
   </div>`;
-}
-
-// One line under the control naming the checkpoint whose known-good value the field is
-// holding, with the way back to the published value. A prefilled number that says nothing
-// about itself reads exactly like a number the person typed, and that is how a checkpoint
-// default becomes a mystery the next time the image looks wrong.
-function checkpointControlDefaultNoteMarkup(control, checkpointLabel) {
-  if (!checkpointLabel) return "";
-  return `<p class="control-default-note" data-control-default-note="${escapeHtml(control.id)}">Checkpoint default from <strong>${escapeHtml(checkpointLabel)}</strong><button type="button" class="button low control-default-reset" data-action="use-checkpoint-control-default-reset" data-control-id="${escapeHtml(control.id)}">Use workflow default</button></p>`;
-}
-
-// Which control values in the panel came from a checkpoint default, in the shape the note
-// wants: control ID to the label of the checkpoint option that supplied it. Provenance is
-// kept per source because a default belongs to one source's checkpoint, and a control the
-// person has since set is dropped here as well as in the panel state — a value that wins
-// cannot also be described as somebody else's suggestion.
-function checkpointDefaultProvenance(state, modelSource) {
-  const key = state.activeSourceKey || state.activeProfileId || "";
-  const perSource = state.checkpointControlDefaults;
-  const stored = perSource instanceof Map ? perSource.get(key) : perSource?.[key];
-  if (!stored) return {};
-  const labels = new Map();
-  for (const selector of sourceModelSelectors(modelSource)) {
-    for (const choice of selector.choices) labels.set(choice.value, choice.label);
-  }
-  const explicit =
-    state.explicitParameterIds instanceof Set
-      ? state.explicitParameterIds
-      : new Set(state.explicitParameterIds || []);
-  const notes = {};
-  for (const [id, optionValue] of stored instanceof Map ? stored : Object.entries(stored)) {
-    if (explicit.has(id)) continue;
-    notes[id] = labels.get(optionValue) || String(optionValue);
-  }
-  return notes;
 }
 
 function controlConstraint(control, name) {

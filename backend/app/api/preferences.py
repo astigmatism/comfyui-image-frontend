@@ -14,7 +14,6 @@ from ..dependencies import (
     require_ready_csrf,
     require_ready_user,
 )
-from ..domain.control_defaults import control_declarations, validate_control_defaults
 from ..errors import AppError
 from ..models import Upload, UserPreference
 from ..schemas import PreferenceResponse, PreferenceUpdate
@@ -41,7 +40,6 @@ def preference_response(preference: UserPreference | None) -> PreferenceResponse
         source_ratings=preference.source_ratings_json if preference else {},
         source_colors=preference.source_colors_json if preference else {},
         checkpoint_tiers=preference.checkpoint_tiers_json if preference else {},
-        control_defaults=preference.control_defaults_json if preference else {},
     )
 
 
@@ -64,7 +62,6 @@ async def update_preferences(
                     source_ratings_json={},
                     source_colors_json={},
                     checkpoint_tiers_json={},
-                    control_defaults_json={},
                 )
                 session.add(preference)
                 session.flush()
@@ -117,22 +114,6 @@ async def update_preferences(
                 preference.checkpoint_tiers_json = {
                     tier: list(identities) for tier, identities in payload.checkpoint_tiers.items()
                 }
-            if payload.control_defaults is not None:
-                if payload.expected_revision is None:
-                    raise AppError(
-                        "revision_required", "A settings revision is required.", status_code=409
-                    )
-                # A control the published catalog does not declare would be a default no
-                # bundle can ever apply, so it is refused here rather than stored and
-                # ignored forever. With nothing published there is nothing to judge it
-                # against, so the shape validated by the schema is what is stored.
-                preference.control_defaults_json = validate_control_defaults(
-                    payload.control_defaults,
-                    control_declarations(
-                        profile.resolved_contract_json
-                        for profile in container.registry.list_current(session)
-                    ),
-                )
             preference.revision += 1
             session.commit()
             return preference_response(preference)

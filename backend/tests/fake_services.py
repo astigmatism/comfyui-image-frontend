@@ -159,10 +159,6 @@ class FakeServiceState:
     cancelled_prompt_ids: set[str] = field(default_factory=set)
     output_files: dict[tuple[str, str, str], bytes] = field(default_factory=dict)
     artifact_cleanup_requests: list[list[dict[str, str]]] = field(default_factory=list)
-    # What the fake companion reports from GET /comfyui-image-frontend/artifacts/retention. None
-    # models a companion build without the route, so the adapter fallback path stays testable.
-    artifact_retention: dict[str, Any] | None = None
-    artifact_retention_status: int = 200
     event_log: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     websocket_clients: dict[str, list[WebSocket]] = field(default_factory=dict)
     submitted: list[dict[str, Any]] = field(default_factory=list)
@@ -241,8 +237,6 @@ class FakeServiceState:
         self.cancelled_prompt_ids.clear()
         self.output_files.clear()
         self.artifact_cleanup_requests.clear()
-        self.artifact_retention = None
-        self.artifact_retention_status = 200
         self.event_log.clear()
         self.websocket_clients.clear()
         self.submitted.clear()
@@ -973,21 +967,6 @@ def create_fake_services_app(state: FakeServiceState) -> FastAPI:
                 deleted += 1
         state.artifact_cleanup_requests.append(normalized)
         return {"deleted": deleted, "missing": missing}
-
-    @app.get("/comfyui-image-frontend/artifacts/retention")
-    async def retention_frontend_artifacts() -> JSONResponse:
-        # Read-only view of the companion's CIF_RETAIN_STAGES switch. The report is a knob
-        # instead of a filesystem scan because the backend only needs a deterministic payload;
-        # None models a companion build that has no such route.
-        if state.artifact_retention is None:
-            return JSONResponse(
-                status_code=state.artifact_retention_status,
-                content={"detail": "artifact retention report unavailable"},
-            )
-        return JSONResponse(
-            status_code=state.artifact_retention_status,
-            content=state.artifact_retention,
-        )
 
     @app.get("/cif/lora-management/capabilities")
     async def lora_management_capabilities() -> dict[str, Any]:

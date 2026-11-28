@@ -9,7 +9,6 @@ Publication integration is additive. Migration `b84f2d6a91c3_add_published_sourc
 - `workflow_profiles` gains ComfyUI instance/source identity, publication UUID/schema/time, manifest hash, warnings, readiness, and source/revision indexes.
 - `generations` gains source identity plus complete raw/normalized result JSON.
 - New JSON columns use empty object/array defaults so old rows remain readable.
-- `4c7a1d8b6e25_add_control_defaults.py` adds `user_preferences.control_defaults_json` with a `{}` server default and leaves `revision` alone, so an account signed in elsewhere during a deploy keeps working instead of colliding with itself. It is its own column rather another key inside `settings_json` because the panel autosaves that blob on every control edit: a default an autosave could silently rewrite is not a default anyone can rely on. A downgrade forgets the preference and nothing else.
 - Legacy profile identity/graph/contract columns remain because generations reference immutable profile rows and historical APIs still project them.
 
 A successful authoritative publication refresh marks embedded-contract profiles non-current/stale; it does not delete their rows or application assets. Old generations remain viewable and deletable. Exact recall is available only if a matching current published revision exists and recompiles identically.
@@ -109,7 +108,7 @@ LoRA library are unchanged. The downgrade re-creates the empty table, index, and
 | `users` | Local account, role, forced-change state, session epoch |
 | `sessions` | HMAC token ID, CSRF, expiry/revocation, privacy-safe client metadata |
 | `login_throttles` | Username/IP-keyed attempt windows and temporary blocks |
-| `user_preferences` | Owner gallery scale, persisted checkpoint tier layout, per-checkpoint control defaults, and retained legacy source rating/color data |
+| `user_preferences` | Owner gallery scale, persisted checkpoint tier layout, and retained legacy source rating/color data |
 | `workflow_profiles` | Immutable accepted publication revisions plus retained legacy snapshots |
 | `workflow_diagnostics` | Safe latest transport/candidate discovery diagnostics |
 | `service_health` | Last known ComfyUI/Ollama state and catalog capability summary |
